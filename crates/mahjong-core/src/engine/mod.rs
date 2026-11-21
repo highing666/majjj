@@ -4,13 +4,14 @@ use core::fmt;
 use std::collections::VecDeque;
 
 use crate::projection;
+use crate::protocol::WinKind;
 use crate::protocol::{
     DiscardEntry, HandSettlement, KongTransfer, MatchError, MatchMode, MatchSummary, PlayerAction,
     PlayerEvent, PlayerHandView, PlayerView, RevealedHand, RevealedMeld, RuleProfile, TurnSource,
 };
 use crate::ruleset::{
     DiscardReactionContext, HandProgression, HandProgressionInput, Ruleset, SettleHandInput,
-    TurnContext,
+    TurnContext, WinCandidate, WinEvalInput, WinSettlementDetails,
 };
 use crate::seat::{Seat, Wind};
 use crate::tile::Tile;
@@ -288,8 +289,9 @@ impl<R: Ruleset, W: WallProvider> Match<R, W> {
         action: PlayerAction,
     ) -> Result<Vec<RecordedEvent>, MatchError> {
         let emitted = match &self.state.phase {
-            TablePhase::TurnAction { actor, .. } => {
+            TablePhase::TurnAction { actor, source } => {
                 let actor = *actor;
+                let source = *source;
                 if seat != actor {
                     return Err(MatchError::NotYourTurn { seat });
                 }
@@ -299,7 +301,7 @@ impl<R: Ruleset, W: WallProvider> Match<R, W> {
                 if !self.legal_actions_for(seat).contains(&action) {
                     return Err(MatchError::IllegalAction { seat, action });
                 }
-                self.apply_turn_action(actor, action)?
+                self.apply_turn_action(actor, source, action)?
             }
             TablePhase::AwaitingDiscardReactions { pending, .. }
             | TablePhase::AwaitingRobKong { pending, .. } => {
@@ -321,6 +323,7 @@ impl<R: Ruleset, W: WallProvider> Match<R, W> {
     fn apply_turn_action(
         &mut self,
         actor: Seat,
+        source: TurnSource,
         action: PlayerAction,
     ) -> Result<Vec<RecordedEvent>, MatchError> {
         let mut out = Vec::new();
@@ -360,6 +363,40 @@ impl<R: Ruleset, W: WallProvider> Match<R, W> {
                 });
 
                 self.advance_after_discard(actor, tile, &mut out);
+                Ok(out)
+            }
+            PlayerAction::Tsumo => {
+                let seat_state = &self.state.seats[actor.index()];
+                let winning_tile = seat_state.drawn_tile.unwrap_or_else(|| {
+                    *seat_state
+                        .closed_tiles
+                        .last()
+                        .expect("winning hand holds at least one closed tile")
+                });
+                let evaluated = self
+                    .ruleset
+                    .evaluate_win(&WinEvalInput {
+                        closed_tiles: &seat_state.closed_tiles,
+                        extra_tile: seat_state.drawn_tile,
+                        melds: &seat_state.melds,
+                        win_kind: WinKind::Tsumo,
+                        turn_source: Some(source),
+                        wall_remaining: self.state.wall_remaining(),
+                    })
+                    .expect("legal_actions verified Tsumo is a valid win");
+
+                self.settle_hand_with_details(
+                    Some(WinSettlementDetails {
+                        winners: vec![WinCandidate {
+                            seat: actor,
+                            win_kind: WinKind::Tsumo,
+                            evaluated,
+                        }],
+                        discarder: None,
+                        winning_tile,
+                    }),
+                    &mut out,
+                );
                 Ok(out)
             }
             _ => Err(MatchError::IllegalAction {
@@ -406,7 +443,7 @@ impl<R: Ruleset, W: WallProvider> Match<R, W> {
         }
 
         if wall_remaining == 0 {
-            self.settle_draw_game(out);
+            self.settle_hand_with_details(None, out);
             return;
         }
 
@@ -414,7 +451,11 @@ impl<R: Ruleset, W: WallProvider> Match<R, W> {
         self.draw_from_wall_head(next_seat, out);
     }
 
-    fn settle_draw_game(&mut self, out: &mut Vec<RecordedEvent>) {
+    pub(crate) fn settle_hand_with_details(
+        &mut self,
+        win_details: Option<WinSettlementDetails>,
+        out: &mut Vec<RecordedEvent>,
+    ) {
         let revealed_hands = std::array::from_fn(|idx| {
             let seat = Seat::from_index(idx).expect("array length is 4");
             let s = &self.state.seats[idx];
@@ -434,7 +475,7 @@ impl<R: Ruleset, W: WallProvider> Match<R, W> {
             current_scores: self.state.scores,
             kong_transfers: self.state.kong_transfers.clone(),
             revealed_hands,
-            win_details: None,
+            win_details,
         });
 
         self.state.scores = settlement.new_scores;
