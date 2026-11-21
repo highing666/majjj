@@ -7,16 +7,16 @@ use core::fmt;
 use std::collections::VecDeque;
 
 use crate::projection;
-use crate::protocol::WinKind;
 use crate::protocol::{
-    DiscardEntry, HandSettlement, KongTransfer, MatchError, MatchMode, MatchSummary, PlayerAction,
-    PlayerEvent, PlayerHandView, PlayerView, RevealedMeld, RuleProfile, TurnSource,
+    DiscardEntry, HandSettlement, KongKind, KongTransfer, MatchError, MatchMode, MatchSummary,
+    PlayerAction, PlayerEvent, PlayerHandView, PlayerView, RevealedMeld, RuleProfile, TurnSource,
+    WinKind,
 };
 use crate::ruleset::{Ruleset, TurnContext, WinCandidate, WinEvalInput, WinSettlementDetails};
 use crate::seat::{Seat, Wind};
 use crate::tile::Tile;
 use crate::wall::{validate_wall, WallProvider};
-use reactions::DiscardReactionWindow;
+use reactions::{DiscardReactionWindow, RobKongWindow};
 
 /// Opaque wrapper over an internal `TableEvent`, exposing only its sequence number.
 ///
@@ -68,6 +68,27 @@ impl SeatState {
     pub(crate) fn hand_count(&self) -> u8 {
         (self.closed_tiles.len() + usize::from(self.drawn_tile.is_some())) as u8
     }
+
+    pub(crate) fn consume_tiles_for_kong(&mut self, tile: Tile, count: usize) {
+        let from_closed = if self.drawn_tile == Some(tile) {
+            self.drawn_tile = None;
+            count - 1
+        } else {
+            count
+        };
+        for _ in 0..from_closed {
+            let pos = self
+                .closed_tiles
+                .iter()
+                .position(|&t| t == tile)
+                .expect("legal kong verified matching tiles in closed_tiles");
+            self.closed_tiles.remove(pos);
+        }
+        if let Some(drawn) = self.drawn_tile.take() {
+            self.closed_tiles.push(drawn);
+            self.closed_tiles.sort_unstable();
+        }
+    }
 }
 
 /// Strictly crate-private 5-state internal FSM.
@@ -78,12 +99,7 @@ pub(crate) enum TablePhase {
         source: TurnSource,
     },
     AwaitingDiscardReactions(DiscardReactionWindow),
-    #[allow(dead_code)]
-    AwaitingRobKong {
-        actor: Seat,
-        tile: Tile,
-        pending: Vec<Seat>,
-    },
+    AwaitingRobKong(RobKongWindow),
     BetweenHands {
         last_settlement: HandSettlement,
         ready_seats: [bool; 4],
@@ -130,7 +146,6 @@ pub(crate) struct TableEvent {
 
 /// Strictly crate-private authoritative event payload variants.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub(crate) enum TableEventKind {
     MatchStarted {
         mode: MatchMode,
@@ -310,12 +325,7 @@ impl<R: Ruleset, W: WallProvider> Match<R, W> {
                 self.apply_turn_action(actor, source, action)?
             }
             TablePhase::AwaitingDiscardReactions(_) => self.apply_discard_reaction(seat, action)?,
-            TablePhase::AwaitingRobKong { pending, .. } => {
-                if !pending.contains(&seat) {
-                    return Err(MatchError::NotYourTurn { seat });
-                }
-                return Err(MatchError::IllegalAction { seat, action });
-            }
+            TablePhase::AwaitingRobKong(_) => self.apply_rob_kong_reaction(seat, action)?,
             TablePhase::BetweenHands { .. } => self.apply_between_hands_action(seat, action)?,
             TablePhase::MatchFinished { .. } => {
                 return Err(MatchError::MatchAlreadyFinished);
@@ -405,11 +415,118 @@ impl<R: Ruleset, W: WallProvider> Match<R, W> {
                 );
                 Ok(out)
             }
+            PlayerAction::ConcealedKong { tile } => {
+                let meld_seq = self.state.seq + 1;
+                let deltas = self
+                    .ruleset
+                    .kong_score_deltas(KongKind::ConcealedKong, actor, None);
+                self.state.kong_transfers.push(KongTransfer {
+                    kind: KongKind::ConcealedKong,
+                    actor,
+                    from_seat: None,
+                    tile,
+                    score_deltas: deltas,
+                });
+
+                let meld = RevealedMeld::ConcealedKong {
+                    tile,
+                    seq: meld_seq,
+                };
+                {
+                    let seat_state = &mut self.state.seats[actor.index()];
+                    seat_state.consume_tiles_for_kong(tile, 4);
+                    seat_state.melds.push(meld);
+                    seat_state.last_draw_or_meld_seq = meld_seq;
+                    seat_state.passed_hu_lock = false;
+                }
+
+                let emitted_seq = Self::push_event(
+                    &mut self.state,
+                    &mut out,
+                    TableEventKind::MeldDeclared {
+                        seat: actor,
+                        meld,
+                        kong_score_deltas: Some(deltas),
+                    },
+                );
+                debug_assert_eq!(emitted_seq, meld_seq);
+
+                self.draw_from_wall_tail(actor, &mut out);
+                Ok(out)
+            }
+            PlayerAction::AddedKong { tile } => {
+                if let Some(window) = RobKongWindow::build(&self.state, &self.ruleset, actor, tile)
+                {
+                    Self::push_event(
+                        &mut self.state,
+                        &mut out,
+                        TableEventKind::AddedKongAttempted { seat: actor, tile },
+                    );
+                    self.state.phase = TablePhase::AwaitingRobKong(window);
+                } else {
+                    self.complete_added_kong(actor, tile, &mut out);
+                }
+                Ok(out)
+            }
             _ => Err(MatchError::IllegalAction {
                 seat: actor,
                 action,
             }),
         }
+    }
+
+    pub(crate) fn complete_added_kong(
+        &mut self,
+        actor: Seat,
+        tile: Tile,
+        out: &mut Vec<RecordedEvent>,
+    ) {
+        let meld_seq = self.state.seq + 1;
+        let deltas = self
+            .ruleset
+            .kong_score_deltas(KongKind::AddedKong, actor, None);
+        self.state.kong_transfers.push(KongTransfer {
+            kind: KongKind::AddedKong,
+            actor,
+            from_seat: None,
+            tile,
+            score_deltas: deltas,
+        });
+
+        let upgraded_meld = {
+            let seat_state = &mut self.state.seats[actor.index()];
+            seat_state.consume_tiles_for_kong(tile, 1);
+            let pon_slot = seat_state
+                .melds
+                .iter_mut()
+                .find(|m| matches!(m, RevealedMeld::Pon { tile: t, .. } if *t == tile))
+                .expect("legal AddedKong verified matching Pon meld");
+            let RevealedMeld::Pon { from_seat, .. } = *pon_slot else {
+                unreachable!("matched RevealedMeld::Pon above");
+            };
+            let upgraded = RevealedMeld::AddedKong {
+                tile,
+                from_seat,
+                seq: meld_seq,
+            };
+            *pon_slot = upgraded;
+            seat_state.last_draw_or_meld_seq = meld_seq;
+            seat_state.passed_hu_lock = false;
+            upgraded
+        };
+
+        let emitted_seq = Self::push_event(
+            &mut self.state,
+            out,
+            TableEventKind::MeldDeclared {
+                seat: actor,
+                meld: upgraded_meld,
+                kong_score_deltas: Some(deltas),
+            },
+        );
+        debug_assert_eq!(emitted_seq, meld_seq);
+
+        self.draw_from_wall_tail(actor, out);
     }
 
     fn advance_after_discard(&mut self, discarder: Seat, tile: Tile, out: &mut Vec<RecordedEvent>) {
@@ -430,11 +547,20 @@ impl<R: Ruleset, W: WallProvider> Match<R, W> {
     }
 
     pub(crate) fn draw_from_wall_head(&mut self, seat: Seat, out: &mut Vec<RecordedEvent>) {
-        let drawn = self
-            .state
-            .wall
-            .pop_front()
-            .expect("wall_remaining > 0 verified before draw");
+        self.draw_tile(seat, false, out);
+    }
+
+    pub(crate) fn draw_from_wall_tail(&mut self, seat: Seat, out: &mut Vec<RecordedEvent>) {
+        self.draw_tile(seat, true, out);
+    }
+
+    fn draw_tile(&mut self, seat: Seat, from_tail: bool, out: &mut Vec<RecordedEvent>) {
+        let drawn = if from_tail {
+            self.state.wall.pop_back()
+        } else {
+            self.state.wall.pop_front()
+        }
+        .expect("wall_remaining > 0 verified before draw");
         let wall_remaining = self.state.wall_remaining();
         let draw_seq = Self::push_event(
             &mut self.state,
@@ -442,7 +568,7 @@ impl<R: Ruleset, W: WallProvider> Match<R, W> {
             TableEventKind::TileDrawn {
                 seat,
                 tile: drawn,
-                is_replacement: false,
+                is_replacement: from_tail,
                 wall_remaining,
             },
         );
@@ -455,7 +581,11 @@ impl<R: Ruleset, W: WallProvider> Match<R, W> {
 
         self.state.phase = TablePhase::TurnAction {
             actor: seat,
-            source: TurnSource::NormalDraw,
+            source: if from_tail {
+                TurnSource::ReplacementDraw
+            } else {
+                TurnSource::NormalDraw
+            },
         };
     }
 
@@ -507,7 +637,7 @@ pub(crate) fn legal_actions_for_state<R: Ruleset>(
             })
         }
         TablePhase::AwaitingDiscardReactions(window) => window.legal_actions(seat),
-        TablePhase::AwaitingRobKong { .. } => Vec::new(),
+        TablePhase::AwaitingRobKong(window) => window.legal_actions(seat),
         TablePhase::BetweenHands { ready_seats, .. } => {
             progression::legal_between_hands_actions(state, *ready_seats, seat)
         }
