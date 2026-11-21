@@ -254,7 +254,6 @@ fn rich_contract_types_roundtrip_serde_json_without_loss() {
     }
 
     let all_errors = vec![
-        MatchError::InvalidSeat,
         MatchError::IllegalAction {
             seat: Seat::South,
             action: PlayerAction::Tsumo,

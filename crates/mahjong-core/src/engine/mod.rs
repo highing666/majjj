@@ -53,9 +53,10 @@ pub(crate) struct SeatState {
 }
 
 impl SeatState {
-    fn empty() -> Self {
+    pub(crate) fn dealt(mut closed_tiles: Vec<Tile>) -> Self {
+        closed_tiles.sort_unstable();
         Self {
-            closed_tiles: Vec::new(),
+            closed_tiles,
             drawn_tile: None,
             river: Vec::new(),
             melds: Vec::new(),
@@ -65,29 +66,112 @@ impl SeatState {
         }
     }
 
+    fn empty() -> Self {
+        Self::dealt(Vec::new())
+    }
+
     pub(crate) fn hand_count(&self) -> u8 {
         (self.closed_tiles.len() + usize::from(self.drawn_tile.is_some())) as u8
     }
 
-    pub(crate) fn consume_tiles_for_kong(&mut self, tile: Tile, count: usize) {
-        let from_closed = if self.drawn_tile == Some(tile) {
+    pub(crate) fn discard_tile(&mut self, tile: Tile, from_drawn: bool, seq: u64) {
+        if from_drawn {
+            debug_assert_eq!(self.drawn_tile, Some(tile));
             self.drawn_tile = None;
-            count - 1
         } else {
-            count
-        };
-        for _ in 0..from_closed {
-            let pos = self
-                .closed_tiles
-                .iter()
-                .position(|&t| t == tile)
-                .expect("legal kong verified matching tiles in closed_tiles");
-            self.closed_tiles.remove(pos);
+            self.remove_closed_tile(tile);
+            if let Some(drawn) = self.drawn_tile.take() {
+                self.closed_tiles.push(drawn);
+                self.closed_tiles.sort_unstable();
+            }
+        }
+        self.river.push(DiscardEntry {
+            tile,
+            is_tsumogiri: from_drawn,
+            claimed_by: None,
+            seq,
+        });
+    }
+
+    pub(crate) fn record_draw(&mut self, tile: Tile, seq: u64) {
+        self.drawn_tile = Some(tile);
+        self.last_draw_or_meld_seq = seq;
+        self.passed_hu_lock = false;
+        self.passed_pon_lock.clear();
+    }
+
+    pub(crate) fn consume_tiles(&mut self, tiles: &[Tile]) {
+        for &tile in tiles {
+            if self.drawn_tile == Some(tile) {
+                self.drawn_tile = None;
+            } else {
+                self.remove_closed_tile(tile);
+            }
         }
         if let Some(drawn) = self.drawn_tile.take() {
             self.closed_tiles.push(drawn);
             self.closed_tiles.sort_unstable();
         }
+    }
+
+    pub(crate) fn record_declared_meld(&mut self, meld: RevealedMeld, seq: u64) {
+        self.melds.push(meld);
+        self.last_draw_or_meld_seq = seq;
+        self.passed_hu_lock = false;
+    }
+
+    pub(crate) fn upgrade_pon_to_added_kong(&mut self, tile: Tile, seq: u64) -> RevealedMeld {
+        self.consume_tiles(&[tile]);
+        let pon_slot = self
+            .melds
+            .iter_mut()
+            .find(|m| matches!(m, RevealedMeld::Pon { tile: t, .. } if *t == tile))
+            .expect("legal AddedKong verified matching Pon meld");
+        let RevealedMeld::Pon { from_seat, .. } = *pon_slot else {
+            unreachable!("matched RevealedMeld::Pon above");
+        };
+        let upgraded = RevealedMeld::AddedKong {
+            tile,
+            from_seat,
+            seq,
+        };
+        *pon_slot = upgraded;
+        self.last_draw_or_meld_seq = seq;
+        self.passed_hu_lock = false;
+        upgraded
+    }
+
+    pub(crate) fn claim_last_discard(&mut self, tile: Tile, claimer: Seat) {
+        let entry = self
+            .river
+            .last_mut()
+            .expect("discarder river holds the claimed discard");
+        debug_assert_eq!(entry.tile, tile);
+        debug_assert_eq!(entry.claimed_by, None);
+        entry.claimed_by = Some(claimer);
+    }
+
+    pub(crate) fn record_pass_locks(&mut self, offered: &[PlayerAction]) {
+        for action in offered {
+            match *action {
+                PlayerAction::Ron { .. } | PlayerAction::RobKongHu { .. } => {
+                    self.passed_hu_lock = true;
+                }
+                PlayerAction::Pon { tile } if !self.passed_pon_lock.contains(&tile) => {
+                    self.passed_pon_lock.push(tile);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn remove_closed_tile(&mut self, tile: Tile) {
+        let pos = self
+            .closed_tiles
+            .iter()
+            .position(|&c| c == tile)
+            .expect("legal action verified tile is in closed_tiles");
+        self.closed_tiles.remove(pos);
     }
 }
 
@@ -324,8 +408,9 @@ impl<R: Ruleset, W: WallProvider> Match<R, W> {
                 }
                 self.apply_turn_action(actor, source, action)?
             }
-            TablePhase::AwaitingDiscardReactions(_) => self.apply_discard_reaction(seat, action)?,
-            TablePhase::AwaitingRobKong(_) => self.apply_rob_kong_reaction(seat, action)?,
+            TablePhase::AwaitingDiscardReactions(_) | TablePhase::AwaitingRobKong(_) => {
+                self.apply_reaction(seat, action)?
+            }
             TablePhase::BetweenHands { .. } => self.apply_between_hands_action(seat, action)?,
             TablePhase::MatchFinished { .. } => {
                 return Err(MatchError::MatchAlreadyFinished);
@@ -345,23 +430,6 @@ impl<R: Ruleset, W: WallProvider> Match<R, W> {
         let mut out = Vec::new();
         match action {
             PlayerAction::Discard { tile, from_drawn } => {
-                let seat_state = &mut self.state.seats[actor.index()];
-                if from_drawn {
-                    debug_assert_eq!(seat_state.drawn_tile, Some(tile));
-                    seat_state.drawn_tile = None;
-                } else {
-                    let pos = seat_state
-                        .closed_tiles
-                        .iter()
-                        .position(|&c| c == tile)
-                        .expect("legal_actions verified tile is in closed_tiles");
-                    seat_state.closed_tiles.remove(pos);
-                    if let Some(drawn) = seat_state.drawn_tile.take() {
-                        seat_state.closed_tiles.push(drawn);
-                        seat_state.closed_tiles.sort_unstable();
-                    }
-                }
-
                 let discard_seq = Self::push_event(
                     &mut self.state,
                     &mut out,
@@ -371,12 +439,7 @@ impl<R: Ruleset, W: WallProvider> Match<R, W> {
                         is_tsumogiri: from_drawn,
                     },
                 );
-                self.state.seats[actor.index()].river.push(DiscardEntry {
-                    tile,
-                    is_tsumogiri: from_drawn,
-                    claimed_by: None,
-                    seq: discard_seq,
-                });
+                self.state.seats[actor.index()].discard_tile(tile, from_drawn, discard_seq);
 
                 self.advance_after_discard(actor, tile, &mut out);
                 Ok(out)
@@ -434,10 +497,8 @@ impl<R: Ruleset, W: WallProvider> Match<R, W> {
                 };
                 {
                     let seat_state = &mut self.state.seats[actor.index()];
-                    seat_state.consume_tiles_for_kong(tile, 4);
-                    seat_state.melds.push(meld);
-                    seat_state.last_draw_or_meld_seq = meld_seq;
-                    seat_state.passed_hu_lock = false;
+                    seat_state.consume_tiles(&[tile; 4]);
+                    seat_state.record_declared_meld(meld, meld_seq);
                 }
 
                 let emitted_seq = Self::push_event(
@@ -493,27 +554,8 @@ impl<R: Ruleset, W: WallProvider> Match<R, W> {
             score_deltas: deltas,
         });
 
-        let upgraded_meld = {
-            let seat_state = &mut self.state.seats[actor.index()];
-            seat_state.consume_tiles_for_kong(tile, 1);
-            let pon_slot = seat_state
-                .melds
-                .iter_mut()
-                .find(|m| matches!(m, RevealedMeld::Pon { tile: t, .. } if *t == tile))
-                .expect("legal AddedKong verified matching Pon meld");
-            let RevealedMeld::Pon { from_seat, .. } = *pon_slot else {
-                unreachable!("matched RevealedMeld::Pon above");
-            };
-            let upgraded = RevealedMeld::AddedKong {
-                tile,
-                from_seat,
-                seq: meld_seq,
-            };
-            *pon_slot = upgraded;
-            seat_state.last_draw_or_meld_seq = meld_seq;
-            seat_state.passed_hu_lock = false;
-            upgraded
-        };
+        let upgraded_meld =
+            self.state.seats[actor.index()].upgrade_pon_to_added_kong(tile, meld_seq);
 
         let emitted_seq = Self::push_event(
             &mut self.state,
@@ -537,13 +579,20 @@ impl<R: Ruleset, W: WallProvider> Match<R, W> {
             return;
         }
 
+        self.advance_after_unclaimed_discard(discarder, out);
+    }
+
+    pub(crate) fn advance_after_unclaimed_discard(
+        &mut self,
+        discarder: Seat,
+        out: &mut Vec<RecordedEvent>,
+    ) {
         if self.state.wall_remaining() == 0 {
             self.settle_hand_with_details(None, out);
             return;
         }
 
-        let next_seat = discarder.next();
-        self.draw_from_wall_head(next_seat, out);
+        self.draw_from_wall_head(discarder.next(), out);
     }
 
     pub(crate) fn draw_from_wall_head(&mut self, seat: Seat, out: &mut Vec<RecordedEvent>) {
@@ -573,11 +622,7 @@ impl<R: Ruleset, W: WallProvider> Match<R, W> {
             },
         );
 
-        let seat_state = &mut self.state.seats[seat.index()];
-        seat_state.drawn_tile = Some(drawn);
-        seat_state.last_draw_or_meld_seq = draw_seq;
-        seat_state.passed_hu_lock = false;
-        seat_state.passed_pon_lock.clear();
+        self.state.seats[seat.index()].record_draw(drawn, draw_seq);
 
         self.state.phase = TablePhase::TurnAction {
             actor: seat,

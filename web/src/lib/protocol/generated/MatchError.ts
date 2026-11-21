@@ -5,4 +5,4 @@ import type { Seat } from "./Seat";
 /**
  * Errors returned by match initialization and action application.
  */
-export type MatchError = "InvalidSeat" | { "IllegalAction": { seat: Seat, action: PlayerAction, } } | { "WrongPhase": { seat: Seat, action: PlayerAction, } } | { "NotYourTurn": { seat: Seat, } } | { "AlreadyConfirmed": { seat: Seat, } } | { "InvalidWall": string } | "MatchAlreadyFinished";
+export type MatchError = { "IllegalAction": { seat: Seat, action: PlayerAction, } } | { "WrongPhase": { seat: Seat, action: PlayerAction, } } | { "NotYourTurn": { seat: Seat, } } | { "AlreadyConfirmed": { seat: Seat, } } | { "InvalidWall": string } | "MatchAlreadyFinished";
