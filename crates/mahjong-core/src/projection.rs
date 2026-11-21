@@ -64,8 +64,8 @@ pub(crate) fn project_table_view<R: Ruleset>(
             None,
             None,
         ),
-        TablePhase::AwaitingRobKong { actor, .. } => {
-            (PublicPhase::Playing, Some(*actor), None, None, None)
+        TablePhase::AwaitingRobKong(window) => {
+            (PublicPhase::Playing, Some(window.actor), None, None, None)
         }
         TablePhase::BetweenHands {
             last_settlement,

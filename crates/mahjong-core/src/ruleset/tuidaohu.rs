@@ -53,6 +53,33 @@ impl Ruleset for TuidaohuRuleset {
             actions.push(PlayerAction::Tsumo);
         }
 
+        if ctx.wall_remaining > 0 {
+            let mut counts = [0u8; Tile::COUNT];
+            for &tile in ctx.closed_tiles {
+                counts[tile.index()] += 1;
+            }
+            if let Some(drawn) = ctx.drawn_tile {
+                counts[drawn.index()] += 1;
+            }
+            for (idx, &count) in counts.iter().enumerate() {
+                if count == 4 {
+                    let tile = Tile::new(idx as u8).expect("index bounded by Tile::COUNT");
+                    actions.push(PlayerAction::ConcealedKong { tile });
+                }
+            }
+            for (idx, &count) in counts.iter().enumerate() {
+                if count >= 1
+                    && ctx
+                        .melds
+                        .iter()
+                        .any(|m| matches!(m, RevealedMeld::Pon { tile, .. } if tile.index() == idx))
+                {
+                    let tile = Tile::new(idx as u8).expect("index bounded by Tile::COUNT");
+                    actions.push(PlayerAction::AddedKong { tile });
+                }
+            }
+        }
+
         let mut last_seen: Option<Tile> = None;
         for &tile in ctx.closed_tiles {
             if last_seen != Some(tile) {
@@ -93,18 +120,36 @@ impl Ruleset for TuidaohuRuleset {
             actions.push(PlayerAction::Ron { tile: ctx.tile });
         }
 
-        if ctx.wall_remaining > 0
-            && !ctx.passed_pon_locked
-            && ctx.closed_tiles.iter().filter(|&&t| t == ctx.tile).count() >= 2
-        {
+        let matching_count = ctx.closed_tiles.iter().filter(|&&t| t == ctx.tile).count();
+        if ctx.wall_remaining > 0 && !ctx.passed_pon_locked && matching_count >= 2 {
             actions.push(PlayerAction::Pon { tile: ctx.tile });
+        }
+        if ctx.wall_remaining > 0 && matching_count >= 3 {
+            actions.push(PlayerAction::ExposedKong { tile: ctx.tile });
         }
 
         actions
     }
 
-    fn legal_rob_kong_reactions(&self, _ctx: &RobKongContext<'_>) -> Vec<PlayerAction> {
-        Vec::new()
+    fn legal_rob_kong_reactions(&self, ctx: &RobKongContext<'_>) -> Vec<PlayerAction> {
+        if ctx.actor == ctx.kong_actor || ctx.passed_hu_lock {
+            return Vec::new();
+        }
+        if self
+            .evaluate_win(&WinEvalInput {
+                closed_tiles: ctx.closed_tiles,
+                extra_tile: Some(ctx.tile),
+                melds: ctx.melds,
+                win_kind: WinKind::RobKongHu,
+                turn_source: None,
+                wall_remaining: ctx.wall_remaining,
+            })
+            .is_some()
+        {
+            vec![PlayerAction::RobKongHu { tile: ctx.tile }]
+        } else {
+            Vec::new()
+        }
     }
 
     fn reaction_priority(&self, action: &PlayerAction) -> ReactionPriority {

@@ -1,18 +1,20 @@
-//! Discard reaction window construction, validation, and priority arbitration.
+//! Discard and rob-kong reaction window construction, validation, and priority arbitration.
 
 use crate::engine::{Match, RecordedEvent, SeatState, TableEventKind, TablePhase, TableState};
-use crate::protocol::{MatchError, PlayerAction, RevealedMeld, TurnSource, WinKind};
+use crate::protocol::{
+    KongKind, KongTransfer, MatchError, PlayerAction, RevealedMeld, TurnSource, WinKind,
+};
 use crate::ruleset::{
-    DiscardReactionContext, ReactionPriority, Ruleset, WinCandidate, WinEvalInput,
+    DiscardReactionContext, ReactionPriority, RobKongContext, Ruleset, WinCandidate, WinEvalInput,
     WinSettlementDetails,
 };
 use crate::seat::Seat;
 use crate::tile::Tile;
 use crate::wall::WallProvider;
 
-/// Per-seat reaction tracking inside an open discard reaction window.
+/// Per-seat reaction tracking inside an open reaction window.
 #[derive(Debug, Clone)]
-pub(crate) struct DiscardReactionEntry {
+pub(crate) struct ReactionEntry {
     pub(crate) seat: Seat,
     pub(crate) offered: Vec<PlayerAction>,
     pub(crate) submitted: Option<PlayerAction>,
@@ -24,11 +26,20 @@ pub(crate) struct DiscardReactionWindow {
     pub(crate) discarder: Seat,
     pub(crate) tile: Tile,
     /// Ordered counter-clockwise from `discarder`.
-    pub(crate) entries: Vec<DiscardReactionEntry>,
+    pub(crate) entries: Vec<ReactionEntry>,
+}
+
+/// Crate-private state for `TablePhase::AwaitingRobKong`.
+#[derive(Debug, Clone)]
+pub(crate) struct RobKongWindow {
+    pub(crate) actor: Seat,
+    pub(crate) tile: Tile,
+    /// Ordered counter-clockwise from `actor`.
+    pub(crate) entries: Vec<ReactionEntry>,
 }
 
 impl DiscardReactionWindow {
-    /// Builds a reaction window iff at least one non-discarder seat has positive reactions.
+    /// Builds a discard reaction window iff at least one non-discarder seat has positive reactions.
     pub(crate) fn build<R: Ruleset>(
         state: &TableState,
         ruleset: &R,
@@ -37,120 +48,196 @@ impl DiscardReactionWindow {
     ) -> Option<Self> {
         let wall_remaining = state.wall_remaining();
         let next_seat = discarder.next();
-        let entries: Vec<DiscardReactionEntry> =
-            [next_seat, next_seat.next(), next_seat.next().next()]
-                .into_iter()
-                .filter_map(|reactor| {
-                    let s = &state.seats[reactor.index()];
-                    let offered = ruleset.legal_discard_reactions(&DiscardReactionContext {
-                        actor: reactor,
-                        discarder,
-                        tile,
-                        closed_tiles: &s.closed_tiles,
-                        melds: &s.melds,
-                        wall_remaining,
-                        passed_hu_lock: s.passed_hu_lock,
-                        passed_pon_locked: s.passed_pon_lock.contains(&tile),
-                        is_next_seat: reactor == next_seat,
-                    });
-                    if offered.is_empty() {
-                        None
-                    } else {
-                        Some(DiscardReactionEntry {
-                            seat: reactor,
-                            offered,
-                            submitted: None,
-                        })
-                    }
-                })
-                .collect();
-
-        if entries.is_empty() {
-            None
-        } else {
-            Some(Self {
+        let entries = collect_reaction_entries(discarder, |reactor| {
+            let s = &state.seats[reactor.index()];
+            ruleset.legal_discard_reactions(&DiscardReactionContext {
+                actor: reactor,
                 discarder,
                 tile,
-                entries,
+                closed_tiles: &s.closed_tiles,
+                melds: &s.melds,
+                wall_remaining,
+                passed_hu_lock: s.passed_hu_lock,
+                passed_pon_locked: s.passed_pon_lock.contains(&tile),
+                is_next_seat: reactor == next_seat,
             })
-        }
-    }
+        });
 
-    pub(crate) fn is_pending(&self, seat: Seat) -> bool {
-        self.entries
-            .iter()
-            .any(|entry| entry.seat == seat && entry.submitted.is_none())
-    }
-
-    pub(crate) fn legal_actions(&self, seat: Seat) -> Vec<PlayerAction> {
-        let Some(entry) = self
-            .entries
-            .iter()
-            .find(|entry| entry.seat == seat && entry.submitted.is_none())
-        else {
-            return Vec::new();
-        };
-        let mut actions = entry.offered.clone();
-        if !actions.contains(&PlayerAction::Pass) {
-            actions.push(PlayerAction::Pass);
-        }
-        actions
-    }
-
-    fn is_ready_to_resolve<R: Ruleset>(&self, ruleset: &R) -> bool {
-        let any_pending = self.entries.iter().any(|e| e.submitted.is_none());
-        if !any_pending {
-            return true;
-        }
-        let Some((best_prio, earliest_best_idx)) = self.best_submitted_priority(ruleset) else {
-            return false;
-        };
-        let allow_multi_ron = ruleset.profile().allow_multi_ron;
-        !self.entries.iter().enumerate().any(|(idx, entry)| {
-            if entry.submitted.is_some() {
-                return false;
-            }
-            let max_prio = entry
-                .offered
-                .iter()
-                .map(|a| ruleset.reaction_priority(a))
-                .max()
-                .unwrap_or(ReactionPriority::Pass);
-            if max_prio > best_prio {
-                return true;
-            }
-            if max_prio < best_prio {
-                return false;
-            }
-            if best_prio == ReactionPriority::Hu && !allow_multi_ron {
-                idx < earliest_best_idx
-            } else {
-                true
-            }
+        (!entries.is_empty()).then_some(Self {
+            discarder,
+            tile,
+            entries,
         })
     }
 
-    fn best_submitted_priority<R: Ruleset>(
-        &self,
-        ruleset: &R,
-    ) -> Option<(ReactionPriority, usize)> {
-        let mut best: Option<(ReactionPriority, usize)> = None;
-        for (idx, entry) in self.entries.iter().enumerate() {
-            let Some(action) = entry.submitted.as_ref() else {
-                continue;
-            };
-            let prio = ruleset.reaction_priority(action);
-            if prio == ReactionPriority::Pass {
-                continue;
-            }
-            match best {
-                None => best = Some((prio, idx)),
-                Some((prev_prio, _)) if prio > prev_prio => best = Some((prio, idx)),
-                _ => {}
-            }
-        }
-        best
+    pub(crate) fn legal_actions(&self, seat: Seat) -> Vec<PlayerAction> {
+        entry_legal_actions(&self.entries, seat)
     }
+}
+
+impl RobKongWindow {
+    /// Builds a rob-kong window iff at least one opponent can legally `RobKongHu`.
+    pub(crate) fn build<R: Ruleset>(
+        state: &TableState,
+        ruleset: &R,
+        actor: Seat,
+        tile: Tile,
+    ) -> Option<Self> {
+        let wall_remaining = state.wall_remaining();
+        let entries = collect_reaction_entries(actor, |reactor| {
+            let s = &state.seats[reactor.index()];
+            ruleset.legal_rob_kong_reactions(&RobKongContext {
+                actor: reactor,
+                kong_actor: actor,
+                tile,
+                closed_tiles: &s.closed_tiles,
+                melds: &s.melds,
+                wall_remaining,
+                passed_hu_lock: s.passed_hu_lock,
+            })
+        });
+
+        (!entries.is_empty()).then_some(Self {
+            actor,
+            tile,
+            entries,
+        })
+    }
+
+    pub(crate) fn legal_actions(&self, seat: Seat) -> Vec<PlayerAction> {
+        entry_legal_actions(&self.entries, seat)
+    }
+}
+
+fn collect_reaction_entries(
+    origin: Seat,
+    mut build_offered: impl FnMut(Seat) -> Vec<PlayerAction>,
+) -> Vec<ReactionEntry> {
+    let s1 = origin.next();
+    let s2 = s1.next();
+    let s3 = s2.next();
+    [s1, s2, s3]
+        .into_iter()
+        .filter_map(|reactor| {
+            let offered = build_offered(reactor);
+            (!offered.is_empty()).then_some(ReactionEntry {
+                seat: reactor,
+                offered,
+                submitted: None,
+            })
+        })
+        .collect()
+}
+
+fn is_entry_pending(entries: &[ReactionEntry], seat: Seat) -> bool {
+    entries
+        .iter()
+        .any(|entry| entry.seat == seat && entry.submitted.is_none())
+}
+
+fn entry_legal_actions(entries: &[ReactionEntry], seat: Seat) -> Vec<PlayerAction> {
+    let Some(entry) = entries
+        .iter()
+        .find(|entry| entry.seat == seat && entry.submitted.is_none())
+    else {
+        return Vec::new();
+    };
+    let mut actions = entry.offered.clone();
+    if !actions.contains(&PlayerAction::Pass) {
+        actions.push(PlayerAction::Pass);
+    }
+    actions
+}
+
+fn best_submitted_priority<R: Ruleset>(
+    entries: &[ReactionEntry],
+    ruleset: &R,
+) -> Option<(ReactionPriority, usize)> {
+    let mut best: Option<(ReactionPriority, usize)> = None;
+    for (idx, entry) in entries.iter().enumerate() {
+        let Some(action) = entry.submitted.as_ref() else {
+            continue;
+        };
+        let prio = ruleset.reaction_priority(action);
+        if prio == ReactionPriority::Pass {
+            continue;
+        }
+        match best {
+            None => best = Some((prio, idx)),
+            Some((prev_prio, _)) if prio > prev_prio => best = Some((prio, idx)),
+            _ => {}
+        }
+    }
+    best
+}
+
+fn entries_ready_to_resolve<R: Ruleset>(entries: &[ReactionEntry], ruleset: &R) -> bool {
+    let any_pending = entries.iter().any(|e| e.submitted.is_none());
+    if !any_pending {
+        return true;
+    }
+    let Some((best_prio, earliest_best_idx)) = best_submitted_priority(entries, ruleset) else {
+        return false;
+    };
+    let allow_multi_ron = ruleset.profile().allow_multi_ron;
+    !entries.iter().enumerate().any(|(idx, entry)| {
+        if entry.submitted.is_some() {
+            return false;
+        }
+        let max_prio = entry
+            .offered
+            .iter()
+            .map(|a| ruleset.reaction_priority(a))
+            .max()
+            .unwrap_or(ReactionPriority::Pass);
+        if max_prio > best_prio {
+            return true;
+        }
+        if max_prio < best_prio {
+            return false;
+        }
+        if best_prio == ReactionPriority::Hu && !allow_multi_ron {
+            idx < earliest_best_idx
+        } else {
+            true
+        }
+    })
+}
+
+fn validate_reaction_submission(
+    entries: &[ReactionEntry],
+    seat: Seat,
+    action: PlayerAction,
+    is_wrong_phase: impl FnOnce(&PlayerAction) -> bool,
+) -> Result<(), MatchError> {
+    if !is_entry_pending(entries, seat) {
+        return Err(MatchError::NotYourTurn { seat });
+    }
+    if is_wrong_phase(&action) {
+        return Err(MatchError::WrongPhase { seat, action });
+    }
+    if !entry_legal_actions(entries, seat).contains(&action) {
+        return Err(MatchError::IllegalAction { seat, action });
+    }
+    Ok(())
+}
+
+fn record_reaction_submission<R: Ruleset>(
+    entries: &mut [ReactionEntry],
+    seats: &mut [SeatState; 4],
+    ruleset: &R,
+    seat: Seat,
+    action: PlayerAction,
+) -> bool {
+    let entry = entries
+        .iter_mut()
+        .find(|entry| entry.seat == seat)
+        .expect("is_pending verified entry exists");
+    entry.submitted = Some(action);
+    if action == PlayerAction::Pass {
+        record_pass_locks(&mut seats[seat.index()], &entry.offered);
+    }
+    entries_ready_to_resolve(entries, ruleset)
 }
 
 pub(crate) fn is_wrong_phase_for_discard_reaction(action: &PlayerAction) -> bool {
@@ -162,6 +249,10 @@ pub(crate) fn is_wrong_phase_for_discard_reaction(action: &PlayerAction) -> bool
             | PlayerAction::Chi { .. }
             | PlayerAction::Pass
     )
+}
+
+fn is_wrong_phase_for_rob_kong_reaction(action: &PlayerAction) -> bool {
+    !matches!(action, PlayerAction::RobKongHu { .. } | PlayerAction::Pass)
 }
 
 fn record_pass_locks(seat_state: &mut SeatState, offered: &[PlayerAction]) {
@@ -188,33 +279,25 @@ impl<R: Ruleset, W: WallProvider> Match<R, W> {
             TablePhase::AwaitingDiscardReactions(window) => window,
             _ => return Err(MatchError::WrongPhase { seat, action }),
         };
-
-        if !window.is_pending(seat) {
-            return Err(MatchError::NotYourTurn { seat });
-        }
-        if is_wrong_phase_for_discard_reaction(&action) {
-            return Err(MatchError::WrongPhase { seat, action });
-        }
-        if !window.legal_actions(seat).contains(&action) {
-            return Err(MatchError::IllegalAction { seat, action });
-        }
+        validate_reaction_submission(
+            &window.entries,
+            seat,
+            action,
+            is_wrong_phase_for_discard_reaction,
+        )?;
 
         let ready = {
             let TablePhase::AwaitingDiscardReactions(window) = &mut self.state.phase else {
                 unreachable!("verified AwaitingDiscardReactions phase");
             };
-            let entry = window
-                .entries
-                .iter_mut()
-                .find(|entry| entry.seat == seat)
-                .expect("is_pending verified entry exists");
-            entry.submitted = Some(action);
-            if action == PlayerAction::Pass {
-                record_pass_locks(&mut self.state.seats[seat.index()], &entry.offered);
-            }
-            window.is_ready_to_resolve(&self.ruleset)
+            record_reaction_submission(
+                &mut window.entries,
+                &mut self.state.seats,
+                &self.ruleset,
+                seat,
+                action,
+            )
         };
-
         if !ready {
             return Ok(Vec::new());
         }
@@ -234,12 +317,59 @@ impl<R: Ruleset, W: WallProvider> Match<R, W> {
         Ok(out)
     }
 
+    pub(crate) fn apply_rob_kong_reaction(
+        &mut self,
+        seat: Seat,
+        action: PlayerAction,
+    ) -> Result<Vec<RecordedEvent>, MatchError> {
+        let window = match &self.state.phase {
+            TablePhase::AwaitingRobKong(window) => window,
+            _ => return Err(MatchError::WrongPhase { seat, action }),
+        };
+        validate_reaction_submission(
+            &window.entries,
+            seat,
+            action,
+            is_wrong_phase_for_rob_kong_reaction,
+        )?;
+
+        let ready = {
+            let TablePhase::AwaitingRobKong(window) = &mut self.state.phase else {
+                unreachable!("verified AwaitingRobKong phase");
+            };
+            record_reaction_submission(
+                &mut window.entries,
+                &mut self.state.seats,
+                &self.ruleset,
+                seat,
+                action,
+            )
+        };
+        if !ready {
+            return Ok(Vec::new());
+        }
+
+        let TablePhase::AwaitingRobKong(window) = std::mem::replace(
+            &mut self.state.phase,
+            TablePhase::TurnAction {
+                actor: Seat::East,
+                source: TurnSource::NormalDraw,
+            },
+        ) else {
+            unreachable!("verified AwaitingRobKong phase");
+        };
+
+        let mut out = Vec::new();
+        self.resolve_rob_kong_window(window, &mut out);
+        Ok(out)
+    }
+
     fn resolve_discard_reaction_window(
         &mut self,
         window: DiscardReactionWindow,
         out: &mut Vec<RecordedEvent>,
     ) {
-        let Some((best_prio, _)) = window.best_submitted_priority(&self.ruleset) else {
+        let Some((best_prio, _)) = best_submitted_priority(&window.entries, &self.ruleset) else {
             if self.state.wall_remaining() == 0 {
                 self.settle_hand_with_details(None, out);
             } else {
@@ -251,7 +381,13 @@ impl<R: Ruleset, W: WallProvider> Match<R, W> {
         match best_prio {
             ReactionPriority::Pass => unreachable!("filtered out above"),
             ReactionPriority::Hu => {
-                self.resolve_ron(&window, out);
+                self.settle_hu_reactions(
+                    &window.entries,
+                    window.discarder,
+                    window.tile,
+                    WinKind::Ron,
+                    out,
+                );
             }
             ReactionPriority::PonOrKong => {
                 let winner = window
@@ -269,6 +405,10 @@ impl<R: Ruleset, W: WallProvider> Match<R, W> {
                         debug_assert_eq!(tile, window.tile);
                         self.resolve_pon(winner.seat, window.discarder, tile, out);
                     }
+                    PlayerAction::ExposedKong { tile } => {
+                        debug_assert_eq!(tile, window.tile);
+                        self.resolve_exposed_kong(winner.seat, window.discarder, tile, out);
+                    }
                     other => todo!("reaction {other:?} is handled in a later ticket"),
                 }
             }
@@ -278,12 +418,37 @@ impl<R: Ruleset, W: WallProvider> Match<R, W> {
         }
     }
 
-    fn resolve_ron(&mut self, window: &DiscardReactionWindow, out: &mut Vec<RecordedEvent>) {
+    fn resolve_rob_kong_window(&mut self, window: RobKongWindow, out: &mut Vec<RecordedEvent>) {
+        match best_submitted_priority(&window.entries, &self.ruleset) {
+            Some((ReactionPriority::Hu, _)) => {
+                self.settle_hu_reactions(
+                    &window.entries,
+                    window.actor,
+                    window.tile,
+                    WinKind::RobKongHu,
+                    out,
+                );
+            }
+            None => {
+                self.complete_added_kong(window.actor, window.tile, out);
+            }
+            Some((other, _)) => unreachable!("rob-kong window only offers Hu/Pass, got {other:?}"),
+        }
+    }
+
+    fn settle_hu_reactions(
+        &mut self,
+        entries: &[ReactionEntry],
+        discarder: Seat,
+        tile: Tile,
+        win_kind: WinKind,
+        out: &mut Vec<RecordedEvent>,
+    ) {
         let wall_remaining = self.state.wall_remaining();
         let allow_multi_ron = self.ruleset.profile().allow_multi_ron;
         let mut winners = Vec::new();
 
-        for entry in &window.entries {
+        for entry in entries {
             let Some(action) = entry.submitted.as_ref() else {
                 continue;
             };
@@ -295,16 +460,16 @@ impl<R: Ruleset, W: WallProvider> Match<R, W> {
                 .ruleset
                 .evaluate_win(&WinEvalInput {
                     closed_tiles: &seat_state.closed_tiles,
-                    extra_tile: Some(window.tile),
+                    extra_tile: Some(tile),
                     melds: &seat_state.melds,
-                    win_kind: WinKind::Ron,
+                    win_kind,
                     turn_source: None,
                     wall_remaining,
                 })
-                .expect("legal Ron reaction must evaluate as a win");
+                .expect("legal Hu reaction must evaluate as a win");
             winners.push(WinCandidate {
                 seat: entry.seat,
-                win_kind: WinKind::Ron,
+                win_kind,
                 evaluated,
             });
             if !allow_multi_ron {
@@ -315,8 +480,8 @@ impl<R: Ruleset, W: WallProvider> Match<R, W> {
         self.settle_hand_with_details(
             Some(WinSettlementDetails {
                 winners,
-                discarder: Some(window.discarder),
-                winning_tile: window.tile,
+                discarder: Some(discarder),
+                winning_tile: tile,
             }),
             out,
         );
@@ -335,6 +500,52 @@ impl<R: Ruleset, W: WallProvider> Match<R, W> {
             from_seat: discarder,
             seq: meld_seq,
         };
+        self.apply_discard_meld(actor, discarder, tile, 2, meld, None, out);
+        self.state.phase = TablePhase::TurnAction {
+            actor,
+            source: TurnSource::AfterMeld,
+        };
+    }
+
+    fn resolve_exposed_kong(
+        &mut self,
+        actor: Seat,
+        discarder: Seat,
+        tile: Tile,
+        out: &mut Vec<RecordedEvent>,
+    ) {
+        let meld_seq = self.state.seq + 1;
+        let meld = RevealedMeld::ExposedKong {
+            tile,
+            from_seat: discarder,
+            seq: meld_seq,
+        };
+        let deltas = self
+            .ruleset
+            .kong_score_deltas(KongKind::ExposedKong, actor, Some(discarder));
+        self.state.kong_transfers.push(KongTransfer {
+            kind: KongKind::ExposedKong,
+            actor,
+            from_seat: Some(discarder),
+            tile,
+            score_deltas: deltas,
+        });
+        self.apply_discard_meld(actor, discarder, tile, 3, meld, Some(deltas), out);
+        self.draw_from_wall_tail(actor, out);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn apply_discard_meld(
+        &mut self,
+        actor: Seat,
+        discarder: Seat,
+        tile: Tile,
+        closed_remove_count: usize,
+        meld: RevealedMeld,
+        kong_score_deltas: Option<[i32; 4]>,
+        out: &mut Vec<RecordedEvent>,
+    ) {
+        let meld_seq = self.state.seq + 1;
 
         {
             let discarder_entry = self.state.seats[discarder.index()]
@@ -348,12 +559,12 @@ impl<R: Ruleset, W: WallProvider> Match<R, W> {
 
         {
             let actor_state = &mut self.state.seats[actor.index()];
-            for _ in 0..2 {
+            for _ in 0..closed_remove_count {
                 let pos = actor_state
                     .closed_tiles
                     .iter()
                     .position(|&t| t == tile)
-                    .expect("legal Pon verified 2 matching tiles in closed_tiles");
+                    .expect("legal discard meld verified matching tiles in closed_tiles");
                 actor_state.closed_tiles.remove(pos);
             }
             actor_state.melds.push(meld);
@@ -367,14 +578,9 @@ impl<R: Ruleset, W: WallProvider> Match<R, W> {
             TableEventKind::MeldDeclared {
                 seat: actor,
                 meld,
-                kong_score_deltas: None,
+                kong_score_deltas,
             },
         );
         debug_assert_eq!(emitted_seq, meld_seq);
-
-        self.state.phase = TablePhase::TurnAction {
-            actor,
-            source: TurnSource::AfterMeld,
-        };
     }
 }
