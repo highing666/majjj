@@ -92,6 +92,7 @@ pub struct DiscardEntry {
     /// Seat that claimed this discard for a meld, if any.
     pub claimed_by: Option<Seat>,
     /// Strictly monotonic table event sequence number of this discard.
+    #[ts(type = "number")]
     pub seq: u64,
 }
 
@@ -102,27 +103,35 @@ pub enum MeldView {
     Pon {
         tile: Tile,
         from_seat: Seat,
+        #[ts(type = "number")]
         seq: u64,
     },
     /// Exposed kong (`明杠`).
     ExposedKong {
         tile: Tile,
         from_seat: Seat,
+        #[ts(type = "number")]
         seq: u64,
     },
     /// Added kong upgraded from a `Pon` (`补杠`).
     AddedKong {
         tile: Tile,
         from_seat: Seat,
+        #[ts(type = "number")]
         seq: u64,
     },
     /// Concealed kong (`暗杠`): `Some(tile)` for the owner, `None` for opponents.
-    ConcealedKong { tile: Option<Tile>, seq: u64 },
+    ConcealedKong {
+        tile: Option<Tile>,
+        #[ts(type = "number")]
+        seq: u64,
+    },
     /// Exposed sequence (`吃`, reserved for future rulesets).
     Chi {
         tiles: [Tile; 3],
         called_tile: Tile,
         from_seat: Seat,
+        #[ts(type = "number")]
         seq: u64,
     },
 }
@@ -150,6 +159,7 @@ pub struct PublicSeatView {
     /// Publicly visible melds declared by this seat.
     pub melds: Vec<MeldView>,
     /// Sequence number of this seat's most recent draw or confirmed meld (`0` at hand start).
+    #[ts(type = "number")]
     pub last_draw_or_meld_seq: u64,
 }
 
@@ -207,6 +217,7 @@ pub struct PlayerView {
     /// Final match summary once `MatchFinished` is reached.
     pub match_summary: Option<MatchSummary>,
     /// Latest monotonically increasing table event sequence number.
+    #[ts(type = "number")]
     pub seq: u64,
 }
 
@@ -280,27 +291,35 @@ pub enum RevealedMeld {
     Pon {
         tile: Tile,
         from_seat: Seat,
+        #[ts(type = "number")]
         seq: u64,
     },
     /// Exposed kong (`明杠`).
     ExposedKong {
         tile: Tile,
         from_seat: Seat,
+        #[ts(type = "number")]
         seq: u64,
     },
     /// Added kong (`补杠`).
     AddedKong {
         tile: Tile,
         from_seat: Seat,
+        #[ts(type = "number")]
         seq: u64,
     },
     /// Concealed kong (`暗杠`) revealed at hand settlement.
-    ConcealedKong { tile: Tile, seq: u64 },
+    ConcealedKong {
+        tile: Tile,
+        #[ts(type = "number")]
+        seq: u64,
+    },
     /// Exposed sequence (`吃`, reserved).
     Chi {
         tiles: [Tile; 3],
         called_tile: Tile,
         from_seat: Seat,
+        #[ts(type = "number")]
         seq: u64,
     },
 }
@@ -373,6 +392,7 @@ pub struct MatchSummary {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct PlayerEvent {
     /// Strictly monotonically increasing sequence number starting at `1`.
+    #[ts(type = "number")]
     pub seq: u64,
     /// Projected event payload.
     pub kind: PlayerEventKind,
