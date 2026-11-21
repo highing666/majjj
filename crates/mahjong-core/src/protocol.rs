@@ -452,9 +452,6 @@ pub enum PlayerEventKind {
 /// Errors returned by match initialization and action application.
 #[derive(Debug, Clone, PartialEq, Eq, Error, Serialize, Deserialize, TS)]
 pub enum MatchError {
-    /// Seat argument could not be resolved.
-    #[error("invalid seat")]
-    InvalidSeat,
     /// Action is illegal in the current state for this seat.
     #[error("illegal action {action:?} for seat {seat:?}")]
     IllegalAction { seat: Seat, action: PlayerAction },

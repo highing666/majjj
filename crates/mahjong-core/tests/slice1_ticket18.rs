@@ -1,7 +1,9 @@
 use mahjong_core::{
-    build_preset_wall, project_event, project_view, HandOutcome, Match, MatchError, MatchMode,
-    MeldView, PlayerAction, PlayerEventKind, PlayerView, PresetWallProvider, PublicPhase,
-    RevealedMeld, ScoreItem, Seat, Tile, TuidaohuRuleset, WinKind,
+    build_preset_wall, project_event, project_view, DiscardReactionContext, EvaluatedWin,
+    HandOutcome, HandProgression, HandProgressionInput, HandSettlement, KongKind, Match,
+    MatchError, MatchMode, MeldView, PlayerAction, PlayerEventKind, PlayerView, PresetWallProvider,
+    PublicPhase, ReactionPriority, RevealedMeld, RobKongContext, RuleProfile, Ruleset, ScoreItem,
+    Seat, SettleHandInput, Tile, TuidaohuRuleset, TurnContext, WinEvalInput, WinKind,
 };
 
 fn t(raw: u8) -> Tile {
@@ -2095,4 +2097,629 @@ fn slice6_dual_ron_and_pon_offer_pon_does_not_lock_while_pass_locks_both() {
     assert!(project_view(&game_pass, Seat::North)
         .legal_actions
         .is_empty());
+}
+
+/// Test-only `Ruleset` wrapper over `TuidaohuRuleset` enabling `Chi` for `discarder.next()`
+/// across the public `Match` seam.
+#[derive(Debug, Clone, Copy, Default)]
+struct ChiEnabledTuidaohuRuleset;
+
+impl Ruleset for ChiEnabledTuidaohuRuleset {
+    fn profile(&self) -> RuleProfile {
+        let mut profile = TuidaohuRuleset.profile();
+        profile.name = "TuidaohuWithChi".to_string();
+        profile.allow_chi = true;
+        profile
+    }
+
+    fn deck(&self) -> Vec<Tile> {
+        TuidaohuRuleset.deck()
+    }
+
+    fn legal_turn_actions(&self, ctx: &TurnContext<'_>) -> Vec<PlayerAction> {
+        TuidaohuRuleset.legal_turn_actions(ctx)
+    }
+
+    fn legal_discard_reactions(&self, ctx: &DiscardReactionContext<'_>) -> Vec<PlayerAction> {
+        let mut actions = TuidaohuRuleset.legal_discard_reactions(ctx);
+        if ctx.is_next_seat && ctx.wall_remaining > 0 && !ctx.tile.is_honor() {
+            let raw = ctx.tile.as_u8();
+            let suit_offset = raw % 9;
+            let candidates = [
+                (suit_offset >= 2)
+                    .then(|| [Tile::new(raw - 2).unwrap(), Tile::new(raw - 1).unwrap()]),
+                ((1..=7).contains(&suit_offset))
+                    .then(|| [Tile::new(raw - 1).unwrap(), Tile::new(raw + 1).unwrap()]),
+                (suit_offset <= 6)
+                    .then(|| [Tile::new(raw + 1).unwrap(), Tile::new(raw + 2).unwrap()]),
+            ];
+            for with in candidates.into_iter().flatten() {
+                if ctx.closed_tiles.contains(&with[0]) && ctx.closed_tiles.contains(&with[1]) {
+                    actions.push(PlayerAction::Chi {
+                        tile: ctx.tile,
+                        with,
+                    });
+                }
+            }
+        }
+        actions
+    }
+
+    fn legal_rob_kong_reactions(&self, ctx: &RobKongContext<'_>) -> Vec<PlayerAction> {
+        TuidaohuRuleset.legal_rob_kong_reactions(ctx)
+    }
+
+    fn reaction_priority(&self, action: &PlayerAction) -> ReactionPriority {
+        TuidaohuRuleset.reaction_priority(action)
+    }
+
+    fn evaluate_win(&self, input: &WinEvalInput<'_>) -> Option<EvaluatedWin> {
+        TuidaohuRuleset.evaluate_win(input)
+    }
+
+    fn kong_score_deltas(&self, kind: KongKind, actor: Seat, from_seat: Option<Seat>) -> [i32; 4] {
+        TuidaohuRuleset.kong_score_deltas(kind, actor, from_seat)
+    }
+
+    fn settle_hand(&self, input: SettleHandInput) -> HandSettlement {
+        TuidaohuRuleset.settle_hand(input)
+    }
+
+    fn advance_hand(&self, input: HandProgressionInput<'_>) -> HandProgression {
+        TuidaohuRuleset.advance_hand(input)
+    }
+}
+
+#[test]
+fn custom_chi_ruleset_executes_chi_clears_passed_hu_lock_and_breaks_menqing() {
+    let east_14 = vec![
+        p(1),
+        s(4),
+        s(5),
+        s(6),
+        p(4),
+        p(5),
+        p(6),
+        EAST_W,
+        EAST_W,
+        NORTH_W,
+        NORTH_W,
+        GREEN_D,
+        GREEN_D,
+        WHITE_D,
+    ];
+    let south_13 = vec![
+        m(1),
+        m(2),
+        m(3),
+        s(1),
+        s(2),
+        s(3),
+        p(1),
+        p(2),
+        p(3),
+        RED_D,
+        RED_D,
+        m(9),
+        m(9),
+    ];
+    let west_13 = vec![
+        s(4),
+        s(5),
+        s(6),
+        s(7),
+        s(8),
+        s(9),
+        p(7),
+        p(8),
+        p(9),
+        EAST_W,
+        SOUTH_W,
+        WEST_W,
+        NORTH_W,
+    ];
+    let north_13 = vec![
+        m(4),
+        m(5),
+        m(6),
+        m(7),
+        m(8),
+        s(4),
+        s(5),
+        s(6),
+        p(4),
+        p(5),
+        p(6),
+        RED_D,
+        WHITE_D,
+    ];
+    let wall = build_preset_wall(
+        &east_14,
+        &south_13,
+        &west_13,
+        &north_13,
+        &[WHITE_D, SOUTH_W, WEST_W, m(3), m(9)],
+        &[],
+    )
+    .unwrap();
+
+    let mut game = Match::new(
+        MatchMode::EastOnly,
+        ChiEnabledTuidaohuRuleset,
+        PresetWallProvider::single(Seat::East, wall),
+    )
+    .unwrap();
+    assert!(project_view(&game, Seat::East).rule_profile.allow_chi);
+
+    // East -> South -> West pass turns with safe discards.
+    game.apply_action(
+        Seat::East,
+        PlayerAction::Discard {
+            tile: GREEN_D,
+            from_drawn: false,
+        },
+    )
+    .unwrap();
+    game.apply_action(
+        Seat::South,
+        PlayerAction::Discard {
+            tile: WHITE_D,
+            from_drawn: true,
+        },
+    )
+    .unwrap();
+    game.apply_action(
+        Seat::West,
+        PlayerAction::Discard {
+            tile: SOUTH_W,
+            from_drawn: true,
+        },
+    )
+    .unwrap();
+
+    // North discards RED_D; South is offered Ron + Pon and Passes -> sets passed_hu_lock.
+    game.apply_action(
+        Seat::North,
+        PlayerAction::Discard {
+            tile: RED_D,
+            from_drawn: false,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        project_view(&game, Seat::South).legal_actions,
+        vec![
+            PlayerAction::Ron { tile: RED_D },
+            PlayerAction::Pon { tile: RED_D },
+            PlayerAction::Pass,
+        ]
+    );
+    game.apply_action(Seat::South, PlayerAction::Pass).unwrap();
+
+    // East draws m(3) and discards m(3) -> only South (next seat) is offered Chi.
+    game.apply_action(
+        Seat::East,
+        PlayerAction::Discard {
+            tile: m(3),
+            from_drawn: true,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        project_view(&game, Seat::South).legal_actions,
+        vec![
+            PlayerAction::Chi {
+                tile: m(3),
+                with: [m(1), m(2)],
+            },
+            PlayerAction::Pass,
+        ]
+    );
+    for other in [Seat::East, Seat::West, Seat::North] {
+        assert!(project_view(&game, other).legal_actions.is_empty());
+    }
+
+    // South executes Chi!
+    let chi_events = game
+        .apply_action(
+            Seat::South,
+            PlayerAction::Chi {
+                tile: m(3),
+                with: [m(1), m(2)],
+            },
+        )
+        .unwrap();
+    assert_eq!(chi_events.len(), 1);
+    let meld_seq = chi_events[0].seq();
+    let expected_meld = MeldView::Chi {
+        tiles: [m(1), m(2), m(3)],
+        called_tile: m(3),
+        from_seat: Seat::East,
+        seq: meld_seq,
+    };
+    assert_eq!(
+        project_event(&chi_events[0], Seat::North).kind,
+        PlayerEventKind::MeldDeclared {
+            seat: Seat::South,
+            meld: expected_meld,
+            kong_score_deltas: None,
+        }
+    );
+
+    let south_view = project_view(&game, Seat::South);
+    assert_eq!(south_view.phase, PublicPhase::Playing);
+    assert_eq!(south_view.turn.active_seat, Some(Seat::South));
+    assert_eq!(south_view.hand.drawn_tile, None);
+    assert_eq!(
+        south_view.hand.closed_tiles,
+        vec![
+            m(3),
+            m(9),
+            m(9),
+            s(1),
+            s(2),
+            s(3),
+            p(1),
+            p(2),
+            p(3),
+            RED_D,
+            RED_D
+        ]
+    );
+    assert_eq!(south_view.seats[Seat::South.index()].hand_count, 11);
+    assert_eq!(
+        south_view.seats[Seat::South.index()].melds,
+        vec![expected_meld]
+    );
+    assert_eq!(
+        south_view.seats[Seat::South.index()].last_draw_or_meld_seq,
+        meld_seq
+    );
+    assert_eq!(
+        south_view.seats[Seat::East.index()]
+            .river
+            .last()
+            .unwrap()
+            .claimed_by,
+        Some(Seat::South)
+    );
+    assert!(south_view.legal_actions.iter().all(|a| matches!(
+        a,
+        PlayerAction::Discard {
+            from_drawn: false,
+            ..
+        }
+    )));
+
+    // South discards extra m(3); West draws and discards m(9).
+    // Chi cleared passed_hu_lock and broke 门前清 -> South wins BasicHu (0 fan, 1 point).
+    game.apply_action(
+        Seat::South,
+        PlayerAction::Discard {
+            tile: m(3),
+            from_drawn: false,
+        },
+    )
+    .unwrap();
+    game.apply_action(
+        Seat::West,
+        PlayerAction::Discard {
+            tile: m(9),
+            from_drawn: true,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        project_view(&game, Seat::South).legal_actions,
+        vec![
+            PlayerAction::Ron { tile: m(9) },
+            PlayerAction::Pon { tile: m(9) },
+            PlayerAction::Pass,
+        ]
+    );
+    game.apply_action(Seat::South, PlayerAction::Ron { tile: m(9) })
+        .unwrap();
+
+    let settled = project_view(&game, Seat::South).last_settlement.unwrap();
+    assert_eq!(settled.score_deltas, [0, 1, -1, 0]);
+    assert_eq!(
+        settled.revealed_hands[Seat::South.index()].melds,
+        vec![RevealedMeld::Chi {
+            tiles: [m(1), m(2), m(3)],
+            called_tile: m(3),
+            from_seat: Seat::East,
+            seq: meld_seq,
+        }]
+    );
+    match &settled.outcome {
+        HandOutcome::Win {
+            winners,
+            discarder,
+            winning_tile,
+        } => {
+            assert_eq!(*discarder, Some(Seat::West));
+            assert_eq!(*winning_tile, m(9));
+            assert_eq!(winners.len(), 1);
+            assert_eq!(winners[0].seat, Seat::South);
+            assert_eq!(winners[0].win_kind, WinKind::Ron);
+            assert_eq!(winners[0].total_fan, 0);
+            assert_eq!(winners[0].base_points, 1);
+            assert_eq!(
+                winners[0].items,
+                vec![ScoreItem {
+                    code: "basic_hu".to_string(),
+                    label: "基本胡".to_string(),
+                    fan: 0,
+                }]
+            );
+        }
+        other => panic!("expected Win settlement, got {other:?}"),
+    }
+}
+
+#[test]
+fn custom_chi_ruleset_arbitrates_hu_over_pon_over_chi_and_sorts_chi_tiles() {
+    let east_14 = vec![
+        m(5),
+        s(1),
+        s(2),
+        s(3),
+        p(1),
+        p(2),
+        p(3),
+        EAST_W,
+        EAST_W,
+        SOUTH_W,
+        SOUTH_W,
+        WEST_W,
+        WEST_W,
+        NORTH_W,
+    ];
+    let south_13 = vec![
+        m(4),
+        m(6),
+        s(4),
+        s(5),
+        s(6),
+        p(4),
+        p(5),
+        p(6),
+        RED_D,
+        RED_D,
+        GREEN_D,
+        GREEN_D,
+        NORTH_W,
+    ];
+    let west_13 = vec![
+        m(5),
+        m(5),
+        m(8),
+        m(9),
+        s(7),
+        s(8),
+        s(9),
+        p(7),
+        p(8),
+        p(9),
+        WHITE_D,
+        WHITE_D,
+        EAST_W,
+    ];
+    let north_13 = vec![
+        m(3),
+        m(4),
+        s(1),
+        s(2),
+        s(3),
+        p(1),
+        p(2),
+        p(3),
+        p(9),
+        p(9),
+        p(9),
+        SOUTH_W,
+        SOUTH_W,
+    ];
+    let wall = build_preset_wall(&east_14, &south_13, &west_13, &north_13, &[], &[]).unwrap();
+
+    // 1. Hu > Pon > Chi even when Chi (South) and Pon (West) submit before Ron (North).
+    let mut game_hu = Match::new(
+        MatchMode::EastOnly,
+        ChiEnabledTuidaohuRuleset,
+        PresetWallProvider::single(Seat::East, wall.clone()),
+    )
+    .unwrap();
+    game_hu
+        .apply_action(
+            Seat::East,
+            PlayerAction::Discard {
+                tile: m(5),
+                from_drawn: false,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        project_view(&game_hu, Seat::South).legal_actions,
+        vec![
+            PlayerAction::Chi {
+                tile: m(5),
+                with: [m(4), m(6)],
+            },
+            PlayerAction::Pass,
+        ]
+    );
+    assert_eq!(
+        project_view(&game_hu, Seat::West).legal_actions,
+        vec![PlayerAction::Pon { tile: m(5) }, PlayerAction::Pass]
+    );
+    assert_eq!(
+        project_view(&game_hu, Seat::North).legal_actions,
+        vec![PlayerAction::Ron { tile: m(5) }, PlayerAction::Pass]
+    );
+    assert!(game_hu
+        .apply_action(
+            Seat::South,
+            PlayerAction::Chi {
+                tile: m(5),
+                with: [m(4), m(6)],
+            },
+        )
+        .unwrap()
+        .is_empty());
+    assert!(game_hu
+        .apply_action(Seat::West, PlayerAction::Pon { tile: m(5) })
+        .unwrap()
+        .is_empty());
+    game_hu
+        .apply_action(Seat::North, PlayerAction::Ron { tile: m(5) })
+        .unwrap();
+    let hu_settled = project_view(&game_hu, Seat::North).last_settlement.unwrap();
+    match &hu_settled.outcome {
+        HandOutcome::Win {
+            winners, discarder, ..
+        } => {
+            assert_eq!(*discarder, Some(Seat::East));
+            assert_eq!(winners.len(), 1);
+            assert_eq!(winners[0].seat, Seat::North);
+            assert_eq!(winners[0].win_kind, WinKind::Ron);
+            assert_eq!(winners[0].total_fan, 1);
+            assert_eq!(winners[0].base_points, 2);
+        }
+        other => panic!("expected Win, got {other:?}"),
+    }
+
+    // 2. Pon > Chi early resolution when Hu seat passes and West submits Pon first.
+    let mut game_pon_early = Match::new(
+        MatchMode::EastOnly,
+        ChiEnabledTuidaohuRuleset,
+        PresetWallProvider::single(Seat::East, wall.clone()),
+    )
+    .unwrap();
+    game_pon_early
+        .apply_action(
+            Seat::East,
+            PlayerAction::Discard {
+                tile: m(5),
+                from_drawn: false,
+            },
+        )
+        .unwrap();
+    assert!(game_pon_early
+        .apply_action(Seat::North, PlayerAction::Pass)
+        .unwrap()
+        .is_empty());
+    let pon_ev = game_pon_early
+        .apply_action(Seat::West, PlayerAction::Pon { tile: m(5) })
+        .unwrap();
+    assert_eq!(pon_ev.len(), 1);
+    assert_eq!(
+        project_view(&game_pon_early, Seat::West).turn.active_seat,
+        Some(Seat::West)
+    );
+    assert_eq!(
+        project_view(&game_pon_early, Seat::South).seats[Seat::West.index()].melds,
+        vec![MeldView::Pon {
+            tile: m(5),
+            from_seat: Seat::East,
+            seq: pon_ev[0].seq(),
+        }]
+    );
+    assert!(project_view(&game_pon_early, Seat::South)
+        .hand
+        .closed_tiles
+        .contains(&m(4)));
+    assert!(project_view(&game_pon_early, Seat::South)
+        .hand
+        .closed_tiles
+        .contains(&m(6)));
+
+    // 3. Pon > Chi when South submits Chi before West submits Pon.
+    let mut game_pon_after_chi = Match::new(
+        MatchMode::EastOnly,
+        ChiEnabledTuidaohuRuleset,
+        PresetWallProvider::single(Seat::East, wall.clone()),
+    )
+    .unwrap();
+    game_pon_after_chi
+        .apply_action(
+            Seat::East,
+            PlayerAction::Discard {
+                tile: m(5),
+                from_drawn: false,
+            },
+        )
+        .unwrap();
+    assert!(game_pon_after_chi
+        .apply_action(Seat::North, PlayerAction::Pass)
+        .unwrap()
+        .is_empty());
+    assert!(game_pon_after_chi
+        .apply_action(
+            Seat::South,
+            PlayerAction::Chi {
+                tile: m(5),
+                with: [m(4), m(6)],
+            },
+        )
+        .unwrap()
+        .is_empty());
+    let pon_after_ev = game_pon_after_chi
+        .apply_action(Seat::West, PlayerAction::Pon { tile: m(5) })
+        .unwrap();
+    assert_eq!(pon_after_ev.len(), 1);
+    assert_eq!(
+        project_view(&game_pon_after_chi, Seat::West)
+            .turn
+            .active_seat,
+        Some(Seat::West)
+    );
+
+    // 4. Chi wins when Hu and Pon seats both Pass, and sorts [m(4), m(5), m(6)] with called_tile = m(5).
+    let mut game_chi = Match::new(
+        MatchMode::EastOnly,
+        ChiEnabledTuidaohuRuleset,
+        PresetWallProvider::single(Seat::East, wall),
+    )
+    .unwrap();
+    game_chi
+        .apply_action(
+            Seat::East,
+            PlayerAction::Discard {
+                tile: m(5),
+                from_drawn: false,
+            },
+        )
+        .unwrap();
+    assert!(game_chi
+        .apply_action(Seat::North, PlayerAction::Pass)
+        .unwrap()
+        .is_empty());
+    assert!(game_chi
+        .apply_action(Seat::West, PlayerAction::Pass)
+        .unwrap()
+        .is_empty());
+    let chi_ev = game_chi
+        .apply_action(
+            Seat::South,
+            PlayerAction::Chi {
+                tile: m(5),
+                with: [m(4), m(6)],
+            },
+        )
+        .unwrap();
+    assert_eq!(chi_ev.len(), 1);
+    let south_after_chi = project_view(&game_chi, Seat::South);
+    assert_eq!(south_after_chi.turn.active_seat, Some(Seat::South));
+    assert_eq!(
+        south_after_chi.seats[Seat::South.index()].melds,
+        vec![MeldView::Chi {
+            tiles: [m(4), m(5), m(6)],
+            called_tile: m(5),
+            from_seat: Seat::East,
+            seq: chi_ev[0].seq(),
+        }]
+    );
+    assert!(!south_after_chi.hand.closed_tiles.contains(&m(4)));
+    assert!(!south_after_chi.hand.closed_tiles.contains(&m(5)));
+    assert!(!south_after_chi.hand.closed_tiles.contains(&m(6)));
 }

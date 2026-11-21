@@ -208,18 +208,9 @@ impl<R: Ruleset, W: WallProvider> Match<R, W> {
         ];
 
         for (seat, count) in deal_order {
-            let mut closed = wall_tiles[cursor..cursor + count].to_vec();
-            closed.sort_unstable();
+            let closed = wall_tiles[cursor..cursor + count].to_vec();
             cursor += count;
-            state.seats[seat.index()] = SeatState {
-                closed_tiles: closed,
-                drawn_tile: None,
-                river: Vec::new(),
-                melds: Vec::new(),
-                last_draw_or_meld_seq: 0,
-                passed_hu_lock: false,
-                passed_pon_lock: Vec::new(),
-            };
+            state.seats[seat.index()] = SeatState::dealt(closed);
         }
 
         state.wall = VecDeque::from(wall_tiles[cursor..].to_vec());
