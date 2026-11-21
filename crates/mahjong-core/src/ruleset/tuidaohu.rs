@@ -277,8 +277,16 @@ impl Ruleset for TuidaohuRuleset {
             };
         }
 
-        if input.mode == MatchMode::EastOnly && input.hand_number >= 4 {
-            return HandProgression::FinishMatch;
+        if input.hand_number >= 4 {
+            return match input.mode {
+                MatchMode::EastOnly => HandProgression::FinishMatch,
+                MatchMode::FreeTable => HandProgression::NextHand {
+                    wind_round: input.wind_round.next(),
+                    hand_number: 1,
+                    dealer_streak: 0,
+                    dealer: input.dealer.next(),
+                },
+            };
         }
 
         HandProgression::NextHand {
