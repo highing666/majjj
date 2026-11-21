@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/mahjong-core",
+    "crates/mahjong-ai",
+    "crates/mahjong-server",
+]
+
+[workspace.package]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rand_chacha = "0.3"
+rand_core = "0.6"
+thiserror = "2"
+ts-rs = { version = "10", features = ["serde-compat"] }
