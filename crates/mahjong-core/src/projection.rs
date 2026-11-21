@@ -57,9 +57,13 @@ pub(crate) fn project_table_view<R: Ruleset>(
         TablePhase::TurnAction { actor, .. } => {
             (PublicPhase::Playing, Some(*actor), None, None, None)
         }
-        TablePhase::AwaitingDiscardReactions { discarder, .. } => {
-            (PublicPhase::Playing, Some(*discarder), None, None, None)
-        }
+        TablePhase::AwaitingDiscardReactions(window) => (
+            PublicPhase::Playing,
+            Some(window.discarder),
+            None,
+            None,
+            None,
+        ),
         TablePhase::AwaitingRobKong { actor, .. } => {
             (PublicPhase::Playing, Some(*actor), None, None, None)
         }

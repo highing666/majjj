@@ -72,8 +72,35 @@ impl Ruleset for TuidaohuRuleset {
         actions
     }
 
-    fn legal_discard_reactions(&self, _ctx: &DiscardReactionContext<'_>) -> Vec<PlayerAction> {
-        Vec::new()
+    fn legal_discard_reactions(&self, ctx: &DiscardReactionContext<'_>) -> Vec<PlayerAction> {
+        if ctx.actor == ctx.discarder {
+            return Vec::new();
+        }
+
+        let mut actions = Vec::new();
+        if !ctx.passed_hu_lock
+            && self
+                .evaluate_win(&WinEvalInput {
+                    closed_tiles: ctx.closed_tiles,
+                    extra_tile: Some(ctx.tile),
+                    melds: ctx.melds,
+                    win_kind: WinKind::Ron,
+                    turn_source: None,
+                    wall_remaining: ctx.wall_remaining,
+                })
+                .is_some()
+        {
+            actions.push(PlayerAction::Ron { tile: ctx.tile });
+        }
+
+        if ctx.wall_remaining > 0
+            && !ctx.passed_pon_locked
+            && ctx.closed_tiles.iter().filter(|&&t| t == ctx.tile).count() >= 2
+        {
+            actions.push(PlayerAction::Pon { tile: ctx.tile });
+        }
+
+        actions
     }
 
     fn legal_rob_kong_reactions(&self, _ctx: &RobKongContext<'_>) -> Vec<PlayerAction> {

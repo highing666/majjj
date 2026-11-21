@@ -745,6 +745,14 @@ fn east_only_handles_dealer_streaks_negative_scores_east4_streak_and_finish_summ
         if probe.phase != PublicPhase::Playing {
             break;
         }
+        if let Some(reactor) = Seat::ALL.into_iter().find(|&s| {
+            project_view(&game, s)
+                .legal_actions
+                .contains(&PlayerAction::Pass)
+        }) {
+            game.apply_action(reactor, PlayerAction::Pass).unwrap();
+            continue;
+        }
         let active = probe.turn.active_seat.unwrap();
         let active_view = project_view(&game, active);
         let discard = active_view
@@ -1234,15 +1242,18 @@ fn any_ruleset_seeded_match_parity_and_free_table_full_wind_cycle() {
             let probe = project_view(&game, Seat::East);
             match probe.phase {
                 PublicPhase::Playing => {
-                    let active = probe.turn.active_seat.unwrap();
-                    let active_view = project_view(&game, active);
-                    let action = active_view
+                    let (actor, actor_view) = Seat::ALL
+                        .into_iter()
+                        .map(|s| (s, project_view(&game, s)))
+                        .find(|(_, v)| !v.legal_actions.is_empty())
+                        .expect("at least one seat has legal actions during Playing");
+                    let action = actor_view
                         .legal_actions
                         .iter()
                         .copied()
                         .find(|a| matches!(a, PlayerAction::Tsumo))
                         .or_else(|| {
-                            active_view.legal_actions.iter().copied().find(|a| {
+                            actor_view.legal_actions.iter().copied().find(|a| {
                                 matches!(
                                     a,
                                     PlayerAction::Discard {
@@ -1252,8 +1263,8 @@ fn any_ruleset_seeded_match_parity_and_free_table_full_wind_cycle() {
                                 )
                             })
                         })
-                        .unwrap_or(active_view.legal_actions[0]);
-                    let emitted = game.apply_action(active, action).unwrap();
+                        .unwrap_or(actor_view.legal_actions[0]);
+                    let emitted = game.apply_action(actor, action).unwrap();
                     for ev in &emitted {
                         events.push(Seat::ALL.map(|s| project_event(ev, s)));
                     }

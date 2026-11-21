@@ -1,6 +1,7 @@
 //! Pure deterministic 5-state table engine (`Match<R, W>`).
 
 mod progression;
+mod reactions;
 
 use core::fmt;
 use std::collections::VecDeque;
@@ -11,12 +12,11 @@ use crate::protocol::{
     DiscardEntry, HandSettlement, KongTransfer, MatchError, MatchMode, MatchSummary, PlayerAction,
     PlayerEvent, PlayerHandView, PlayerView, RevealedMeld, RuleProfile, TurnSource,
 };
-use crate::ruleset::{
-    DiscardReactionContext, Ruleset, TurnContext, WinCandidate, WinEvalInput, WinSettlementDetails,
-};
+use crate::ruleset::{Ruleset, TurnContext, WinCandidate, WinEvalInput, WinSettlementDetails};
 use crate::seat::{Seat, Wind};
 use crate::tile::Tile;
 use crate::wall::{validate_wall, WallProvider};
+use reactions::DiscardReactionWindow;
 
 /// Opaque wrapper over an internal `TableEvent`, exposing only its sequence number.
 ///
@@ -48,9 +48,7 @@ pub(crate) struct SeatState {
     pub(crate) river: Vec<DiscardEntry>,
     pub(crate) melds: Vec<RevealedMeld>,
     pub(crate) last_draw_or_meld_seq: u64,
-    #[allow(dead_code)]
     pub(crate) passed_hu_lock: bool,
-    #[allow(dead_code)]
     pub(crate) passed_pon_lock: Vec<Tile>,
 }
 
@@ -79,12 +77,7 @@ pub(crate) enum TablePhase {
         actor: Seat,
         source: TurnSource,
     },
-    #[allow(dead_code)]
-    AwaitingDiscardReactions {
-        discarder: Seat,
-        tile: Tile,
-        pending: Vec<Seat>,
-    },
+    AwaitingDiscardReactions(DiscardReactionWindow),
     #[allow(dead_code)]
     AwaitingRobKong {
         actor: Seat,
@@ -293,7 +286,7 @@ impl<R: Ruleset, W: WallProvider> Match<R, W> {
             (&self.state.phase, action),
             (
                 TablePhase::TurnAction { .. }
-                    | TablePhase::AwaitingDiscardReactions { .. }
+                    | TablePhase::AwaitingDiscardReactions(_)
                     | TablePhase::AwaitingRobKong { .. },
                 PlayerAction::ConfirmNextHand | PlayerAction::EndMatch
             )
@@ -316,8 +309,8 @@ impl<R: Ruleset, W: WallProvider> Match<R, W> {
                 }
                 self.apply_turn_action(actor, source, action)?
             }
-            TablePhase::AwaitingDiscardReactions { pending, .. }
-            | TablePhase::AwaitingRobKong { pending, .. } => {
+            TablePhase::AwaitingDiscardReactions(_) => self.apply_discard_reaction(seat, action)?,
+            TablePhase::AwaitingRobKong { pending, .. } => {
                 if !pending.contains(&seat) {
                     return Err(MatchError::NotYourTurn { seat });
                 }
@@ -420,42 +413,14 @@ impl<R: Ruleset, W: WallProvider> Match<R, W> {
     }
 
     fn advance_after_discard(&mut self, discarder: Seat, tile: Tile, out: &mut Vec<RecordedEvent>) {
-        let wall_remaining = self.state.wall_remaining();
-        let pending: Vec<Seat> = [
-            discarder.next(),
-            discarder.next().next(),
-            discarder.next().next().next(),
-        ]
-        .into_iter()
-        .filter(|&reactor| {
-            let s = &self.state.seats[reactor.index()];
-            !self
-                .ruleset
-                .legal_discard_reactions(&DiscardReactionContext {
-                    actor: reactor,
-                    discarder,
-                    tile,
-                    closed_tiles: &s.closed_tiles,
-                    melds: &s.melds,
-                    wall_remaining,
-                    passed_hu_lock: s.passed_hu_lock,
-                    passed_pon_locked: s.passed_pon_lock.contains(&tile),
-                    is_next_seat: reactor == discarder.next(),
-                })
-                .is_empty()
-        })
-        .collect();
-
-        if !pending.is_empty() {
-            self.state.phase = TablePhase::AwaitingDiscardReactions {
-                discarder,
-                tile,
-                pending,
-            };
+        if let Some(window) =
+            DiscardReactionWindow::build(&self.state, &self.ruleset, discarder, tile)
+        {
+            self.state.phase = TablePhase::AwaitingDiscardReactions(window);
             return;
         }
 
-        if wall_remaining == 0 {
+        if self.state.wall_remaining() == 0 {
             self.settle_hand_with_details(None, out);
             return;
         }
@@ -464,7 +429,7 @@ impl<R: Ruleset, W: WallProvider> Match<R, W> {
         self.draw_from_wall_head(next_seat, out);
     }
 
-    fn draw_from_wall_head(&mut self, seat: Seat, out: &mut Vec<RecordedEvent>) {
+    pub(crate) fn draw_from_wall_head(&mut self, seat: Seat, out: &mut Vec<RecordedEvent>) {
         let drawn = self
             .state
             .wall
@@ -506,7 +471,7 @@ impl<R: Ruleset, W: WallProvider> Match<R, W> {
         projection::project_table_event(&event.0, seat)
     }
 
-    fn push_event(
+    pub(crate) fn push_event(
         state: &mut TableState,
         out: &mut Vec<RecordedEvent>,
         kind: TableEventKind,
@@ -541,9 +506,8 @@ pub(crate) fn legal_actions_for_state<R: Ruleset>(
                 wall_remaining: state.wall_remaining(),
             })
         }
-        TablePhase::AwaitingDiscardReactions { .. } | TablePhase::AwaitingRobKong { .. } => {
-            Vec::new()
-        }
+        TablePhase::AwaitingDiscardReactions(window) => window.legal_actions(seat),
+        TablePhase::AwaitingRobKong { .. } => Vec::new(),
         TablePhase::BetweenHands { ready_seats, .. } => {
             progression::legal_between_hands_actions(state, *ready_seats, seat)
         }
