@@ -1,0 +1,24 @@
+<!-- PROTOTYPE: Three radically different 2D comic mahjong table variants (A/B/C), switchable via ?variant=, to validate Arcane-inspired visual readability and Mac discard/call ergonomics for issue #10. -->
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Majjj · 2D 漫画风推倒胡牌桌原型</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="stage-viewport" class="stage-viewport">
+      <main id="variant-stage" class="table-shell"></main>
+    </div>
+
+    <div id="sandbox-toolbar" class="sandbox-toolbar"></div>
+    <div id="audio-popover" class="audio-popover" hidden></div>
+    <div id="state-inspector" class="state-inspector" hidden></div>
+    <div id="settlement-modal" hidden></div>
+    <div id="tile-atlas-modal" hidden></div>
+    <nav id="prototype-switcher" class="proto-switcher"></nav>
+
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>
