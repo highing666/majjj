@@ -1,3 +1,6 @@
+mod common;
+
+use common::{assert_136_tile_conservation, tile as t, tiles};
 use mahjong_core::{
     build_preset_wall, project_event, project_view, DiscardReactionContext, EvaluatedWin,
     HandOutcome, HandProgression, HandProgressionInput, HandSettlement, KongKind, Match,
@@ -6,117 +9,12 @@ use mahjong_core::{
     Seat, SettleHandInput, Tile, TuidaohuRuleset, TurnContext, WinEvalInput, WinKind,
 };
 
-fn t(raw: u8) -> Tile {
-    Tile::new(raw).expect("valid tile index")
-}
-
-fn m(rank: u8) -> Tile {
-    assert!((1..=9).contains(&rank));
-    t(rank - 1)
-}
-
-fn s(rank: u8) -> Tile {
-    assert!((1..=9).contains(&rank));
-    t(9 + rank - 1)
-}
-
-fn p(rank: u8) -> Tile {
-    assert!((1..=9).contains(&rank));
-    t(18 + rank - 1)
-}
-
-const EAST_W: Tile = match Tile::new(27) {
-    Some(tile) => tile,
-    None => unreachable!(),
-};
-const SOUTH_W: Tile = match Tile::new(28) {
-    Some(tile) => tile,
-    None => unreachable!(),
-};
-const WEST_W: Tile = match Tile::new(29) {
-    Some(tile) => tile,
-    None => unreachable!(),
-};
-const NORTH_W: Tile = match Tile::new(30) {
-    Some(tile) => tile,
-    None => unreachable!(),
-};
-const RED_D: Tile = match Tile::new(31) {
-    Some(tile) => tile,
-    None => unreachable!(),
-};
-const GREEN_D: Tile = match Tile::new(32) {
-    Some(tile) => tile,
-    None => unreachable!(),
-};
-const WHITE_D: Tile = match Tile::new(33) {
-    Some(tile) => tile,
-    None => unreachable!(),
-};
-
 #[test]
 fn slice1_precise_windowing_zero_leakage_and_all_pass_continuation() {
-    let east_14 = vec![
-        m(1),
-        m(9),
-        s(2),
-        s(5),
-        s(8),
-        p(1),
-        p(4),
-        p(7),
-        EAST_W,
-        SOUTH_W,
-        WEST_W,
-        NORTH_W,
-        RED_D,
-        GREEN_D,
-    ];
-    let south_plain = vec![
-        m(2),
-        m(4),
-        m(6),
-        m(8),
-        s(1),
-        s(4),
-        s(7),
-        p(2),
-        p(5),
-        p(8),
-        EAST_W,
-        SOUTH_W,
-        WHITE_D,
-    ];
-    let west_pon_1m = vec![
-        m(1),
-        m(1),
-        m(3),
-        m(5),
-        m(7),
-        s(3),
-        s(6),
-        s(9),
-        p(3),
-        p(6),
-        p(9),
-        WEST_W,
-        NORTH_W,
-    ];
-    let north_plain = vec![
-        m(2),
-        m(5),
-        m(8),
-        s(1),
-        s(5),
-        s(9),
-        p(1),
-        p(4),
-        p(8),
-        RED_D,
-        GREEN_D,
-        WHITE_D,
-        NORTH_W,
-    ];
+    let east_14 = tiles("19m 258s 147p ESWNCF");
+    let south_plain = tiles("2468m 147s 258p ESB");
+    let west_pon_1m = tiles("11357m 369s 369p WN");
+    let north_plain = tiles("258m 159s 148p CFBN");
 
     // 1. Discard with no eligible reactions advances directly to next draw without opening a window.
     let direct_wall = build_preset_wall(
@@ -124,7 +22,7 @@ fn slice1_precise_windowing_zero_leakage_and_all_pass_continuation() {
         &south_plain,
         &west_pon_1m,
         &north_plain,
-        &[WHITE_D],
+        &tiles("B"),
         &[],
     )
     .unwrap();
@@ -138,7 +36,7 @@ fn slice1_precise_windowing_zero_leakage_and_all_pass_continuation() {
         .apply_action(
             Seat::East,
             PlayerAction::Discard {
-                tile: m(9),
+                tile: t("9m"),
                 from_drawn: false,
             },
         )
@@ -150,7 +48,7 @@ fn slice1_precise_windowing_zero_leakage_and_all_pass_continuation() {
             seat: Seat::East,
             tile,
             is_tsumogiri: false,
-        } if tile == m(9)
+        } if tile == t("9m")
     ));
     assert!(matches!(
         project_event(&direct_events[1], Seat::South).kind,
@@ -159,7 +57,7 @@ fn slice1_precise_windowing_zero_leakage_and_all_pass_continuation() {
             tile: Some(t_drawn),
             is_replacement: false,
             wall_remaining: 82,
-        } if t_drawn == WHITE_D
+        } if t_drawn == t("B")
     ));
 
     // 2. Discard opening reaction window: compare two matches where West vs South holds Pon { 1m }
@@ -169,7 +67,7 @@ fn slice1_precise_windowing_zero_leakage_and_all_pass_continuation() {
         &south_plain,
         &west_pon_1m,
         &north_plain,
-        &[WHITE_D],
+        &tiles("B"),
         &[],
     )
     .unwrap();
@@ -178,7 +76,7 @@ fn slice1_precise_windowing_zero_leakage_and_all_pass_continuation() {
         &west_pon_1m,
         &south_plain,
         &north_plain,
-        &[WHITE_D],
+        &tiles("B"),
         &[],
     )
     .unwrap();
@@ -200,7 +98,7 @@ fn slice1_precise_windowing_zero_leakage_and_all_pass_continuation() {
         .apply_action(
             Seat::East,
             PlayerAction::Discard {
-                tile: m(1),
+                tile: t("1m"),
                 from_drawn: false,
             },
         )
@@ -209,7 +107,7 @@ fn slice1_precise_windowing_zero_leakage_and_all_pass_continuation() {
         .apply_action(
             Seat::East,
             PlayerAction::Discard {
-                tile: m(1),
+                tile: t("1m"),
                 from_drawn: false,
             },
         )
@@ -233,7 +131,7 @@ fn slice1_precise_windowing_zero_leakage_and_all_pass_continuation() {
         if seat == Seat::West {
             assert_eq!(
                 view.legal_actions,
-                vec![PlayerAction::Pon { tile: m(1) }, PlayerAction::Pass]
+                vec![PlayerAction::Pon { tile: t("1m") }, PlayerAction::Pass]
             );
         } else {
             assert!(view.legal_actions.is_empty());
@@ -261,7 +159,7 @@ fn slice1_precise_windowing_zero_leakage_and_all_pass_continuation() {
     ));
     assert!(matches!(
         game_west
-            .apply_action(Seat::West, PlayerAction::Ron { tile: m(1) })
+            .apply_action(Seat::West, PlayerAction::Ron { tile: t("1m") })
             .unwrap_err(),
         MatchError::IllegalAction {
             seat: Seat::West,
@@ -273,27 +171,13 @@ fn slice1_precise_windowing_zero_leakage_and_all_pass_continuation() {
 
     // 3. Two pending seats (West Pon, North Ron): first Pass emits nothing and hides legal_actions;
     // second Pass resolves to next seat (South) drawing from wall head.
-    let north_ron_1m = vec![
-        m(2),
-        m(3),
-        s(1),
-        s(2),
-        s(3),
-        p(4),
-        p(5),
-        p(6),
-        p(7),
-        p(8),
-        p(9),
-        RED_D,
-        RED_D,
-    ];
+    let north_ron_1m = tiles("23m 123s 456789p CC");
     let two_pending_wall = build_preset_wall(
         &east_14,
         &south_plain,
         &west_pon_1m,
         &north_ron_1m,
-        &[WHITE_D],
+        &tiles("B"),
         &[],
     )
     .unwrap();
@@ -307,7 +191,7 @@ fn slice1_precise_windowing_zero_leakage_and_all_pass_continuation() {
         .apply_action(
             Seat::East,
             PlayerAction::Discard {
-                tile: m(1),
+                tile: t("1m"),
                 from_drawn: false,
             },
         )
@@ -315,11 +199,11 @@ fn slice1_precise_windowing_zero_leakage_and_all_pass_continuation() {
 
     assert_eq!(
         project_view(&two_pending, Seat::West).legal_actions,
-        vec![PlayerAction::Pon { tile: m(1) }, PlayerAction::Pass]
+        vec![PlayerAction::Pon { tile: t("1m") }, PlayerAction::Pass]
     );
     assert_eq!(
         project_view(&two_pending, Seat::North).legal_actions,
-        vec![PlayerAction::Ron { tile: m(1) }, PlayerAction::Pass]
+        vec![PlayerAction::Ron { tile: t("1m") }, PlayerAction::Pass]
     );
 
     let south_before = project_view(&two_pending, Seat::South);
@@ -350,78 +234,21 @@ fn slice1_precise_windowing_zero_leakage_and_all_pass_continuation() {
             tile: Some(t_drawn),
             is_replacement: false,
             wall_remaining: 82,
-        } if t_drawn == WHITE_D
+        } if t_drawn == t("B")
     ));
     let south_after = project_view(&two_pending, Seat::South);
     assert_eq!(south_after.turn.active_seat, Some(Seat::South));
-    assert_eq!(south_after.hand.drawn_tile, Some(WHITE_D));
+    assert_eq!(south_after.hand.drawn_tile, Some(t("B")));
 }
 
 #[test]
 fn slice2_pon_execution_state_event_after_meld_and_loses_menqing() {
-    let east_14 = vec![
-        m(1),
-        m(9),
-        s(4),
-        s(5),
-        s(8),
-        p(1),
-        p(4),
-        p(5),
-        EAST_W,
-        SOUTH_W,
-        WEST_W,
-        NORTH_W,
-        RED_D,
-        GREEN_D,
-    ];
-    let south_13 = vec![
-        m(5),
-        m(6),
-        m(7),
-        m(8),
-        s(6),
-        s(7),
-        s(9),
-        p(2),
-        p(3),
-        p(6),
-        EAST_W,
-        SOUTH_W,
-        WHITE_D,
-    ];
-    let west_13 = vec![
-        m(1),
-        m(1),
-        m(2),
-        m(3),
-        m(4),
-        s(1),
-        s(2),
-        s(3),
-        p(7),
-        p(8),
-        p(9),
-        WEST_W,
-        RED_D,
-    ];
-    let north_13 = vec![
-        m(5),
-        m(6),
-        m(8),
-        s(4),
-        s(5),
-        s(9),
-        p(1),
-        p(4),
-        p(6),
-        GREEN_D,
-        WHITE_D,
-        NORTH_W,
-        SOUTH_W,
-    ];
-    // Head draws after West's Pon discard: North draws p(2), East draws p(3), South draws s(8), West draws RED_D.
-    let head_draws = vec![p(2), p(3), s(8), RED_D];
+    let east_14 = tiles("19m 458s 145p ESWNCF");
+    let south_13 = tiles("5678m 679s 236p ESB");
+    let west_13 = tiles("11234m 123s 789p WC");
+    let north_13 = tiles("568m 459s 146p FBNS");
+    // Head draws after West's Pon discard: North draws 2p, East draws 3p, South draws 8s, West draws C.
+    let head_draws = tiles("23p 8s C");
     let wall =
         build_preset_wall(&east_14, &south_13, &west_13, &north_13, &head_draws, &[]).unwrap();
 
@@ -436,7 +263,7 @@ fn slice2_pon_execution_state_event_after_meld_and_loses_menqing() {
     game.apply_action(
         Seat::East,
         PlayerAction::Discard {
-            tile: m(1),
+            tile: t("1m"),
             from_drawn: false,
         },
     )
@@ -444,7 +271,7 @@ fn slice2_pon_execution_state_event_after_meld_and_loses_menqing() {
 
     // West claims Pon { 1m }.
     let pon_events = game
-        .apply_action(Seat::West, PlayerAction::Pon { tile: m(1) })
+        .apply_action(Seat::West, PlayerAction::Pon { tile: t("1m") })
         .unwrap();
     assert_eq!(pon_events.len(), 1);
     let meld_seq = pon_events[0].seq();
@@ -461,7 +288,7 @@ fn slice2_pon_execution_state_event_after_meld_and_loses_menqing() {
                 assert_eq!(
                     meld,
                     MeldView::Pon {
-                        tile: m(1),
+                        tile: t("1m"),
                         from_seat: Seat::East,
                         seq: meld_seq,
                     }
@@ -477,22 +304,7 @@ fn slice2_pon_execution_state_event_after_meld_and_loses_menqing() {
     assert_eq!(west_view.turn.active_seat, Some(Seat::West));
     assert_eq!(west_view.wall_remaining, 83);
     assert_eq!(west_view.hand.drawn_tile, None);
-    assert_eq!(
-        west_view.hand.closed_tiles,
-        vec![
-            m(2),
-            m(3),
-            m(4),
-            s(1),
-            s(2),
-            s(3),
-            p(7),
-            p(8),
-            p(9),
-            WEST_W,
-            RED_D
-        ]
-    );
+    assert_eq!(west_view.hand.closed_tiles, tiles("234m 123s 789p WC"));
     assert_eq!(west_view.seats[Seat::West.index()].hand_count, 11);
     assert_eq!(
         west_view.seats[Seat::West.index()].last_draw_or_meld_seq,
@@ -501,7 +313,7 @@ fn slice2_pon_execution_state_event_after_meld_and_loses_menqing() {
     assert_eq!(
         west_view.seats[Seat::West.index()].melds,
         vec![MeldView::Pon {
-            tile: m(1),
+            tile: t("1m"),
             from_seat: Seat::East,
             seq: meld_seq,
         }]
@@ -520,68 +332,33 @@ fn slice2_pon_execution_state_event_after_meld_and_loses_menqing() {
         }
     )));
     assert_eq!(west_view.legal_actions.len(), 11);
+    assert_136_tile_conservation(&game);
 
-    // 136-tile conservation check after Pon.
-    let total_hands: usize = west_view
-        .seats
-        .iter()
-        .map(|s| usize::from(s.hand_count))
-        .sum();
-    let total_unclaimed_river: usize = west_view
-        .seats
-        .iter()
-        .flat_map(|s| s.river.iter())
-        .filter(|d| d.claimed_by.is_none())
-        .count();
-    let total_melds: usize = west_view
-        .seats
-        .iter()
-        .flat_map(|s| s.melds.iter())
-        .map(|m| match m {
-            MeldView::Pon { .. } | MeldView::Chi { .. } => 3,
-            _ => 4,
-        })
-        .sum();
-    assert_eq!(
-        total_hands + total_unclaimed_river + total_melds + usize::from(west_view.wall_remaining),
-        136
-    );
-
-    // West discards WEST_W in AfterMeld turn -> North draws p(2) and discards it -> East -> South -> West draws RED_D.
+    // West discards W in AfterMeld turn -> North draws 2p and discards it -> East -> South -> West draws C.
     game.apply_action(
         Seat::West,
         PlayerAction::Discard {
-            tile: WEST_W,
+            tile: t("W"),
             from_drawn: false,
         },
     )
     .unwrap();
-    game.apply_action(
-        Seat::North,
-        PlayerAction::Discard {
-            tile: p(2),
-            from_drawn: true,
-        },
-    )
-    .unwrap();
-    game.apply_action(
-        Seat::East,
-        PlayerAction::Discard {
-            tile: p(3),
-            from_drawn: true,
-        },
-    )
-    .unwrap();
-    game.apply_action(
-        Seat::South,
-        PlayerAction::Discard {
-            tile: s(8),
-            from_drawn: true,
-        },
-    )
-    .unwrap();
+    for (seat, tile) in [
+        (Seat::North, t("2p")),
+        (Seat::East, t("3p")),
+        (Seat::South, t("8s")),
+    ] {
+        game.apply_action(
+            seat,
+            PlayerAction::Discard {
+                tile,
+                from_drawn: true,
+            },
+        )
+        .unwrap();
+    }
 
-    // West wins via Tsumo on RED_D; Pon broke 门前清 so score is 基本胡 (0 fan, 1 base point).
+    // West wins via Tsumo on C; Pon broke 门前清 so score is 基本胡 (0 fan, 1 base point).
     let win_events = game.apply_action(Seat::West, PlayerAction::Tsumo).unwrap();
     let settlement = match project_event(&win_events[0], Seat::East).kind {
         PlayerEventKind::HandSettled { settlement } => settlement,
@@ -591,7 +368,7 @@ fn slice2_pon_execution_state_event_after_meld_and_loses_menqing() {
     assert_eq!(
         settlement.revealed_hands[Seat::West.index()].melds,
         vec![RevealedMeld::Pon {
-            tile: m(1),
+            tile: t("1m"),
             from_seat: Seat::East,
             seq: meld_seq,
         }]
@@ -618,67 +395,10 @@ fn slice2_pon_execution_state_event_after_meld_and_loses_menqing() {
 
 #[test]
 fn slice3_single_ron_and_hu_over_pon_early_resolution() {
-    let east_14 = vec![
-        m(1),
-        m(9),
-        s(4),
-        s(5),
-        s(8),
-        p(1),
-        p(4),
-        p(5),
-        EAST_W,
-        SOUTH_W,
-        WEST_W,
-        NORTH_W,
-        RED_D,
-        GREEN_D,
-    ];
-    let south_pon_1m = vec![
-        m(1),
-        m(1),
-        m(5),
-        m(6),
-        m(7),
-        s(6),
-        s(7),
-        s(9),
-        p(2),
-        p(3),
-        p(6),
-        EAST_W,
-        WHITE_D,
-    ];
-    let west_ron_1m = vec![
-        m(2),
-        m(3),
-        s(1),
-        s(2),
-        s(3),
-        p(7),
-        p(7),
-        p(8),
-        p(8),
-        p(9),
-        p(9),
-        RED_D,
-        RED_D,
-    ];
-    let north_plain = vec![
-        m(4),
-        m(6),
-        m(8),
-        s(4),
-        s(5),
-        s(9),
-        p(1),
-        p(4),
-        p(6),
-        GREEN_D,
-        WHITE_D,
-        NORTH_W,
-        SOUTH_W,
-    ];
+    let east_14 = tiles("19m 458s 145p ESWNCF");
+    let south_pon_1m = tiles("11567m 679s 236p EB");
+    let west_ron_1m = tiles("23m 123s 778899p CC");
+    let north_plain = tiles("468m 459s 146p FBNS");
 
     // Sub-case A: West submits Ron immediately -> preempts South (Pon-only) with early resolution.
     let wall_a = build_preset_wall(
@@ -686,7 +406,7 @@ fn slice3_single_ron_and_hu_over_pon_early_resolution() {
         &south_pon_1m,
         &west_ron_1m,
         &north_plain,
-        &[WHITE_D],
+        &tiles("B"),
         &[],
     )
     .unwrap();
@@ -701,7 +421,7 @@ fn slice3_single_ron_and_hu_over_pon_early_resolution() {
         .apply_action(
             Seat::East,
             PlayerAction::Discard {
-                tile: m(1),
+                tile: t("1m"),
                 from_drawn: false,
             },
         )
@@ -709,16 +429,16 @@ fn slice3_single_ron_and_hu_over_pon_early_resolution() {
 
     assert_eq!(
         project_view(&game_a, Seat::South).legal_actions,
-        vec![PlayerAction::Pon { tile: m(1) }, PlayerAction::Pass]
+        vec![PlayerAction::Pon { tile: t("1m") }, PlayerAction::Pass]
     );
     assert_eq!(
         project_view(&game_a, Seat::West).legal_actions,
-        vec![PlayerAction::Ron { tile: m(1) }, PlayerAction::Pass]
+        vec![PlayerAction::Ron { tile: t("1m") }, PlayerAction::Pass]
     );
 
     // West wins immediately without waiting for South.
     let ron_events = game_a
-        .apply_action(Seat::West, PlayerAction::Ron { tile: m(1) })
+        .apply_action(Seat::West, PlayerAction::Ron { tile: t("1m") })
         .unwrap();
     assert_eq!(ron_events.len(), 1);
     let settlement = match project_event(&ron_events[0], Seat::East).kind {
@@ -734,7 +454,7 @@ fn slice3_single_ron_and_hu_over_pon_early_resolution() {
             winning_tile,
         } => {
             assert_eq!(*discarder, Some(Seat::East));
-            assert_eq!(*winning_tile, m(1));
+            assert_eq!(*winning_tile, t("1m"));
             assert_eq!(winners.len(), 1);
             assert_eq!(winners[0].seat, Seat::West);
             assert_eq!(winners[0].win_kind, WinKind::Ron);
@@ -762,7 +482,7 @@ fn slice3_single_ron_and_hu_over_pon_early_resolution() {
         &south_pon_1m,
         &west_ron_1m,
         &north_plain,
-        &[WHITE_D],
+        &tiles("B"),
         &[],
     )
     .unwrap();
@@ -776,24 +496,24 @@ fn slice3_single_ron_and_hu_over_pon_early_resolution() {
         .apply_action(
             Seat::East,
             PlayerAction::Discard {
-                tile: m(1),
+                tile: t("1m"),
                 from_drawn: false,
             },
         )
         .unwrap();
 
     let after_south_pon = game_b
-        .apply_action(Seat::South, PlayerAction::Pon { tile: m(1) })
+        .apply_action(Seat::South, PlayerAction::Pon { tile: t("1m") })
         .unwrap();
     assert!(after_south_pon.is_empty());
     assert!(project_view(&game_b, Seat::South).legal_actions.is_empty());
     assert_eq!(
         project_view(&game_b, Seat::West).legal_actions,
-        vec![PlayerAction::Ron { tile: m(1) }, PlayerAction::Pass]
+        vec![PlayerAction::Ron { tile: t("1m") }, PlayerAction::Pass]
     );
 
     let after_west_ron = game_b
-        .apply_action(Seat::West, PlayerAction::Ron { tile: m(1) })
+        .apply_action(Seat::West, PlayerAction::Ron { tile: t("1m") })
         .unwrap();
     assert_eq!(after_west_ron.len(), 1);
     match project_event(&after_west_ron[0], Seat::South).kind {
@@ -812,7 +532,7 @@ fn slice3_single_ron_and_hu_over_pon_early_resolution() {
         &south_pon_1m,
         &west_ron_1m,
         &north_plain,
-        &[WHITE_D],
+        &tiles("B"),
         &[],
     )
     .unwrap();
@@ -826,13 +546,13 @@ fn slice3_single_ron_and_hu_over_pon_early_resolution() {
         .apply_action(
             Seat::East,
             PlayerAction::Discard {
-                tile: m(1),
+                tile: t("1m"),
                 from_drawn: false,
             },
         )
         .unwrap();
     assert!(game_c
-        .apply_action(Seat::South, PlayerAction::Pon { tile: m(1) })
+        .apply_action(Seat::South, PlayerAction::Pon { tile: t("1m") })
         .unwrap()
         .is_empty());
     let pass_resolves_pon = game_c.apply_action(Seat::West, PlayerAction::Pass).unwrap();
@@ -847,7 +567,7 @@ fn slice3_single_ron_and_hu_over_pon_early_resolution() {
                 ..
             },
             ..
-        } if tile == m(1)
+        } if tile == t("1m")
     ));
     assert_eq!(
         project_view(&game_c, Seat::South).turn.active_seat,
@@ -858,73 +578,16 @@ fn slice3_single_ron_and_hu_over_pon_early_resolution() {
 #[test]
 fn slice4_multi_ron_two_and_three_winners_with_dealer_streak() {
     // Part A: 2 Ron winners (West 1-fan, North 2-fan) + 1 Pon-only seat (South).
-    let east_14 = vec![
-        m(1),
-        m(9),
-        s(2),
-        s(5),
-        s(8),
-        p(1),
-        p(5),
-        EAST_W,
-        SOUTH_W,
-        WEST_W,
-        NORTH_W,
-        RED_D,
-        GREEN_D,
-        WHITE_D,
-    ];
-    let south_pon = vec![
-        m(1),
-        m(1),
-        m(5),
-        m(6),
-        m(7),
-        s(6),
-        s(7),
-        s(9),
-        p(2),
-        p(3),
-        p(6),
-        EAST_W,
-        WHITE_D,
-    ];
-    let west_ron_1fan = vec![
-        m(2),
-        m(3),
-        s(1),
-        s(2),
-        s(3),
-        p(7),
-        p(7),
-        p(8),
-        p(8),
-        p(9),
-        p(9),
-        RED_D,
-        RED_D,
-    ];
-    let north_ron_2fan = vec![
-        m(2),
-        m(3),
-        m(4),
-        m(4),
-        m(4),
-        m(9),
-        m(9),
-        m(9),
-        NORTH_W,
-        NORTH_W,
-        NORTH_W,
-        GREEN_D,
-        GREEN_D,
-    ];
+    let east_14 = tiles("19m 258s 15p ESWNCFB");
+    let south_pon = tiles("11567m 679s 236p EB");
+    let west_ron_1fan = tiles("23m 123s 778899p CC");
+    let north_ron_2fan = tiles("23444999m NNN FF");
     let wall_a = build_preset_wall(
         &east_14,
         &south_pon,
         &west_ron_1fan,
         &north_ron_2fan,
-        &[p(4)],
+        &tiles("4p"),
         &[],
     )
     .unwrap();
@@ -939,7 +602,7 @@ fn slice4_multi_ron_two_and_three_winners_with_dealer_streak() {
         .apply_action(
             Seat::East,
             PlayerAction::Discard {
-                tile: m(1),
+                tile: t("1m"),
                 from_drawn: false,
             },
         )
@@ -947,7 +610,7 @@ fn slice4_multi_ron_two_and_three_winners_with_dealer_streak() {
 
     // West submits Ron first -> MUST wait for North (also offered Ron), while South is Pon-only.
     let after_west = game_a
-        .apply_action(Seat::West, PlayerAction::Ron { tile: m(1) })
+        .apply_action(Seat::West, PlayerAction::Ron { tile: t("1m") })
         .unwrap();
     assert!(after_west.is_empty());
     assert_eq!(
@@ -957,16 +620,16 @@ fn slice4_multi_ron_two_and_three_winners_with_dealer_streak() {
     assert!(project_view(&game_a, Seat::West).legal_actions.is_empty());
     assert_eq!(
         project_view(&game_a, Seat::North).legal_actions,
-        vec![PlayerAction::Ron { tile: m(1) }, PlayerAction::Pass]
+        vec![PlayerAction::Ron { tile: t("1m") }, PlayerAction::Pass]
     );
     assert_eq!(
         project_view(&game_a, Seat::South).legal_actions,
-        vec![PlayerAction::Pon { tile: m(1) }, PlayerAction::Pass]
+        vec![PlayerAction::Pon { tile: t("1m") }, PlayerAction::Pass]
     );
 
     // North submits Ron -> resolves IMMEDIATELY without waiting for Pon-only South.
     let after_north = game_a
-        .apply_action(Seat::North, PlayerAction::Ron { tile: m(1) })
+        .apply_action(Seat::North, PlayerAction::Ron { tile: t("1m") })
         .unwrap();
     assert_eq!(after_north.len(), 1);
     let settlement_a = match project_event(&after_north[0], Seat::East).kind {
@@ -983,7 +646,7 @@ fn slice4_multi_ron_two_and_three_winners_with_dealer_streak() {
             winning_tile,
         } => {
             assert_eq!(*discarder, Some(Seat::East));
-            assert_eq!(*winning_tile, m(1));
+            assert_eq!(*winning_tile, t("1m"));
             assert_eq!(winners.len(), 2);
             assert_eq!(winners[0].seat, Seat::West);
             assert_eq!(winners[0].total_fan, 1);
@@ -1006,13 +669,13 @@ fn slice4_multi_ron_two_and_three_winners_with_dealer_streak() {
         .apply_action(
             Seat::East,
             PlayerAction::Discard {
-                tile: m(1),
+                tile: t("1m"),
                 from_drawn: false,
             },
         )
         .unwrap();
     assert!(game_a2
-        .apply_action(Seat::West, PlayerAction::Ron { tile: m(1) })
+        .apply_action(Seat::West, PlayerAction::Ron { tile: t("1m") })
         .unwrap()
         .is_empty());
     let settled_a2 = game_a2
@@ -1027,73 +690,16 @@ fn slice4_multi_ron_two_and_three_winners_with_dealer_streak() {
     }
 
     // Part B: 3 winners (一炮多响) submitted out of order + dealer 连庄.
-    let b_east_14 = vec![
-        m(2),
-        m(3),
-        s(1),
-        s(2),
-        s(3),
-        p(1),
-        p(2),
-        p(3),
-        EAST_W,
-        EAST_W,
-        EAST_W,
-        RED_D,
-        RED_D,
-        WHITE_D,
-    ];
-    let b_south_13 = vec![
-        m(1),
-        m(4),
-        m(5),
-        m(6),
-        s(4),
-        s(5),
-        s(6),
-        p(4),
-        p(5),
-        p(6),
-        SOUTH_W,
-        SOUTH_W,
-        SOUTH_W,
-    ];
-    let b_west_13 = vec![
-        m(1),
-        m(7),
-        m(8),
-        m(9),
-        s(7),
-        s(8),
-        s(9),
-        p(7),
-        p(8),
-        p(9),
-        WEST_W,
-        WEST_W,
-        WEST_W,
-    ];
-    let b_north_13 = vec![
-        m(1),
-        m(2),
-        m(5),
-        m(9),
-        s(2),
-        s(6),
-        s(9),
-        p(2),
-        p(5),
-        p(8),
-        NORTH_W,
-        GREEN_D,
-        RED_D,
-    ];
+    let b_east_14 = tiles("23m 123s 123p EEE CCB");
+    let b_south_13 = tiles("1456m 456s 456p SSS");
+    let b_west_13 = tiles("1789m 789s 789p WWW");
+    let b_north_13 = tiles("1259m 269s 258p NFC");
     let wall_b1 = build_preset_wall(
         &b_east_14,
         &b_south_13,
         &b_west_13,
         &b_north_13,
-        &[WHITE_D, WHITE_D, WHITE_D],
+        &tiles("BBB"),
         &[],
     )
     .unwrap();
@@ -1110,7 +716,7 @@ fn slice4_multi_ron_two_and_three_winners_with_dealer_streak() {
         .apply_action(
             Seat::East,
             PlayerAction::Discard {
-                tile: WHITE_D,
+                tile: t("B"),
                 from_drawn: false,
             },
         )
@@ -1119,7 +725,7 @@ fn slice4_multi_ron_two_and_three_winners_with_dealer_streak() {
         .apply_action(
             Seat::South,
             PlayerAction::Discard {
-                tile: WHITE_D,
+                tile: t("B"),
                 from_drawn: true,
             },
         )
@@ -1128,7 +734,7 @@ fn slice4_multi_ron_two_and_three_winners_with_dealer_streak() {
         .apply_action(
             Seat::West,
             PlayerAction::Discard {
-                tile: WHITE_D,
+                tile: t("B"),
                 from_drawn: true,
             },
         )
@@ -1137,7 +743,7 @@ fn slice4_multi_ron_two_and_three_winners_with_dealer_streak() {
         .apply_action(
             Seat::North,
             PlayerAction::Discard {
-                tile: m(1),
+                tile: t("1m"),
                 from_drawn: false,
             },
         )
@@ -1147,21 +753,21 @@ fn slice4_multi_ron_two_and_three_winners_with_dealer_streak() {
     for seat in [Seat::East, Seat::South, Seat::West] {
         assert_eq!(
             project_view(&game_b, seat).legal_actions,
-            vec![PlayerAction::Ron { tile: m(1) }, PlayerAction::Pass]
+            vec![PlayerAction::Ron { tile: t("1m") }, PlayerAction::Pass]
         );
     }
 
     // Submit in non-turn order: West -> East -> South.
     assert!(game_b
-        .apply_action(Seat::West, PlayerAction::Ron { tile: m(1) })
+        .apply_action(Seat::West, PlayerAction::Ron { tile: t("1m") })
         .unwrap()
         .is_empty());
     assert!(game_b
-        .apply_action(Seat::East, PlayerAction::Ron { tile: m(1) })
+        .apply_action(Seat::East, PlayerAction::Ron { tile: t("1m") })
         .unwrap()
         .is_empty());
     let settled_3 = game_b
-        .apply_action(Seat::South, PlayerAction::Ron { tile: m(1) })
+        .apply_action(Seat::South, PlayerAction::Ron { tile: t("1m") })
         .unwrap();
     assert_eq!(settled_3.len(), 1);
 
@@ -1178,7 +784,7 @@ fn slice4_multi_ron_two_and_three_winners_with_dealer_streak() {
             winning_tile,
         } => {
             assert_eq!(*discarder, Some(Seat::North));
-            assert_eq!(*winning_tile, m(1));
+            assert_eq!(*winning_tile, t("1m"));
             let winner_seats: Vec<Seat> = winners.iter().map(|w| w.seat).collect();
             assert_eq!(winner_seats, vec![Seat::East, Seat::South, Seat::West]);
         }
@@ -1199,68 +805,11 @@ fn slice4_multi_ron_two_and_three_winners_with_dealer_streak() {
 
 #[test]
 fn slice5_last_discard_at_zero_wall_allows_last_tile_ron_forbids_pon_and_settles_draw_on_pass() {
-    // East holds p(4)*2 + WHITE_D*2; 0 copies of p(4) or WHITE_D exist in the 83-tile wall.
-    let east_14 = vec![
-        m(1),
-        m(2),
-        m(3),
-        s(1),
-        s(2),
-        s(3),
-        p(1),
-        p(2),
-        p(3),
-        p(4),
-        p(4),
-        WHITE_D,
-        WHITE_D,
-        NORTH_W,
-    ];
-    let south_13 = vec![
-        m(4),
-        m(6),
-        m(8),
-        s(4),
-        s(6),
-        s(8),
-        p(4),
-        p(6),
-        p(8),
-        SOUTH_W,
-        RED_D,
-        WHITE_D,
-        EAST_W,
-    ];
-    let west_13 = vec![
-        m(5),
-        m(7),
-        m(9),
-        s(5),
-        s(7),
-        s(9),
-        p(4),
-        p(5),
-        p(7),
-        p(9),
-        WEST_W,
-        GREEN_D,
-        RED_D,
-    ];
-    let north_13 = vec![
-        m(5),
-        m(7),
-        m(9),
-        s(5),
-        s(7),
-        s(9),
-        p(5),
-        p(7),
-        p(9),
-        NORTH_W,
-        GREEN_D,
-        SOUTH_W,
-        WHITE_D,
-    ];
+    // East holds 4p*2 + B*2; 0 copies of 4p or B exist in the 83-tile wall.
+    let east_14 = tiles("123m 123s 12344p BBN");
+    let south_13 = tiles("468m 468s 468p SCBE");
+    let west_13 = tiles("579m 579s 4579p WFC");
+    let north_13 = tiles("579m 579s 579p NFSB");
 
     let wall_ron = build_preset_wall(&east_14, &south_13, &west_13, &north_13, &[], &[]).unwrap();
     let mut game_ron = Match::new(
@@ -1271,11 +820,11 @@ fn slice5_last_discard_at_zero_wall_allows_last_tile_ron_forbids_pon_and_settles
     .unwrap();
 
     let play_to_last_discard = |game: &mut Match<TuidaohuRuleset, PresetWallProvider>| {
-        // Discard 1 (East discards NORTH_W), then 82 tsumogiri discards so North draws tile #83.
+        // Discard 1 (East discards N), then 82 tsumogiri discards so North draws tile #83.
         game.apply_action(
             Seat::East,
             PlayerAction::Discard {
-                tile: NORTH_W,
+                tile: t("N"),
                 from_drawn: false,
             },
         )
@@ -1300,7 +849,7 @@ fn slice5_last_discard_at_zero_wall_allows_last_tile_ron_forbids_pon_and_settles
         game.apply_action(
             Seat::North,
             PlayerAction::Discard {
-                tile: WHITE_D,
+                tile: t("B"),
                 from_drawn: false,
             },
         )
@@ -1310,17 +859,17 @@ fn slice5_last_discard_at_zero_wall_allows_last_tile_ron_forbids_pon_and_settles
     let last_discard_events = play_to_last_discard(&mut game_ron);
     assert_eq!(last_discard_events.len(), 1);
 
-    // East has 2 copies of WHITE_D AND wins on WHITE_D, but Pon is forbidden at wall_remaining == 0.
+    // East has 2 copies of B AND wins on B, but Pon is forbidden at wall_remaining == 0.
     let east_window = project_view(&game_ron, Seat::East);
     assert_eq!(east_window.phase, PublicPhase::Playing);
     assert_eq!(east_window.wall_remaining, 0);
     assert_eq!(
         east_window.legal_actions,
-        vec![PlayerAction::Ron { tile: WHITE_D }, PlayerAction::Pass]
+        vec![PlayerAction::Ron { tile: t("B") }, PlayerAction::Pass]
     );
 
     let win_events = game_ron
-        .apply_action(Seat::East, PlayerAction::Ron { tile: WHITE_D })
+        .apply_action(Seat::East, PlayerAction::Ron { tile: t("B") })
         .unwrap();
     assert_eq!(win_events.len(), 1);
     let settlement = match project_event(&win_events[0], Seat::East).kind {
@@ -1335,7 +884,7 @@ fn slice5_last_discard_at_zero_wall_allows_last_tile_ron_forbids_pon_and_settles
             winning_tile,
         } => {
             assert_eq!(*discarder, Some(Seat::North));
-            assert_eq!(*winning_tile, WHITE_D);
+            assert_eq!(*winning_tile, t("B"));
             assert_eq!(winners[0].total_fan, 2);
             assert_eq!(winners[0].base_points, 4);
             assert!(winners[0].items.contains(&ScoreItem {
@@ -1375,7 +924,7 @@ fn slice5_last_discard_at_zero_wall_allows_last_tile_ron_forbids_pon_and_settles
     // If a seat only has 2 copies of the last discard (cannot Ron) at wall_remaining == 0,
     // no reaction window opens and DrawGame settles directly on the discard.
     let mut east_no_win = east_14.clone();
-    east_no_win[0] = m(9); // break m(1,2,3) so East has 2 WHITE_D (Pon-only) and cannot Ron.
+    east_no_win[0] = t("9m"); // break 123m so East has 2 B (Pon-only) and cannot Ron.
     let wall_pon_only_last =
         build_preset_wall(&east_no_win, &south_13, &west_13, &north_13, &[], &[]).unwrap();
     let mut game_pon_only = Match::new(
@@ -1400,74 +949,17 @@ fn slice5_last_discard_at_zero_wall_allows_last_tile_ron_forbids_pon_and_settles
 #[test]
 fn slice6_passed_hu_lock_lifecycle() {
     // Sub-test A: North passes Ron on 1m -> blocked on South's 4m -> Pon on 7p allowed & clears 过水胡 -> Rons 2m.
-    let east_14 = vec![
-        m(1),
-        m(9),
-        s(4),
-        s(5),
-        s(8),
-        p(1),
-        p(3),
-        p(9),
-        EAST_W,
-        SOUTH_W,
-        WEST_W,
-        NORTH_W,
-        GREEN_D,
-        WHITE_D,
-    ];
-    let south_13 = vec![
-        m(5),
-        m(6),
-        m(7),
-        m(8),
-        s(6),
-        s(7),
-        s(9),
-        p(2),
-        p(3),
-        p(8),
-        EAST_W,
-        SOUTH_W,
-        WHITE_D,
-    ];
-    let west_13 = vec![
-        m(4),
-        m(5),
-        m(7),
-        m(8),
-        s(4),
-        s(6),
-        s(8),
-        p(1),
-        p(2),
-        p(9),
-        WEST_W,
-        NORTH_W,
-        GREEN_D,
-    ];
-    let north_13 = vec![
-        m(2),
-        m(3),
-        s(1),
-        s(2),
-        s(3),
-        p(4),
-        p(5),
-        p(6),
-        p(7),
-        p(7),
-        RED_D,
-        RED_D,
-        RED_D,
-    ];
-    // South draws m(4), West draws p(7), East draws m(2).
+    let east_14 = tiles("19m 458s 139p ESWNFB");
+    let south_13 = tiles("5678m 679s 238p ESB");
+    let west_13 = tiles("4578m 468s 129p WNF");
+    let north_13 = tiles("23m 123s 45677p CCC");
+    // South draws 4m, West draws 7p, East draws 2m.
     let wall_a = build_preset_wall(
         &east_14,
         &south_13,
         &west_13,
         &north_13,
-        &[m(4), p(7), m(2)],
+        &tiles("4m 7p 2m"),
         &[],
     )
     .unwrap();
@@ -1483,26 +975,26 @@ fn slice6_passed_hu_lock_lifecycle() {
         .apply_action(
             Seat::East,
             PlayerAction::Discard {
-                tile: m(1),
+                tile: t("1m"),
                 from_drawn: false,
             },
         )
         .unwrap();
     assert_eq!(
         project_view(&game_a, Seat::North).legal_actions,
-        vec![PlayerAction::Ron { tile: m(1) }, PlayerAction::Pass]
+        vec![PlayerAction::Ron { tile: t("1m") }, PlayerAction::Pass]
     );
     let after_north_pass = game_a
         .apply_action(Seat::North, PlayerAction::Pass)
         .unwrap();
-    assert_eq!(after_north_pass.len(), 1); // South draws m(4).
+    assert_eq!(after_north_pass.len(), 1); // South draws 4m.
 
     // 2. South discards 4m (which would win for North) -> blocked by 过水胡, directly advances to West.
     let south_discard_4m = game_a
         .apply_action(
             Seat::South,
             PlayerAction::Discard {
-                tile: m(4),
+                tile: t("4m"),
                 from_drawn: true,
             },
         )
@@ -1519,7 +1011,7 @@ fn slice6_passed_hu_lock_lifecycle() {
         .apply_action(
             Seat::West,
             PlayerAction::Discard {
-                tile: p(7),
+                tile: t("7p"),
                 from_drawn: true,
             },
         )
@@ -1527,10 +1019,10 @@ fn slice6_passed_hu_lock_lifecycle() {
     assert_eq!(west_discard_7p.len(), 1);
     assert_eq!(
         project_view(&game_a, Seat::North).legal_actions,
-        vec![PlayerAction::Pon { tile: p(7) }, PlayerAction::Pass]
+        vec![PlayerAction::Pon { tile: t("7p") }, PlayerAction::Pass]
     );
     game_a
-        .apply_action(Seat::North, PlayerAction::Pon { tile: p(7) })
+        .apply_action(Seat::North, PlayerAction::Pon { tile: t("7p") })
         .unwrap();
 
     // North discards 3m in AfterMeld, waiting on 2m.
@@ -1538,7 +1030,7 @@ fn slice6_passed_hu_lock_lifecycle() {
         .apply_action(
             Seat::North,
             PlayerAction::Discard {
-                tile: m(3),
+                tile: t("3m"),
                 from_drawn: false,
             },
         )
@@ -1549,7 +1041,7 @@ fn slice6_passed_hu_lock_lifecycle() {
         .apply_action(
             Seat::East,
             PlayerAction::Discard {
-                tile: m(2),
+                tile: t("2m"),
                 from_drawn: true,
             },
         )
@@ -1557,10 +1049,10 @@ fn slice6_passed_hu_lock_lifecycle() {
     assert_eq!(east_discard_2m.len(), 1);
     assert_eq!(
         project_view(&game_a, Seat::North).legal_actions,
-        vec![PlayerAction::Ron { tile: m(2) }, PlayerAction::Pass]
+        vec![PlayerAction::Ron { tile: t("2m") }, PlayerAction::Pass]
     );
     let win_events = game_a
-        .apply_action(Seat::North, PlayerAction::Ron { tile: m(2) })
+        .apply_action(Seat::North, PlayerAction::Ron { tile: t("2m") })
         .unwrap();
     assert!(matches!(
         project_event(&win_events[0], Seat::North).kind,
@@ -1576,7 +1068,7 @@ fn slice6_passed_hu_lock_lifecycle() {
         &south_waiting,
         &west_13,
         &north_filler,
-        &[m(1)],
+        &tiles("1m"),
         &[],
     )
     .unwrap();
@@ -1590,7 +1082,7 @@ fn slice6_passed_hu_lock_lifecycle() {
         .apply_action(
             Seat::East,
             PlayerAction::Discard {
-                tile: m(1),
+                tile: t("1m"),
                 from_drawn: false,
             },
         )
@@ -1604,13 +1096,13 @@ fn slice6_passed_hu_lock_lifecycle() {
         .apply_action(Seat::South, PlayerAction::Tsumo)
         .unwrap();
 
-    // Case B2: South passes 1m, draws WHITE_D (clears 过水胡), discards WHITE_D, West discards 1m -> South can Ron!
+    // Case B2: South passes 1m, draws B (clears 过水胡), discards B, West discards 1m -> South can Ron!
     let wall_b2 = build_preset_wall(
         &east_14,
         &south_waiting,
         &west_13,
         &north_filler,
-        &[WHITE_D, m(1)],
+        &tiles("B 1m"),
         &[],
     )
     .unwrap();
@@ -1624,7 +1116,7 @@ fn slice6_passed_hu_lock_lifecycle() {
         .apply_action(
             Seat::East,
             PlayerAction::Discard {
-                tile: m(1),
+                tile: t("1m"),
                 from_drawn: false,
             },
         )
@@ -1636,7 +1128,7 @@ fn slice6_passed_hu_lock_lifecycle() {
         .apply_action(
             Seat::South,
             PlayerAction::Discard {
-                tile: WHITE_D,
+                tile: t("B"),
                 from_drawn: true,
             },
         )
@@ -1645,7 +1137,7 @@ fn slice6_passed_hu_lock_lifecycle() {
         .apply_action(
             Seat::West,
             PlayerAction::Discard {
-                tile: m(1),
+                tile: t("1m"),
                 from_drawn: true,
             },
         )
@@ -1653,90 +1145,30 @@ fn slice6_passed_hu_lock_lifecycle() {
     assert_eq!(west_1m.len(), 1);
     assert_eq!(
         project_view(&game_b2, Seat::South).legal_actions,
-        vec![PlayerAction::Ron { tile: m(1) }, PlayerAction::Pass]
+        vec![PlayerAction::Ron { tile: t("1m") }, PlayerAction::Pass]
     );
     game_b2
-        .apply_action(Seat::South, PlayerAction::Ron { tile: m(1) })
+        .apply_action(Seat::South, PlayerAction::Ron { tile: t("1m") })
         .unwrap();
 }
 
 #[test]
 fn slice6_passed_pon_lock_lifecycle() {
-    let east_14 = vec![
-        s(2),
-        m(9),
-        s(4),
-        s(5),
-        s(6),
-        p(2),
-        p(4),
-        p(9),
-        EAST_W,
-        SOUTH_W,
-        WEST_W,
-        NORTH_W,
-        RED_D,
-        GREEN_D,
-    ];
-    let south_13 = vec![
-        m(1),
-        m(3),
-        m(7),
-        m(8),
-        s(1),
-        s(3),
-        s(5),
-        p(3),
-        p(5),
-        p(7),
-        EAST_W,
-        SOUTH_W,
-        WHITE_D,
-    ];
-    let west_13 = vec![
-        m(2),
-        m(7),
-        m(8),
-        s(1),
-        s(4),
-        s(6),
-        p(3),
-        p(5),
-        p(6),
-        WEST_W,
-        NORTH_W,
-        RED_D,
-        GREEN_D,
-    ];
-    let north_13 = vec![
-        s(2),
-        s(2),
-        p(8),
-        p(8),
-        p(1),
-        p(1),
-        m(4),
-        m(5),
-        m(6),
-        s(7),
-        s(8),
-        s(9),
-        WEST_W,
-    ];
+    let east_14 = tiles("9m 2456s 249p ESWNCF");
+    let south_13 = tiles("1378m 135s 357p ESB");
+    let west_13 = tiles("278m 146s 356p WNCF");
+    let north_13 = tiles("456m 22789s 1188p W");
 
     // Wall 1:
     // - East discards 2s -> North passes Pon { 2s } (acquires 过水碰 for 2s).
-    // - South draws 2s and discards 2s -> North is NOT offered Pon { 2s }.
-    // - West draws 8p and discards 8p -> North IS offered Pon { 8p } (per-tile), claims Pon, discards WEST_W.
-    // - East draws 2s? Wait: 4th 2s isn't available if South already drew 2s!
-    // So in Wall 1: South draws WHITE_D, West draws 8p, North Pon 8p -> East draws 2s (North now tenpai on 2s & 1p!)
+    // - South draws B & discards B; West draws 8p -> North Pon 8p -> East draws 2s (North now tenpai on 2s & 1p!)
     // -> North is STILL NOT offered Pon { 2s } (Pon 8p did NOT clear 过水碰), AND IS offered Ron { 2s }!
     let wall_1 = build_preset_wall(
         &east_14,
         &south_13,
         &west_13,
         &north_13,
-        &[WHITE_D, p(8), s(2)],
+        &tiles("B 8p 2s"),
         &[],
     )
     .unwrap();
@@ -1751,14 +1183,14 @@ fn slice6_passed_pon_lock_lifecycle() {
         .apply_action(
             Seat::East,
             PlayerAction::Discard {
-                tile: s(2),
+                tile: t("2s"),
                 from_drawn: false,
             },
         )
         .unwrap();
     assert_eq!(
         project_view(&game_1, Seat::North).legal_actions,
-        vec![PlayerAction::Pon { tile: s(2) }, PlayerAction::Pass]
+        vec![PlayerAction::Pon { tile: t("2s") }, PlayerAction::Pass]
     );
     game_1
         .apply_action(Seat::North, PlayerAction::Pass)
@@ -1768,7 +1200,7 @@ fn slice6_passed_pon_lock_lifecycle() {
         .apply_action(
             Seat::South,
             PlayerAction::Discard {
-                tile: WHITE_D,
+                tile: t("B"),
                 from_drawn: true,
             },
         )
@@ -1777,7 +1209,7 @@ fn slice6_passed_pon_lock_lifecycle() {
         .apply_action(
             Seat::West,
             PlayerAction::Discard {
-                tile: p(8),
+                tile: t("8p"),
                 from_drawn: true,
             },
         )
@@ -1785,16 +1217,16 @@ fn slice6_passed_pon_lock_lifecycle() {
     assert_eq!(west_8p.len(), 1);
     assert_eq!(
         project_view(&game_1, Seat::North).legal_actions,
-        vec![PlayerAction::Pon { tile: p(8) }, PlayerAction::Pass]
+        vec![PlayerAction::Pon { tile: t("8p") }, PlayerAction::Pass]
     );
     game_1
-        .apply_action(Seat::North, PlayerAction::Pon { tile: p(8) })
+        .apply_action(Seat::North, PlayerAction::Pon { tile: t("8p") })
         .unwrap();
     game_1
         .apply_action(
             Seat::North,
             PlayerAction::Discard {
-                tile: WEST_W,
+                tile: t("W"),
                 from_drawn: false,
             },
         )
@@ -1806,7 +1238,7 @@ fn slice6_passed_pon_lock_lifecycle() {
         .apply_action(
             Seat::East,
             PlayerAction::Discard {
-                tile: s(2),
+                tile: t("2s"),
                 from_drawn: true,
             },
         )
@@ -1814,14 +1246,15 @@ fn slice6_passed_pon_lock_lifecycle() {
     assert_eq!(east_2s.len(), 1);
     assert_eq!(
         project_view(&game_1, Seat::North).legal_actions,
-        vec![PlayerAction::Ron { tile: s(2) }, PlayerAction::Pass]
+        vec![PlayerAction::Ron { tile: t("2s") }, PlayerAction::Pass]
     );
     game_1
-        .apply_action(Seat::North, PlayerAction::Ron { tile: s(2) })
+        .apply_action(Seat::North, PlayerAction::Ron { tile: t("2s") })
         .unwrap();
 
     // Wall 2: Verify same-round Pon { 2s } is blocked BEFORE North draws.
-    let wall_2 = build_preset_wall(&east_14, &south_13, &west_13, &north_13, &[s(2)], &[]).unwrap();
+    let wall_2 =
+        build_preset_wall(&east_14, &south_13, &west_13, &north_13, &tiles("2s"), &[]).unwrap();
     let mut game_2 = Match::new(
         MatchMode::EastOnly,
         TuidaohuRuleset,
@@ -1833,7 +1266,7 @@ fn slice6_passed_pon_lock_lifecycle() {
         .apply_action(
             Seat::East,
             PlayerAction::Discard {
-                tile: s(2),
+                tile: t("2s"),
                 from_drawn: false,
             },
         )
@@ -1847,7 +1280,7 @@ fn slice6_passed_pon_lock_lifecycle() {
         .apply_action(
             Seat::South,
             PlayerAction::Discard {
-                tile: s(2),
+                tile: t("2s"),
                 from_drawn: true,
             },
         )
@@ -1864,7 +1297,7 @@ fn slice6_passed_pon_lock_lifecycle() {
         &south_13,
         &west_13,
         &north_13,
-        &[WHITE_D, WHITE_D, RED_D, s(2)],
+        &tiles("BBC 2s"),
         &[],
     )
     .unwrap();
@@ -1879,7 +1312,7 @@ fn slice6_passed_pon_lock_lifecycle() {
         .apply_action(
             Seat::East,
             PlayerAction::Discard {
-                tile: s(2),
+                tile: t("2s"),
                 from_drawn: false,
             },
         )
@@ -1887,40 +1320,28 @@ fn slice6_passed_pon_lock_lifecycle() {
     game_3
         .apply_action(Seat::North, PlayerAction::Pass)
         .unwrap();
-    game_3
-        .apply_action(
-            Seat::South,
-            PlayerAction::Discard {
-                tile: WHITE_D,
-                from_drawn: true,
-            },
-        )
-        .unwrap();
-    game_3
-        .apply_action(
-            Seat::West,
-            PlayerAction::Discard {
-                tile: WHITE_D,
-                from_drawn: true,
-            },
-        )
-        .unwrap();
-    game_3
-        .apply_action(
-            Seat::North,
-            PlayerAction::Discard {
-                tile: RED_D,
-                from_drawn: true,
-            },
-        )
-        .unwrap();
+    for (seat, tile) in [
+        (Seat::South, t("B")),
+        (Seat::West, t("B")),
+        (Seat::North, t("C")),
+    ] {
+        game_3
+            .apply_action(
+                seat,
+                PlayerAction::Discard {
+                    tile,
+                    from_drawn: true,
+                },
+            )
+            .unwrap();
+    }
 
     // East draws and discards 2s -> North IS offered Pon { 2s } again!
     let east_2s_again = game_3
         .apply_action(
             Seat::East,
             PlayerAction::Discard {
-                tile: s(2),
+                tile: t("2s"),
                 from_drawn: true,
             },
         )
@@ -1928,78 +1349,21 @@ fn slice6_passed_pon_lock_lifecycle() {
     assert_eq!(east_2s_again.len(), 1);
     assert_eq!(
         project_view(&game_3, Seat::North).legal_actions,
-        vec![PlayerAction::Pon { tile: s(2) }, PlayerAction::Pass]
+        vec![PlayerAction::Pon { tile: t("2s") }, PlayerAction::Pass]
     );
     game_3
-        .apply_action(Seat::North, PlayerAction::Pon { tile: s(2) })
+        .apply_action(Seat::North, PlayerAction::Pon { tile: t("2s") })
         .unwrap();
 }
 
 #[test]
 fn slice6_dual_ron_and_pon_offer_pon_does_not_lock_while_pass_locks_both() {
-    let east_14 = vec![
-        m(5),
-        m(9),
-        s(4),
-        s(5),
-        s(8),
-        p(1),
-        p(3),
-        p(9),
-        EAST_W,
-        SOUTH_W,
-        WEST_W,
-        NORTH_W,
-        GREEN_D,
-        WHITE_D,
-    ];
-    let south_13 = vec![
-        m(1),
-        m(2),
-        m(7),
-        m(8),
-        s(6),
-        s(7),
-        s(9),
-        p(2),
-        p(3),
-        p(8),
-        EAST_W,
-        SOUTH_W,
-        WHITE_D,
-    ];
-    let west_13 = vec![
-        m(1),
-        m(2),
-        m(7),
-        m(8),
-        s(4),
-        s(6),
-        s(8),
-        p(1),
-        p(2),
-        p(9),
-        WEST_W,
-        NORTH_W,
-        GREEN_D,
-    ];
-    let north_13 = vec![
-        m(4),
-        m(5),
-        m(5),
-        m(6),
-        s(1),
-        s(2),
-        s(3),
-        p(4),
-        p(5),
-        p(6),
-        RED_D,
-        RED_D,
-        RED_D,
-    ];
+    let east_14 = tiles("59m 458s 139p ESWNFB");
+    let south_13 = tiles("1278m 679s 238p ESB");
+    let west_13 = tiles("1278m 468s 129p WNF");
+    let north_13 = tiles("4556m 123s 456p CCC");
     let wall =
-        build_preset_wall(&east_14, &south_13, &west_13, &north_13, &[m(5), m(6)], &[]).unwrap();
+        build_preset_wall(&east_14, &south_13, &west_13, &north_13, &tiles("56m"), &[]).unwrap();
 
     // Case 1: Offered [Ron { 5m }, Pon { 5m }]; choosing Pon does NOT set 过水胡.
     let mut game_pon = Match::new(
@@ -2012,7 +1376,7 @@ fn slice6_dual_ron_and_pon_offer_pon_does_not_lock_while_pass_locks_both() {
         .apply_action(
             Seat::East,
             PlayerAction::Discard {
-                tile: m(5),
+                tile: t("5m"),
                 from_drawn: false,
             },
         )
@@ -2020,19 +1384,19 @@ fn slice6_dual_ron_and_pon_offer_pon_does_not_lock_while_pass_locks_both() {
     assert_eq!(
         project_view(&game_pon, Seat::North).legal_actions,
         vec![
-            PlayerAction::Ron { tile: m(5) },
-            PlayerAction::Pon { tile: m(5) },
+            PlayerAction::Ron { tile: t("5m") },
+            PlayerAction::Pon { tile: t("5m") },
             PlayerAction::Pass,
         ]
     );
     game_pon
-        .apply_action(Seat::North, PlayerAction::Pon { tile: m(5) })
+        .apply_action(Seat::North, PlayerAction::Pon { tile: t("5m") })
         .unwrap();
     game_pon
         .apply_action(
             Seat::North,
             PlayerAction::Discard {
-                tile: m(4),
+                tile: t("4m"),
                 from_drawn: false,
             },
         )
@@ -2042,7 +1406,7 @@ fn slice6_dual_ron_and_pon_offer_pon_does_not_lock_while_pass_locks_both() {
         .apply_action(
             Seat::East,
             PlayerAction::Discard {
-                tile: m(5),
+                tile: t("5m"),
                 from_drawn: true,
             },
         )
@@ -2051,17 +1415,17 @@ fn slice6_dual_ron_and_pon_offer_pon_does_not_lock_while_pass_locks_both() {
         .apply_action(
             Seat::South,
             PlayerAction::Discard {
-                tile: m(6),
+                tile: t("6m"),
                 from_drawn: true,
             },
         )
         .unwrap();
     assert_eq!(
         project_view(&game_pon, Seat::North).legal_actions,
-        vec![PlayerAction::Ron { tile: m(6) }, PlayerAction::Pass]
+        vec![PlayerAction::Ron { tile: t("6m") }, PlayerAction::Pass]
     );
     game_pon
-        .apply_action(Seat::North, PlayerAction::Ron { tile: m(6) })
+        .apply_action(Seat::North, PlayerAction::Ron { tile: t("6m") })
         .unwrap();
 
     // Case 2: Offered [Ron { 5m }, Pon { 5m }]; choosing Pass locks BOTH 过水胡 and 过水碰 for 5m.
@@ -2075,7 +1439,7 @@ fn slice6_dual_ron_and_pon_offer_pon_does_not_lock_while_pass_locks_both() {
         .apply_action(
             Seat::East,
             PlayerAction::Discard {
-                tile: m(5),
+                tile: t("5m"),
                 from_drawn: false,
             },
         )
@@ -2088,7 +1452,7 @@ fn slice6_dual_ron_and_pon_offer_pon_does_not_lock_while_pass_locks_both() {
         .apply_action(
             Seat::South,
             PlayerAction::Discard {
-                tile: m(5),
+                tile: t("5m"),
                 from_drawn: true,
             },
         )
@@ -2172,73 +1536,16 @@ impl Ruleset for ChiEnabledTuidaohuRuleset {
 
 #[test]
 fn custom_chi_ruleset_executes_chi_clears_passed_hu_lock_and_breaks_menqing() {
-    let east_14 = vec![
-        p(1),
-        s(4),
-        s(5),
-        s(6),
-        p(4),
-        p(5),
-        p(6),
-        EAST_W,
-        EAST_W,
-        NORTH_W,
-        NORTH_W,
-        GREEN_D,
-        GREEN_D,
-        WHITE_D,
-    ];
-    let south_13 = vec![
-        m(1),
-        m(2),
-        m(3),
-        s(1),
-        s(2),
-        s(3),
-        p(1),
-        p(2),
-        p(3),
-        RED_D,
-        RED_D,
-        m(9),
-        m(9),
-    ];
-    let west_13 = vec![
-        s(4),
-        s(5),
-        s(6),
-        s(7),
-        s(8),
-        s(9),
-        p(7),
-        p(8),
-        p(9),
-        EAST_W,
-        SOUTH_W,
-        WEST_W,
-        NORTH_W,
-    ];
-    let north_13 = vec![
-        m(4),
-        m(5),
-        m(6),
-        m(7),
-        m(8),
-        s(4),
-        s(5),
-        s(6),
-        p(4),
-        p(5),
-        p(6),
-        RED_D,
-        WHITE_D,
-    ];
+    let east_14 = tiles("456s 1456p EENNFFB");
+    let south_13 = tiles("12399m 123s 123p CC");
+    let west_13 = tiles("456789s 789p ESWN");
+    let north_13 = tiles("45678m 456s 456p CB");
     let wall = build_preset_wall(
         &east_14,
         &south_13,
         &west_13,
         &north_13,
-        &[WHITE_D, SOUTH_W, WEST_W, m(3), m(9)],
+        &tiles("B S W 39m"),
         &[],
     )
     .unwrap();
@@ -2255,33 +1562,27 @@ fn custom_chi_ruleset_executes_chi_clears_passed_hu_lock_and_breaks_menqing() {
     game.apply_action(
         Seat::East,
         PlayerAction::Discard {
-            tile: GREEN_D,
+            tile: t("F"),
             from_drawn: false,
         },
     )
     .unwrap();
-    game.apply_action(
-        Seat::South,
-        PlayerAction::Discard {
-            tile: WHITE_D,
-            from_drawn: true,
-        },
-    )
-    .unwrap();
-    game.apply_action(
-        Seat::West,
-        PlayerAction::Discard {
-            tile: SOUTH_W,
-            from_drawn: true,
-        },
-    )
-    .unwrap();
+    for (seat, tile) in [(Seat::South, t("B")), (Seat::West, t("S"))] {
+        game.apply_action(
+            seat,
+            PlayerAction::Discard {
+                tile,
+                from_drawn: true,
+            },
+        )
+        .unwrap();
+    }
 
-    // North discards RED_D; South is offered Ron + Pon and Passes -> sets passed_hu_lock.
+    // North discards C; South is offered Ron + Pon and Passes -> sets passed_hu_lock.
     game.apply_action(
         Seat::North,
         PlayerAction::Discard {
-            tile: RED_D,
+            tile: t("C"),
             from_drawn: false,
         },
     )
@@ -2289,18 +1590,18 @@ fn custom_chi_ruleset_executes_chi_clears_passed_hu_lock_and_breaks_menqing() {
     assert_eq!(
         project_view(&game, Seat::South).legal_actions,
         vec![
-            PlayerAction::Ron { tile: RED_D },
-            PlayerAction::Pon { tile: RED_D },
+            PlayerAction::Ron { tile: t("C") },
+            PlayerAction::Pon { tile: t("C") },
             PlayerAction::Pass,
         ]
     );
     game.apply_action(Seat::South, PlayerAction::Pass).unwrap();
 
-    // East draws m(3) and discards m(3) -> only South (next seat) is offered Chi.
+    // East draws 3m and discards 3m -> only South (next seat) is offered Chi.
     game.apply_action(
         Seat::East,
         PlayerAction::Discard {
-            tile: m(3),
+            tile: t("3m"),
             from_drawn: true,
         },
     )
@@ -2309,8 +1610,8 @@ fn custom_chi_ruleset_executes_chi_clears_passed_hu_lock_and_breaks_menqing() {
         project_view(&game, Seat::South).legal_actions,
         vec![
             PlayerAction::Chi {
-                tile: m(3),
-                with: [m(1), m(2)],
+                tile: t("3m"),
+                with: [t("1m"), t("2m")],
             },
             PlayerAction::Pass,
         ]
@@ -2324,16 +1625,16 @@ fn custom_chi_ruleset_executes_chi_clears_passed_hu_lock_and_breaks_menqing() {
         .apply_action(
             Seat::South,
             PlayerAction::Chi {
-                tile: m(3),
-                with: [m(1), m(2)],
+                tile: t("3m"),
+                with: [t("1m"), t("2m")],
             },
         )
         .unwrap();
     assert_eq!(chi_events.len(), 1);
     let meld_seq = chi_events[0].seq();
     let expected_meld = MeldView::Chi {
-        tiles: [m(1), m(2), m(3)],
-        called_tile: m(3),
+        tiles: [t("1m"), t("2m"), t("3m")],
+        called_tile: t("3m"),
         from_seat: Seat::East,
         seq: meld_seq,
     };
@@ -2350,22 +1651,7 @@ fn custom_chi_ruleset_executes_chi_clears_passed_hu_lock_and_breaks_menqing() {
     assert_eq!(south_view.phase, PublicPhase::Playing);
     assert_eq!(south_view.turn.active_seat, Some(Seat::South));
     assert_eq!(south_view.hand.drawn_tile, None);
-    assert_eq!(
-        south_view.hand.closed_tiles,
-        vec![
-            m(3),
-            m(9),
-            m(9),
-            s(1),
-            s(2),
-            s(3),
-            p(1),
-            p(2),
-            p(3),
-            RED_D,
-            RED_D
-        ]
-    );
+    assert_eq!(south_view.hand.closed_tiles, tiles("399m 123s 123p CC"));
     assert_eq!(south_view.seats[Seat::South.index()].hand_count, 11);
     assert_eq!(
         south_view.seats[Seat::South.index()].melds,
@@ -2391,12 +1677,12 @@ fn custom_chi_ruleset_executes_chi_clears_passed_hu_lock_and_breaks_menqing() {
         }
     )));
 
-    // South discards extra m(3); West draws and discards m(9).
+    // South discards extra 3m; West draws and discards 9m.
     // Chi cleared passed_hu_lock and broke 门前清 -> South wins BasicHu (0 fan, 1 point).
     game.apply_action(
         Seat::South,
         PlayerAction::Discard {
-            tile: m(3),
+            tile: t("3m"),
             from_drawn: false,
         },
     )
@@ -2404,7 +1690,7 @@ fn custom_chi_ruleset_executes_chi_clears_passed_hu_lock_and_breaks_menqing() {
     game.apply_action(
         Seat::West,
         PlayerAction::Discard {
-            tile: m(9),
+            tile: t("9m"),
             from_drawn: true,
         },
     )
@@ -2412,12 +1698,12 @@ fn custom_chi_ruleset_executes_chi_clears_passed_hu_lock_and_breaks_menqing() {
     assert_eq!(
         project_view(&game, Seat::South).legal_actions,
         vec![
-            PlayerAction::Ron { tile: m(9) },
-            PlayerAction::Pon { tile: m(9) },
+            PlayerAction::Ron { tile: t("9m") },
+            PlayerAction::Pon { tile: t("9m") },
             PlayerAction::Pass,
         ]
     );
-    game.apply_action(Seat::South, PlayerAction::Ron { tile: m(9) })
+    game.apply_action(Seat::South, PlayerAction::Ron { tile: t("9m") })
         .unwrap();
 
     let settled = project_view(&game, Seat::South).last_settlement.unwrap();
@@ -2425,8 +1711,8 @@ fn custom_chi_ruleset_executes_chi_clears_passed_hu_lock_and_breaks_menqing() {
     assert_eq!(
         settled.revealed_hands[Seat::South.index()].melds,
         vec![RevealedMeld::Chi {
-            tiles: [m(1), m(2), m(3)],
-            called_tile: m(3),
+            tiles: [t("1m"), t("2m"), t("3m")],
+            called_tile: t("3m"),
             from_seat: Seat::East,
             seq: meld_seq,
         }]
@@ -2438,7 +1724,7 @@ fn custom_chi_ruleset_executes_chi_clears_passed_hu_lock_and_breaks_menqing() {
             winning_tile,
         } => {
             assert_eq!(*discarder, Some(Seat::West));
-            assert_eq!(*winning_tile, m(9));
+            assert_eq!(*winning_tile, t("9m"));
             assert_eq!(winners.len(), 1);
             assert_eq!(winners[0].seat, Seat::South);
             assert_eq!(winners[0].win_kind, WinKind::Ron);
@@ -2459,67 +1745,10 @@ fn custom_chi_ruleset_executes_chi_clears_passed_hu_lock_and_breaks_menqing() {
 
 #[test]
 fn custom_chi_ruleset_arbitrates_hu_over_pon_over_chi_and_sorts_chi_tiles() {
-    let east_14 = vec![
-        m(5),
-        s(1),
-        s(2),
-        s(3),
-        p(1),
-        p(2),
-        p(3),
-        EAST_W,
-        EAST_W,
-        SOUTH_W,
-        SOUTH_W,
-        WEST_W,
-        WEST_W,
-        NORTH_W,
-    ];
-    let south_13 = vec![
-        m(4),
-        m(6),
-        s(4),
-        s(5),
-        s(6),
-        p(4),
-        p(5),
-        p(6),
-        RED_D,
-        RED_D,
-        GREEN_D,
-        GREEN_D,
-        NORTH_W,
-    ];
-    let west_13 = vec![
-        m(5),
-        m(5),
-        m(8),
-        m(9),
-        s(7),
-        s(8),
-        s(9),
-        p(7),
-        p(8),
-        p(9),
-        WHITE_D,
-        WHITE_D,
-        EAST_W,
-    ];
-    let north_13 = vec![
-        m(3),
-        m(4),
-        s(1),
-        s(2),
-        s(3),
-        p(1),
-        p(2),
-        p(3),
-        p(9),
-        p(9),
-        p(9),
-        SOUTH_W,
-        SOUTH_W,
-    ];
+    let east_14 = tiles("5m 123s 123p EESSWWN");
+    let south_13 = tiles("46m 456s 456p CCFFN");
+    let west_13 = tiles("5589m 789s 789p BBE");
+    let north_13 = tiles("34m 123s 123999p SS");
     let wall = build_preset_wall(&east_14, &south_13, &west_13, &north_13, &[], &[]).unwrap();
 
     // 1. Hu > Pon > Chi even when Chi (South) and Pon (West) submit before Ron (North).
@@ -2533,7 +1762,7 @@ fn custom_chi_ruleset_arbitrates_hu_over_pon_over_chi_and_sorts_chi_tiles() {
         .apply_action(
             Seat::East,
             PlayerAction::Discard {
-                tile: m(5),
+                tile: t("5m"),
                 from_drawn: false,
             },
         )
@@ -2542,36 +1771,36 @@ fn custom_chi_ruleset_arbitrates_hu_over_pon_over_chi_and_sorts_chi_tiles() {
         project_view(&game_hu, Seat::South).legal_actions,
         vec![
             PlayerAction::Chi {
-                tile: m(5),
-                with: [m(4), m(6)],
+                tile: t("5m"),
+                with: [t("4m"), t("6m")],
             },
             PlayerAction::Pass,
         ]
     );
     assert_eq!(
         project_view(&game_hu, Seat::West).legal_actions,
-        vec![PlayerAction::Pon { tile: m(5) }, PlayerAction::Pass]
+        vec![PlayerAction::Pon { tile: t("5m") }, PlayerAction::Pass]
     );
     assert_eq!(
         project_view(&game_hu, Seat::North).legal_actions,
-        vec![PlayerAction::Ron { tile: m(5) }, PlayerAction::Pass]
+        vec![PlayerAction::Ron { tile: t("5m") }, PlayerAction::Pass]
     );
     assert!(game_hu
         .apply_action(
             Seat::South,
             PlayerAction::Chi {
-                tile: m(5),
-                with: [m(4), m(6)],
+                tile: t("5m"),
+                with: [t("4m"), t("6m")],
             },
         )
         .unwrap()
         .is_empty());
     assert!(game_hu
-        .apply_action(Seat::West, PlayerAction::Pon { tile: m(5) })
+        .apply_action(Seat::West, PlayerAction::Pon { tile: t("5m") })
         .unwrap()
         .is_empty());
     game_hu
-        .apply_action(Seat::North, PlayerAction::Ron { tile: m(5) })
+        .apply_action(Seat::North, PlayerAction::Ron { tile: t("5m") })
         .unwrap();
     let hu_settled = project_view(&game_hu, Seat::North).last_settlement.unwrap();
     match &hu_settled.outcome {
@@ -2599,7 +1828,7 @@ fn custom_chi_ruleset_arbitrates_hu_over_pon_over_chi_and_sorts_chi_tiles() {
         .apply_action(
             Seat::East,
             PlayerAction::Discard {
-                tile: m(5),
+                tile: t("5m"),
                 from_drawn: false,
             },
         )
@@ -2609,7 +1838,7 @@ fn custom_chi_ruleset_arbitrates_hu_over_pon_over_chi_and_sorts_chi_tiles() {
         .unwrap()
         .is_empty());
     let pon_ev = game_pon_early
-        .apply_action(Seat::West, PlayerAction::Pon { tile: m(5) })
+        .apply_action(Seat::West, PlayerAction::Pon { tile: t("5m") })
         .unwrap();
     assert_eq!(pon_ev.len(), 1);
     assert_eq!(
@@ -2619,7 +1848,7 @@ fn custom_chi_ruleset_arbitrates_hu_over_pon_over_chi_and_sorts_chi_tiles() {
     assert_eq!(
         project_view(&game_pon_early, Seat::South).seats[Seat::West.index()].melds,
         vec![MeldView::Pon {
-            tile: m(5),
+            tile: t("5m"),
             from_seat: Seat::East,
             seq: pon_ev[0].seq(),
         }]
@@ -2627,11 +1856,11 @@ fn custom_chi_ruleset_arbitrates_hu_over_pon_over_chi_and_sorts_chi_tiles() {
     assert!(project_view(&game_pon_early, Seat::South)
         .hand
         .closed_tiles
-        .contains(&m(4)));
+        .contains(&t("4m")));
     assert!(project_view(&game_pon_early, Seat::South)
         .hand
         .closed_tiles
-        .contains(&m(6)));
+        .contains(&t("6m")));
 
     // 3. Pon > Chi when South submits Chi before West submits Pon.
     let mut game_pon_after_chi = Match::new(
@@ -2644,7 +1873,7 @@ fn custom_chi_ruleset_arbitrates_hu_over_pon_over_chi_and_sorts_chi_tiles() {
         .apply_action(
             Seat::East,
             PlayerAction::Discard {
-                tile: m(5),
+                tile: t("5m"),
                 from_drawn: false,
             },
         )
@@ -2657,14 +1886,14 @@ fn custom_chi_ruleset_arbitrates_hu_over_pon_over_chi_and_sorts_chi_tiles() {
         .apply_action(
             Seat::South,
             PlayerAction::Chi {
-                tile: m(5),
-                with: [m(4), m(6)],
+                tile: t("5m"),
+                with: [t("4m"), t("6m")],
             },
         )
         .unwrap()
         .is_empty());
     let pon_after_ev = game_pon_after_chi
-        .apply_action(Seat::West, PlayerAction::Pon { tile: m(5) })
+        .apply_action(Seat::West, PlayerAction::Pon { tile: t("5m") })
         .unwrap();
     assert_eq!(pon_after_ev.len(), 1);
     assert_eq!(
@@ -2674,7 +1903,7 @@ fn custom_chi_ruleset_arbitrates_hu_over_pon_over_chi_and_sorts_chi_tiles() {
         Some(Seat::West)
     );
 
-    // 4. Chi wins when Hu and Pon seats both Pass, and sorts [m(4), m(5), m(6)] with called_tile = m(5).
+    // 4. Chi wins when Hu and Pon seats both Pass, and sorts [4m, 5m, 6m] with called_tile = 5m.
     let mut game_chi = Match::new(
         MatchMode::EastOnly,
         ChiEnabledTuidaohuRuleset,
@@ -2685,7 +1914,7 @@ fn custom_chi_ruleset_arbitrates_hu_over_pon_over_chi_and_sorts_chi_tiles() {
         .apply_action(
             Seat::East,
             PlayerAction::Discard {
-                tile: m(5),
+                tile: t("5m"),
                 from_drawn: false,
             },
         )
@@ -2702,8 +1931,8 @@ fn custom_chi_ruleset_arbitrates_hu_over_pon_over_chi_and_sorts_chi_tiles() {
         .apply_action(
             Seat::South,
             PlayerAction::Chi {
-                tile: m(5),
-                with: [m(4), m(6)],
+                tile: t("5m"),
+                with: [t("4m"), t("6m")],
             },
         )
         .unwrap();
@@ -2713,13 +1942,13 @@ fn custom_chi_ruleset_arbitrates_hu_over_pon_over_chi_and_sorts_chi_tiles() {
     assert_eq!(
         south_after_chi.seats[Seat::South.index()].melds,
         vec![MeldView::Chi {
-            tiles: [m(4), m(5), m(6)],
-            called_tile: m(5),
+            tiles: [t("4m"), t("5m"), t("6m")],
+            called_tile: t("5m"),
             from_seat: Seat::East,
             seq: chi_ev[0].seq(),
         }]
     );
-    assert!(!south_after_chi.hand.closed_tiles.contains(&m(4)));
-    assert!(!south_after_chi.hand.closed_tiles.contains(&m(5)));
-    assert!(!south_after_chi.hand.closed_tiles.contains(&m(6)));
+    assert!(!south_after_chi.hand.closed_tiles.contains(&t("4m")));
+    assert!(!south_after_chi.hand.closed_tiles.contains(&t("5m")));
+    assert!(!south_after_chi.hand.closed_tiles.contains(&t("6m")));
 }

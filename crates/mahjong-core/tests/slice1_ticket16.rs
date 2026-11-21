@@ -1,9 +1,25 @@
+mod common;
+
 use mahjong_core::{
     build_preset_wall, project_event, project_view, AnyRuleset, HandOutcome, Match, MatchError,
     MatchMode, PlayerAction, PlayerEvent, PlayerEventKind, PlayerView, PresetWallProvider,
     PublicPhase, RuleProfile, Seat, SeededWallProvider, Suit, Tile, TuidaohuRuleset, Wind,
 };
 use ts_rs::TS;
+
+#[test]
+fn common_tile_notation_parses_all_34_kinds() {
+    let mut all = common::tiles("123456789m 123456789s 123456789p ESWNCFB");
+    let expected: Vec<Tile> = Tile::all().collect();
+    assert_eq!(all, expected);
+
+    assert_eq!(common::tiles("1234567z"), common::tiles("ESWNCFB"));
+    assert_eq!(common::tile("5m"), t(4));
+    assert_eq!(common::tile("C"), t(31));
+    assert_eq!(common::tile("7z"), t(33));
+
+    all.clear();
+}
 
 #[test]
 fn slice1_tile_encoding_and_standard_deck_invariants() {

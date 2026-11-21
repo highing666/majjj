@@ -1,3 +1,6 @@
+// `ts-rs` drift verification legitimately compares generated files on disk inside a temp dir.
+#![allow(clippy::disallowed_methods, clippy::disallowed_types)]
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};

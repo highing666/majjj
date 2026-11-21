@@ -7,3 +7,6 @@ license.workspace = true
 [dependencies]
 mahjong-ai = { path = "../mahjong-ai" }
 mahjong-core = { path = "../mahjong-core" }
+
+[lints]
+workspace = true

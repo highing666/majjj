@@ -17,3 +17,8 @@ rand_chacha = "0.3"
 rand_core = "0.6"
 thiserror = "2"
 ts-rs = { version = "10", features = ["serde-compat"] }
+
+[workspace.lints.clippy]
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
