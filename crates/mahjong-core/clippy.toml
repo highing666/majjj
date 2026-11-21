@@ -1,0 +1,18 @@
+disallowed-types = [
+    { path = "std::time::Instant", reason = "mahjong-core must have zero clock dependencies" },
+    { path = "std::time::SystemTime", reason = "mahjong-core must have zero clock dependencies" },
+    { path = "std::fs::File", reason = "mahjong-core must have zero filesystem I/O" },
+    { path = "std::net::TcpListener", reason = "mahjong-core must have zero network I/O" },
+    { path = "std::net::TcpStream", reason = "mahjong-core must have zero network I/O" },
+    { path = "std::net::UdpSocket", reason = "mahjong-core must have zero network I/O" },
+]
+
+disallowed-methods = [
+    { path = "std::fs::read", reason = "mahjong-core must have zero filesystem I/O" },
+    { path = "std::fs::read_to_string", reason = "mahjong-core must have zero filesystem I/O" },
+    { path = "std::fs::read_dir", reason = "mahjong-core must have zero filesystem I/O" },
+    { path = "std::fs::write", reason = "mahjong-core must have zero filesystem I/O" },
+    { path = "std::fs::create_dir_all", reason = "mahjong-core must have zero filesystem I/O" },
+    { path = "std::fs::remove_dir_all", reason = "mahjong-core must have zero filesystem I/O" },
+    { path = "std::thread::sleep", reason = "mahjong-core must be pure synchronous without delays" },
+]
