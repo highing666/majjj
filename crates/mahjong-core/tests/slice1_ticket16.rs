@@ -475,6 +475,9 @@ fn slice2_tsumogiri_and_shouqie_including_empty_shouqie_recording() {
     assert_eq!(south_after.hand.drawn_tile, None);
     assert!(south_after.seats[Seat::South.index()].river[0].is_tsumogiri);
 
+    // North holds 1p*3 + 2p and sees a Ron window on South's 3p (t(20)); pass so West draws 14.
+    game.apply_action(Seat::North, PlayerAction::Pass).unwrap();
+
     // 3. West has 14 in closed_tiles AND drawn_tile == Some(14) -> both from_drawn flags are legal!
     let west_view = project_view(&game, Seat::West);
     assert!(west_view.legal_actions.contains(&PlayerAction::Discard {
@@ -555,6 +558,21 @@ fn play_current_hand_to_settlement<R: mahjong_core::Ruleset, W: mahjong_core::Wa
         let probe = project_view(game, Seat::East);
         if probe.phase != PublicPhase::Playing {
             break;
+        }
+        if let Some(reactor) = Seat::ALL.into_iter().find(|&s| {
+            project_view(game, s)
+                .legal_actions
+                .contains(&PlayerAction::Pass)
+        }) {
+            let emitted = game
+                .apply_action(reactor, PlayerAction::Pass)
+                .expect("legal Pass in reaction window");
+            for ev in &emitted {
+                assert_eq!(ev.seq(), last_seq + 1, "seq must increase strictly by 1");
+                last_seq = ev.seq();
+            }
+            all_events.extend(emitted);
+            continue;
         }
         let active = probe.turn.active_seat.expect("active seat during Playing");
         let active_view = project_view(game, active);
@@ -1037,9 +1055,17 @@ fn slice4_deterministic_u64_seed_replay_is_identical_across_runs() {
             let probe = project_view(&game, Seat::East);
             match probe.phase {
                 PublicPhase::Playing => {
-                    let active = probe.turn.active_seat.unwrap();
-                    let action = project_view(&game, active).legal_actions[0];
-                    let emitted = game.apply_action(active, action).unwrap();
+                    let (actor, action) = Seat::ALL
+                        .into_iter()
+                        .find_map(|s| {
+                            project_view(&game, s)
+                                .legal_actions
+                                .first()
+                                .copied()
+                                .map(|action| (s, action))
+                        })
+                        .expect("at least one seat has legal actions during Playing");
+                    let emitted = game.apply_action(actor, action).unwrap();
                     for ev in &emitted {
                         events.push(Seat::ALL.map(|s| project_event(ev, s)));
                     }
