@@ -7,7 +7,7 @@ ifeq ($(UNAME_S),Darwin)
   endif
 endif
 
-.PHONY: fmt clippy test check-boundaries check-glossary check ts-bindings install-hooks
+.PHONY: fmt clippy test test-server check-boundaries check-web-safeguards check-glossary check check-sandbox ts-bindings install-hooks web-install web-typecheck web-test web-build
 
 fmt:
 	cargo fmt --all -- --check
@@ -15,11 +15,17 @@ fmt:
 clippy:
 	cargo clippy --workspace --all-targets -- -D warnings
 
-test:
+test: web-build
 	cargo test --workspace
+
+test-server: web-build
+	cargo test -p mahjong-server
 
 check-boundaries:
 	./scripts/check-core-boundaries.sh
+
+check-web-safeguards:
+	./scripts/check-web-safeguards.sh
 
 check-glossary:
 	./scripts/check-glossary.sh
@@ -27,8 +33,23 @@ check-glossary:
 check:
 	./scripts/check.sh
 
+check-sandbox:
+	./scripts/check.sh --sandbox
+
 ts-bindings:
-	UPDATE_TS_BINDINGS=1 cargo test -p mahjong-core --test ts_contract_drift
+	UPDATE_TS_BINDINGS=1 cargo test -p mahjong-server --test ts_contract_drift
 
 install-hooks:
 	git config core.hooksPath .githooks
+
+web-install:
+	npm ci --prefix web
+
+web-typecheck:
+	npm --prefix web run typecheck
+
+web-test:
+	npm --prefix web test
+
+web-build:
+	npm --prefix web run build

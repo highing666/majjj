@@ -1,0 +1,16 @@
+disallowed-types = [
+    { path = "std::fs::File", reason = "mahjong-ai must have zero filesystem I/O" },
+    { path = "std::net::TcpListener", reason = "mahjong-ai must have zero network I/O" },
+    { path = "std::net::TcpStream", reason = "mahjong-ai must have zero network I/O" },
+    { path = "std::net::UdpSocket", reason = "mahjong-ai must have zero network I/O" },
+]
+
+disallowed-methods = [
+    { path = "std::fs::read", reason = "mahjong-ai must have zero filesystem I/O" },
+    { path = "std::fs::read_to_string", reason = "mahjong-ai must have zero filesystem I/O" },
+    { path = "std::fs::read_dir", reason = "mahjong-ai must have zero filesystem I/O" },
+    { path = "std::fs::write", reason = "mahjong-ai must have zero filesystem I/O" },
+    { path = "std::fs::create_dir_all", reason = "mahjong-ai must have zero filesystem I/O" },
+    { path = "std::fs::remove_dir_all", reason = "mahjong-ai must have zero filesystem I/O" },
+    { path = "std::thread::sleep", reason = "mahjong-ai must be pure synchronous without delays" },
+]
