@@ -7,7 +7,7 @@ ifeq ($(UNAME_S),Darwin)
   endif
 endif
 
-.PHONY: fmt clippy test check-boundaries check-glossary check ts-bindings install-hooks
+.PHONY: fmt clippy test check-boundaries check-glossary check ts-bindings install-hooks web-install web-typecheck web-test web-build
 
 fmt:
 	cargo fmt --all -- --check
@@ -32,3 +32,15 @@ ts-bindings:
 
 install-hooks:
 	git config core.hooksPath .githooks
+
+web-install:
+	npm ci --prefix web
+
+web-typecheck:
+	npm --prefix web run typecheck
+
+web-test:
+	npm --prefix web test
+
+web-build:
+	npm --prefix web run build

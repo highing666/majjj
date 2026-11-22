@@ -9,8 +9,8 @@ forbidden_zh='房间|牌山|牌堆|舍牌区|弃牌|副露|碰牌|点杠|直杠|
 forbidden_rob='抢杠([^胡]|$)'
 forbidden_en='(^|[^A-Za-z0-9_])(Room|Fulu)([^A-Za-z0-9_]|$)'
 
-if grep -rnE "$forbidden_zh|$forbidden_rob|$forbidden_en" crates/; then
-  echo "ERROR: forbidden GLOSSARY.md synonym found under crates/" >&2
+if grep -rnE "$forbidden_zh|$forbidden_rob|$forbidden_en" crates/ web/src/ web/index.html; then
+  echo "ERROR: forbidden GLOSSARY.md synonym found under crates/, web/src/, or web/index.html" >&2
   exit 1
 fi
 
