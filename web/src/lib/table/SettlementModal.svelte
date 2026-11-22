@@ -5,8 +5,14 @@
   import type { Seat } from "../protocol/generated/Seat";
   import type { SeatInfo } from "../protocol/generated/SeatInfo";
   import type { WinKind } from "../protocol/generated/WinKind";
+  import {
+    ALL_SEATS,
+    seatIndex,
+    seatLabel,
+    seatShortWind,
+  } from "../protocol/seats";
   import TileBadge from "./TileBadge.svelte";
-  import { formatRoundTitle, getTileLabel, seatLabel } from "./tiles";
+  import { formatRoundTitle, getTileLabel } from "./tiles";
   import { buildRevealedMeldItems, formatScoreDelta } from "./viewModel";
 
   interface Props {
@@ -37,10 +43,8 @@
     onRequestEndFreeTable,
   }: Props = $props();
 
-  const SEAT_RING: [Seat, Seat, Seat, Seat] = ["East", "South", "West", "North"];
-
   function seatName(seat: Seat): string {
-    const idx = SEAT_RING.indexOf(seat);
+    const idx = seatIndex(seat);
     const info = seats[idx];
     const nickname =
       info?.nickname || (info?.kind === "Ai" ? `AI ${idx + 1}` : "");
@@ -81,7 +85,7 @@
   });
 
   const viewerIndex = $derived(
-    yourSeat !== null ? SEAT_RING.indexOf(yourSeat) : -1,
+    yourSeat !== null ? seatIndex(yourSeat) : -1,
   );
   const viewerReady = $derived(
     viewerIndex >= 0 && readySeats !== null ? readySeats[viewerIndex] : false,
@@ -164,8 +168,8 @@
                 {kongKindLabel(kt.kind)} · {getTileLabel(kt.tile)}（{seatName(kt.actor)}{kt.from_seat ? ` ← ${seatLabel(kt.from_seat)}` : ""}）
               </span>
               <span class="kong-deltas">
-                {#each SEAT_RING as s, i (s)}
-                  <span>{seatLabel(s).slice(0, 1)}{formatScoreDelta(kt.score_deltas[i])}</span>
+                {#each ALL_SEATS as s, i (s)}
+                  <span>{seatShortWind(s)}{formatScoreDelta(kt.score_deltas[i])}</span>
                 {/each}
               </span>
             </li>

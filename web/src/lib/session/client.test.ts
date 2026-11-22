@@ -3,14 +3,12 @@ import type { ClientMessage } from "../protocol/generated/ClientMessage";
 import type { LobbyConfig } from "../protocol/generated/LobbyConfig";
 import type { PlayerView } from "../protocol/generated/PlayerView";
 import type { PublicSeatView } from "../protocol/generated/PublicSeatView";
-import type { Seat } from "../protocol/generated/Seat";
 import type { SeatInfo } from "../protocol/generated/SeatInfo";
 import type { ServerMessage } from "../protocol/generated/ServerMessage";
 import type { TableSnapshot } from "../protocol/generated/TableSnapshot";
+import { ALL_SEATS } from "../protocol/seats";
 import { createTableClient, type WebSocketLike } from "./client";
 import { createMemoryStorage } from "./storage";
-
-const ALL_SEATS: [Seat, Seat, Seat, Seat] = ["East", "South", "West", "North"];
 
 class MockWebSocket implements WebSocketLike {
   readyState = 0; // CONNECTING

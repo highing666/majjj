@@ -315,8 +315,25 @@ impl TableSession {
             if exclude_conn_id == Some(id) {
                 continue;
             }
-            let _ = conn.tx.send(OutboundSignal::Message(Box::new(msg.clone())));
+            Self::send_to(&conn.tx, msg.clone());
         }
+    }
+
+    fn require_seated_human(
+        &self,
+        conn_id: u64,
+        action_desc: &str,
+    ) -> Option<(Seat, mpsc::UnboundedSender<OutboundSignal>)> {
+        let conn = self.connections.get(&conn_id)?;
+        let Some(seat) = conn.seat else {
+            Self::send_error(&conn.tx, format!("must join a seat before {action_desc}"));
+            return None;
+        };
+        if self.seats[seat.index()].info.kind != SeatKind::Human {
+            Self::send_error(&conn.tx, format!("only a seated human can {action_desc}"));
+            return None;
+        }
+        Some((seat, conn.tx.clone()))
     }
 
     fn send_to(tx: &mpsc::UnboundedSender<OutboundSignal>, msg: ServerMessage) {
@@ -533,16 +550,12 @@ impl TableSession {
     }
 
     fn handle_update_lobby_config(&mut self, conn_id: u64, next_config: LobbyConfig) {
-        let Some(conn) = self.connections.get(&conn_id) else {
+        let Some((_, tx)) = self.require_seated_human(conn_id, "updating lobby config") else {
             return;
         };
-        if conn.seat.is_none() {
-            Self::send_error(&conn.tx, "must join a seat before updating lobby config");
-            return;
-        }
         if self.phase == TablePhase::InMatch {
             Self::send_error(
-                &conn.tx,
+                &tx,
                 "cannot update lobby config while a match is in progress",
             );
             return;
@@ -552,11 +565,10 @@ impl TableSession {
     }
 
     fn handle_set_pace(&mut self, conn_id: u64, pace: crate::protocol::TablePace) {
-        let Some(conn) = self.connections.get(&conn_id) else {
-            return;
-        };
-        if conn.seat.is_none() {
-            Self::send_error(&conn.tx, "must join a seat before changing table pace");
+        if self
+            .require_seated_human(conn_id, "changing table pace")
+            .is_none()
+        {
             return;
         }
         self.config.pace = pace;
@@ -564,19 +576,11 @@ impl TableSession {
     }
 
     fn handle_start_match(&mut self, conn_id: u64) {
-        let Some(conn_tx) = self.connections.get(&conn_id).map(|c| c.tx.clone()) else {
-            return;
-        };
-        let Some(caller_seat) = self.connections.get(&conn_id).and_then(|c| c.seat) else {
-            Self::send_error(&conn_tx, "must join a seat before starting a match");
+        let Some((_, conn_tx)) = self.require_seated_human(conn_id, "starting a match") else {
             return;
         };
         if self.phase == TablePhase::InMatch {
             Self::send_error(&conn_tx, "match is already in progress");
-            return;
-        }
-        if self.seats[caller_seat.index()].info.kind != SeatKind::Human {
-            Self::send_error(&conn_tx, "only a seated human can start a match");
             return;
         }
 
@@ -724,19 +728,15 @@ impl TableSession {
         client_action_id: String,
         action: PlayerAction,
     ) {
-        let Some(conn) = self.connections.get(&conn_id).cloned() else {
+        let Some((seat, tx)) = self.require_seated_human(conn_id, "submitting actions") else {
             return;
         };
         if self.phase != TablePhase::InMatch {
-            Self::send_error(&conn.tx, "can only submit actions during an active match");
-            return;
-        }
-        let Some(seat) = conn.seat else {
-            Self::send_error(&conn.tx, "must join a seat before submitting actions");
-            return;
-        };
-        if self.seats[seat.index()].info.kind != SeatKind::Human {
-            Self::send_error(&conn.tx, "seat is not controlled by a human");
+            Self::send_action_rejected(
+                &tx,
+                "can only submit actions during an active match",
+                self.seq,
+            );
             return;
         }
         if client_action_id.trim().is_empty() {
@@ -744,12 +744,12 @@ impl TableSession {
                 .active_match
                 .as_ref()
                 .map_or(self.seq, |m| m.game.seq());
-            Self::send_action_rejected(&conn.tx, "client_action_id must not be empty", current_seq);
+            Self::send_action_rejected(&tx, "client_action_id must not be empty", current_seq);
             return;
         }
 
         let Some(active) = self.active_match.as_ref() else {
-            Self::send_error(&conn.tx, "no active match");
+            Self::send_action_rejected(&tx, "no active match", self.seq);
             return;
         };
         if active
@@ -762,7 +762,7 @@ impl TableSession {
         let current_seq = active.game.seq();
         if expected_seq != current_seq {
             Self::send_action_rejected(
-                &conn.tx,
+                &tx,
                 format!("expected seq {expected_seq}, but current seq is {current_seq}"),
                 current_seq,
             );
@@ -771,14 +771,14 @@ impl TableSession {
 
         if matches!(action, PlayerAction::EndMatch) && self.online_humans() >= 2 {
             Self::send_action_rejected(
-                &conn.tx,
+                &tx,
                 "cannot end FreeTable directly while multiple humans are online; use RequestEndFreeTable",
                 current_seq,
             );
             return;
         }
 
-        self.apply_match_step(seat, action, Some((conn.tx, client_action_id)));
+        self.apply_match_step(seat, action, Some((tx, client_action_id)));
     }
 
     fn apply_match_step(
@@ -869,29 +869,24 @@ impl TableSession {
     }
 
     fn auto_confirm_ai_between_hands(&mut self, emitted: &mut Vec<RecordedEvent>) {
-        let Some(active) = self.active_match.as_mut() else {
+        let Some(match_id) = self.active_match.as_ref().map(|a| a.match_id) else {
             return;
         };
-        let match_id = active.match_id;
         for seat in Seat::ALL {
             if self.seats[seat.index()].info.kind != SeatKind::Ai {
                 continue;
             }
-            let view = active.game.project_view(seat);
+            let Some(view) = self
+                .active_match
+                .as_ref()
+                .map(|a| a.game.project_view(seat))
+            else {
+                return;
+            };
             if !view.legal_actions.contains(&PlayerAction::ConfirmNextHand) {
                 continue;
             }
-            let ctx = DecisionContext {
-                difficulty: self.seats[seat.index()]
-                    .info
-                    .ai_difficulty
-                    .unwrap_or(self.config.ai_difficulty),
-                style: self.seats[seat.index()]
-                    .info
-                    .ai_style
-                    .unwrap_or(AiStyle::Balanced),
-                budget: DecisionBudget::default(),
-            };
+            let ctx = self.ai_decision_context(seat);
             let step_seed = derive_ai_step_seed(self.ai_base_seed, match_id, view.seq, seat);
             let mut rng = ChaCha8Rng::seed_from_u64(step_seed);
             let decided = mahjong_ai::decide(&view, &ctx, &mut rng);
@@ -900,8 +895,10 @@ impl TableSession {
             } else {
                 decided
             };
-            if let Ok(mut more) = active.game.apply_action(seat, action) {
-                emitted.append(&mut more);
+            if let Some(active) = self.active_match.as_mut() {
+                if let Ok(mut more) = active.game.apply_action(seat, action) {
+                    emitted.append(&mut more);
+                }
             }
         }
     }
@@ -994,19 +991,11 @@ impl TableSession {
     }
 
     fn handle_return_to_lobby(&mut self, conn_id: u64) {
-        let Some(conn) = self.connections.get(&conn_id).cloned() else {
+        let Some((_, tx)) = self.require_seated_human(conn_id, "returning to lobby") else {
             return;
         };
         if self.phase != TablePhase::Finished {
-            Self::send_error(&conn.tx, "can only return to lobby when match is Finished");
-            return;
-        }
-        let Some(seat) = conn.seat else {
-            Self::send_error(&conn.tx, "must be seated to return to lobby");
-            return;
-        };
-        if self.seats[seat.index()].info.kind != SeatKind::Human {
-            Self::send_error(&conn.tx, "only a seated human can return to lobby");
+            Self::send_error(&tx, "can only return to lobby when match is Finished");
             return;
         }
         self.reset_match_to_lobby();
@@ -1037,31 +1026,37 @@ impl TableSession {
         }
     }
 
-    fn handle_request_destructive_op(&mut self, conn_id: u64, kind: DestructiveOpKind) {
-        let Some(conn) = self.connections.get(&conn_id).cloned() else {
-            return;
-        };
-        let Some(seat) = conn.seat else {
-            Self::send_error(&conn.tx, "must be seated to request this operation");
-            return;
-        };
-        if self.seats[seat.index()].info.kind != SeatKind::Human {
-            Self::send_error(&conn.tx, "only a seated human can request this operation");
-            return;
+    fn resolve_or_update_pending_op(&mut self, op: PendingDestructiveOp, actor_on_complete: Seat) {
+        if op
+            .required_seats
+            .iter()
+            .all(|req| op.confirmed_seats.contains(req))
+        {
+            self.execute_destructive_op(op.kind, actor_on_complete);
+        } else {
+            self.pending_destructive_op = Some(op);
+            self.broadcast_all_snapshots();
         }
+    }
+
+    fn handle_request_destructive_op(&mut self, conn_id: u64, kind: DestructiveOpKind) {
+        let Some((seat, tx)) = self.require_seated_human(conn_id, "requesting this operation")
+        else {
+            return;
+        };
         if self.phase != TablePhase::InMatch {
-            Self::send_error(&conn.tx, "destructive table request is only valid InMatch");
+            Self::send_error(&tx, "destructive table request is only valid InMatch");
             return;
         }
         if kind == DestructiveOpKind::EndFreeTable && !self.is_end_free_table_allowed() {
             Self::send_error(
-                &conn.tx,
+                &tx,
                 "RequestEndFreeTable is only valid during BetweenHands in FreeTable mode",
             );
             return;
         }
         if self.pending_destructive_op.is_some() {
-            Self::send_error(&conn.tx, "another confirmation request is already pending");
+            Self::send_error(&tx, "another confirmation request is already pending");
             return;
         }
 
@@ -1082,29 +1077,22 @@ impl TableSession {
     }
 
     fn handle_confirm_destructive_op(&mut self, conn_id: u64, op_id: String, accept: bool) {
-        let Some(conn) = self.connections.get(&conn_id).cloned() else {
+        let Some((seat, tx)) = self.require_seated_human(conn_id, "confirming this operation")
+        else {
             return;
         };
-        let Some(seat) = conn.seat else {
-            Self::send_error(&conn.tx, "must be seated to confirm this operation");
-            return;
-        };
-        if self.seats[seat.index()].info.kind != SeatKind::Human {
-            Self::send_error(&conn.tx, "only a seated human can confirm this operation");
-            return;
-        }
         let Some(mut op) = self.pending_destructive_op.take() else {
-            Self::send_error(&conn.tx, "no pending destructive operation");
+            Self::send_error(&tx, "no pending destructive operation");
             return;
         };
         if op.op_id != op_id {
             self.pending_destructive_op = Some(op);
-            Self::send_error(&conn.tx, "destructive operation id does not match");
+            Self::send_error(&tx, "destructive operation id does not match");
             return;
         }
         if !op.required_seats.contains(&seat) {
             self.pending_destructive_op = Some(op);
-            Self::send_error(&conn.tx, "seat is not part of required confirmations");
+            Self::send_error(&tx, "seat is not part of required confirmations");
             return;
         }
 
@@ -1116,16 +1104,8 @@ impl TableSession {
         if !op.confirmed_seats.contains(&seat) {
             op.confirmed_seats.push(seat);
         }
-        if op
-            .required_seats
-            .iter()
-            .all(|req| op.confirmed_seats.contains(req))
-        {
-            self.execute_destructive_op(op.kind, op.requested_by);
-        } else {
-            self.pending_destructive_op = Some(op);
-            self.broadcast_all_snapshots();
-        }
+        let requested_by = op.requested_by;
+        self.resolve_or_update_pending_op(op, requested_by);
     }
 
     fn reconcile_pending_destructive_op_on_disconnect(&mut self) {
@@ -1141,21 +1121,12 @@ impl TableSession {
         if op.required_seats.is_empty() {
             return;
         }
-        if op
-            .required_seats
-            .iter()
-            .all(|req| op.confirmed_seats.contains(req))
-        {
-            let actor = op
-                .confirmed_seats
-                .first()
-                .copied()
-                .unwrap_or(op.requested_by);
-            self.execute_destructive_op(op.kind, actor);
-        } else {
-            self.pending_destructive_op = Some(op);
-            self.broadcast_all_snapshots();
-        }
+        let actor = op
+            .confirmed_seats
+            .first()
+            .copied()
+            .unwrap_or(op.requested_by);
+        self.resolve_or_update_pending_op(op, actor);
     }
 
     fn on_disconnect(&mut self, conn_id: u64) {

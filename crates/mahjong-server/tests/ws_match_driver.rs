@@ -1,93 +1,25 @@
+mod common;
+
 use std::collections::HashSet;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures_util::{SinkExt, StreamExt};
-use http_body_util::BodyExt;
-use hyper::{Request, StatusCode};
-use hyper_util::rt::TokioIo;
+use common::{
+    connect_and_hello, connect_ws, fetch_health, recv_msg, recv_snapshot, send_msg,
+    spawn_seeded_server, spawn_with_wall_factory, tile, tiles, WsClient,
+};
 use mahjong_ai::{AiDifficulty, TileEfficiencyBot};
 use mahjong_core::{
     build_preset_wall, HandOutcome, MatchMode, MeldView, PlayerAction, PlayerEvent,
-    PlayerEventKind, PresetWallProvider, PublicPhase, RevealedMeld, Seat, Tile, WinKind,
+    PlayerEventKind, PresetWallProvider, PublicPhase, RevealedMeld, Seat, WinKind,
 };
 use mahjong_server::protocol::{
-    ClientMessage, DestructiveOpKind, HealthResponse, SeatKind, SeatingRule, ServerMessage,
-    TablePace, TablePhase, TableSnapshot,
+    ClientMessage, DestructiveOpKind, SeatKind, SeatingRule, ServerMessage, TablePace, TablePhase,
+    TableSnapshot,
 };
-use mahjong_server::session::{BoxedWallProvider, TableOptions, WallProviderFactory};
-use mahjong_server::{ServerConfig, ServerHandle};
+use mahjong_server::session::{BoxedWallProvider, WallProviderFactory};
 use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
-use tokio::net::TcpStream;
-use tokio_tungstenite::tungstenite::Message as WsMessage;
-use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
-
-type WsClient = WebSocketStream<MaybeTlsStream<TcpStream>>;
-
-async fn spawn_seeded_server(seed: u64) -> ServerHandle {
-    ServerConfig {
-        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
-        port: 0,
-        static_dir: None,
-    }
-    .spawn_with_options(TableOptions::seeded(seed))
-    .await
-    .expect("spawn seeded server")
-}
-
-async fn spawn_with_wall_factory(seed: u64, factory: WallProviderFactory) -> ServerHandle {
-    ServerConfig {
-        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
-        port: 0,
-        static_dir: None,
-    }
-    .spawn_with_options(TableOptions::with_wall_factory(seed, factory))
-    .await
-    .expect("spawn server with wall factory")
-}
-
-fn tiles(spec: &str) -> Vec<Tile> {
-    let mut out = Vec::new();
-    for token in spec.split_whitespace() {
-        let bytes = token.as_bytes();
-        if let Some((&suffix, digits)) = bytes.split_last() {
-            if matches!(suffix, b'm' | b's' | b'p') && !digits.is_empty() {
-                for &d in digits {
-                    let raw = match (suffix, d) {
-                        (b'm', b'1'..=b'9') => d - b'1',
-                        (b's', b'1'..=b'9') => 9 + (d - b'1'),
-                        (b'p', b'1'..=b'9') => 18 + (d - b'1'),
-                        _ => panic!("invalid tile {token:?}"),
-                    };
-                    out.push(Tile::new(raw).unwrap());
-                }
-                continue;
-            }
-        }
-        for &ch in bytes {
-            let raw = match ch {
-                b'E' => 27,
-                b'S' => 28,
-                b'W' => 29,
-                b'N' => 30,
-                b'C' => 31,
-                b'F' => 32,
-                b'B' => 33,
-                _ => panic!("invalid honor {token:?}"),
-            };
-            out.push(Tile::new(raw).unwrap());
-        }
-    }
-    out
-}
-
-fn tile(token: &str) -> Tile {
-    let parsed = tiles(token);
-    assert_eq!(parsed.len(), 1);
-    parsed[0]
-}
 
 async fn assert_no_pending_messages_via_ping(ws: &mut WsClient, ping_ts: u64) {
     send_msg(ws, &ClientMessage::ClientPing { ts_ms: ping_ts }).await;
@@ -109,85 +41,16 @@ async fn recv_event_batch(ws: &mut WsClient) -> (u64, u64, Vec<PlayerEvent>, Vec
     }
 }
 
-async fn connect_ws(addr: SocketAddr) -> WsClient {
-    let url = format!("ws://{addr}/ws");
-    let (ws, _) = connect_async(&url).await.expect("connect websocket");
-    ws
-}
-
-async fn send_msg(ws: &mut WsClient, msg: &ClientMessage) {
-    let text = serde_json::to_string(msg).expect("serialize client message");
-    ws.send(WsMessage::Text(text.into()))
-        .await
-        .expect("send ws message");
-}
-
-async fn recv_msg(ws: &mut WsClient) -> ServerMessage {
-    let frame = tokio::time::timeout(Duration::from_secs(5), ws.next())
-        .await
-        .expect("timed out waiting for server ws message")
-        .expect("ws stream ended unexpectedly")
-        .expect("ws frame error");
-    match frame {
-        WsMessage::Text(text) => {
-            serde_json::from_str::<ServerMessage>(&text).expect("valid ServerMessage JSON")
-        }
-        other => panic!("expected text frame, got {other:?}"),
-    }
-}
-
-async fn recv_snapshot(ws: &mut WsClient) -> TableSnapshot {
-    loop {
-        match recv_msg(ws).await {
-            ServerMessage::TableSnapshot(snap) => return snap,
-            ServerMessage::LobbyUpdated { .. } => continue,
-            other => panic!("expected TableSnapshot, got {other:?}"),
-        }
-    }
-}
-
-async fn fetch_health(addr: SocketAddr) -> HealthResponse {
-    let stream = TcpStream::connect(addr).await.expect("connect tcp");
-    let io = TokioIo::new(stream);
-    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
-        .await
-        .expect("http handshake");
-    tokio::spawn(async move {
-        let _ = conn.await;
-    });
-
-    let req = Request::builder()
-        .method("GET")
-        .uri("/api/health")
-        .header("Host", addr.to_string())
-        .body(http_body_util::Empty::<hyper::body::Bytes>::new())
-        .unwrap();
-    let res = sender.send_request(req).await.unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    let bytes = res.into_body().collect().await.unwrap().to_bytes();
-    serde_json::from_slice(&bytes).unwrap()
-}
-
-async fn connect_and_hello(addr: SocketAddr, client_id: &str, nickname: &str) -> WsClient {
-    let mut ws = connect_ws(addr).await;
-    send_msg(
-        &mut ws,
-        &ClientMessage::Hello {
-            client_id: client_id.to_string(),
-            nickname: nickname.to_string(),
-            table_id: None,
-            seat_token: None,
-        },
-    )
-    .await;
-    let _ = recv_snapshot(&mut ws).await;
-    ws
+#[test]
+fn tile_parser_supports_all_34_tiles_including_z_honors() {
+    assert_eq!(tiles("1234567z"), tiles("E S W N C F B"));
+    assert_eq!(tile("7z"), tile("B"));
 }
 
 #[tokio::test]
 async fn start_match_validates_human_seat_applies_seating_rules_fills_distinct_ai_styles_and_projects_views(
 ) {
-    let server = spawn_seeded_server(101).await;
+    let server = spawn_seeded_server(101, None).await;
     let addr = server.addr();
 
     let mut observer = connect_and_hello(addr, "obs", "Observer").await;
@@ -280,7 +143,7 @@ async fn start_match_validates_human_seat_applies_seating_rules_fills_distinct_a
     server.shutdown().await;
 
     // Verify FixedAdjacent places 2 humans at East and South, and Random 1P+3AI fills all 3 distinct AiStyles.
-    let server_adj = spawn_seeded_server(202).await;
+    let server_adj = spawn_seeded_server(202, None).await;
     let addr_adj = server_adj.addr();
     let mut a1 = connect_and_hello(addr_adj, "a1", "A1").await;
     let mut a2 = connect_and_hello(addr_adj, "a2", "A2").await;
@@ -319,7 +182,7 @@ async fn start_match_validates_human_seat_applies_seating_rules_fills_distinct_a
     let _ = a2.close(None).await;
     server_adj.shutdown().await;
 
-    let server_rand = spawn_seeded_server(303).await;
+    let server_rand = spawn_seeded_server(303, None).await;
     let addr_rand = server_rand.addr();
     let mut r1 = connect_and_hello(addr_rand, "r1", "Solo").await;
     send_msg(&mut r1, &ClientMessage::JoinSeat { seat: None }).await;
@@ -610,7 +473,7 @@ async fn submit_action_enforces_seq_idempotency_zero_leakage_and_empty_partial_r
 #[tokio::test]
 async fn one_player_three_ai_completes_full_east_only_match_and_emits_settled_plus_finished_batch()
 {
-    let server = spawn_seeded_server(777).await;
+    let server = spawn_seeded_server(777, None).await;
     let addr = server.addr();
 
     let mut human = connect_and_hello(addr, "solo-human", "Alice").await;
@@ -1435,7 +1298,7 @@ async fn destructive_ops_end_free_table_and_disband_match_mutual_confirm_and_off
 #[tokio::test]
 async fn two_player_two_ai_full_east_only_with_reconnect_then_free_table_rematch_and_return_to_lobby(
 ) {
-    let server = spawn_seeded_server(1234).await;
+    let server = spawn_seeded_server(1234, None).await;
     let addr = server.addr();
 
     let mut p1 = connect_and_hello(addr, "2p-a", "Alice").await;
@@ -1659,6 +1522,21 @@ async fn two_player_two_ai_full_east_only_with_reconnect_then_free_table_rematch
             .hands_played
             >= 2
     );
+
+    // Seated human submitting SubmitAction after match transitioned to Finished receives ActionRejected (not locking UI).
+    send_msg(
+        &mut p1,
+        &ClientMessage::SubmitAction {
+            expected_seq: free_fin1.seq,
+            client_action_id: "late-after-finish".to_string(),
+            action: PlayerAction::ConfirmNextHand,
+        },
+    )
+    .await;
+    assert!(matches!(
+        recv_msg(&mut p1).await,
+        ServerMessage::ActionRejected { current_seq, .. } if current_seq == free_fin1.seq
+    ));
 
     // ReturnToLobby from Finished.
     send_msg(&mut p1, &ClientMessage::ReturnToLobby).await;

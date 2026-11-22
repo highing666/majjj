@@ -15,7 +15,7 @@ fmt:
 clippy:
 	cargo clippy --workspace --all-targets -- -D warnings
 
-test:
+test: web-build
 	cargo test --workspace
 
 check-boundaries:

@@ -23,6 +23,9 @@ describe("computeTableLayout", () => {
     ({ width, height }) => {
       const layout = computeTableLayout(width, height);
 
+      expect(layout.isWide).toBe(width >= 640);
+      expect(layout.margin).toBe(width >= 640 ? 20 : 10);
+      expect(layout.topMargin).toBe(height >= 500 ? 14 : 8);
       expect(layout.handTileW).toBeGreaterThanOrEqual(20);
       expect(layout.handTileH).toBeGreaterThan(layout.handTileW);
       expect(layout.riverTileW).toBeGreaterThanOrEqual(14);

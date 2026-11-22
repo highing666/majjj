@@ -2,7 +2,7 @@
   import type { PendingDestructiveOp } from "../protocol/generated/PendingDestructiveOp";
   import type { Seat } from "../protocol/generated/Seat";
   import type { SeatInfo } from "../protocol/generated/SeatInfo";
-  import { seatLabel } from "./tiles";
+  import { seatIndex, seatLabel } from "../protocol/seats";
 
   interface Props {
     op: PendingDestructiveOp;
@@ -14,10 +14,8 @@
 
   let { op, seats, yourSeat, disabled = false, onConfirm }: Props = $props();
 
-  const SEAT_RING: [Seat, Seat, Seat, Seat] = ["East", "South", "West", "North"];
-
   function seatDisplayName(seat: Seat): string {
-    const info = seats[SEAT_RING.indexOf(seat)];
+    const info = seats[seatIndex(seat)];
     return info?.nickname
       ? `${seatLabel(seat)}（${info.nickname}）`
       : seatLabel(seat);

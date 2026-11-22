@@ -1,71 +1,17 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+mod common;
+
 use std::time::Duration;
 
+use common::{connect_ws, fetch_health, recv_msg, recv_snapshot, send_msg, spawn_server, WsClient};
 use futures_util::{SinkExt, StreamExt};
-use http_body_util::BodyExt;
-use hyper::{Request, StatusCode};
-use hyper_util::rt::TokioIo;
 use mahjong_ai::AiDifficulty;
 use mahjong_core::{MatchMode, PlayerAction, Seat};
 use mahjong_server::protocol::{
-    ClientMessage, HealthResponse, SeatKind, SeatingRule, ServerMessage, TablePace, TablePhase,
-    TableSnapshot,
+    ClientMessage, SeatKind, SeatingRule, ServerMessage, TablePace, TablePhase,
 };
-use mahjong_server::{ServerConfig, ServerHandle};
-use tokio::net::TcpStream;
+use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
-use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
-
-type WsClient = WebSocketStream<MaybeTlsStream<TcpStream>>;
-
-async fn spawn_lobby_server() -> ServerHandle {
-    ServerConfig {
-        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
-        port: 0,
-        static_dir: None,
-    }
-    .spawn()
-    .await
-    .expect("spawn server")
-}
-
-async fn connect_ws(addr: SocketAddr) -> WsClient {
-    let url = format!("ws://{addr}/ws");
-    let (ws, _) = connect_async(&url).await.expect("connect websocket");
-    ws
-}
-
-async fn send_msg(ws: &mut WsClient, msg: &ClientMessage) {
-    let text = serde_json::to_string(msg).expect("serialize client message");
-    ws.send(WsMessage::Text(text.into()))
-        .await
-        .expect("send ws message");
-}
-
-async fn recv_msg(ws: &mut WsClient) -> ServerMessage {
-    let frame = tokio::time::timeout(Duration::from_secs(3), ws.next())
-        .await
-        .expect("timed out waiting for server ws message")
-        .expect("ws stream ended unexpectedly")
-        .expect("ws frame error");
-    match frame {
-        WsMessage::Text(text) => {
-            serde_json::from_str::<ServerMessage>(&text).expect("valid ServerMessage JSON")
-        }
-        other => panic!("expected text frame, got {other:?}"),
-    }
-}
-
-async fn recv_snapshot(ws: &mut WsClient) -> TableSnapshot {
-    loop {
-        match recv_msg(ws).await {
-            ServerMessage::TableSnapshot(snap) => return snap,
-            ServerMessage::LobbyUpdated { .. } => continue,
-            other => panic!("expected TableSnapshot, got {other:?}"),
-        }
-    }
-}
 
 async fn recv_lobby_updated(ws: &mut WsClient) -> ServerMessage {
     loop {
@@ -77,31 +23,9 @@ async fn recv_lobby_updated(ws: &mut WsClient) -> ServerMessage {
     }
 }
 
-async fn fetch_health(addr: SocketAddr) -> HealthResponse {
-    let stream = TcpStream::connect(addr).await.expect("connect tcp");
-    let io = TokioIo::new(stream);
-    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
-        .await
-        .expect("http handshake");
-    tokio::spawn(async move {
-        let _ = conn.await;
-    });
-
-    let req = Request::builder()
-        .method("GET")
-        .uri("/api/health")
-        .header("Host", addr.to_string())
-        .body(http_body_util::Empty::<hyper::body::Bytes>::new())
-        .unwrap();
-    let res = sender.send_request(req).await.unwrap();
-    assert_eq!(res.status(), StatusCode::OK);
-    let bytes = res.into_body().collect().await.unwrap().to_bytes();
-    serde_json::from_slice(&bytes).unwrap()
-}
-
 #[tokio::test]
 async fn hello_issues_credentials_and_handles_ping_and_request_snapshot() {
-    let server = spawn_lobby_server().await;
+    let server = spawn_server(None).await;
     let addr = server.addr();
 
     let mut ws = connect_ws(addr).await;
@@ -179,7 +103,7 @@ async fn hello_issues_credentials_and_handles_ping_and_request_snapshot() {
 
 #[tokio::test]
 async fn multi_client_join_leave_reconnect_and_peer_config_broadcast() {
-    let server = spawn_lobby_server().await;
+    let server = spawn_server(None).await;
     let addr = server.addr();
 
     let mut ws1 = connect_ws(addr).await;
@@ -382,7 +306,7 @@ async fn multi_client_join_leave_reconnect_and_peer_config_broadcast() {
 
 #[tokio::test]
 async fn duplicate_tab_replaces_old_socket_with_session_replaced_and_keeps_seat_online() {
-    let server = spawn_lobby_server().await;
+    let server = spawn_server(None).await;
     let addr = server.addr();
 
     let mut ws_old = connect_ws(addr).await;
@@ -449,7 +373,7 @@ async fn duplicate_tab_replaces_old_socket_with_session_replaced_and_keeps_seat_
 
 #[tokio::test]
 async fn reserved_and_unwired_messages_and_invalid_json_return_error_notice_without_disconnect() {
-    let server = spawn_lobby_server().await;
+    let server = spawn_server(None).await;
     let addr = server.addr();
 
     let mut ws = connect_ws(addr).await;
@@ -517,7 +441,7 @@ async fn reserved_and_unwired_messages_and_invalid_json_return_error_notice_with
 
 #[tokio::test]
 async fn seat_capacity_move_seat_unseated_replacement_and_cross_client_token_isolation() {
-    let server = spawn_lobby_server().await;
+    let server = spawn_server(None).await;
     let addr = server.addr();
 
     let mut clients = Vec::new();

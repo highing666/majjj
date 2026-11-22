@@ -1,8 +1,10 @@
+mod common;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
+use common::TempDirGuard;
 use mahjong_ai::{AiDifficulty, AiStyle};
 use mahjong_core::{MatchError, MatchMode, PlayerAction, Seat, Suit, Tile, TurnSource};
 use mahjong_server::protocol::{
@@ -11,34 +13,6 @@ use mahjong_server::protocol::{
     TableSnapshot,
 };
 use ts_rs::TS;
-
-static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-struct TempDirGuard {
-    path: PathBuf,
-}
-
-impl TempDirGuard {
-    fn new(prefix: &str) -> Self {
-        let id = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("{prefix}_{}_{}", std::process::id(), id));
-        if path.exists() {
-            fs::remove_dir_all(&path).expect("clean stale temp dir");
-        }
-        fs::create_dir_all(&path).expect("create temp dir");
-        Self { path }
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for TempDirGuard {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
-}
 
 fn generated_bindings_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))

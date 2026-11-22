@@ -1,5 +1,12 @@
 import { CanvasSource, Rectangle, Texture } from "pixi.js";
 import type { Tile } from "../protocol/generated/Tile";
+import {
+  getDragonKind,
+  getTileLabel,
+  getTileNumeral,
+  getTileRank,
+  getTileSuit,
+} from "./tiles";
 
 const CELL_W = 128;
 const CELL_H = 176;
@@ -17,9 +24,6 @@ const INK = "#181A20";
 const RED = "#B12824";
 const GREEN = "#1F6E4A";
 const BLUE = "#1D4F8C";
-
-const CHINESE_NUMS = ["一", "二", "三", "四", "五", "六", "七", "八", "九"];
-const WINDS = ["东", "南", "西", "北"];
 
 export interface TileAtlas {
   readonly width: number;
@@ -102,7 +106,7 @@ function drawManTile(
   ctx: CanvasRenderingContext2D,
   ox: number,
   oy: number,
-  rank: number,
+  tile: Tile,
 ): void {
   const cx = ox + CELL_W / 2;
   ctx.save();
@@ -112,7 +116,7 @@ function drawManTile(
   ctx.fillStyle = RED;
   ctx.font =
     '800 50px "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", sans-serif';
-  ctx.fillText(CHINESE_NUMS[rank - 1], cx, oy + 54);
+  ctx.fillText(getTileNumeral(tile), cx, oy + 54);
 
   ctx.fillStyle = INK;
   ctx.font =
@@ -372,7 +376,8 @@ function drawHonorTile(
   const cy = oy + CELL_H / 2 - 4;
   ctx.save();
 
-  if (tile === 33) {
+  const dragon = getDragonKind(tile);
+  if (dragon === "White") {
     // 白: crisp double cobalt rectangular frame
     roundRectPath(ctx, ox + 26, oy + 26, CELL_W - 52, CELL_H - 60, 8);
     ctx.strokeStyle = BLUE;
@@ -387,25 +392,14 @@ function drawHonorTile(
     return;
   }
 
-  let char = "";
-  let color = INK;
-  if (tile >= 27 && tile <= 30) {
-    char = WINDS[tile - 27];
-    color = INK;
-  } else if (tile === 31) {
-    char = "中";
-    color = RED;
-  } else if (tile === 32) {
-    char = "发";
-    color = GREEN;
-  }
+  const color = dragon === "Red" ? RED : dragon === "Green" ? GREEN : INK;
 
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillStyle = color;
   ctx.font =
     '800 68px "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", sans-serif';
-  ctx.fillText(char, cx, cy);
+  ctx.fillText(getTileLabel(tile), cx, cy);
   ctx.restore();
 }
 
@@ -416,14 +410,22 @@ function drawTileArtwork(
   tile: Tile,
 ): void {
   drawTileBase(ctx, ox, oy, false);
-  if (tile >= 0 && tile <= 8) {
-    drawManTile(ctx, ox, oy, tile + 1);
-  } else if (tile >= 9 && tile <= 17) {
-    drawBambooTile(ctx, ox, oy, tile - 8);
-  } else if (tile >= 18 && tile <= 26) {
-    drawDotTile(ctx, ox, oy, tile - 17);
-  } else {
-    drawHonorTile(ctx, ox, oy, tile);
+  const suit = getTileSuit(tile);
+  const rank = getTileRank(tile);
+  switch (suit) {
+    case "Man":
+      drawManTile(ctx, ox, oy, tile);
+      break;
+    case "Bamboo":
+      drawBambooTile(ctx, ox, oy, rank ?? 1);
+      break;
+    case "Dot":
+      drawDotTile(ctx, ox, oy, rank ?? 1);
+      break;
+    case "Wind":
+    case "Dragon":
+      drawHonorTile(ctx, ox, oy, tile);
+      break;
   }
 }
 

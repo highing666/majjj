@@ -1,87 +1,17 @@
+mod common;
+
 use std::fs;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::net::{IpAddr, Ipv4Addr, TcpListener};
 
-use http_body_util::BodyExt;
+use common::{http_get, spawn_server, TempDirGuard};
 use hyper::header::{CACHE_CONTROL, CONTENT_TYPE};
-use hyper::{Request, StatusCode};
-use hyper_util::rt::TokioIo;
+use hyper::StatusCode;
 use mahjong_server::protocol::{HealthResponse, TablePhase};
-use mahjong_server::{ServerConfig, ServerHandle};
-use tokio::net::TcpStream;
-
-static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-struct TempDirGuard {
-    path: PathBuf,
-}
-
-impl TempDirGuard {
-    fn new(prefix: &str) -> Self {
-        let id = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("{prefix}_{}_{}", std::process::id(), id));
-        if path.exists() {
-            fs::remove_dir_all(&path).expect("clean stale temp dir");
-        }
-        fs::create_dir_all(&path).expect("create temp dir");
-        Self { path }
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for TempDirGuard {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
-}
-
-async fn http_get(addr: SocketAddr, uri_path: &str) -> (StatusCode, hyper::HeaderMap, Vec<u8>) {
-    let stream = TcpStream::connect(addr).await.expect("connect to server");
-    let io = TokioIo::new(stream);
-    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
-        .await
-        .expect("http1 handshake");
-    tokio::spawn(async move {
-        let _ = conn.await;
-    });
-
-    let req = Request::builder()
-        .method("GET")
-        .uri(uri_path)
-        .header("Host", addr.to_string())
-        .body(http_body_util::Empty::<hyper::body::Bytes>::new())
-        .expect("build request");
-    let res = sender.send_request(req).await.expect("send request");
-    let status = res.status();
-    let headers = res.headers().clone();
-    let body = res
-        .into_body()
-        .collect()
-        .await
-        .expect("collect body")
-        .to_bytes()
-        .to_vec();
-    (status, headers, body)
-}
-
-async fn spawn_test_server(static_dir: Option<PathBuf>) -> ServerHandle {
-    ServerConfig {
-        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
-        port: 0,
-        static_dir,
-    }
-    .spawn()
-    .await
-    .expect("spawn server")
-}
+use mahjong_server::ServerConfig;
 
 #[tokio::test]
 async fn health_endpoint_returns_no_store_and_active_metadata() {
-    let server = spawn_test_server(None).await;
+    let server = spawn_server(None).await;
     let addr = server.addr();
 
     let (status, headers, body) = http_get(addr, "/api/health").await;
@@ -117,7 +47,9 @@ async fn static_hosting_enforces_cache_headers_spa_fallback_and_traversal_guard(
 
     let dist_dir = parent_temp.path().join("dist");
     let assets_dir = dist_dir.join("assets");
+    let nested_dir = dist_dir.join("nested");
     fs::create_dir_all(&assets_dir).unwrap();
+    fs::create_dir_all(&nested_dir).unwrap();
     fs::write(
         dist_dir.join("index.html"),
         "<!doctype html><html><body>Majjj</body></html>",
@@ -125,10 +57,22 @@ async fn static_hosting_enforces_cache_headers_spa_fallback_and_traversal_guard(
     .unwrap();
     fs::write(dist_dir.join("manifest.webmanifest"), r#"{"name":"majjj"}"#).unwrap();
     fs::write(dist_dir.join("manifest.json"), r#"{"name":"majjj"}"#).unwrap();
+    fs::write(
+        nested_dir.join("manifest.webmanifest"),
+        r#"{"name":"majjj"}"#,
+    )
+    .unwrap();
     fs::write(assets_dir.join("app-deadbeef.js"), "console.log('majjj');").unwrap();
+    fs::write(assets_dir.join("index-Ab12Cd34.js"), "console.log('vite');").unwrap();
+    fs::write(
+        assets_dir.join("index-R99xeND-.js"),
+        "console.log('b64url');",
+    )
+    .unwrap();
     fs::write(assets_dir.join("style-123456.css"), "body { margin: 0; }").unwrap();
+    fs::write(assets_dir.join("logo.png"), [0x89, 0x50, 0x4E, 0x47]).unwrap();
 
-    let server = spawn_test_server(Some(dist_dir)).await;
+    let server = spawn_server(Some(dist_dir)).await;
     let addr = server.addr();
 
     // Root & index.html -> no-cache
@@ -148,8 +92,12 @@ async fn static_hosting_enforces_cache_headers_spa_fallback_and_traversal_guard(
         assert!(String::from_utf8_lossy(&body).contains("Majjj"));
     }
 
-    // Manifest files -> no-cache
-    for path in ["/manifest.webmanifest", "/manifest.json"] {
+    // Manifest files (root and nested) -> no-cache
+    for path in [
+        "/manifest.webmanifest",
+        "/manifest.json",
+        "/nested/manifest.webmanifest",
+    ] {
         let (status, headers, _) = http_get(addr, path).await;
         assert_eq!(status, StatusCode::OK, "path={path}");
         assert_eq!(
@@ -160,30 +108,53 @@ async fn static_hosting_enforces_cache_headers_spa_fallback_and_traversal_guard(
     }
 
     // Hashed assets under /assets/ -> immutable
-    let (status, headers, body) = http_get(addr, "/assets/app-deadbeef.js").await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(
-        headers.get(CACHE_CONTROL).and_then(|v| v.to_str().ok()),
-        Some("public, max-age=31536000, immutable")
-    );
-    assert!(headers
-        .get(CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default()
-        .contains("javascript"));
-    assert_eq!(body, b"console.log('majjj');");
+    for (path, expected_type, expected_body) in [
+        (
+            "/assets/app-deadbeef.js",
+            "javascript",
+            b"console.log('majjj');".as_slice(),
+        ),
+        (
+            "/assets/index-Ab12Cd34.js",
+            "javascript",
+            b"console.log('vite');".as_slice(),
+        ),
+        (
+            "/assets/index-R99xeND-.js",
+            "javascript",
+            b"console.log('b64url');".as_slice(),
+        ),
+        (
+            "/assets/style-123456.css",
+            "text/css",
+            b"body { margin: 0; }".as_slice(),
+        ),
+    ] {
+        let (status, headers, body) = http_get(addr, path).await;
+        assert_eq!(status, StatusCode::OK, "path={path}");
+        assert_eq!(
+            headers.get(CACHE_CONTROL).and_then(|v| v.to_str().ok()),
+            Some("public, max-age=31536000, immutable"),
+            "path={path}"
+        );
+        assert!(
+            headers
+                .get(CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .contains(expected_type),
+            "path={path}"
+        );
+        assert_eq!(body, expected_body, "path={path}");
+    }
 
-    let (status, headers, _) = http_get(addr, "/assets/style-123456.css").await;
+    // Unhashed file under /assets/ -> no-cache
+    let (status, headers, _) = http_get(addr, "/assets/logo.png").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         headers.get(CACHE_CONTROL).and_then(|v| v.to_str().ok()),
-        Some("public, max-age=31536000, immutable")
+        Some("no-cache")
     );
-    assert!(headers
-        .get(CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default()
-        .contains("text/css"));
 
     // Missing asset under /assets/ must 404 instead of returning index.html
     let (status, _, _) = http_get(addr, "/assets/missing-999.js").await;

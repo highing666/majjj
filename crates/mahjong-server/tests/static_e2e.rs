@@ -1,23 +1,15 @@
+mod common;
+
 use std::fs;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
-use futures_util::{SinkExt, StreamExt};
-use http_body_util::BodyExt;
-use hyper::header::{CACHE_CONTROL, CONTENT_TYPE};
-use hyper::{Request, StatusCode};
-use hyper_util::rt::TokioIo;
-use mahjong_core::{PlayerAction, PlayerEventKind, PublicPhase};
-use mahjong_server::protocol::{
-    ClientMessage, HealthResponse, SeatKind, ServerMessage, TablePhase, TableSnapshot,
+use common::{
+    connect_ws, fetch_health, http_get, recv_msg, recv_snapshot, send_msg, spawn_seeded_server,
 };
-use mahjong_server::{ServerConfig, ServerHandle, TableOptions};
-use tokio::net::TcpStream;
-use tokio_tungstenite::tungstenite::Message as WsMessage;
-use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
-
-type WsClient = WebSocketStream<MaybeTlsStream<TcpStream>>;
+use hyper::header::{CACHE_CONTROL, CONTENT_TYPE};
+use hyper::StatusCode;
+use mahjong_core::{PlayerAction, PlayerEventKind, PublicPhase};
+use mahjong_server::protocol::{ClientMessage, SeatKind, ServerMessage, TablePhase};
 
 fn web_dist_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -98,106 +90,10 @@ fn discover_built_dist() -> BuiltDist {
     }
 }
 
-async fn http_get(addr: SocketAddr, uri_path: &str) -> (StatusCode, hyper::HeaderMap, Vec<u8>) {
-    let stream = TcpStream::connect(addr).await.expect("connect to server");
-    let io = TokioIo::new(stream);
-    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
-        .await
-        .expect("http1 handshake");
-    tokio::spawn(async move {
-        let _ = conn.await;
-    });
-
-    let req = Request::builder()
-        .method("GET")
-        .uri(uri_path)
-        .header("Host", addr.to_string())
-        .body(http_body_util::Empty::<hyper::body::Bytes>::new())
-        .expect("build request");
-    let res = sender.send_request(req).await.expect("send request");
-    let status = res.status();
-    let headers = res.headers().clone();
-    let body = res
-        .into_body()
-        .collect()
-        .await
-        .expect("collect body")
-        .to_bytes()
-        .to_vec();
-    (status, headers, body)
-}
-
-async fn fetch_health(addr: SocketAddr) -> (hyper::HeaderMap, HealthResponse) {
-    let (status, headers, body) = http_get(addr, "/api/health").await;
-    assert_eq!(status, StatusCode::OK);
-    let content_type = headers
-        .get(CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default();
-    assert!(
-        content_type.contains("application/json"),
-        "unexpected /api/health content-type: {content_type}"
-    );
-    assert_eq!(
-        headers.get(CACHE_CONTROL).and_then(|v| v.to_str().ok()),
-        Some("no-store")
-    );
-    let parsed: HealthResponse = serde_json::from_slice(&body).expect("valid HealthResponse JSON");
-    (headers, parsed)
-}
-
-async fn spawn_static_server(dist_dir: PathBuf) -> ServerHandle {
-    ServerConfig {
-        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
-        port: 0,
-        static_dir: Some(dist_dir),
-    }
-    .spawn_with_options(TableOptions::seeded(29))
-    .await
-    .expect("spawn static e2e server")
-}
-
-async fn connect_ws(addr: SocketAddr) -> WsClient {
-    let url = format!("ws://{addr}/ws");
-    let (ws, _) = connect_async(&url).await.expect("connect same-origin /ws");
-    ws
-}
-
-async fn send_msg(ws: &mut WsClient, msg: &ClientMessage) {
-    let text = serde_json::to_string(msg).expect("serialize ClientMessage");
-    ws.send(WsMessage::Text(text.into()))
-        .await
-        .expect("send ws message");
-}
-
-async fn recv_msg(ws: &mut WsClient) -> ServerMessage {
-    let frame = tokio::time::timeout(Duration::from_secs(5), ws.next())
-        .await
-        .expect("timed out waiting for server ws message")
-        .expect("ws stream ended unexpectedly")
-        .expect("ws frame error");
-    match frame {
-        WsMessage::Text(text) => {
-            serde_json::from_str::<ServerMessage>(&text).expect("valid ServerMessage JSON")
-        }
-        other => panic!("expected text frame, got {other:?}"),
-    }
-}
-
-async fn recv_snapshot(ws: &mut WsClient) -> TableSnapshot {
-    loop {
-        match recv_msg(ws).await {
-            ServerMessage::TableSnapshot(snap) => return snap,
-            ServerMessage::LobbyUpdated { .. } => continue,
-            other => panic!("expected TableSnapshot, got {other:?}"),
-        }
-    }
-}
-
 #[tokio::test]
 async fn production_static_hosting_serves_built_dist_health_and_same_origin_ws_match() {
     let dist = discover_built_dist();
-    let server = spawn_static_server(dist.dir.clone()).await;
+    let server = spawn_seeded_server(29, Some(dist.dir.clone())).await;
     let addr = server.addr();
 
     // 1. Root HTML returns 200, Cache-Control: no-cache, and built asset references.
@@ -254,7 +150,7 @@ async fn production_static_hosting_serves_built_dist_health_and_same_origin_ws_m
     }
 
     // 3. Health endpoint returns valid JSON HealthResponse and Cache-Control: no-store.
-    let (_, initial_health) = fetch_health(addr).await;
+    let initial_health = fetch_health(addr).await;
     assert_eq!(initial_health.app, "majjj");
     assert_eq!(initial_health.version, env!("CARGO_PKG_VERSION"));
     assert_eq!(initial_health.phase, TablePhase::Lobby);
@@ -285,7 +181,7 @@ async fn production_static_hosting_serves_built_dist_health_and_same_origin_ws_m
     assert_eq!(joined_snap.seats[lobby_seat.index()].kind, SeatKind::Human);
     assert!(joined_snap.seats[lobby_seat.index()].connected);
 
-    let (_, lobby_health) = fetch_health(addr).await;
+    let lobby_health = fetch_health(addr).await;
     assert_eq!(lobby_health.phase, TablePhase::Lobby);
     assert_eq!(lobby_health.online_humans, 1);
 
@@ -316,7 +212,7 @@ async fn production_static_hosting_serves_built_dist_health_and_same_origin_ws_m
     assert_eq!(view.phase, PublicPhase::Playing);
     assert_eq!(view.seq, match_snap.seq);
 
-    let (_, match_health) = fetch_health(addr).await;
+    let match_health = fetch_health(addr).await;
     assert_eq!(match_health.phase, TablePhase::InMatch);
     assert_eq!(match_health.online_humans, 1);
 
