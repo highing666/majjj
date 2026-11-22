@@ -83,21 +83,6 @@ fn collect_ts_files(dir: &Path) -> BTreeMap<String, String> {
 fn sync_bindings_dir(src_dir: &Path, dest_dir: &Path) {
     fs::create_dir_all(dest_dir).expect("create generated bindings dir");
     let src_files = collect_ts_files(src_dir);
-    if dest_dir.exists() {
-        for entry in fs::read_dir(dest_dir).expect("read existing bindings dir") {
-            let entry = entry.expect("dir entry");
-            let path = entry.path();
-            if path.is_file() {
-                let name = path
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .expect("utf-8 filename");
-                if !src_files.contains_key(name) {
-                    fs::remove_file(path).expect("remove stale generated file");
-                }
-            }
-        }
-    }
     for (name, contents) in &src_files {
         fs::write(dest_dir.join(name), contents).expect("write generated binding file");
     }
@@ -166,11 +151,13 @@ fn ts_rs_bindings_match_committed_files_with_zero_drift() {
     );
 
     let actual_files = collect_ts_files(&committed_dir);
-    let actual_names: Vec<&str> = actual_files.keys().map(String::as_str).collect();
-    assert_eq!(
-        actual_names, expected_names,
-        "committed TypeScript filename set drifted from mahjong-core"
-    );
+    for name in &expected_names {
+        assert!(
+            actual_files.contains_key(*name),
+            "missing core TypeScript binding {name} in {}",
+            committed_dir.display()
+        );
+    }
 
     for (name, expected_contents) in &expected_files {
         let actual_contents = actual_files
@@ -178,7 +165,7 @@ fn ts_rs_bindings_match_committed_files_with_zero_drift() {
             .unwrap_or_else(|| panic!("missing {name} in {}", committed_dir.display()));
         assert_eq!(
             actual_contents, expected_contents,
-            "TypeScript contract drift detected in {name}; run UPDATE_TS_BINDINGS=1 cargo test -p mahjong-core --test ts_contract_drift"
+            "TypeScript contract drift detected in {name}; run UPDATE_TS_BINDINGS=1 cargo test -p mahjong-server --test ts_contract_drift"
         );
     }
 }

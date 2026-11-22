@@ -28,7 +28,7 @@ check:
 	./scripts/check.sh
 
 ts-bindings:
-	UPDATE_TS_BINDINGS=1 cargo test -p mahjong-core --test ts_contract_drift
+	UPDATE_TS_BINDINGS=1 cargo test -p mahjong-server --test ts_contract_drift
 
 install-hooks:
 	git config core.hooksPath .githooks

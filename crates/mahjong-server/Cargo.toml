@@ -5,8 +5,26 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+axum = { version = "0.8", features = ["ws"] }
+clap = { version = "4", features = ["derive", "env"] }
+futures-util = "0.3"
+if-addrs = "0.13"
 mahjong-ai = { path = "../mahjong-ai" }
 mahjong-core = { path = "../mahjong-core" }
+rand_chacha.workspace = true
+rand_core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync", "time", "signal", "fs"] }
+ts-rs.workspace = true
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+tokio-tungstenite = "0.26"
 
 [lints]
 workspace = true
