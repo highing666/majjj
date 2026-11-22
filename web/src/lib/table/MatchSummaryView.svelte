@@ -1,5 +1,8 @@
 <script lang="ts">
+  import LobbyConfigFields from "../lobby/LobbyConfigFields.svelte";
+  import { matchModeLabel } from "../lobby/lobbyConfig";
   import type { HandSettlement } from "../protocol/generated/HandSettlement";
+  import type { LobbyConfig } from "../protocol/generated/LobbyConfig";
   import type { MatchSummary } from "../protocol/generated/MatchSummary";
   import type { Seat } from "../protocol/generated/Seat";
   import type { SeatInfo } from "../protocol/generated/SeatInfo";
@@ -13,28 +16,30 @@
 
   interface Props {
     summary: MatchSummary;
+    config: LobbyConfig;
     seats: [SeatInfo, SeatInfo, SeatInfo, SeatInfo];
     yourSeat: Seat | null;
     lastSettlement: HandSettlement | null;
     disabled?: boolean;
+    onUpdateConfig: (config: LobbyConfig) => void;
     onStartMatch: () => void;
     onReturnToLobby: () => void;
   }
 
   let {
     summary,
+    config,
     seats,
     yourSeat,
     lastSettlement,
     disabled = false,
+    onUpdateConfig,
     onStartMatch,
     onReturnToLobby,
   }: Props = $props();
 
   const standings = $derived(buildMatchStandings(summary, seats));
-  const modeLabel = $derived(
-    summary.mode === "EastOnly" ? "东风战" : "自由桌",
-  );
+  const modeLabel = $derived(matchModeLabel(summary.mode));
   const canOperate = $derived(yourSeat !== null && !disabled);
 </script>
 
@@ -131,6 +136,23 @@
       </div>
     </details>
   {/if}
+
+  <section class="rematch-config">
+    <div class="rematch-config-head">
+      <h2>再开一桌规则设置</h2>
+      {#if yourSeat === null}
+        <span class="tag tag-offline">当前未入座，仅入座玩家可调整</span>
+      {:else}
+        <span class="rematch-config-note">修改后即时同步全桌</span>
+      {/if}
+    </div>
+    <LobbyConfigFields
+      {config}
+      disabled={!canOperate}
+      compact
+      {onUpdateConfig}
+    />
+  </section>
 
   <footer class="summary-actions">
     <button
@@ -283,6 +305,34 @@
     padding: 2px;
     border-radius: 4px;
     background: var(--bg-muted);
+  }
+
+  .rematch-config {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--bg-muted);
+  }
+
+  .rematch-config-head {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .rematch-config-head h2 {
+    margin: 0;
+    font-size: 15px;
+  }
+
+  .rematch-config-note {
+    font-size: 12px;
+    color: var(--ink-muted);
   }
 
   .summary-actions {

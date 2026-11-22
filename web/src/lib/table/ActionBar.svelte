@@ -2,7 +2,7 @@
   import type { PlayerAction } from "../protocol/generated/PlayerAction";
   import type { PlayerView } from "../protocol/generated/PlayerView";
   import TileBadge from "./TileBadge.svelte";
-  import { buildActionBarItems, type ActionBarItem } from "./viewModel";
+  import { buildActionBarItems } from "./viewModel";
 
   interface Props {
     playerView: PlayerView;
@@ -36,16 +36,7 @@
     }
 
     const key = event.key.toLowerCase();
-    let candidates: ActionBarItem[] = [];
-    if (key === "h") {
-      candidates = items.filter((i) => i.tone === "hu");
-    } else if (key === "g") {
-      candidates = items.filter((i) => i.tone === "kong");
-    } else if (key === "p") {
-      candidates = items.filter((i) => i.tone === "pon");
-    } else if (event.key === "Escape") {
-      candidates = items.filter((i) => i.tone === "pass");
-    }
+    const candidates = items.filter((item) => item.shortcutKey === key);
 
     if (candidates.length === 1) {
       event.preventDefault();

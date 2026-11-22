@@ -196,12 +196,12 @@ fn shanten_thirteen_orphans(counts: &[u8; Tile::COUNT]) -> i8 {
 fn shanten_standard(counts: &[u8; Tile::COUNT], existing_melds: usize) -> i8 {
     let mut work = *counts;
     let existing = existing_melds.min(4) as i8;
-    let mut best = eval_standard_no_pair(&mut work, existing);
+    let mut best = eval_standard_body(&mut work, existing, 0);
 
     for pair_idx in 0..Tile::COUNT {
         if work[pair_idx] >= 2 {
             work[pair_idx] -= 2;
-            let s = eval_standard_with_pair(&mut work, existing);
+            let s = eval_standard_body(&mut work, existing, 1);
             work[pair_idx] += 2;
             if s < best {
                 best = s;
@@ -209,14 +209,6 @@ fn shanten_standard(counts: &[u8; Tile::COUNT], existing_melds: usize) -> i8 {
         }
     }
     best
-}
-
-fn eval_standard_no_pair(counts: &mut [u8; Tile::COUNT], existing: i8) -> i8 {
-    eval_standard_body(counts, existing, 0)
-}
-
-fn eval_standard_with_pair(counts: &mut [u8; Tile::COUNT], existing: i8) -> i8 {
-    eval_standard_body(counts, existing, 1)
 }
 
 fn eval_standard_body(counts: &mut [u8; Tile::COUNT], existing: i8, has_pair: i8) -> i8 {
@@ -227,40 +219,40 @@ fn eval_standard_body(counts: &mut [u8; Tile::COUNT], existing: i8, has_pair: i8
     let mut dot = [0u8; 9];
     dot.copy_from_slice(&counts[18..27]);
 
-    let man_table = suit_meld_taatsu(&mut man);
-    let bamboo_table = suit_meld_taatsu(&mut bamboo);
-    let dot_table = suit_meld_taatsu(&mut dot);
+    let man_table = suit_meld_proto(&mut man);
+    let bamboo_table = suit_meld_proto(&mut bamboo);
+    let dot_table = suit_meld_proto(&mut dot);
 
     let mut honor_m = 0i8;
-    let mut honor_t = 0i8;
+    let mut honor_p = 0i8;
     for &c in &counts[27..Tile::COUNT] {
         if c >= 3 {
             honor_m += 1;
         } else if c == 2 {
-            honor_t += 1;
+            honor_p += 1;
         }
     }
 
     let max_blocks = 4 - existing;
     let mut best_score = 2 * existing + has_pair;
-    for (m1, &t1) in man_table.iter().enumerate() {
-        if t1 < 0 {
+    for (m1, &p1) in man_table.iter().enumerate() {
+        if p1 < 0 {
             continue;
         }
         let m1 = m1 as i8;
         if m1 > max_blocks {
             break;
         }
-        for (m2, &t2) in bamboo_table.iter().enumerate() {
-            if t2 < 0 {
+        for (m2, &p2) in bamboo_table.iter().enumerate() {
+            if p2 < 0 {
                 continue;
             }
             let m2 = m2 as i8;
             if m1 + m2 > max_blocks {
                 break;
             }
-            for (m3, &t3) in dot_table.iter().enumerate() {
-                if t3 < 0 {
+            for (m3, &p3) in dot_table.iter().enumerate() {
+                if p3 < 0 {
                     continue;
                 }
                 let m3 = m3 as i8;
@@ -268,9 +260,9 @@ fn eval_standard_body(counts: &mut [u8; Tile::COUNT], existing: i8, has_pair: i8
                 if closed_m > max_blocks {
                     break;
                 }
-                let total_t = t1 + t2 + t3 + honor_t;
-                let used_t = total_t.min(max_blocks - closed_m);
-                let score = 2 * (existing + closed_m) + used_t + has_pair;
+                let total_proto = p1 + p2 + p3 + honor_p;
+                let used_proto = total_proto.min(max_blocks - closed_m);
+                let score = 2 * (existing + closed_m) + used_proto + has_pair;
                 if score > best_score {
                     best_score = score;
                 }
@@ -281,7 +273,7 @@ fn eval_standard_body(counts: &mut [u8; Tile::COUNT], existing: i8, has_pair: i8
     8 - best_score
 }
 
-fn suit_meld_taatsu(counts: &mut [u8; 9]) -> [i8; 5] {
+fn suit_meld_proto(counts: &mut [u8; 9]) -> [i8; 5] {
     let mut out = [-1i8; 5];
     dfs_melds(counts, 0, 0, true, &mut out);
     out
@@ -303,9 +295,9 @@ fn dfs_melds(
     }
     if idx == 9 {
         if melds < out.len() {
-            let t = max_taatsu(counts, 0);
-            if t > out[melds] {
-                out[melds] = t;
+            let p = max_proto_melds(counts, 0);
+            if p > out[melds] {
+                out[melds] = p;
             }
         }
         return;
@@ -331,7 +323,7 @@ fn dfs_melds(
     dfs_melds(counts, idx + 1, melds, true, out);
 }
 
-fn max_taatsu(counts: &mut [u8; 9], mut idx: usize) -> i8 {
+fn max_proto_melds(counts: &mut [u8; 9], mut idx: usize) -> i8 {
     while idx < 9 && counts[idx] == 0 {
         idx += 1;
     }
@@ -343,26 +335,26 @@ fn max_taatsu(counts: &mut [u8; 9], mut idx: usize) -> i8 {
     let mut best = 0i8;
     if c >= 2 {
         counts[idx] -= 2;
-        best = best.max(1 + max_taatsu(counts, idx));
+        best = best.max(1 + max_proto_melds(counts, idx));
         counts[idx] += 2;
     }
     if idx + 1 < 9 && counts[idx + 1] > 0 {
         counts[idx] -= 1;
         counts[idx + 1] -= 1;
-        best = best.max(1 + max_taatsu(counts, idx));
+        best = best.max(1 + max_proto_melds(counts, idx));
         counts[idx] += 1;
         counts[idx + 1] += 1;
     }
     if idx + 2 < 9 && counts[idx + 2] > 0 {
         counts[idx] -= 1;
         counts[idx + 2] -= 1;
-        best = best.max(1 + max_taatsu(counts, idx));
+        best = best.max(1 + max_proto_melds(counts, idx));
         counts[idx] += 1;
         counts[idx + 2] += 1;
     }
     if c == 1 {
         counts[idx] -= 1;
-        best = best.max(max_taatsu(counts, idx + 1));
+        best = best.max(max_proto_melds(counts, idx + 1));
         counts[idx] += 1;
     }
     best
@@ -382,16 +374,16 @@ mod tests {
             counts: &mut [u8; Tile::COUNT],
             idx: usize,
             melds: i8,
-            taatsu: i8,
+            proto_melds: i8,
             existing: i8,
             has_pair: i8,
             best_score: &mut i8,
         ) {
             let max_blocks = 4 - existing;
-            if melds + taatsu > max_blocks {
+            if melds + proto_melds > max_blocks {
                 return;
             }
-            let score = 2 * (existing + melds) + taatsu + has_pair;
+            let score = 2 * (existing + melds) + proto_melds + has_pair;
             if score > *best_score {
                 *best_score = score;
             }
@@ -404,13 +396,13 @@ mod tests {
             }
 
             // Try meld: triplet
-            if melds + taatsu < max_blocks && counts[next] >= 3 {
+            if melds + proto_melds < max_blocks && counts[next] >= 3 {
                 counts[next] -= 3;
                 search_blocks(
                     counts,
                     next,
                     melds + 1,
-                    taatsu,
+                    proto_melds,
                     existing,
                     has_pair,
                     best_score,
@@ -418,7 +410,7 @@ mod tests {
                 counts[next] += 3;
             }
             // Try meld: sequence
-            if melds + taatsu < max_blocks
+            if melds + proto_melds < max_blocks
                 && next < 27
                 && next % 9 <= 6
                 && counts[next + 1] > 0
@@ -431,7 +423,7 @@ mod tests {
                     counts,
                     next,
                     melds + 1,
-                    taatsu,
+                    proto_melds,
                     existing,
                     has_pair,
                     best_score,
@@ -440,29 +432,33 @@ mod tests {
                 counts[next + 1] += 1;
                 counts[next + 2] += 1;
             }
-            // Try taatsu: pair
-            if melds + taatsu < max_blocks && counts[next] >= 2 {
+            // Try proto-meld: pair
+            if melds + proto_melds < max_blocks && counts[next] >= 2 {
                 counts[next] -= 2;
                 search_blocks(
                     counts,
                     next,
                     melds,
-                    taatsu + 1,
+                    proto_melds + 1,
                     existing,
                     has_pair,
                     best_score,
                 );
                 counts[next] += 2;
             }
-            // Try taatsu: adjacent
-            if melds + taatsu < max_blocks && next < 27 && next % 9 <= 7 && counts[next + 1] > 0 {
+            // Try proto-meld: adjacent
+            if melds + proto_melds < max_blocks
+                && next < 27
+                && next % 9 <= 7
+                && counts[next + 1] > 0
+            {
                 counts[next] -= 1;
                 counts[next + 1] -= 1;
                 search_blocks(
                     counts,
                     next,
                     melds,
-                    taatsu + 1,
+                    proto_melds + 1,
                     existing,
                     has_pair,
                     best_score,
@@ -470,15 +466,19 @@ mod tests {
                 counts[next] += 1;
                 counts[next + 1] += 1;
             }
-            // Try taatsu: gap
-            if melds + taatsu < max_blocks && next < 27 && next % 9 <= 6 && counts[next + 2] > 0 {
+            // Try proto-meld: gap
+            if melds + proto_melds < max_blocks
+                && next < 27
+                && next % 9 <= 6
+                && counts[next + 2] > 0
+            {
                 counts[next] -= 1;
                 counts[next + 2] -= 1;
                 search_blocks(
                     counts,
                     next,
                     melds,
-                    taatsu + 1,
+                    proto_melds + 1,
                     existing,
                     has_pair,
                     best_score,
@@ -488,7 +488,15 @@ mod tests {
             }
             // Skip one copy of `next`
             counts[next] -= 1;
-            search_blocks(counts, next, melds, taatsu, existing, has_pair, best_score);
+            search_blocks(
+                counts,
+                next,
+                melds,
+                proto_melds,
+                existing,
+                has_pair,
+                best_score,
+            );
             counts[next] += 1;
         }
 

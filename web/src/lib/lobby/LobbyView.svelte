@@ -1,13 +1,11 @@
 <script lang="ts">
   import QRCode from "qrcode";
-  import type { AiDifficulty } from "../protocol/generated/AiDifficulty";
   import type { LobbyConfig } from "../protocol/generated/LobbyConfig";
-  import type { MatchMode } from "../protocol/generated/MatchMode";
   import type { Seat } from "../protocol/generated/Seat";
   import type { SeatInfo } from "../protocol/generated/SeatInfo";
-  import type { SeatingRule } from "../protocol/generated/SeatingRule";
-  import type { TablePace } from "../protocol/generated/TablePace";
   import type { TableSnapshot } from "../protocol/generated/TableSnapshot";
+  import { seatLabel } from "../protocol/seats";
+  import LobbyConfigFields from "./LobbyConfigFields.svelte";
 
   interface Props {
     snapshot: TableSnapshot;
@@ -106,19 +104,6 @@
   const canConfigure = $derived(isSeated && !disabled);
   const canStartMatch = $derived(isSeated && humanCount >= 1 && !disabled);
 
-  function seatLabel(seat: Seat): string {
-    switch (seat) {
-      case "East":
-        return "东座";
-      case "South":
-        return "南座";
-      case "West":
-        return "西座";
-      case "North":
-        return "北座";
-    }
-  }
-
   function handleNicknameSubmit(event: SubmitEvent): void {
     event.preventDefault();
     applyNickname();
@@ -144,37 +129,6 @@
     if (!disabled && nicknameDirty) {
       applyNickname(false);
     }
-  }
-
-  function patchConfig(partial: Partial<LobbyConfig>): void {
-    if (!canConfigure) {
-      return;
-    }
-    onUpdateConfig({
-      ...snapshot.config,
-      ...partial,
-    });
-  }
-
-  function handleModeChange(event: Event): void {
-    const value = (event.currentTarget as HTMLSelectElement).value as MatchMode;
-    patchConfig({ mode: value });
-  }
-
-  function handleSeatingChange(event: Event): void {
-    const value = (event.currentTarget as HTMLSelectElement).value as SeatingRule;
-    patchConfig({ seating: value });
-  }
-
-  function handleAiDifficultyChange(event: Event): void {
-    const value = (event.currentTarget as HTMLSelectElement)
-      .value as AiDifficulty;
-    patchConfig({ ai_difficulty: value });
-  }
-
-  function handlePaceChange(event: Event): void {
-    const value = (event.currentTarget as HTMLSelectElement).value as TablePace;
-    patchConfig({ pace: value });
   }
 
   function handleIpv4Switch(event: Event): void {
@@ -311,60 +265,11 @@
         {/if}
       </div>
 
-      <div class="config-grid">
-        <label class="config-field">
-          <span class="field-label">对局模式</span>
-          <select
-            class="select-input"
-            value={snapshot.config.mode}
-            onchange={handleModeChange}
-            disabled={!canConfigure}
-          >
-            <option value="EastOnly">东风战（东一至东四含连庄）</option>
-            <option value="FreeTable">自由桌（不限小局数）</option>
-          </select>
-        </label>
-
-        <label class="config-field">
-          <span class="field-label">定座规则</span>
-          <select
-            class="select-input"
-            value={snapshot.config.seating}
-            onchange={handleSeatingChange}
-            disabled={!canConfigure}
-          >
-            <option value="Random">随机定座（默认）</option>
-            <option value="FixedOpposite">双人固定对家（东 / 西）</option>
-            <option value="FixedAdjacent">双人固定邻座（东 / 南）</option>
-          </select>
-        </label>
-
-        <label class="config-field">
-          <span class="field-label">AI 难度档位</span>
-          <select
-            class="select-input"
-            value={snapshot.config.ai_difficulty}
-            onchange={handleAiDifficultyChange}
-            disabled={!canConfigure}
-          >
-            <option value="Strong">强力</option>
-            <option value="Intermediate">进阶</option>
-          </select>
-        </label>
-
-        <label class="config-field">
-          <span class="field-label">牌桌节奏</span>
-          <select
-            class="select-input"
-            value={snapshot.config.pace}
-            onchange={handlePaceChange}
-            disabled={!canConfigure}
-          >
-            <option value="Standard">标准节奏</option>
-            <option value="Fast">快速节奏</option>
-          </select>
-        </label>
-      </div>
+      <LobbyConfigFields
+        config={snapshot.config}
+        disabled={!canConfigure}
+        {onUpdateConfig}
+      />
 
       <div class="start-bar">
         <p class="start-hint">
@@ -590,12 +495,6 @@
     width: 100%;
   }
 
-  .config-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 12px;
-  }
-
   .config-field {
     display: flex;
     flex-direction: column;
@@ -696,8 +595,7 @@
   }
 
   @media (max-width: 540px) {
-    .seats-grid,
-    .config-grid {
+    .seats-grid {
       grid-template-columns: 1fr;
     }
 

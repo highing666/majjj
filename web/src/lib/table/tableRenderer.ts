@@ -415,13 +415,24 @@ export class TableSceneRenderer {
     const tileGap = 1;
     const groupGap = 8;
 
-    const drawHorizontalMeldGroup = (
-      seat: Seat,
-      anchorRight: number,
-      y: number,
-      growLeft: boolean,
-      rotation: number,
-    ) => {
+    interface MeldGroupPlacement {
+      seat: Seat;
+      axis: "horizontal" | "vertical";
+      edgeAnchor: number;
+      fixedCoord: number;
+      growLeft?: boolean;
+      rotation: number;
+    }
+
+    const drawMeldSequence = (placement: MeldGroupPlacement) => {
+      const {
+        seat,
+        axis,
+        edgeAnchor,
+        fixedCoord,
+        growLeft = false,
+        rotation,
+      } = placement;
       const seatView = seatByName.get(seat);
       if (!seatView) {
         return;
@@ -431,14 +442,17 @@ export class TableSceneRenderer {
         pendingAddedKong,
         seat,
       );
-      let cursor = anchorRight;
+      let cursor = edgeAnchor;
       for (const item of items) {
-        const groupW =
+        const groupLen =
           item.tiles.length * mw + (item.tiles.length - 1) * tileGap;
-        const startX = growLeft ? cursor - groupW : cursor;
+        const start =
+          axis === "horizontal" && growLeft ? cursor - groupLen : cursor;
+
         item.tiles.forEach((slot, idx) => {
-          const cx = startX + idx * (mw + tileGap) + mw / 2;
-          const cy = y + mh / 2;
+          const along = start + idx * (mw + tileGap) + mw / 2;
+          const cx = axis === "horizontal" ? along : fixedCoord;
+          const cy = axis === "horizontal" ? fixedCoord + mh / 2 : along;
           const sprite = createTileSprite(
             this.atlas,
             slot.faceUp ? slot.tile : null,
@@ -451,8 +465,13 @@ export class TableSceneRenderer {
         });
 
         if (item.pendingAddedKong && pendingAddedKong !== null) {
-          const hoverX = startX + 1 * (mw + tileGap) + mw / 2;
-          const hoverY = y - mh * 0.28;
+          const secondAlong = start + (mw + tileGap) + mw / 2;
+          const hoverX =
+            axis === "horizontal"
+              ? secondAlong
+              : fixedCoord + (rotation > 0 ? mh * 0.32 : -mh * 0.32);
+          const hoverY =
+            axis === "horizontal" ? fixedCoord - mh * 0.28 : secondAlong;
           const pendingSprite = createTileSprite(
             this.atlas,
             pendingAddedKong.tile,
@@ -463,108 +482,67 @@ export class TableSceneRenderer {
           pendingSprite.position.set(hoverX, hoverY);
           this.meldLayer.addChild(pendingSprite);
 
-          const outline = new Graphics();
-          outline
-            .roundRect(hoverX - mw / 2 - 2, hoverY - mh / 2 - 2, mw + 4, mh + 4, 4)
-            .stroke({ width: 2, color: PENDING_AMBER });
-          this.meldLayer.addChild(outline);
-        }
-
-        cursor = growLeft ? startX - groupGap : startX + groupW + groupGap;
-      }
-    };
-
-    const drawVerticalMeldGroup = (
-      seat: Seat,
-      x: number,
-      startY: number,
-      rotation: number,
-    ) => {
-      const seatView = seatByName.get(seat);
-      if (!seatView) {
-        return;
-      }
-      const items = buildMeldRenderItems(
-        seatView.melds,
-        pendingAddedKong,
-        seat,
-      );
-      let cursorY = startY;
-      for (const item of items) {
-        item.tiles.forEach((slot, idx) => {
-          const cx = x;
-          const cy = cursorY + idx * (mw + tileGap) + mw / 2;
-          const sprite = createTileSprite(
-            this.atlas,
-            slot.faceUp ? slot.tile : null,
-            mw,
-            mh,
-            rotation,
-          );
-          sprite.position.set(cx, cy);
-          this.meldLayer.addChild(sprite);
-        });
-
-        if (item.pendingAddedKong && pendingAddedKong !== null) {
-          const hoverY = cursorY + 1 * (mw + tileGap) + mw / 2;
-          const offsetX = rotation > 0 ? mh * 0.32 : -mh * 0.32;
-          const pendingSprite = createTileSprite(
-            this.atlas,
-            pendingAddedKong.tile,
-            mw,
-            mh,
-            rotation,
-          );
-          pendingSprite.position.set(x + offsetX, hoverY);
-          this.meldLayer.addChild(pendingSprite);
-
+          const boxW = axis === "horizontal" ? mw : mh;
+          const boxH = axis === "horizontal" ? mh : mw;
           const outline = new Graphics();
           outline
             .roundRect(
-              x + offsetX - mh / 2 - 2,
-              hoverY - mw / 2 - 2,
-              mh + 4,
-              mw + 4,
+              hoverX - boxW / 2 - 2,
+              hoverY - boxH / 2 - 2,
+              boxW + 4,
+              boxH + 4,
               4,
             )
             .stroke({ width: 2, color: PENDING_AMBER });
           this.meldLayer.addChild(outline);
         }
 
-        cursorY += item.tiles.length * (mw + tileGap) + groupGap;
+        cursor =
+          axis === "horizontal" && growLeft
+            ? start - groupGap
+            : start + groupLen + groupGap;
       }
     };
 
-    // Bottom viewer melds: anchored bottom-right above hand, growing leftward
-    drawHorizontalMeldGroup(
-      relative.bottom,
-      layout.melds.bottom.x,
-      layout.melds.bottom.y,
-      true,
-      0,
-    );
-    // Top opponent melds: anchored top-right below top hand, growing leftward
-    drawHorizontalMeldGroup(
-      relative.top,
-      layout.melds.top.x,
-      layout.melds.top.y,
-      true,
-      Math.PI,
-    );
-    // Left opponent melds: growing downward
-    drawVerticalMeldGroup(
-      relative.left,
-      layout.melds.left.x + mh / 2,
-      layout.melds.left.y,
-      Math.PI / 2,
-    );
-    // Right opponent melds: growing downward
-    drawVerticalMeldGroup(
-      relative.right,
-      layout.melds.right.x - mh / 2,
-      layout.melds.right.y,
-      -Math.PI / 2,
-    );
+    const placements: MeldGroupPlacement[] = [
+      // Bottom viewer melds: anchored bottom-right above hand, growing leftward
+      {
+        seat: relative.bottom,
+        axis: "horizontal",
+        edgeAnchor: layout.melds.bottom.x,
+        fixedCoord: layout.melds.bottom.y,
+        growLeft: true,
+        rotation: 0,
+      },
+      // Top opponent melds: anchored top-right below top hand, growing leftward
+      {
+        seat: relative.top,
+        axis: "horizontal",
+        edgeAnchor: layout.melds.top.x,
+        fixedCoord: layout.melds.top.y,
+        growLeft: true,
+        rotation: Math.PI,
+      },
+      // Left opponent melds: growing downward
+      {
+        seat: relative.left,
+        axis: "vertical",
+        edgeAnchor: layout.melds.left.y,
+        fixedCoord: layout.melds.left.x + mh / 2,
+        rotation: Math.PI / 2,
+      },
+      // Right opponent melds: growing downward
+      {
+        seat: relative.right,
+        axis: "vertical",
+        edgeAnchor: layout.melds.right.y,
+        fixedCoord: layout.melds.right.x - mh / 2,
+        rotation: -Math.PI / 2,
+      },
+    ];
+    for (const placement of placements) {
+      drawMeldSequence(placement);
+    }
   }
 
   private drawOpponentHands(
@@ -580,51 +558,46 @@ export class TableSceneRenderer {
     const topCount = seatByName.get(relative.top)?.hand_count ?? 0;
     const topSpan = topCount * ow + Math.max(0, topCount - 1) * gap;
     const topStartX = layout.cx - topSpan / 2;
-    const topY = (layout.height >= 500 ? 14 : 8) + oh / 2;
+    const topY = layout.topMargin + oh / 2;
     for (let i = 0; i < topCount; i += 1) {
       const sprite = createTileSprite(this.atlas, null, ow, oh, Math.PI);
       sprite.position.set(topStartX + i * (ow + gap) + ow / 2, topY);
       this.opponentHandLayer.addChild(sprite);
     }
 
-    // Left opponent
-    const leftCount = seatByName.get(relative.left)?.hand_count ?? 0;
+    // Left and right opponents
     const sideTileW = Math.max(12, Math.round(ow * 0.86));
     const sideTileH = Math.round(sideTileW * 1.38);
-    const leftSpan = leftCount * sideTileW + Math.max(0, leftCount - 1) * gap;
-    const leftStartY = layout.cy - leftSpan / 2;
-    const leftX = (layout.width >= 640 ? 20 : 10) + sideTileH / 2;
-    for (let i = 0; i < leftCount; i += 1) {
-      const sprite = createTileSprite(
-        this.atlas,
-        null,
-        sideTileW,
-        sideTileH,
-        Math.PI / 2,
-      );
-      sprite.position.set(leftX, leftStartY + i * (sideTileW + gap) + sideTileW / 2);
-      this.opponentHandLayer.addChild(sprite);
-    }
-
-    // Right opponent
-    const rightCount = seatByName.get(relative.right)?.hand_count ?? 0;
-    const rightSpan = rightCount * sideTileW + Math.max(0, rightCount - 1) * gap;
-    const rightStartY = layout.cy - rightSpan / 2;
-    const rightX =
-      layout.width - (layout.width >= 640 ? 20 : 10) - sideTileH / 2;
-    for (let i = 0; i < rightCount; i += 1) {
-      const sprite = createTileSprite(
-        this.atlas,
-        null,
-        sideTileW,
-        sideTileH,
-        -Math.PI / 2,
-      );
-      sprite.position.set(
-        rightX,
-        rightStartY + i * (sideTileW + gap) + sideTileW / 2,
-      );
-      this.opponentHandLayer.addChild(sprite);
+    const sideHands = [
+      {
+        seat: relative.left,
+        x: layout.margin + sideTileH / 2,
+        rotation: Math.PI / 2,
+      },
+      {
+        seat: relative.right,
+        x: layout.width - layout.margin - sideTileH / 2,
+        rotation: -Math.PI / 2,
+      },
+    ];
+    for (const side of sideHands) {
+      const count = seatByName.get(side.seat)?.hand_count ?? 0;
+      const span = count * sideTileW + Math.max(0, count - 1) * gap;
+      const startY = layout.cy - span / 2;
+      for (let i = 0; i < count; i += 1) {
+        const sprite = createTileSprite(
+          this.atlas,
+          null,
+          sideTileW,
+          sideTileH,
+          side.rotation,
+        );
+        sprite.position.set(
+          side.x,
+          startY + i * (sideTileW + gap) + sideTileW / 2,
+        );
+        this.opponentHandLayer.addChild(sprite);
+      }
     }
   }
 
@@ -662,7 +635,7 @@ export class TableSceneRenderer {
       const dealerTag = isDealer ? "庄" : "";
 
       const line = `${dealerTag ? `[${dealerTag}] ` : ""}${wind}·${shortName}${offlineTag}  ${formatScoreDelta(seatView.score)}`;
-      const badgeW = layout.width >= 640 ? 156 : 122;
+      const badgeW = layout.isWide ? 156 : 122;
       const badgeH = 26;
       const bx = alignRight ? x - badgeW : x;
 
@@ -681,7 +654,7 @@ export class TableSceneRenderer {
         style: {
           fontFamily:
             '-apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans CJK SC", sans-serif',
-          fontSize: layout.width >= 640 ? 12 : 10,
+          fontSize: layout.isWide ? 12 : 10,
           fontWeight: isActive ? "700" : "600",
           fill: isActive ? ACTIVE_GLOW : TEXT_LIGHT,
         },

@@ -187,15 +187,49 @@ fn hex_val(b: u8) -> Option<u8> {
     }
 }
 
+fn is_vite_hash_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+fn has_vite_content_hash(rel: &str) -> bool {
+    let Some(stem) = Path::new(rel).file_stem().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    if let Some((prefix, suffix)) = stem.rsplit_once('-') {
+        if !prefix.is_empty() && suffix.len() >= 6 && suffix.bytes().all(is_vite_hash_char) {
+            return true;
+        }
+    }
+    // Rollup/Vite emits 8-character base64url hashes (`[A-Za-z0-9_-]{8}`) that may contain `-`.
+    if stem.len() >= 10 {
+        let sep_idx = stem.len() - 9;
+        let hash = &stem[sep_idx + 1..];
+        if stem.as_bytes()[sep_idx] == b'-'
+            && hash.bytes().all(|b| is_vite_hash_char(b) || b == b'-')
+            && hash
+                .bytes()
+                .any(|b| b.is_ascii_digit() || b.is_ascii_uppercase())
+        {
+            return true;
+        }
+    }
+    false
+}
+
 fn cache_control_for_path(rel: &str) -> &'static str {
     let lower = rel.to_ascii_lowercase();
-    if lower.ends_with(".html")
-        || lower.ends_with(".htm")
-        || lower == "manifest.json"
-        || lower == "manifest.webmanifest"
-    {
+    let lower_path = Path::new(&lower);
+    let is_manifest = matches!(
+        lower_path.file_name().and_then(|n| n.to_str()),
+        Some("manifest.json" | "manifest.webmanifest")
+    );
+    let is_html = matches!(
+        lower_path.extension().and_then(|e| e.to_str()),
+        Some("html" | "htm")
+    );
+    if is_html || is_manifest {
         "no-cache"
-    } else if lower.starts_with("assets/") {
+    } else if lower.starts_with("assets/") && has_vite_content_hash(rel) {
         "public, max-age=31536000, immutable"
     } else {
         "no-cache"

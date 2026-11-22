@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { matchModeLabel } from "./lib/lobby/lobbyConfig";
   import LobbyView from "./lib/lobby/LobbyView.svelte";
   import type { PlayerAction } from "./lib/protocol/generated/PlayerAction";
   import type { TablePace } from "./lib/protocol/generated/TablePace";
@@ -134,7 +135,7 @@
       <header class="match-topbar">
         <div class="topbar-info">
           <span class="tag tag-mode">
-            {snapshot.config.mode === "EastOnly" ? "东风战" : "自由桌"}
+            {matchModeLabel(snapshot.config.mode)}
           </span>
           {#if playerView}
             <span class="topbar-round">
@@ -245,10 +246,12 @@
   {:else if playerView?.match_summary}
     <MatchSummaryView
       summary={playerView.match_summary}
+      config={snapshot.config}
       seats={snapshot.seats}
       yourSeat={snapshot.your_seat}
       lastSettlement={playerView.last_settlement}
       disabled={actionsDisabled}
+      onUpdateConfig={(config) => client.updateLobbyConfig(config)}
       onStartMatch={() => client.startMatch()}
       onReturnToLobby={() => client.returnToLobby()}
     />

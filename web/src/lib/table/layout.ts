@@ -10,6 +10,9 @@ export interface TableLayout {
   height: number;
   cx: number;
   cy: number;
+  margin: number;
+  topMargin: number;
+  isWide: boolean;
   handTileW: number;
   handTileH: number;
   handGap: number;
@@ -57,12 +60,13 @@ export function computeTableLayout(
   const width = Math.max(320, Math.round(rawWidth));
   const height = Math.max(280, Math.round(rawHeight));
 
-  const handGap = width >= 640 ? 3 : 1;
-  const drawnGap = width >= 640 ? 14 : 7;
-  const sideMargin = width >= 640 ? 20 : 10;
+  const isWide = width >= 640;
+  const handGap = isWide ? 3 : 1;
+  const drawnGap = isWide ? 14 : 7;
+  const margin = isWide ? 20 : 10;
 
   const maxHandWByWidth = Math.floor(
-    (width - sideMargin * 2 - 12 * handGap - drawnGap) / 14,
+    (width - margin * 2 - 12 * handGap - drawnGap) / 14,
   );
   const handTileW = clamp(
     Math.min(maxHandWByWidth, Math.round(height * 0.1)),
@@ -97,7 +101,7 @@ export function computeTableLayout(
     height: hubH,
   };
 
-  const riverGap = width >= 640 ? 2 : 1;
+  const riverGap = isWide ? 2 : 1;
   const riverHubGap = height >= 500 ? 10 : 6;
   const maxRiverAreaV = Math.max(
     40,
@@ -105,7 +109,7 @@ export function computeTableLayout(
   );
   const maxRiverAreaH = Math.max(
     40,
-    Math.floor((width - hubW) / 2 - oppHandTileH - sideMargin * 2 - riverHubGap - 8),
+    Math.floor((width - hubW) / 2 - oppHandTileH - margin * 2 - riverHubGap - 8),
   );
   const riverDepthBudget = Math.min(maxRiverAreaV, maxRiverAreaH);
   const maxRiverTileHFromDepth = Math.floor((riverDepthBudget - riverGap * 2) / 3);
@@ -137,7 +141,7 @@ export function computeTableLayout(
     height: topRiverHeight,
   };
 
-  const leftRiverWidth = Math.min(riverThreeRows, Math.max(riverTileH, hub.x - riverHubGap - sideMargin - oppHandTileH - 8));
+  const leftRiverWidth = Math.min(riverThreeRows, Math.max(riverTileH, hub.x - riverHubGap - margin - oppHandTileH - 8));
   const leftRiver: Rect = {
     x: hub.x - riverHubGap - leftRiverWidth,
     y: Math.round(cy - riverSpan / 2),
@@ -145,7 +149,7 @@ export function computeTableLayout(
     height: riverSpan,
   };
 
-  const rightRiverWidth = Math.min(riverThreeRows, Math.max(riverTileH, width - sideMargin - oppHandTileH - 8 - (hub.x + hub.width + riverHubGap)));
+  const rightRiverWidth = Math.min(riverThreeRows, Math.max(riverTileH, width - margin - oppHandTileH - 8 - (hub.x + hub.width + riverHubGap)));
   const rightRiver: Rect = {
     x: hub.x + hub.width + riverHubGap,
     y: Math.round(cy - riverSpan / 2),
@@ -153,12 +157,15 @@ export function computeTableLayout(
     height: riverSpan,
   };
 
-  const badgePad = width >= 640 ? 16 : 8;
+  const badgePad = isWide ? 16 : 8;
   return {
     width,
     height,
     cx,
     cy,
+    margin,
+    topMargin,
+    isWide,
     handTileW,
     handTileH,
     handGap,
@@ -186,9 +193,9 @@ export function computeTableLayout(
     },
     melds: {
       bottom: { x: width - badgePad, y: bottomHandY - meldTileH - 8 },
-      right: { x: width - sideMargin - oppHandTileH - 8, y: cy + riverSpan / 2 + 10 },
+      right: { x: width - margin - oppHandTileH - 8, y: cy + riverSpan / 2 + 10 },
       top: { x: width - badgePad, y: topMargin + oppHandTileH + 6 },
-      left: { x: sideMargin + oppHandTileH + 8, y: topMargin + oppHandTileH + 6 },
+      left: { x: margin + oppHandTileH + 8, y: topMargin + oppHandTileH + 6 },
     },
   };
 }

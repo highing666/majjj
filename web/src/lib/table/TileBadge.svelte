@@ -1,6 +1,13 @@
 <script lang="ts">
   import type { Tile } from "../protocol/generated/Tile";
-  import { getTileLabel, getTileNumeral, getTileSuit } from "./tiles";
+  import {
+    getDragonKind,
+    getSuitUnit,
+    getTileLabel,
+    getTileNumeral,
+    getTileSuit,
+    getTileTone,
+  } from "./tiles";
 
   interface Props {
     tile: Tile | null;
@@ -21,44 +28,13 @@
   const suit = $derived(tile !== null ? getTileSuit(tile) : null);
   const numeral = $derived(tile !== null ? getTileNumeral(tile) : "");
   const label = $derived(tile !== null && faceUp ? getTileLabel(tile) : "扣牌");
-
-  const suitUnit = $derived.by(() => {
-    switch (suit) {
-      case "Man":
-        return "万";
-      case "Bamboo":
-        return "条";
-      case "Dot":
-        return "筒";
-      default:
-        return "";
-    }
-  });
-
-  const toneClass = $derived.by(() => {
-    if (!faceUp || tile === null) {
-      return "tone-back";
-    }
-    if (suit === "Man") {
-      return "tone-man";
-    }
-    if (suit === "Bamboo") {
-      return "tone-bamboo";
-    }
-    if (suit === "Dot") {
-      return "tone-dot";
-    }
-    if (tile === 31) {
-      return "tone-red";
-    }
-    if (tile === 32) {
-      return "tone-bamboo";
-    }
-    if (tile === 33) {
-      return "tone-dot";
-    }
-    return "tone-ink";
-  });
+  const suitUnit = $derived(suit !== null ? getSuitUnit(suit) : "");
+  const isWhiteDragon = $derived(
+    tile !== null && getDragonKind(tile) === "White",
+  );
+  const toneClass = $derived(
+    !faceUp || tile === null ? "tone-back" : `tone-${getTileTone(tile)}`,
+  );
 </script>
 
 <span
@@ -70,7 +46,7 @@
 >
   {#if !faceUp || tile === null}
     <span class="tile-back-inner"></span>
-  {:else if tile === 33}
+  {:else if isWhiteDragon}
     <span class="tile-white-frame"></span>
   {:else if suitUnit}
     <span class="tile-top">{numeral}</span>

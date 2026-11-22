@@ -5,13 +5,12 @@ import type { PublicSeatView } from "../protocol/generated/PublicSeatView";
 import type { Seat } from "../protocol/generated/Seat";
 import type { SeatInfo } from "../protocol/generated/SeatInfo";
 import type { TableSnapshot } from "../protocol/generated/TableSnapshot";
+import { ALL_SEATS } from "../protocol/seats";
 import {
   createInitialSessionState,
   reduceServerMessage,
   type SessionState,
 } from "./reducer";
-
-const ALL_SEATS: [Seat, Seat, Seat, Seat] = ["East", "South", "West", "North"];
 
 function makeLobbyConfig(overrides: Partial<LobbyConfig> = {}): LobbyConfig {
   return {
@@ -665,6 +664,30 @@ describe("session reducer — EventBatch folding, gap recovery, and ActionReject
     ]);
   });
 
+  it("clears pendingActionId on ErrorNotice so unexpected server errors never deadlock input", () => {
+    const start: SessionState = {
+      ...reduceServerMessage(createInitialSessionState(), {
+        TableSnapshot: makeSnapshot({
+          phase: "InMatch",
+          your_seat: "East",
+          seq: 10,
+          player_view: makePlayerView({ seq: 10 }),
+        }),
+      }).state,
+      pendingActionId: "act-pending-1",
+    };
+
+    const res = reduceServerMessage(start, {
+      ErrorNotice: { message: "can only submit actions during an active match" },
+    });
+
+    expect(res.state.pendingActionId).toBeNull();
+    expect(res.state.lastErrorNotice).toBe(
+      "can only submit actions during an active match",
+    );
+    expect(res.effects).toEqual([]);
+  });
+
   it("clears pendingAddedKong on HandSettled and folds NextHandConfirmed and HandStarted", () => {
     const start = reduceServerMessage(createInitialSessionState(), {
       TableSnapshot: makeSnapshot({
@@ -1058,6 +1081,37 @@ describe("session reducer — EventBatch folding, gap recovery, and ActionReject
     }).state;
     expect(returnedToLobby.snapshot?.phase).toBe("Lobby");
     expect(returnedToLobby.snapshot?.player_view).toBeNull();
+
+    // Peer LobbyUpdated in Finished updates config/pace while preserving match_summary
+    const updatedConfigInFinished = reduceServerMessage(finished, {
+      LobbyUpdated: {
+        phase: "Finished",
+        config: makeLobbyConfig({
+          mode: "EastOnly",
+          seating: "FixedOpposite",
+          ai_difficulty: "Intermediate",
+          pace: "Fast",
+        }),
+        seats: makeLobbySeats(),
+      },
+    }).state;
+    expect(updatedConfigInFinished.snapshot?.phase).toBe("Finished");
+    expect(updatedConfigInFinished.snapshot?.config).toEqual({
+      mode: "EastOnly",
+      seating: "FixedOpposite",
+      ai_difficulty: "Intermediate",
+      pace: "Fast",
+    });
+    expect(updatedConfigInFinished.snapshot?.pace).toBe("Fast");
+    expect(
+      updatedConfigInFinished.snapshot?.player_view?.match_summary,
+    ).toEqual({
+      mode: "FreeTable",
+      hands_played: 2,
+      initial_scores: [0, 0, 0, 0],
+      final_scores: [8, -8, 0, 0],
+      net_deltas: [8, -8, 0, 0],
+    });
 
     // Finished -> StartMatch directly transitions back to InMatch
     const restarted = reduceServerMessage(finished, {

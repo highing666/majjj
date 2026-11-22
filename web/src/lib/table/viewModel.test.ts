@@ -5,10 +5,17 @@ import type { PlayerView } from "../protocol/generated/PlayerView";
 import type { PublicSeatView } from "../protocol/generated/PublicSeatView";
 import type { Seat } from "../protocol/generated/Seat";
 import {
+  matchModeLabel,
+  patchLobbyConfig,
+} from "../lobby/lobbyConfig";
+import {
   formatRoundTitle,
+  getDragonKind,
+  getSuitUnit,
   getTileLabel,
   getTileRank,
   getTileSuit,
+  getTileTone,
   seatLabel,
   seatShortWind,
 } from "./tiles";
@@ -106,6 +113,23 @@ describe("tile metadata helpers", () => {
     expect(getTileSuit(31)).toBe("Dragon");
     expect(getTileRank(33)).toBeNull();
     expect([31, 32, 33].map(getTileLabel)).toEqual(["中", "发", "白"]);
+    expect([31, 32, 33].map(getDragonKind)).toEqual(["Red", "Green", "White"]);
+    expect(getDragonKind(0)).toBeNull();
+    expect([getSuitUnit("Man"), getSuitUnit("Bamboo"), getSuitUnit("Dot"), getSuitUnit("Dragon")]).toEqual([
+      "万",
+      "条",
+      "筒",
+      "",
+    ]);
+    expect([0, 9, 18, 27, 31, 32, 33].map(getTileTone)).toEqual([
+      "man",
+      "bamboo",
+      "dot",
+      "ink",
+      "red",
+      "bamboo",
+      "dot",
+    ]);
   });
 
   it("formats seat labels and round titles with GLOSSARY terms", () => {
@@ -242,7 +266,36 @@ describe("table viewModel helpers", () => {
       "碰",
       "过",
     ]);
+    expect(items.map((item) => item.shortcutKey)).toEqual([
+      "h",
+      "h",
+      "h",
+      "g",
+      "g",
+      "g",
+      "p",
+      "escape",
+    ]);
     expect(items.some((item) => item.label.includes("吃"))).toBe(false);
+
+    expect(matchModeLabel("EastOnly")).toBe("东风战");
+    expect(matchModeLabel("FreeTable")).toBe("自由桌");
+    expect(
+      patchLobbyConfig(
+        {
+          mode: "EastOnly",
+          seating: "Random",
+          ai_difficulty: "Strong",
+          pace: "Standard",
+        },
+        { mode: "FreeTable", pace: "Fast" },
+      ),
+    ).toEqual({
+      mode: "FreeTable",
+      seating: "Random",
+      ai_difficulty: "Strong",
+      pace: "Fast",
+    });
 
     // BetweenHands actions are excluded from in-play ActionBar
     const betweenHands = makePlayerView({

@@ -7,8 +7,10 @@ import type { RevealedMeld } from "../protocol/generated/RevealedMeld";
 import type { Seat } from "../protocol/generated/Seat";
 import type { SeatInfo } from "../protocol/generated/SeatInfo";
 import type { Tile } from "../protocol/generated/Tile";
+import { parseMeld, type MeldKind } from "../protocol/melds";
+import { ALL_SEATS, seatIndex, seatLabel } from "../protocol/seats";
 import type { PendingAddedKong } from "../session/reducer";
-import { getTileLabel, seatLabel } from "./tiles";
+import { getTileLabel } from "./tiles";
 
 export interface RelativeSeats {
   bottom: Seat;
@@ -23,7 +25,7 @@ export interface MeldTileSlot {
 }
 
 export interface MeldRenderItem {
-  kind: "Pon" | "ExposedKong" | "AddedKong" | "ConcealedKong" | "Chi";
+  kind: MeldKind;
   tiles: MeldTileSlot[];
   pendingAddedKong: boolean;
 }
@@ -37,6 +39,7 @@ export interface ActionBarItem {
   tileLabel: string | null;
   tone: ActionBarTone;
   shortcut: string;
+  shortcutKey: string;
   action: PlayerAction;
 }
 
@@ -56,18 +59,16 @@ export interface MatchStandingRow {
   netDelta: number;
 }
 
-const SEAT_RING: [Seat, Seat, Seat, Seat] = ["East", "South", "West", "North"];
-
 /**
  * Maps canonical seats counter-clockwise relative to `viewer` (`bottom` -> `right` -> `top` -> `left`).
  */
 export function getRelativeSeats(viewer: Seat): RelativeSeats {
-  const idx = SEAT_RING.indexOf(viewer);
+  const idx = seatIndex(viewer);
   return {
-    bottom: SEAT_RING[idx],
-    right: SEAT_RING[(idx + 1) % 4],
-    top: SEAT_RING[(idx + 2) % 4],
-    left: SEAT_RING[(idx + 3) % 4],
+    bottom: ALL_SEATS[idx],
+    right: ALL_SEATS[(idx + 1) % 4],
+    top: ALL_SEATS[(idx + 2) % 4],
+    left: ALL_SEATS[(idx + 3) % 4],
   };
 }
 
@@ -106,97 +107,78 @@ export function buildVisibleRiverRows(
   return rows;
 }
 
-/**
- * Converts a seat's `MeldView` list into render slots, honoring viewer vs opponent `ConcealedKong`
- * visibility and highlighting unresolved `AddedKongAttempted` without finalizing the meld early.
- */
 function mapMeldToRenderItem(
   meld: MeldView | RevealedMeld,
   pendingAddedKong: PendingAddedKong | null,
   seat: Seat | null,
 ): MeldRenderItem {
-  if ("Pon" in meld) {
-    const tile = meld.Pon.tile;
-    const isPendingAdded =
-      pendingAddedKong !== null &&
-      seat !== null &&
-      pendingAddedKong.seat === seat &&
-      pendingAddedKong.tile === tile;
-    return {
-      kind: "Pon",
-      tiles: [
-        { tile, faceUp: true },
-        { tile, faceUp: true },
-        { tile, faceUp: true },
-      ],
-      pendingAddedKong: isPendingAdded,
-    };
-  }
-
-  if ("ExposedKong" in meld) {
-    const tile = meld.ExposedKong.tile;
-    return {
-      kind: "ExposedKong",
-      tiles: [
-        { tile, faceUp: true },
-        { tile, faceUp: true },
-        { tile, faceUp: true },
-        { tile, faceUp: true },
-      ],
-      pendingAddedKong: false,
-    };
-  }
-
-  if ("AddedKong" in meld) {
-    const tile = meld.AddedKong.tile;
-    return {
-      kind: "AddedKong",
-      tiles: [
-        { tile, faceUp: true },
-        { tile, faceUp: true },
-        { tile, faceUp: true },
-        { tile, faceUp: true },
-      ],
-      pendingAddedKong: false,
-    };
-  }
-
-  if ("ConcealedKong" in meld) {
-    const tile = meld.ConcealedKong.tile;
-    if (tile !== null) {
+  const parsed = parseMeld(meld);
+  switch (parsed.kind) {
+    case "Pon": {
+      const { tile } = parsed;
+      const isPendingAdded =
+        pendingAddedKong !== null &&
+        seat !== null &&
+        pendingAddedKong.seat === seat &&
+        pendingAddedKong.tile === tile;
       return {
-        kind: "ConcealedKong",
+        kind: "Pon",
         tiles: [
-          { tile: null, faceUp: false },
-          { tile: null, faceUp: false },
           { tile, faceUp: true },
-          { tile: null, faceUp: false },
+          { tile, faceUp: true },
+          { tile, faceUp: true },
+        ],
+        pendingAddedKong: isPendingAdded,
+      };
+    }
+    case "ExposedKong":
+    case "AddedKong": {
+      const { kind, tile } = parsed;
+      return {
+        kind,
+        tiles: [
+          { tile, faceUp: true },
+          { tile, faceUp: true },
+          { tile, faceUp: true },
+          { tile, faceUp: true },
         ],
         pendingAddedKong: false,
       };
     }
-    return {
-      kind: "ConcealedKong",
-      tiles: [
-        { tile: null, faceUp: false },
-        { tile: null, faceUp: false },
-        { tile: null, faceUp: false },
-        { tile: null, faceUp: false },
-      ],
-      pendingAddedKong: false,
-    };
+    case "ConcealedKong": {
+      const { tile } = parsed;
+      return {
+        kind: "ConcealedKong",
+        tiles:
+          tile !== null
+            ? [
+                { tile: null, faceUp: false },
+                { tile: null, faceUp: false },
+                { tile, faceUp: true },
+                { tile: null, faceUp: false },
+              ]
+            : [
+                { tile: null, faceUp: false },
+                { tile: null, faceUp: false },
+                { tile: null, faceUp: false },
+                { tile: null, faceUp: false },
+              ],
+        pendingAddedKong: false,
+      };
+    }
+    case "Chi": {
+      const [a, b, c] = parsed.tiles;
+      return {
+        kind: "Chi",
+        tiles: [
+          { tile: a, faceUp: true },
+          { tile: b, faceUp: true },
+          { tile: c, faceUp: true },
+        ],
+        pendingAddedKong: false,
+      };
+    }
   }
-
-  const [a, b, c] = meld.Chi.tiles;
-  return {
-    kind: "Chi",
-    tiles: [
-      { tile: a, faceUp: true },
-      { tile: b, faceUp: true },
-      { tile: c, faceUp: true },
-    ],
-    pendingAddedKong: false,
-  };
 }
 
 /**
@@ -237,7 +219,7 @@ export function buildMatchStandings(
   summary: MatchSummary,
   seats: readonly [SeatInfo, SeatInfo, SeatInfo, SeatInfo],
 ): MatchStandingRow[] {
-  const rows = SEAT_RING.map((seat, idx) => {
+  const rows = ALL_SEATS.map((seat, idx) => {
     const info = seats[idx];
     const nickname =
       info.nickname || (info.kind === "Ai" ? `AI ${idx + 1}` : seatLabel(seat));
@@ -282,16 +264,12 @@ export function findLegalDiscardAction(
   return null;
 }
 
-/**
- * Builds authoritative in-play action bar buttons exclusively from `view.legal_actions`.
- * Never renders `吃` when `rule_profile.allow_chi` is `false` (Tuidaohu), and excludes hand discards
- * and `BetweenHands` actions.
- */
 function createActionItem(
   key: string,
   label: string,
   tone: ActionBarTone,
   shortcut: string,
+  shortcutKey: string,
   action: PlayerAction,
   tile: Tile | null = null,
 ): ActionBarItem {
@@ -302,6 +280,7 @@ function createActionItem(
     tileLabel: tile !== null ? getTileLabel(tile) : null,
     tone,
     shortcut,
+    shortcutKey,
     action,
   };
 }
@@ -327,11 +306,13 @@ export function buildActionBarItems(view: PlayerView): ActionBarItem[] {
 
   for (const action of view.legal_actions) {
     if (action === "Tsumo") {
-      tsumoItems.push(createActionItem("Tsumo", "自摸", "hu", "H", action));
+      tsumoItems.push(createActionItem("Tsumo", "自摸", "hu", "H", "h", action));
       continue;
     }
     if (action === "Pass") {
-      passItems.push(createActionItem("Pass", "过", "pass", "Esc", action));
+      passItems.push(
+        createActionItem("Pass", "过", "pass", "Esc", "escape", action),
+      );
       continue;
     }
     if (typeof action !== "object" || action === null) {
@@ -340,31 +321,65 @@ export function buildActionBarItems(view: PlayerView): ActionBarItem[] {
 
     if ("Ron" in action) {
       const tile = action.Ron.tile;
-      ronItems.push(createActionItem(`Ron:${tile}`, "点炮胡", "hu", "H", action, tile));
+      ronItems.push(
+        createActionItem(`Ron:${tile}`, "点炮胡", "hu", "H", "h", action, tile),
+      );
     } else if ("RobKongHu" in action) {
       const tile = action.RobKongHu.tile;
       robKongItems.push(
-        createActionItem(`RobKongHu:${tile}`, "抢杠胡", "hu", "H", action, tile),
+        createActionItem(
+          `RobKongHu:${tile}`,
+          "抢杠胡",
+          "hu",
+          "H",
+          "h",
+          action,
+          tile,
+        ),
       );
     } else if ("ConcealedKong" in action) {
       const tile = action.ConcealedKong.tile;
       concealedKongItems.push(
-        createActionItem(`ConcealedKong:${tile}`, "暗杠", "kong", "G", action, tile),
+        createActionItem(
+          `ConcealedKong:${tile}`,
+          "暗杠",
+          "kong",
+          "G",
+          "g",
+          action,
+          tile,
+        ),
       );
     } else if ("AddedKong" in action) {
       const tile = action.AddedKong.tile;
       addedKongItems.push(
-        createActionItem(`AddedKong:${tile}`, "补杠", "kong", "G", action, tile),
+        createActionItem(
+          `AddedKong:${tile}`,
+          "补杠",
+          "kong",
+          "G",
+          "g",
+          action,
+          tile,
+        ),
       );
     } else if ("ExposedKong" in action) {
       const tile = action.ExposedKong.tile;
       exposedKongItems.push(
-        createActionItem(`ExposedKong:${tile}`, "明杠", "kong", "G", action, tile),
+        createActionItem(
+          `ExposedKong:${tile}`,
+          "明杠",
+          "kong",
+          "G",
+          "g",
+          action,
+          tile,
+        ),
       );
     } else if ("Pon" in action) {
       const tile = action.Pon.tile;
       ponItems.push(
-        createActionItem(`Pon:${tile}`, "碰", "pon", "P", action, tile),
+        createActionItem(`Pon:${tile}`, "碰", "pon", "P", "p", action, tile),
       );
     }
     // `Discard` is handled directly on hand tiles; `Chi` is never rendered when `allow_chi === false`.

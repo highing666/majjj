@@ -1,8 +1,16 @@
-import type { Seat } from "../protocol/generated/Seat";
 import type { Suit } from "../protocol/generated/Suit";
 import type { Tile } from "../protocol/generated/Tile";
 import type { TurnView } from "../protocol/generated/TurnView";
 import type { Wind } from "../protocol/generated/Wind";
+export {
+  ALL_SEATS,
+  seatIndex,
+  seatLabel,
+  seatShortWind,
+} from "../protocol/seats";
+
+export type DragonKind = "Red" | "Green" | "White";
+export type TileTone = "man" | "bamboo" | "dot" | "red" | "ink";
 
 const CHINESE_NUMERALS = ["一", "二", "三", "四", "五", "六", "七", "八", "九"];
 const WIND_TILES = ["东", "南", "西", "北"];
@@ -75,34 +83,61 @@ export function getTileNumeral(tile: Tile): string {
 }
 
 /**
- * Returns Chinese seat label (`东座`/`南座`/`西座`/`北座`).
+ * Returns the Chinese suit suffix (`万`/`条`/`筒`) for a suit, or `""` for honors.
  */
-export function seatLabel(seat: Seat): string {
-  switch (seat) {
-    case "East":
-      return "东座";
-    case "South":
-      return "南座";
-    case "West":
-      return "西座";
-    case "North":
-      return "北座";
+export function getSuitUnit(suit: Suit): "万" | "条" | "筒" | "" {
+  switch (suit) {
+    case "Man":
+      return "万";
+    case "Bamboo":
+      return "条";
+    case "Dot":
+      return "筒";
+    default:
+      return "";
   }
 }
 
 /**
- * Returns single-character wind label for a seat (`东`/`南`/`西`/`北`).
+ * Returns `"Red"` (`中`), `"Green"` (`发`), `"White"` (`白`) for dragon tiles, or `null`.
  */
-export function seatShortWind(seat: Seat): string {
-  switch (seat) {
-    case "East":
-      return "东";
-    case "South":
-      return "南";
-    case "West":
-      return "西";
-    case "North":
-      return "北";
+export function getDragonKind(tile: Tile): DragonKind | null {
+  switch (tile) {
+    case 31:
+      return "Red";
+    case 32:
+      return "Green";
+    case 33:
+      return "White";
+    default:
+      return null;
+  }
+}
+
+/**
+ * Returns the semantic color tone for rendering a face-up tile.
+ */
+export function getTileTone(tile: Tile): TileTone {
+  const suit = getTileSuit(tile);
+  switch (suit) {
+    case "Man":
+      return "man";
+    case "Bamboo":
+      return "bamboo";
+    case "Dot":
+      return "dot";
+    case "Wind":
+      return "ink";
+    case "Dragon": {
+      const dragon = getDragonKind(tile);
+      if (dragon === "Red") {
+        return "red";
+      }
+      if (dragon === "Green") {
+        return "bamboo";
+      }
+      return "dot";
+    }
   }
 }
 

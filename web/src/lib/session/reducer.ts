@@ -7,6 +7,8 @@ import type { Seat } from "../protocol/generated/Seat";
 import type { ServerMessage } from "../protocol/generated/ServerMessage";
 import type { TableSnapshot } from "../protocol/generated/TableSnapshot";
 import type { Tile } from "../protocol/generated/Tile";
+import { parseMeld } from "../protocol/melds";
+import { ALL_SEATS, seatIndex } from "../protocol/seats";
 
 export type ConnectionStatus = "disconnected" | "connecting" | "connected";
 
@@ -36,20 +38,7 @@ export interface ReduceResult {
   effects: SessionEffect[];
 }
 
-const ALL_SEATS: [Seat, Seat, Seat, Seat] = ["East", "South", "West", "North"];
-
-export function seatIndex(seat: Seat): number {
-  switch (seat) {
-    case "East":
-      return 0;
-    case "South":
-      return 1;
-    case "West":
-      return 2;
-    case "North":
-      return 3;
-  }
-}
+export { seatIndex };
 
 export function createInitialSessionState(): SessionState {
   return {
@@ -160,76 +149,66 @@ function applyMeldDeclared(
   meld: MeldView,
   eventSeq: number,
 ): void {
-  const actorIdx = seatIndex(actor);
-  const actorSeat = view.seats[actorIdx];
+  const actorSeat = view.seats[seatIndex(actor)];
   actorSeat.last_draw_or_meld_seq = eventSeq;
+  const parsed = parseMeld(meld);
 
-  if ("Pon" in meld) {
-    const { tile, from_seat } = meld.Pon;
-    markRiverClaimed(view.seats, from_seat, tile, actor);
-    actorSeat.melds.push(meld);
-    actorSeat.hand_count = Math.max(0, actorSeat.hand_count - 2);
-    if (actor === view.viewer) {
-      view.hand = consumeViewerTiles(view.hand, [tile, tile]);
-    }
-    return;
-  }
+  let handDelta = 0;
+  let viewerConsumed: Tile[] = [];
 
-  if ("ExposedKong" in meld) {
-    const { tile, from_seat } = meld.ExposedKong;
-    markRiverClaimed(view.seats, from_seat, tile, actor);
-    actorSeat.melds.push(meld);
-    actorSeat.hand_count = Math.max(0, actorSeat.hand_count - 3);
-    if (actor === view.viewer) {
-      view.hand = consumeViewerTiles(view.hand, [tile, tile, tile]);
-    }
-    return;
-  }
-
-  if ("Chi" in meld) {
-    const { tiles, called_tile, from_seat } = meld.Chi;
-    markRiverClaimed(view.seats, from_seat, called_tile, actor);
-    actorSeat.melds.push(meld);
-    actorSeat.hand_count = Math.max(0, actorSeat.hand_count - 2);
-    if (actor === view.viewer) {
-      const consumed: Tile[] = [];
+  switch (parsed.kind) {
+    case "Pon":
+      markRiverClaimed(view.seats, parsed.fromSeat, parsed.tile, actor);
+      actorSeat.melds.push(meld);
+      handDelta = 2;
+      viewerConsumed = [parsed.tile, parsed.tile];
+      break;
+    case "ExposedKong":
+      markRiverClaimed(view.seats, parsed.fromSeat, parsed.tile, actor);
+      actorSeat.melds.push(meld);
+      handDelta = 3;
+      viewerConsumed = [parsed.tile, parsed.tile, parsed.tile];
+      break;
+    case "Chi": {
+      markRiverClaimed(view.seats, parsed.fromSeat, parsed.calledTile, actor);
+      actorSeat.melds.push(meld);
+      handDelta = 2;
       let skippedCalled = false;
-      for (const t of tiles) {
-        if (!skippedCalled && t === called_tile) {
+      for (const t of parsed.tiles) {
+        if (!skippedCalled && t === parsed.calledTile) {
           skippedCalled = true;
         } else {
-          consumed.push(t);
+          viewerConsumed.push(t);
         }
       }
-      view.hand = consumeViewerTiles(view.hand, consumed);
+      break;
     }
-    return;
-  }
-
-  if ("AddedKong" in meld) {
-    const { tile } = meld.AddedKong;
-    const ponIdx = actorSeat.melds.findIndex(
-      (existing) => "Pon" in existing && existing.Pon.tile === tile,
-    );
-    if (ponIdx !== -1) {
-      actorSeat.melds[ponIdx] = meld;
-    } else {
+    case "AddedKong": {
+      const ponIdx = actorSeat.melds.findIndex((existing) => {
+        const parsedExisting = parseMeld(existing);
+        return parsedExisting.kind === "Pon" && parsedExisting.tile === parsed.tile;
+      });
+      if (ponIdx !== -1) {
+        actorSeat.melds[ponIdx] = meld;
+      } else {
+        actorSeat.melds.push(meld);
+      }
+      handDelta = 1;
+      viewerConsumed = [parsed.tile];
+      break;
+    }
+    case "ConcealedKong":
       actorSeat.melds.push(meld);
-    }
-    actorSeat.hand_count = Math.max(0, actorSeat.hand_count - 1);
-    if (actor === view.viewer) {
-      view.hand = consumeViewerTiles(view.hand, [tile]);
-    }
-    return;
+      handDelta = 4;
+      if (parsed.tile !== null) {
+        viewerConsumed = [parsed.tile, parsed.tile, parsed.tile, parsed.tile];
+      }
+      break;
   }
 
-  if ("ConcealedKong" in meld) {
-    const { tile } = meld.ConcealedKong;
-    actorSeat.melds.push(meld);
-    actorSeat.hand_count = Math.max(0, actorSeat.hand_count - 4);
-    if (actor === view.viewer && tile !== null) {
-      view.hand = consumeViewerTiles(view.hand, [tile, tile, tile, tile]);
-    }
+  actorSeat.hand_count = Math.max(0, actorSeat.hand_count - handDelta);
+  if (actor === view.viewer && viewerConsumed.length > 0) {
+    view.hand = consumeViewerTiles(view.hand, viewerConsumed);
   }
 }
 
@@ -574,6 +553,7 @@ export function reduceServerMessage(
     return {
       state: {
         ...state,
+        pendingActionId: null,
         lastErrorNotice: message.ErrorNotice.message,
       },
       effects: [],
