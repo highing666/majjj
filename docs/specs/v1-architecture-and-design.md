@@ -571,7 +571,7 @@ flowchart LR
 
 | 目标命令 | 执行时机 | 覆盖内容与门禁标准 |
 | --- | --- | --- |
-| `make check` | 每次开发提交前（日常门禁） | ① `cargo test --workspace`（全量规则、视角隔离、1,000 局模糊测试、`shanten-dp` 交叉测试）；<br>② `ts-rs` 类型生成与 `git diff --exit-code web/src/lib/protocol/generated/` 零漂移校验；<br>③ `cd web && pnpm typecheck && pnpm build`；<br>④ `mahjong-ai` 400 小局（100 组镜像）快速烟测。 |
+| `make check` | 每次开发提交前（日常门禁） | ① `cargo test --workspace`（全量规则、视角隔离、1,000 局模糊测试、`shanten-dp` 交叉测试）；<br>② `ts-rs` 类型生成与 `git diff --exit-code web/src/lib/protocol/generated/` 零漂移校验；<br>③ `cd web && npm run typecheck && npm test && npm run build`；<br>④ `mahjong-ai` 400 小局（100 组镜像）快速烟测。 |
 | `make bench-ai` | Slice 3 收口及修改 AI 参数/搜索逻辑后 | 运行完整 **4,000 小局（1,000 组四座镜像）**强 AI 量化门禁 + 5 级强度消融单调校验 + 8GB Mac `Realtime` 延迟 P95 分布报告。 |
 | `make dist-mac` | 每次发布或向对象 Mac 推送前 | 执行前端生产构建 + `cargo build --release -p mahjong-server` 生成内嵌 `rust-embed` 的 Apple Silicon 单二进制，并核验内嵌资源体量与缓存头单测。 |
 

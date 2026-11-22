@@ -36,6 +36,11 @@ query($owner: String!, $repo: String!, $number: Int!) {
           title
           state
           body
+          comments(last: 10) {
+            nodes {
+              body
+            }
+          }
           blockedBy(first: 20) {
             nodes {
               number
@@ -92,7 +97,16 @@ else
       $subs | map(
         "### Issue #\(.number): \(.title)\n\n" +
         "**State**: \(.state)\n\n" +
-        "\(.body)\n"
+        "\(.body)\n" +
+        (
+          if (.comments.nodes | length) > 0 then
+            "\n#### Comments\n\n" +
+            ([.comments.nodes[] | .body] | join("\n\n---\n\n")) +
+            "\n"
+          else
+            ""
+          end
+        )
       ) | join("\n---\n\n")
     )
   )

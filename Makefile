@@ -7,7 +7,7 @@ ifeq ($(UNAME_S),Darwin)
   endif
 endif
 
-.PHONY: fmt clippy test check-boundaries check-glossary check ts-bindings install-hooks web-install web-typecheck web-test web-build
+.PHONY: fmt clippy test test-server check-boundaries check-web-safeguards check-glossary check check-sandbox ts-bindings install-hooks web-install web-typecheck web-test web-build
 
 fmt:
 	cargo fmt --all -- --check
@@ -18,14 +18,23 @@ clippy:
 test: web-build
 	cargo test --workspace
 
+test-server: web-build
+	cargo test -p mahjong-server
+
 check-boundaries:
 	./scripts/check-core-boundaries.sh
+
+check-web-safeguards:
+	./scripts/check-web-safeguards.sh
 
 check-glossary:
 	./scripts/check-glossary.sh
 
 check:
 	./scripts/check.sh
+
+check-sandbox:
+	./scripts/check.sh --sandbox
 
 ts-bindings:
 	UPDATE_TS_BINDINGS=1 cargo test -p mahjong-server --test ts_contract_drift
