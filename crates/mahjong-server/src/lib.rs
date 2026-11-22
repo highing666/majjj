@@ -10,3 +10,4 @@ pub mod session;
 pub mod static_assets;
 
 pub use server::{ServerConfig, ServerError, ServerHandle};
+pub use session::{BoxedWallProvider, TableOptions, WallProviderFactory};
