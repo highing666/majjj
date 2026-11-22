@@ -19,6 +19,11 @@ name = "mahjong-ai"
 version = "0.1.0"
 dependencies = [
  "mahjong-core",
+ "rand_chacha",
+ "rand_core",
+ "serde",
+ "serde_json",
+ "ts-rs",
 ]
 
 [[package]]
