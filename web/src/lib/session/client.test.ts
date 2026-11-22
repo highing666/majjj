@@ -501,4 +501,123 @@ describe("TableClient", () => {
     expect(sockets).toHaveLength(1);
     client.dispose();
   });
+
+  it("submits 手切 (from_drawn: false) & 摸切 (from_drawn: true), unlocks on EventBatch, and drives BetweenHands/PendingDestructiveOp/Finished commands", () => {
+    const sockets: MockWebSocket[] = [];
+    let seqId = 0;
+
+    const client = createTableClient({
+      wsUrl: "ws://127.0.0.1:8789/ws",
+      storage: createMemoryStorage(),
+      createWebSocket: (url) => {
+        const ws = new MockWebSocket(url);
+        sockets.push(ws);
+        return ws;
+      },
+      idGenerator: () => `id-${++seqId}`,
+    });
+
+    client.connect();
+    sockets[0].emitOpen();
+    sockets[0].emitServerMessage({
+      TableSnapshot: makeSnapshot({
+        phase: "InMatch",
+        your_seat: "East",
+        seq: 4,
+        player_view: {
+          ...makePlayerView(4),
+          mode: "FreeTable",
+          legal_actions: [
+            { Discard: { tile: 0, from_drawn: false } },
+            { Discard: { tile: 5, from_drawn: true } },
+          ],
+        },
+      }),
+    });
+
+    // 手切 (from_drawn: false) locks input immediately
+    expect(client.submitAction({ Discard: { tile: 0, from_drawn: false } })).toBe(
+      true,
+    );
+    expect(client.getState().pendingActionId).toBe("id-2");
+    expect(client.submitAction({ Discard: { tile: 5, from_drawn: true } })).toBe(
+      false,
+    );
+
+    // EventBatch unlocks input and advances seq
+    sockets[0].emitServerMessage({
+      EventBatch: {
+        from_seq: 5,
+        to_seq: 6,
+        events: [
+          {
+            seq: 5,
+            kind: {
+              TileDiscarded: { seat: "East", tile: 0, is_tsumogiri: false },
+            },
+          },
+          {
+            seq: 6,
+            kind: {
+              TileDrawn: {
+                seat: "East",
+                tile: 9,
+                is_replacement: false,
+                wall_remaining: 68,
+              },
+            },
+          },
+        ],
+        updated_legal_actions: [{ Discard: { tile: 9, from_drawn: true } }],
+      },
+    });
+    expect(client.getState().pendingActionId).toBeNull();
+    expect(client.getState().snapshot?.seq).toBe(6);
+
+    // 摸切 (from_drawn: true) uses updated seq 6
+    expect(client.submitAction({ Discard: { tile: 9, from_drawn: true } })).toBe(
+      true,
+    );
+    expect(client.getState().pendingActionId).toBe("id-3");
+
+    // In-match pace switch & disband request & destructive op confirmation
+    expect(client.setPace("Fast")).toBe(true);
+    expect(client.requestDisbandMatch()).toBe(true);
+    expect(client.requestEndFreeTable()).toBe(true);
+    expect(client.confirmDestructiveOp("op-1", true)).toBe(true);
+    expect(client.confirmDestructiveOp("op-2", false)).toBe(true);
+
+    // Finished actions
+    expect(client.startMatch()).toBe(true);
+    expect(client.returnToLobby()).toBe(true);
+
+    const sent = sockets[0].parsedSent();
+    expect(sent).toContainEqual({
+      SubmitAction: {
+        expected_seq: 4,
+        client_action_id: "id-2",
+        action: { Discard: { tile: 0, from_drawn: false } },
+      },
+    });
+    expect(sent).toContainEqual({
+      SubmitAction: {
+        expected_seq: 6,
+        client_action_id: "id-3",
+        action: { Discard: { tile: 9, from_drawn: true } },
+      },
+    });
+    expect(sent).toContainEqual({ SetPace: { pace: "Fast" } });
+    expect(sent).toContain("RequestDisbandMatch");
+    expect(sent).toContain("RequestEndFreeTable");
+    expect(sent).toContainEqual({
+      ConfirmDestructiveOp: { op_id: "op-1", accept: true },
+    });
+    expect(sent).toContainEqual({
+      ConfirmDestructiveOp: { op_id: "op-2", accept: false },
+    });
+    expect(sent).toContain("StartMatch");
+    expect(sent).toContain("ReturnToLobby");
+
+    client.dispose();
+  });
 });

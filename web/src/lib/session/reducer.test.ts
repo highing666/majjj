@@ -796,5 +796,281 @@ describe("session reducer — EventBatch folding, gap recovery, and ActionReject
     expect(nextHand.snapshot?.player_view?.seats[1].hand_count).toBe(14);
     expect(nextHand.snapshot?.player_view?.seats[0].hand_count).toBe(13);
   });
+
+  it("preserves player_view and pending_destructive_op on LobbyUpdated during InMatch (e.g. SetPace)", () => {
+    const view = makePlayerView({ seq: 8 });
+    const pendingOp = {
+      op_id: "op-disband-1",
+      kind: "DisbandMatch" as const,
+      requested_by: "East" as const,
+      required_seats: ["East" as const, "South" as const],
+      confirmed_seats: ["East" as const],
+    };
+    const start: SessionState = {
+      ...reduceServerMessage(createInitialSessionState(), {
+        TableSnapshot: makeSnapshot({
+          phase: "InMatch",
+          your_seat: "East",
+          seq: 8,
+          player_view: view,
+          pending_destructive_op: pendingOp,
+        }),
+      }).state,
+      pendingAddedKong: { seat: "East", tile: 27 },
+    };
+
+    const res = reduceServerMessage(start, {
+      LobbyUpdated: {
+        phase: "InMatch",
+        config: makeLobbyConfig({ pace: "Fast" }),
+        seats: makeLobbySeats(),
+      },
+    });
+
+    expect(res.state.snapshot?.pace).toBe("Fast");
+    expect(res.state.snapshot?.config.pace).toBe("Fast");
+    expect(res.state.snapshot?.player_view).toEqual(view);
+    expect(res.state.snapshot?.pending_destructive_op).toEqual(pendingOp);
+    expect(res.state.pendingAddedKong).toEqual({ seat: "East", tile: 27 });
+  });
+
+  it("handles RobKongHu HandSettled after AddedKongAttempted without upgrading Pon meld", () => {
+    const start = reduceServerMessage(createInitialSessionState(), {
+      TableSnapshot: makeSnapshot({
+        phase: "InMatch",
+        your_seat: "South",
+        seq: 11,
+        player_view: makePlayerView({
+          viewer: "South",
+          seq: 11,
+          seats: [
+            {
+              seat: "East",
+              score: 0,
+              hand_count: 11,
+              river: [],
+              melds: [{ Pon: { tile: 27, from_seat: "West", seq: 6 } }],
+              last_draw_or_meld_seq: 10,
+            },
+            {
+              seat: "South",
+              score: 0,
+              hand_count: 13,
+              river: [],
+              melds: [],
+              last_draw_or_meld_seq: 9,
+            },
+            {
+              seat: "West",
+              score: 0,
+              hand_count: 13,
+              river: [],
+              melds: [],
+              last_draw_or_meld_seq: 7,
+            },
+            {
+              seat: "North",
+              score: 0,
+              hand_count: 13,
+              river: [],
+              melds: [],
+              last_draw_or_meld_seq: 8,
+            },
+          ],
+        }),
+      }),
+    }).state;
+
+    const pending = reduceServerMessage(start, {
+      EventBatch: {
+        from_seq: 12,
+        to_seq: 12,
+        events: [
+          { seq: 12, kind: { AddedKongAttempted: { seat: "East", tile: 27 } } },
+        ],
+        updated_legal_actions: [{ RobKongHu: { tile: 27 } }, "Pass"],
+      },
+    }).state;
+
+    expect(pending.pendingAddedKong).toEqual({ seat: "East", tile: 27 });
+    expect(pending.snapshot?.player_view?.legal_actions).toEqual([
+      { RobKongHu: { tile: 27 } },
+      "Pass",
+    ]);
+
+    const settled = reduceServerMessage(pending, {
+      EventBatch: {
+        from_seq: 13,
+        to_seq: 13,
+        events: [
+          {
+            seq: 13,
+            kind: {
+              HandSettled: {
+                settlement: {
+                  wind_round: "East",
+                  hand_number: 1,
+                  dealer_streak: 0,
+                  dealer: "East",
+                  outcome: {
+                    Win: {
+                      winners: [
+                        {
+                          seat: "South",
+                          win_kind: "RobKongHu",
+                          items: [{ code: "rob_kong_hu", label: "抢杠胡", fan: 1 }],
+                          total_fan: 1,
+                          base_points: 2,
+                        },
+                      ],
+                      discarder: "East",
+                      winning_tile: 27,
+                    },
+                  },
+                  kong_transfers: [],
+                  score_deltas: [-6, 6, 0, 0],
+                  new_scores: [-6, 6, 0, 0],
+                  revealed_hands: ALL_SEATS.map((seat) => ({
+                    seat,
+                    closed_tiles: [0, 1, 2],
+                    drawn_tile: null,
+                    melds:
+                      seat === "East"
+                        ? [{ Pon: { tile: 27, from_seat: "West", seq: 6 } }]
+                        : [],
+                  })) as [
+                    {
+                      seat: Seat;
+                      closed_tiles: number[];
+                      drawn_tile: number | null;
+                      melds: [{ Pon: { tile: number; from_seat: Seat; seq: number } }];
+                    },
+                    {
+                      seat: Seat;
+                      closed_tiles: number[];
+                      drawn_tile: number | null;
+                      melds: [];
+                    },
+                    {
+                      seat: Seat;
+                      closed_tiles: number[];
+                      drawn_tile: number | null;
+                      melds: [];
+                    },
+                    {
+                      seat: Seat;
+                      closed_tiles: number[];
+                      drawn_tile: number | null;
+                      melds: [];
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        ],
+        updated_legal_actions: ["ConfirmNextHand"],
+      },
+    }).state;
+
+    expect(settled.pendingAddedKong).toBeNull();
+    expect(settled.snapshot?.player_view?.phase).toBe("BetweenHands");
+    expect(settled.snapshot?.player_view?.seats[0].melds).toEqual([
+      { Pon: { tile: 27, from_seat: "West", seq: 6 } },
+    ]);
+    expect(settled.snapshot?.player_view?.seats.map((s) => s.score)).toEqual([
+      -6, 6, 0, 0,
+    ]);
+  });
+
+  it("handles PendingDestructiveOp snapshot lifecycle and Finished -> ReturnToLobby / StartMatch transitions", () => {
+    const pendingOp = {
+      op_id: "op-end-1",
+      kind: "EndFreeTable" as const,
+      requested_by: "East" as const,
+      required_seats: ["East" as const, "South" as const],
+      confirmed_seats: ["East" as const],
+    };
+
+    // PendingDestructiveOp arrives via TableSnapshot
+    const withPending = reduceServerMessage(createInitialSessionState(), {
+      TableSnapshot: makeSnapshot({
+        phase: "InMatch",
+        your_seat: "South",
+        seq: 25,
+        player_view: makePlayerView({
+          viewer: "South",
+          mode: "FreeTable",
+          phase: "BetweenHands",
+          seq: 25,
+        }),
+        pending_destructive_op: pendingOp,
+      }),
+    }).state;
+    expect(withPending.snapshot?.pending_destructive_op).toEqual(pendingOp);
+
+    // Rejection clears pending_destructive_op via TableSnapshot
+    const cleared = reduceServerMessage(withPending, {
+      TableSnapshot: makeSnapshot({
+        phase: "InMatch",
+        your_seat: "South",
+        seq: 25,
+        player_view: makePlayerView({
+          viewer: "South",
+          mode: "FreeTable",
+          phase: "BetweenHands",
+          seq: 25,
+        }),
+        pending_destructive_op: null,
+      }),
+    }).state;
+    expect(cleared.snapshot?.pending_destructive_op).toBeNull();
+
+    // Finished state transitions cleanly to Lobby on ReturnToLobby snapshot
+    const finished = reduceServerMessage(cleared, {
+      TableSnapshot: makeSnapshot({
+        phase: "Finished",
+        your_seat: "South",
+        seq: 26,
+        player_view: makePlayerView({
+          viewer: "South",
+          phase: "MatchFinished",
+          seq: 26,
+          match_summary: {
+            mode: "FreeTable",
+            hands_played: 2,
+            initial_scores: [0, 0, 0, 0],
+            final_scores: [8, -8, 0, 0],
+            net_deltas: [8, -8, 0, 0],
+          },
+        }),
+      }),
+    }).state;
+    expect(finished.snapshot?.phase).toBe("Finished");
+
+    const returnedToLobby = reduceServerMessage(finished, {
+      TableSnapshot: makeSnapshot({
+        phase: "Lobby",
+        your_seat: "South",
+        seq: 0,
+        player_view: null,
+      }),
+    }).state;
+    expect(returnedToLobby.snapshot?.phase).toBe("Lobby");
+    expect(returnedToLobby.snapshot?.player_view).toBeNull();
+
+    // Finished -> StartMatch directly transitions back to InMatch
+    const restarted = reduceServerMessage(finished, {
+      TableSnapshot: makeSnapshot({
+        phase: "InMatch",
+        your_seat: "East",
+        seq: 2,
+        player_view: makePlayerView({ seq: 2 }),
+      }),
+    }).state;
+    expect(restarted.snapshot?.phase).toBe("InMatch");
+    expect(restarted.snapshot?.player_view?.phase).toBe("Playing");
+    expect(restarted.snapshot?.player_view?.match_summary).toBeNull();
+  });
 });
 
