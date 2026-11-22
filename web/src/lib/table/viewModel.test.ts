@@ -9,6 +9,7 @@ import {
   patchLobbyConfig,
 } from "../lobby/lobbyConfig";
 import {
+  formatCompactRoundTitle,
   formatRoundTitle,
   getDragonKind,
   getSuitUnit,
@@ -153,6 +154,24 @@ describe("tile metadata helpers", () => {
         active_seat: "South",
       }),
     ).toBe("东风圈 第 2 小局 · 连庄 2");
+    expect(
+      formatCompactRoundTitle({
+        wind_round: "East",
+        hand_number: 3,
+        dealer_streak: 0,
+        dealer: "West",
+        active_seat: "West",
+      }),
+    ).toBe("东3");
+    expect(
+      formatCompactRoundTitle({
+        wind_round: "South",
+        hand_number: 2,
+        dealer_streak: 2,
+        dealer: "South",
+        active_seat: "South",
+      }),
+    ).toBe("南2·连2");
   });
 });
 

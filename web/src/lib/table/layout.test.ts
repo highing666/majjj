@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeTableLayout } from "./layout";
+import { computeHubLayout, computeTableLayout } from "./layout";
 
 function rectsOverlap(
   a: { x: number; y: number; width: number; height: number },
@@ -56,6 +56,56 @@ describe("computeTableLayout", () => {
       expect(layout.rivers.bottom.y + layout.rivers.bottom.height).toBeLessThanOrEqual(
         layout.bottomHandY,
       );
+
+      // Center compass wind ticks and inner labels must stay strictly inside hub without overlap
+      const hubLayout = computeHubLayout(layout.hub);
+      const halfWind = hubLayout.windFontSize / 2;
+      for (const windPos of Object.values(hubLayout.winds)) {
+        expect(windPos.x - halfWind).toBeGreaterThanOrEqual(layout.hub.x);
+        expect(windPos.x + halfWind).toBeLessThanOrEqual(
+          layout.hub.x + layout.hub.width,
+        );
+        expect(windPos.y - halfWind).toBeGreaterThanOrEqual(layout.hub.y);
+        expect(windPos.y + halfWind).toBeLessThanOrEqual(
+          layout.hub.y + layout.hub.height,
+        );
+
+        const windBox = {
+          x: windPos.x - halfWind,
+          y: windPos.y - halfWind,
+          width: hubLayout.windFontSize,
+          height: hubLayout.windFontSize,
+        };
+        expect(rectsOverlap(hubLayout.inner, windBox)).toBe(false);
+      }
+
+      expect(hubLayout.inner.x).toBeGreaterThanOrEqual(layout.hub.x);
+      expect(hubLayout.inner.y).toBeGreaterThanOrEqual(layout.hub.y);
+      expect(hubLayout.inner.x + hubLayout.inner.width).toBeLessThanOrEqual(
+        layout.hub.x + layout.hub.width,
+      );
+      expect(hubLayout.inner.y + hubLayout.inner.height).toBeLessThanOrEqual(
+        layout.hub.y + layout.hub.height,
+      );
+
+      if (hubLayout.showRoundLine) {
+        expect(
+          hubLayout.roundY - hubLayout.roundFontSize / 2,
+        ).toBeGreaterThanOrEqual(hubLayout.inner.y);
+        expect(
+          hubLayout.wallY + hubLayout.wallFontSize / 2,
+        ).toBeLessThanOrEqual(hubLayout.inner.y + hubLayout.inner.height);
+        expect(hubLayout.wallY - hubLayout.roundY).toBeGreaterThanOrEqual(
+          (hubLayout.roundFontSize + hubLayout.wallFontSize) / 2,
+        );
+      } else {
+        expect(
+          hubLayout.wallY - hubLayout.wallFontSize / 2,
+        ).toBeGreaterThanOrEqual(hubLayout.inner.y);
+        expect(
+          hubLayout.wallY + hubLayout.wallFontSize / 2,
+        ).toBeLessThanOrEqual(hubLayout.inner.y + hubLayout.inner.height);
+      }
     },
   );
 });

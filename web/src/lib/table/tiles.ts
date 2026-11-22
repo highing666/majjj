@@ -167,3 +167,21 @@ export function formatRoundTitle(turn: TurnView): string {
   }
   return base;
 }
+
+const SHORT_WIND_LABEL: Record<Wind, string> = {
+  East: "东",
+  South: "南",
+  West: "西",
+  North: "北",
+};
+
+/**
+ * Formats a compact round/hand badge for the center compass hub (e.g. `东1`, `东2·连1`).
+ */
+export function formatCompactRoundTitle(turn: TurnView): string {
+  const base = `${SHORT_WIND_LABEL[turn.wind_round]}${turn.hand_number}`;
+  if (turn.dealer_streak > 0) {
+    return `${base}·连${turn.dealer_streak}`;
+  }
+  return base;
+}

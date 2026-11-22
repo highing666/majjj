@@ -5,9 +5,9 @@ import type { SeatInfo } from "../protocol/generated/SeatInfo";
 import type { TableSnapshot } from "../protocol/generated/TableSnapshot";
 import type { Tile } from "../protocol/generated/Tile";
 import type { PendingAddedKong } from "../session/reducer";
-import { computeTableLayout, type TableLayout } from "./layout";
+import { computeHubLayout, computeTableLayout, type TableLayout } from "./layout";
 import type { TileAtlas } from "./tileAtlas";
-import { formatRoundTitle, seatShortWind } from "./tiles";
+import { formatCompactRoundTitle, seatShortWind } from "./tiles";
 import {
   buildMeldRenderItems,
   buildVisibleRiverRows,
@@ -79,6 +79,12 @@ function findLatestRiverSeq(seats: readonly PublicSeatView[]): number {
     }
   }
   return maxSeq;
+}
+
+function fitTextToWidth(label: Text, maxWidth: number): void {
+  if (maxWidth > 0 && label.width > maxWidth && label.width > 0) {
+    label.scale.set(maxWidth / label.width);
+  }
 }
 
 /**
@@ -211,6 +217,8 @@ export class TableSceneRenderer {
   ): void {
     disposeChildren(this.hubLayer);
     const { hub } = layout;
+    const hubLayout = computeHubLayout(hub);
+    const centerX = hub.x + hub.width / 2;
 
     const card = new Graphics();
     card
@@ -219,40 +227,44 @@ export class TableSceneRenderer {
       .stroke({ width: 1.5, color: BRASS, alpha: 0.85 });
     this.hubLayer.addChild(card);
 
-    const roundText = new Text({
-      text: formatRoundTitle(turn),
-      style: {
-        fontFamily:
-          '-apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans CJK SC", sans-serif',
-        fontSize: hub.width >= 100 ? 12 : 10,
-        fontWeight: "700",
-        fill: BRASS,
-      },
-    });
-    roundText.anchor.set(0.5, 0);
-    roundText.position.set(hub.x + hub.width / 2, hub.y + 8);
-    this.hubLayer.addChild(roundText);
+    if (hubLayout.showRoundLine) {
+      const roundText = new Text({
+        text: formatCompactRoundTitle(turn),
+        style: {
+          fontFamily:
+            '-apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans CJK SC", sans-serif',
+          fontSize: hubLayout.roundFontSize,
+          fontWeight: "700",
+          fill: BRASS,
+        },
+      });
+      roundText.anchor.set(0.5);
+      roundText.position.set(centerX, hubLayout.roundY);
+      fitTextToWidth(roundText, hubLayout.inner.width);
+      this.hubLayer.addChild(roundText);
+    }
 
     const wallText = new Text({
-      text: `牌墙余 ${wallRemaining} 张`,
+      text: `余 ${wallRemaining}`,
       style: {
         fontFamily:
           '-apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans CJK SC", sans-serif',
-        fontSize: hub.width >= 100 ? 13 : 11,
+        fontSize: hubLayout.wallFontSize,
         fontWeight: "700",
         fill: TEXT_LIGHT,
       },
     });
     wallText.anchor.set(0.5);
-    wallText.position.set(hub.x + hub.width / 2, hub.y + hub.height / 2 + 2);
+    wallText.position.set(centerX, hubLayout.wallY);
+    fitTextToWidth(wallText, hubLayout.inner.width);
     this.hubLayer.addChild(wallText);
 
     // Directional wind ticks around hub edges
     const edgeDirs: Array<{ seat: Seat; x: number; y: number }> = [
-      { seat: relative.bottom, x: hub.x + hub.width / 2, y: hub.y + hub.height - 9 },
-      { seat: relative.top, x: hub.x + hub.width / 2, y: hub.y + 24 },
-      { seat: relative.left, x: hub.x + 12, y: hub.y + hub.height / 2 + 2 },
-      { seat: relative.right, x: hub.x + hub.width - 12, y: hub.y + hub.height / 2 + 2 },
+      { seat: relative.bottom, ...hubLayout.winds.bottom },
+      { seat: relative.top, ...hubLayout.winds.top },
+      { seat: relative.left, ...hubLayout.winds.left },
+      { seat: relative.right, ...hubLayout.winds.right },
     ];
     for (const dir of edgeDirs) {
       const isActive = turn.active_seat === dir.seat;
@@ -261,7 +273,7 @@ export class TableSceneRenderer {
         style: {
           fontFamily:
             '-apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans CJK SC", sans-serif',
-          fontSize: 10,
+          fontSize: hubLayout.windFontSize,
           fontWeight: isActive ? "800" : "600",
           fill: isActive ? ACTIVE_GLOW : TEXT_MUTED,
         },

@@ -5,6 +5,27 @@ export interface Rect {
   height: number;
 }
 
+export interface Point {
+  x: number;
+  y: number;
+}
+
+export interface HubLayout {
+  inner: Rect;
+  windFontSize: number;
+  roundFontSize: number;
+  wallFontSize: number;
+  showRoundLine: boolean;
+  roundY: number;
+  wallY: number;
+  winds: {
+    top: Point;
+    bottom: Point;
+    left: Point;
+    right: Point;
+  };
+}
+
 export interface TableLayout {
   width: number;
   height: number;
@@ -196,6 +217,47 @@ export function computeTableLayout(
       right: { x: width - margin - oppHandTileH - 8, y: cy + riverSpan / 2 + 10 },
       top: { x: width - badgePad, y: topMargin + oppHandTileH + 6 },
       left: { x: margin + oppHandTileH + 8, y: topMargin + oppHandTileH + 6 },
+    },
+  };
+}
+
+/**
+ * Computes strictly bounded inner content and edge wind coordinates for the center compass hub.
+ */
+export function computeHubLayout(hub: Rect): HubLayout {
+  const windFontSize = hub.height >= 72 ? 11 : 9;
+  const edgeInsetX = Math.max(10, Math.round(hub.width * 0.11));
+  const edgeInsetY = Math.max(9, Math.round(hub.height * 0.14));
+  const cx = hub.x + hub.width / 2;
+  const cy = hub.y + hub.height / 2;
+
+  const innerPadX = edgeInsetX + Math.ceil(windFontSize * 0.65) + 4;
+  const innerPadY = edgeInsetY + Math.ceil(windFontSize * 0.65) + 3;
+  const inner: Rect = {
+    x: hub.x + innerPadX,
+    y: hub.y + innerPadY,
+    width: Math.max(16, hub.width - innerPadX * 2),
+    height: Math.max(12, hub.height - innerPadY * 2),
+  };
+
+  const showRoundLine = inner.height >= 28;
+  const roundFontSize = inner.height >= 38 ? 11 : 10;
+  const wallFontSize =
+    inner.height >= 38 ? 14 : inner.height >= 28 ? 12 : 11;
+
+  return {
+    inner,
+    windFontSize,
+    roundFontSize,
+    wallFontSize,
+    showRoundLine,
+    roundY: inner.y + inner.height * 0.28,
+    wallY: showRoundLine ? inner.y + inner.height * 0.72 : cy,
+    winds: {
+      top: { x: cx, y: hub.y + edgeInsetY },
+      bottom: { x: cx, y: hub.y + hub.height - edgeInsetY },
+      left: { x: hub.x + edgeInsetX, y: cy },
+      right: { x: hub.x + hub.width - edgeInsetX, y: cy },
     },
   };
 }
