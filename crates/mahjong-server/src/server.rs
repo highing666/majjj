@@ -19,7 +19,7 @@ use tokio::task::JoinHandle;
 
 use crate::lan::read_local_hostname;
 use crate::protocol::{HealthResponse, ServerMessage};
-use crate::session::{OutboundSignal, TableRuntime};
+use crate::session::{OutboundSignal, TableOptions, TableRuntime};
 use crate::static_assets::{
     DiskStaticAssets, NoopStaticAssets, StaticAssetError, StaticAssetSource,
 };
@@ -111,6 +111,20 @@ impl ServerConfig {
     /// Returns [`ServerError::StaticDir`] if `static_dir` cannot be opened, or
     /// [`ServerError::Bind`] if binding `bind:port` fails.
     pub async fn spawn(self) -> Result<ServerHandle, ServerError> {
+        self.spawn_with_options(TableOptions::default()).await
+    }
+
+    /// Binds the TCP socket immediately and spawns the server with custom [`TableOptions`]
+    /// (e.g. deterministic wall and seating seeds in tests).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::StaticDir`] if `static_dir` cannot be opened, or
+    /// [`ServerError::Bind`] if binding `bind:port` fails.
+    pub async fn spawn_with_options(
+        self,
+        options: TableOptions,
+    ) -> Result<ServerHandle, ServerError> {
         let static_assets: Arc<dyn StaticAssetSource> =
             match &self.static_dir {
                 Some(dir) => Arc::new(DiskStaticAssets::new(dir).map_err(|source| {
@@ -141,7 +155,7 @@ impl ServerConfig {
 
         let state = AppState {
             port: local_addr.port(),
-            session: TableRuntime::with_hostname(local_addr.port(), local_hostname),
+            session: TableRuntime::with_options(local_addr.port(), local_hostname, options),
             static_assets,
         };
         let router = build_router(state);
