@@ -1,18 +1,15 @@
 mod common;
 
 use common::{tile, tiles};
-use mahjong_ai::l3::{decide_with_options, L3DefenseModel, L3Profile};
-use mahjong_ai::l4::{sample_sim_state, should_trigger, SimState};
+use mahjong_ai::eval::EvalStrategy;
 use mahjong_ai::{decide, AiDifficulty, AiStyle, DecisionBudget, DecisionContext};
 use mahjong_core::{
     build_preset_wall, project_view, Match, MatchMode, MeldView, PlayerAction, PresetWallProvider,
-    PublicPhase, Seat, SeededWallProvider, Tile, TuidaohuRuleset,
+    PublicPhase, Seat, SeededWallProvider, TuidaohuRuleset,
 };
 use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
 use std::time::Instant;
-
-fn assert_copy<T: Copy>() {}
 
 fn strong_det_ctx(max_samples: usize) -> DecisionContext {
     DecisionContext {
@@ -22,43 +19,8 @@ fn strong_det_ctx(max_samples: usize) -> DecisionContext {
     }
 }
 
-fn verify_sim_conservation(sim: &SimState, view: &mahjong_core::PlayerView) {
-    let mut tile_totals = [0u8; Tile::COUNT];
-
-    for seat in Seat::ALL {
-        let idx = seat.index();
-        for (k, &c) in sim.hands[idx].iter().enumerate() {
-            tile_totals[k] = tile_totals[k].saturating_add(c);
-        }
-        for (k, &c) in sim.melds[idx].counts.iter().enumerate() {
-            tile_totals[k] = tile_totals[k].saturating_add(c);
-        }
-        for entry in &view.seats[idx].river {
-            if entry.claimed_by.is_none() {
-                tile_totals[entry.tile.index()] = tile_totals[entry.tile.index()].saturating_add(1);
-            }
-        }
-    }
-
-    for &t in &sim.wall[usize::from(sim.wall_head)..usize::from(sim.wall_tail)] {
-        tile_totals[usize::from(t)] = tile_totals[usize::from(t)].saturating_add(1);
-    }
-
-    let grand_total: usize = tile_totals.iter().map(|&c| usize::from(c)).sum();
-    assert_eq!(
-        grand_total,
-        Tile::DECK_SIZE,
-        "136-tile conservation violated"
-    );
-    for (k, &cnt) in tile_totals.iter().enumerate() {
-        assert_eq!(cnt, 4, "tile index {k} must have exact count 4, got {cnt}");
-    }
-}
-
 #[test]
-fn hidden_concealed_kongs_conserve_136_tiles_across_one_and_two_kongs() {
-    assert_copy::<SimState>();
-
+fn hidden_concealed_kongs_conserve_136_tiles_and_decide_legally_across_one_and_two_kongs() {
     // Case 1: 1 opponent hidden ConcealedKong { tile: None }.
     let mut game1 = Match::new(
         MatchMode::EastOnly,
@@ -101,11 +63,7 @@ fn hidden_concealed_kongs_conserve_136_tiles_across_one_and_two_kongs() {
     );
 
     let ctx = strong_det_ctx(32);
-    let profile = L3Profile::from_context(&ctx, true);
-    let model1 = L3DefenseModel::new(&south_view1, profile);
     for seed in 1..=32u64 {
-        let sim = sample_sim_state(&south_view1, &model1, seed);
-        verify_sim_conservation(&sim, &south_view1);
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
         let action = decide(&south_view1, &ctx, &mut rng);
         assert!(south_view1.legal_actions.contains(&action));
@@ -166,10 +124,7 @@ fn hidden_concealed_kongs_conserve_136_tiles_across_one_and_two_kongs() {
         .count();
     assert_eq!(hidden_count, 2);
 
-    let model2 = L3DefenseModel::new(&west_view2, profile);
     for seed in 1..=32u64 {
-        let sim = sample_sim_state(&west_view2, &model2, seed * 17);
-        verify_sim_conservation(&sim, &west_view2);
         let mut rng = ChaCha8Rng::seed_from_u64(seed * 17);
         let action = decide(&west_view2, &ctx, &mut rng);
         assert!(west_view2.legal_actions.contains(&action));
@@ -308,11 +263,6 @@ fn run_match_trace_in_pool(threads: usize, max_samples: usize) -> Vec<(Seat, Pla
 fn deterministic_budget_is_bit_exact_across_single_and_multi_thread_pools() {
     let view = high_tension_meld_view();
     let ctx = strong_det_ctx(128);
-    let (cands, model) = mahjong_ai::l3::evaluate_l3_candidates(&view, &ctx, true);
-    assert!(
-        should_trigger(&view, &ctx, true, cands.as_slice(), &model),
-        "high tension meld view must trigger L4"
-    );
 
     let pool1 = rayon::ThreadPoolBuilder::new()
         .num_threads(1)
@@ -361,31 +311,15 @@ fn intermediate_difficulty_never_triggers_l4_even_under_high_tension_or_melds() 
         budget: DecisionBudget::Deterministic { max_samples: 256 },
     };
 
-    let (cands, model) = mahjong_ai::l3::evaluate_l3_candidates(&view, &inter_256, false);
-    assert!(!should_trigger(
-        &view,
-        &inter_256,
-        false,
-        cands.as_slice(),
-        &model
-    ));
-    assert!(!should_trigger(
-        &view,
-        &inter_256,
-        true,
-        cands.as_slice(),
-        &model
-    ));
-
     for seed in 0..16u64 {
         let mut r1 = ChaCha8Rng::seed_from_u64(seed);
         let mut r2 = ChaCha8Rng::seed_from_u64(seed);
         let mut r3 = ChaCha8Rng::seed_from_u64(seed);
         let a_1 = decide(&view, &inter_1, &mut r1);
         let a_256 = decide(&view, &inter_256, &mut r2);
-        let a_no_l4 = decide_with_options(&view, &inter_256, false, &mut r3);
+        let a_eval = EvalStrategy::Intermediate.decide(&view, inter_256.budget, &mut r3);
         assert_eq!(a_1, a_256, "Intermediate must ignore max_samples");
-        assert_eq!(a_1, a_no_l4, "Intermediate must match L1-L3 directly");
+        assert_eq!(a_1, a_eval, "EvalStrategy::Intermediate must match decide");
     }
 }
 

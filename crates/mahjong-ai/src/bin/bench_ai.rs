@@ -10,7 +10,6 @@ use mahjong_ai::eval::{
     LogisticMetrics, SmokeConfig, SmokeReport, GATE_MAX_REALTIME_MAX_MS, GATE_MAX_REALTIME_P95_MS,
     GATE_MIN_DEAL_IN_REDUCTION, GATE_MIN_MEAN_NET_SCORE,
 };
-use mahjong_ai::l3_weights::{TENPAI_FEATURE_COUNT, WAIT_FEATURE_COUNT};
 use mahjong_ai::DecisionBudget;
 
 enum CliOutput {
@@ -113,17 +112,7 @@ fn parse_matchup_args(args: &[String]) -> Result<EvalConfig, String> {
             );
         }
 
-        let (flag, value) = if let Some((k, v)) = arg.split_once('=') {
-            idx += 1;
-            (k, v)
-        } else {
-            let val = args
-                .get(idx + 1)
-                .ok_or_else(|| format!("missing value for flag '{arg}'"))?;
-            idx += 2;
-            (arg, val.as_str())
-        };
-
+        let (flag, value) = next_flag_value(args, &mut idx)?;
         match flag {
             "--candidate" => {
                 candidate = EvalStrategy::from_str(value).map_err(|e| e.to_string())?;
@@ -131,21 +120,9 @@ fn parse_matchup_args(args: &[String]) -> Result<EvalConfig, String> {
             "--opponent" => {
                 opponent = EvalStrategy::from_str(value).map_err(|e| e.to_string())?;
             }
-            "--groups" => {
-                groups = value
-                    .parse::<usize>()
-                    .map_err(|e| format!("invalid --groups '{value}': {e}"))?;
-            }
-            "--seed" => {
-                seed = value
-                    .parse::<u64>()
-                    .map_err(|e| format!("invalid --seed '{value}': {e}"))?;
-            }
-            "--threads" => {
-                threads = value
-                    .parse::<usize>()
-                    .map_err(|e| format!("invalid --threads '{value}': {e}"))?;
-            }
+            "--groups" => groups = parse_usize_flag(flag, value)?,
+            "--seed" => seed = parse_u64_flag(flag, value)?,
+            "--threads" => threads = parse_usize_flag(flag, value)?,
             "--budget" => {
                 budget = parse_budget(value)?;
             }
@@ -177,33 +154,11 @@ fn parse_calibrate_args(args: &[String]) -> Result<CalibrateConfig, String> {
             );
         }
 
-        let (flag, value) = if let Some((k, v)) = arg.split_once('=') {
-            idx += 1;
-            (k, v)
-        } else {
-            let val = args
-                .get(idx + 1)
-                .ok_or_else(|| format!("missing value for flag '{arg}'"))?;
-            idx += 2;
-            (arg, val.as_str())
-        };
-
+        let (flag, value) = next_flag_value(args, &mut idx)?;
         match flag {
-            "--hands" => {
-                hands = value
-                    .parse::<usize>()
-                    .map_err(|e| format!("invalid --hands '{value}': {e}"))?;
-            }
-            "--seed" => {
-                seed = value
-                    .parse::<u64>()
-                    .map_err(|e| format!("invalid --seed '{value}': {e}"))?;
-            }
-            "--threads" => {
-                threads = value
-                    .parse::<usize>()
-                    .map_err(|e| format!("invalid --threads '{value}': {e}"))?;
-            }
+            "--hands" => hands = parse_usize_flag(flag, value)?,
+            "--seed" => seed = parse_u64_flag(flag, value)?,
+            "--threads" => threads = parse_usize_flag(flag, value)?,
             other => return Err(format!("unknown flag '{other}'")),
         }
     }
@@ -235,6 +190,12 @@ fn parse_usize_flag(flag: &str, value: &str) -> Result<usize, String> {
         .map_err(|e| format!("invalid {flag} '{value}': {e}"))
 }
 
+fn parse_u64_flag(flag: &str, value: &str) -> Result<u64, String> {
+    value
+        .parse::<u64>()
+        .map_err(|e| format!("invalid {flag} '{value}': {e}"))
+}
+
 fn parse_smoke_args(args: &[String]) -> Result<SmokeConfig, String> {
     let mut cfg = SmokeConfig::default();
     let mut idx = 0usize;
@@ -249,11 +210,7 @@ fn parse_smoke_args(args: &[String]) -> Result<SmokeConfig, String> {
         let (flag, value) = next_flag_value(args, &mut idx)?;
         match flag {
             "--groups" => cfg.groups = parse_usize_flag(flag, value)?,
-            "--seed" => {
-                cfg.seed = value
-                    .parse::<u64>()
-                    .map_err(|e| format!("invalid --seed '{value}': {e}"))?;
-            }
+            "--seed" => cfg.seed = parse_u64_flag(flag, value)?,
             "--threads" => cfg.threads = parse_usize_flag(flag, value)?,
             "--samples" => {
                 let s = parse_usize_flag(flag, value)?;
@@ -291,11 +248,7 @@ fn parse_gate_args(args: &[String]) -> Result<GateConfig, String> {
             }
             "--realtime-groups" => cfg.realtime_groups = parse_usize_flag(flag, value)?,
             "--determinism-groups" => cfg.determinism_groups = parse_usize_flag(flag, value)?,
-            "--seed" => {
-                cfg.seed = value
-                    .parse::<u64>()
-                    .map_err(|e| format!("invalid --seed '{value}': {e}"))?;
-            }
+            "--seed" => cfg.seed = parse_u64_flag(flag, value)?,
             "--threads" => cfg.threads = parse_usize_flag(flag, value)?,
             other => return Err(format!("unknown flag '{other}'")),
         }
@@ -533,7 +486,6 @@ fn print_calibration(report: &CalibrateReport) {
     println!();
     println!("/// Calibrated weights for `P(Tenpai_opp)` (index 0 = intercept).");
     println!("pub const TENPAI_WEIGHTS: [f64; TENPAI_FEATURE_COUNT] = [");
-    let _ = TENPAI_FEATURE_COUNT;
     for (idx, w) in report.tenpai_weights.iter().enumerate() {
         println!("    {w:.8}, // {idx}");
     }
@@ -541,7 +493,6 @@ fn print_calibration(report: &CalibrateReport) {
     println!();
     println!("/// Calibrated weights for `P(Wait_opp(tile) | Tenpai_opp)` (index 0 = intercept).");
     println!("pub const WAIT_WEIGHTS: [f64; WAIT_FEATURE_COUNT] = [");
-    let _ = WAIT_FEATURE_COUNT;
     for (idx, w) in report.wait_weights.iter().enumerate() {
         println!("    {w:.8}, // {idx}");
     }

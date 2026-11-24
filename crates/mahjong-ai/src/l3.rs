@@ -12,10 +12,10 @@ use crate::l2::{
 use crate::l3_weights::{TENPAI_FEATURE_COUNT, TENPAI_WEIGHTS, WAIT_FEATURE_COUNT, WAIT_WEIGHTS};
 use crate::scoring::MeldSummary;
 use crate::shanten::compute_remaining;
+use crate::shared::{sigmoid, TERMINAL_OR_HONOR_INDICES};
 use crate::{AiDifficulty, AiStyle, DecisionContext};
 
 const INITIAL_WALL_TILES: f64 = 83.0;
-const TERMINAL_OR_HONOR_INDICES: [usize; 13] = [0, 8, 9, 17, 18, 26, 27, 28, 29, 30, 31, 32, 33];
 
 /// Exact remaining unseen wait combinations around a candidate tile from `remaining[0..34]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -55,14 +55,12 @@ pub struct L3Profile {
     pub big_hand_bias: f64,
     /// Additive preference bias on calling `Pon` / `ExposedKong`.
     pub meld_bias: f64,
-    /// Reserved toggle for Ticket #36 L4 search (`Strong` vs `StrongNoL4`).
-    pub l4_enabled: bool,
 }
 
 impl L3Profile {
-    /// Derives the static profile for `(ctx.difficulty, ctx.style, l4_enabled)`.
+    /// Derives the static profile for `(ctx.difficulty, ctx.style)`.
     #[must_use]
-    pub const fn from_context(ctx: &DecisionContext, l4_enabled: bool) -> Self {
+    pub const fn from_context(ctx: &DecisionContext) -> Self {
         let (base_risk, base_rob, base_shrink, style_scale) = match ctx.difficulty {
             AiDifficulty::Strong => (1.00, 1.25, 0.90, 1.00),
             AiDifficulty::Intermediate => (0.22, 0.30, 0.18, 0.35),
@@ -79,7 +77,6 @@ impl L3Profile {
             speed_bias: speed_bias * style_scale,
             big_hand_bias: big_hand_bias * style_scale,
             meld_bias: meld_bias * style_scale,
-            l4_enabled,
         }
     }
 }
@@ -637,28 +634,6 @@ impl L3DefenseModel {
         &self.signals[seat.index()]
     }
 
-    /// Returns aggregate opponent tenpai threat (`sum_{opp} P(Tenpai_opp) * base_multiplier`).
-    #[must_use]
-    pub fn total_opponent_threat(&self) -> f64 {
-        let mut total = 0.0f64;
-        for opp in Seat::ALL {
-            if opp == self.viewer {
-                continue;
-            }
-            let sig = &self.signals[opp.index()];
-            let base = if sig.is_menqing { 2.0 } else { 1.0 };
-            let flush_peak = sig
-                .flush_concentration
-                .iter()
-                .copied()
-                .fold(0.0f64, f64::max)
-                .max(sig.all_honors_prob);
-            let amp = 1.0 + 1.5 * flush_peak + if sig.melds_count >= 2 { 0.4 } else { 0.0 };
-            total += sig.p_tenpai * base * amp;
-        }
-        total
-    }
-
     /// Returns the maximum estimated `P(Tenpai_opp)` among the three opponents.
     #[must_use]
     pub fn max_opponent_tenpai(&self) -> f64 {
@@ -704,6 +679,21 @@ impl L3DefenseModel {
         }
         peak
     }
+
+    fn threat_summary(&self) -> OpponentThreatSummary {
+        OpponentThreatSummary {
+            max_opp_tenpai: self.max_opponent_tenpai(),
+            any_opp_tenpai: self.any_opponent_tenpai(),
+            peak_weighted: self.peak_weighted_threat(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct OpponentThreatSummary {
+    max_opp_tenpai: f64,
+    any_opp_tenpai: f64,
+    peak_weighted: f64,
 }
 
 impl RobKongRiskModel for L3DefenseModel {
@@ -742,16 +732,13 @@ impl RobKongRiskModel for L3DefenseModel {
 pub fn evaluate_l3_candidates(
     view: &PlayerView,
     ctx: &DecisionContext,
-    l4_enabled: bool,
 ) -> (CandidateBuffer, L3DefenseModel) {
-    let profile = L3Profile::from_context(ctx, l4_enabled);
+    let profile = L3Profile::from_context(ctx);
     let model = L3DefenseModel::new(view, profile);
     let mut buf = evaluate_candidates(view, &model);
-    let max_opp_tenpai = model.max_opponent_tenpai();
-    let any_opp_tenpai = model.any_opponent_tenpai();
-    let peak_weighted = model.peak_weighted_threat();
-    let threat = threat_level(max_opp_tenpai, any_opp_tenpai, peak_weighted);
-    let fold_threat = high_fold_threat(max_opp_tenpai, any_opp_tenpai, peak_weighted);
+    let summary = model.threat_summary();
+    let threat = threat_level(summary);
+    let fold_threat = high_fold_threat(summary);
     let (min_hand_risk, safe_shield_count) = closed_hand_risk_summary(view, &model);
     let fold_escape_factor = if safe_shield_count >= 1 || min_hand_risk <= 0.025 {
         1.0
@@ -769,16 +756,14 @@ pub fn evaluate_l3_candidates(
                 let eff_w =
                     effective_risk_weight(cand, view, threat, effective_fold_threat, profile);
                 let risk = model.discard_risk(tile);
-                let late = view.wall_remaining <= 38;
-                let tail_risk = if (cand.shanten_after >= 2 && effective_fold_threat > 0.05)
-                    || (cand.shanten_after >= 1 && cand.ukeire <= 4)
-                    || (cand.shanten_after >= 1 && late)
-                {
-                    (risk - 0.10).max(0.0)
-                } else {
-                    0.0
-                };
-                cand.ev = off - eff_w * risk - profile.risk_weight * 2.5 * tail_risk;
+                let tail_penalty = discard_tail_risk_penalty(
+                    cand,
+                    risk,
+                    profile,
+                    effective_fold_threat > 0.05,
+                    cand.shanten_after >= 1 && view.wall_remaining <= 38,
+                );
+                cand.ev = off - eff_w * risk - tail_penalty;
             }
             PlayerAction::Pon { tile } => {
                 let shrink = pon_shrink_penalty(cand.shanten_after, cand.ukeire, threat, profile);
@@ -805,17 +790,17 @@ pub fn evaluate_l3_candidates(
             }
             PlayerAction::ExposedKong { .. } => {
                 let shrink = if cand.shanten_after == 0 {
-                    0.04 * profile.meld_shrink_weight * max_opp_tenpai
+                    0.04 * profile.meld_shrink_weight * summary.max_opp_tenpai
                 } else {
                     profile.meld_shrink_weight
-                        * max_opp_tenpai
+                        * summary.max_opp_tenpai
                         * (0.18 + 0.10 * f64::from(cand.shanten_after.clamp(1, 3)))
                 };
                 cand.ev = off + profile.meld_bias - shrink;
             }
             PlayerAction::ConcealedKong { .. } => {
                 let shrink = if cand.shanten_after >= 1 {
-                    0.06 * profile.meld_shrink_weight * max_opp_tenpai
+                    0.06 * profile.meld_shrink_weight * summary.max_opp_tenpai
                 } else {
                     0.0
                 };
@@ -831,6 +816,25 @@ pub fn evaluate_l3_candidates(
     }
 
     (buf, model)
+}
+
+/// Shared discard tail-risk penalty used by L3 synthesis and L4 style-offset anchoring.
+#[must_use]
+pub(crate) fn discard_tail_risk_penalty(
+    cand: &CandidateEv,
+    risk: f64,
+    profile: L3Profile,
+    s2_threat_active: bool,
+    late_active: bool,
+) -> f64 {
+    let applies = (cand.shanten_after >= 2 && s2_threat_active)
+        || (cand.shanten_after >= 1 && cand.ukeire <= 4)
+        || late_active;
+    if applies {
+        profile.risk_weight * 2.5 * (risk - 0.10).max(0.0)
+    } else {
+        0.0
+    }
 }
 
 /// Runs the L1-L4 decision pipeline with explicit `l4_enabled` control.
@@ -854,7 +858,7 @@ pub fn decide_with_options<R: RngCore + ?Sized>(
         return action;
     }
 
-    let (candidates, model) = evaluate_l3_candidates(view, ctx, l4_enabled);
+    let (candidates, model) = evaluate_l3_candidates(view, ctx);
     crate::l4::decide_with_l4(view, ctx, l4_enabled, &candidates, &model, rng)
 }
 
@@ -899,17 +903,17 @@ fn closed_hand_risk_summary(view: &PlayerView, model: &L3DefenseModel) -> (f64, 
     (if best.is_finite() { best } else { 0.0 }, safe_count)
 }
 
-fn threat_level(max_opp_tenpai: f64, any_opp_tenpai: f64, peak_weighted: f64) -> f64 {
-    let peak_threat = ((max_opp_tenpai - 0.18) / 0.30).clamp(0.0, 1.5);
-    let any_threat = ((any_opp_tenpai - 0.42) / 0.38).clamp(0.0, 1.5);
-    let weighted_threat = ((peak_weighted - 0.26) / 0.34).clamp(0.0, 1.6);
+fn threat_level(summary: OpponentThreatSummary) -> f64 {
+    let peak_threat = ((summary.max_opp_tenpai - 0.18) / 0.30).clamp(0.0, 1.5);
+    let any_threat = ((summary.any_opp_tenpai - 0.42) / 0.38).clamp(0.0, 1.5);
+    let weighted_threat = ((summary.peak_weighted - 0.26) / 0.34).clamp(0.0, 1.6);
     peak_threat.max(any_threat).max(weighted_threat)
 }
 
-fn high_fold_threat(max_opp_tenpai: f64, any_opp_tenpai: f64, peak_weighted: f64) -> f64 {
-    let peak_fold = ((max_opp_tenpai - 0.24) / 0.24).clamp(0.0, 1.9);
-    let any_fold = ((any_opp_tenpai - 0.48) / 0.28).clamp(0.0, 1.9);
-    let weighted_fold = ((peak_weighted - 0.33) / 0.28).clamp(0.0, 2.1);
+fn high_fold_threat(summary: OpponentThreatSummary) -> f64 {
+    let peak_fold = ((summary.max_opp_tenpai - 0.24) / 0.24).clamp(0.0, 1.9);
+    let any_fold = ((summary.any_opp_tenpai - 0.48) / 0.28).clamp(0.0, 1.9);
+    let weighted_fold = ((summary.peak_weighted - 0.33) / 0.28).clamp(0.0, 2.1);
     peak_fold.max(any_fold).max(weighted_fold)
 }
 
@@ -977,11 +981,9 @@ pub(crate) fn candidate_effective_risk_weight(
     model: &L3DefenseModel,
     profile: L3Profile,
 ) -> f64 {
-    let max_opp_tenpai = model.max_opponent_tenpai();
-    let any_opp_tenpai = model.any_opponent_tenpai();
-    let peak_weighted = model.peak_weighted_threat();
-    let threat = threat_level(max_opp_tenpai, any_opp_tenpai, peak_weighted);
-    let fold_threat = high_fold_threat(max_opp_tenpai, any_opp_tenpai, peak_weighted);
+    let summary = model.threat_summary();
+    let threat = threat_level(summary);
+    let fold_threat = high_fold_threat(summary);
     effective_risk_weight(cand, view, threat, fold_threat, profile)
 }
 
@@ -1050,12 +1052,644 @@ fn dot<const N: usize>(w: &[f64; N], x: &[f64; N]) -> f64 {
     sum
 }
 
-fn sigmoid(z: f64) -> f64 {
-    if z >= 0.0 {
-        let e = (-z).exp();
-        1.0 / (1.0 + e)
-    } else {
-        let e = z.exp();
-        e / (1.0 + e)
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::l2;
+    use crate::test_common::{tile, tiles};
+    use crate::DecisionBudget;
+    use mahjong_core::{
+        build_preset_wall, project_view, Match, MatchMode, PresetWallProvider, TuidaohuRuleset,
+    };
+    use rand_chacha::ChaCha8Rng;
+    use rand_core::SeedableRng;
+
+    #[test]
+    fn passed_hu_zero_risk_helper_tracks_draw_and_meld_expiry() {
+        let meld_wall = build_preset_wall(
+            &tiles("123s 456s 78s EE 22p 5m 1m"),
+            &tiles("11p 444m 777m 999s 9m 6p"),
+            &tiles("11m 99m CC 67m 66p 9p 4s 7s"),
+            &tiles("222m 333m 444p 111s C"),
+            &tiles("8s 6s W F 4p 3p 3s 7p 5m 5p N 2s 5m"),
+            &[],
+        )
+        .expect("valid preset wall");
+
+        let mut meld_game = Match::new(
+            MatchMode::EastOnly,
+            TuidaohuRuleset,
+            PresetWallProvider::single(Seat::East, meld_wall),
+        )
+        .expect("match starts");
+        for (seat, action) in [
+            (
+                Seat::East,
+                PlayerAction::Discard {
+                    tile: tile("1m"),
+                    from_drawn: false,
+                },
+            ),
+            (Seat::West, PlayerAction::Pon { tile: tile("1m") }),
+            (
+                Seat::West,
+                PlayerAction::Discard {
+                    tile: tile("9p"),
+                    from_drawn: false,
+                },
+            ),
+            (
+                Seat::North,
+                PlayerAction::Discard {
+                    tile: tile("8s"),
+                    from_drawn: true,
+                },
+            ),
+            (
+                Seat::East,
+                PlayerAction::Discard {
+                    tile: tile("6s"),
+                    from_drawn: true,
+                },
+            ),
+            (
+                Seat::South,
+                PlayerAction::Discard {
+                    tile: tile("9m"),
+                    from_drawn: false,
+                },
+            ),
+            (Seat::West, PlayerAction::Pon { tile: tile("9m") }),
+            (
+                Seat::West,
+                PlayerAction::Discard {
+                    tile: tile("4s"),
+                    from_drawn: false,
+                },
+            ),
+            (
+                Seat::North,
+                PlayerAction::Discard {
+                    tile: tile("C"),
+                    from_drawn: false,
+                },
+            ),
+            (Seat::West, PlayerAction::Pon { tile: tile("C") }),
+            (
+                Seat::West,
+                PlayerAction::Discard {
+                    tile: tile("7s"),
+                    from_drawn: false,
+                },
+            ),
+            (
+                Seat::North,
+                PlayerAction::Discard {
+                    tile: tile("4p"),
+                    from_drawn: true,
+                },
+            ),
+            (
+                Seat::East,
+                PlayerAction::Discard {
+                    tile: tile("3p"),
+                    from_drawn: true,
+                },
+            ),
+            (
+                Seat::South,
+                PlayerAction::Discard {
+                    tile: tile("3s"),
+                    from_drawn: true,
+                },
+            ),
+            (
+                Seat::West,
+                PlayerAction::Discard {
+                    tile: tile("7p"),
+                    from_drawn: true,
+                },
+            ),
+        ] {
+            meld_game.apply_action(seat, action).unwrap();
+        }
+        assert!(!is_passed_hu_zero_risk(
+            &project_view(&meld_game, Seat::East),
+            Seat::West,
+            tile("5m")
+        ));
+
+        meld_game
+            .apply_action(
+                Seat::North,
+                PlayerAction::Discard {
+                    tile: tile("5m"),
+                    from_drawn: true,
+                },
+            )
+            .unwrap();
+        meld_game
+            .apply_action(Seat::West, PlayerAction::Pass)
+            .unwrap();
+
+        let safe_view = project_view(&meld_game, Seat::East);
+        assert!(is_passed_hu_zero_risk(&safe_view, Seat::West, tile("5m")));
+        assert!(!is_passed_hu_zero_risk(&safe_view, Seat::West, tile("5p")));
+
+        meld_game
+            .apply_action(
+                Seat::East,
+                PlayerAction::Discard {
+                    tile: tile("5m"),
+                    from_drawn: false,
+                },
+            )
+            .unwrap();
+        meld_game
+            .apply_action(
+                Seat::South,
+                PlayerAction::Discard {
+                    tile: tile("6p"),
+                    from_drawn: false,
+                },
+            )
+            .unwrap();
+        meld_game
+            .apply_action(Seat::West, PlayerAction::Pon { tile: tile("6p") })
+            .unwrap();
+        meld_game
+            .apply_action(
+                Seat::West,
+                PlayerAction::Discard {
+                    tile: tile("6m"),
+                    from_drawn: false,
+                },
+            )
+            .unwrap();
+        meld_game
+            .apply_action(
+                Seat::North,
+                PlayerAction::Discard {
+                    tile: tile("2s"),
+                    from_drawn: true,
+                },
+            )
+            .unwrap();
+
+        assert!(
+            !is_passed_hu_zero_risk(
+                &project_view(&meld_game, Seat::East),
+                Seat::West,
+                tile("5m")
+            ),
+            "过水胡 0-risk window must expire when West claims a Pon meld"
+        );
+    }
+
+    #[test]
+    fn kabe_wait_combos_and_l3_defense_model_behave_as_specified() {
+        let mut rem_check = [3u8; Tile::COUNT];
+        rem_check[tile("5m").index()] = 0;
+        rem_check[tile("E").index()] = 0;
+        let combos_5m = kabe_wait_combos(tile("5m"), &rem_check);
+        let combos_e = kabe_wait_combos(tile("E"), &rem_check);
+        assert_eq!(combos_5m.shanpon, 0);
+        assert_eq!(combos_5m.tanki, 0);
+        assert!(combos_5m.ryanmen > 0 && combos_5m.kanchan > 0);
+        assert_eq!(combos_e.total_std_combos(), 0);
+
+        // AddedKong risk model + L2 vs L3 comparison on the 5m AddedKong scenario.
+        let ak_wall = build_preset_wall(
+            &tiles("55m 123s 456s 7p 99s E B 1m"),
+            &tiles("11p 444p 777p 66p 5m 9m 2m"),
+            &tiles("11m 99m 22m 67m 88p E 4s 7s"),
+            &tiles("333m 444m 555p 111s C"),
+            &tiles("E 8s S W N F 3p C 2p 9p 3p B 8s E 2p 9p 8s 3p W S 5m"),
+            &[],
+        )
+        .expect("valid ak wall");
+        let mut ak_game = Match::new(
+            MatchMode::EastOnly,
+            TuidaohuRuleset,
+            PresetWallProvider::single(Seat::East, ak_wall),
+        )
+        .expect("match starts");
+        for (seat, action) in [
+            (
+                Seat::East,
+                PlayerAction::Discard {
+                    tile: tile("1m"),
+                    from_drawn: false,
+                },
+            ),
+            (Seat::West, PlayerAction::Pon { tile: tile("1m") }),
+            (
+                Seat::West,
+                PlayerAction::Discard {
+                    tile: tile("E"),
+                    from_drawn: false,
+                },
+            ),
+            (
+                Seat::North,
+                PlayerAction::Discard {
+                    tile: tile("E"),
+                    from_drawn: true,
+                },
+            ),
+            (
+                Seat::East,
+                PlayerAction::Discard {
+                    tile: tile("8s"),
+                    from_drawn: true,
+                },
+            ),
+            (
+                Seat::South,
+                PlayerAction::Discard {
+                    tile: tile("5m"),
+                    from_drawn: false,
+                },
+            ),
+            (Seat::East, PlayerAction::Pon { tile: tile("5m") }),
+            (
+                Seat::East,
+                PlayerAction::Discard {
+                    tile: tile("B"),
+                    from_drawn: false,
+                },
+            ),
+            (
+                Seat::South,
+                PlayerAction::Discard {
+                    tile: tile("9m"),
+                    from_drawn: false,
+                },
+            ),
+            (Seat::West, PlayerAction::Pon { tile: tile("9m") }),
+            (
+                Seat::West,
+                PlayerAction::Discard {
+                    tile: tile("4s"),
+                    from_drawn: false,
+                },
+            ),
+            (
+                Seat::North,
+                PlayerAction::Discard {
+                    tile: tile("N"),
+                    from_drawn: true,
+                },
+            ),
+            (
+                Seat::East,
+                PlayerAction::Discard {
+                    tile: tile("F"),
+                    from_drawn: true,
+                },
+            ),
+            (
+                Seat::South,
+                PlayerAction::Discard {
+                    tile: tile("2m"),
+                    from_drawn: false,
+                },
+            ),
+            (Seat::West, PlayerAction::Pon { tile: tile("2m") }),
+            (
+                Seat::West,
+                PlayerAction::Discard {
+                    tile: tile("7s"),
+                    from_drawn: false,
+                },
+            ),
+            (
+                Seat::North,
+                PlayerAction::Discard {
+                    tile: tile("C"),
+                    from_drawn: true,
+                },
+            ),
+            (
+                Seat::East,
+                PlayerAction::Discard {
+                    tile: tile("2p"),
+                    from_drawn: true,
+                },
+            ),
+            (
+                Seat::South,
+                PlayerAction::Discard {
+                    tile: tile("9p"),
+                    from_drawn: true,
+                },
+            ),
+            (
+                Seat::West,
+                PlayerAction::Discard {
+                    tile: tile("3p"),
+                    from_drawn: true,
+                },
+            ),
+            (
+                Seat::North,
+                PlayerAction::Discard {
+                    tile: tile("B"),
+                    from_drawn: true,
+                },
+            ),
+            (
+                Seat::East,
+                PlayerAction::Discard {
+                    tile: tile("8s"),
+                    from_drawn: true,
+                },
+            ),
+            (
+                Seat::South,
+                PlayerAction::Discard {
+                    tile: tile("E"),
+                    from_drawn: true,
+                },
+            ),
+            (
+                Seat::West,
+                PlayerAction::Discard {
+                    tile: tile("2p"),
+                    from_drawn: true,
+                },
+            ),
+            (
+                Seat::North,
+                PlayerAction::Discard {
+                    tile: tile("9p"),
+                    from_drawn: true,
+                },
+            ),
+            (
+                Seat::East,
+                PlayerAction::Discard {
+                    tile: tile("8s"),
+                    from_drawn: true,
+                },
+            ),
+            (
+                Seat::South,
+                PlayerAction::Discard {
+                    tile: tile("3p"),
+                    from_drawn: true,
+                },
+            ),
+            (
+                Seat::West,
+                PlayerAction::Discard {
+                    tile: tile("W"),
+                    from_drawn: true,
+                },
+            ),
+            (
+                Seat::North,
+                PlayerAction::Discard {
+                    tile: tile("S"),
+                    from_drawn: true,
+                },
+            ),
+        ] {
+            ak_game.apply_action(seat, action).unwrap();
+        }
+        let ak_view = project_view(&ak_game, Seat::East);
+        let ctx = DecisionContext {
+            difficulty: AiDifficulty::Strong,
+            style: AiStyle::Balanced,
+            budget: DecisionBudget::Deterministic { max_samples: 64 },
+        };
+        let model = L3DefenseModel::new(&ak_view, L3Profile::from_context(&ctx));
+        assert!(model.discard_risk(tile("E")) < 1e-3);
+        assert!(model.rob_kong_risk_ev(&ak_view, tile("5m")) > 2.5);
+
+        let mut rng = ChaCha8Rng::seed_from_u64(3502);
+        assert_eq!(
+            l2::decide(&ak_view, &ctx, &mut rng),
+            PlayerAction::AddedKong { tile: tile("5m") }
+        );
+        assert_eq!(
+            decide_with_options(&ak_view, &ctx, false, &mut rng),
+            PlayerAction::Discard {
+                tile: tile("E"),
+                from_drawn: false,
+            }
+        );
+    }
+
+    #[test]
+    fn style_profiles_separate_offense_and_kabe_folding_without_l4() {
+        let border_wall = build_preset_wall(
+            &tiles("999s 456s 122p 68p 11s 1m"),
+            &tiles("11p 8p 9m 1s 555p 66p 33s B"),
+            &tiles("11m 99m CC 67m 77p 4s 7s 5s"),
+            &tiles("1p 333m 444p 1s 2s 8s F 7m 3m"),
+            &tiles("B 6s W N 4s 3p 5s 3p 9p 7p 4p 9p 9p W S S 4m 5m"),
+            &[],
+        )
+        .expect("valid border wall");
+        let mut border_game = Match::new(
+            MatchMode::EastOnly,
+            TuidaohuRuleset,
+            PresetWallProvider::single(Seat::East, border_wall),
+        )
+        .expect("match starts");
+        for (seat, action) in [
+            (
+                Seat::East,
+                PlayerAction::Discard {
+                    tile: tile("1m"),
+                    from_drawn: false,
+                },
+            ),
+            (Seat::West, PlayerAction::Pon { tile: tile("1m") }),
+            (
+                Seat::West,
+                PlayerAction::Discard {
+                    tile: tile("7p"),
+                    from_drawn: false,
+                },
+            ),
+            (
+                Seat::North,
+                PlayerAction::Discard {
+                    tile: tile("B"),
+                    from_drawn: true,
+                },
+            ),
+            (
+                Seat::East,
+                PlayerAction::Discard {
+                    tile: tile("6s"),
+                    from_drawn: true,
+                },
+            ),
+            (
+                Seat::South,
+                PlayerAction::Discard {
+                    tile: tile("8p"),
+                    from_drawn: false,
+                },
+            ),
+            (
+                Seat::West,
+                PlayerAction::Discard {
+                    tile: tile("4s"),
+                    from_drawn: false,
+                },
+            ),
+            (
+                Seat::North,
+                PlayerAction::Discard {
+                    tile: tile("F"),
+                    from_drawn: false,
+                },
+            ),
+            (
+                Seat::East,
+                PlayerAction::Discard {
+                    tile: tile("3p"),
+                    from_drawn: true,
+                },
+            ),
+            (
+                Seat::South,
+                PlayerAction::Discard {
+                    tile: tile("1s"),
+                    from_drawn: false,
+                },
+            ),
+            (Seat::East, PlayerAction::Pass),
+            (
+                Seat::West,
+                PlayerAction::Discard {
+                    tile: tile("3p"),
+                    from_drawn: true,
+                },
+            ),
+            (
+                Seat::North,
+                PlayerAction::Discard {
+                    tile: tile("8s"),
+                    from_drawn: false,
+                },
+            ),
+            (
+                Seat::East,
+                PlayerAction::Discard {
+                    tile: tile("7p"),
+                    from_drawn: true,
+                },
+            ),
+            (
+                Seat::South,
+                PlayerAction::Discard {
+                    tile: tile("1p"),
+                    from_drawn: false,
+                },
+            ),
+            (
+                Seat::West,
+                PlayerAction::Discard {
+                    tile: tile("7s"),
+                    from_drawn: false,
+                },
+            ),
+            (
+                Seat::North,
+                PlayerAction::Discard {
+                    tile: tile("1p"),
+                    from_drawn: false,
+                },
+            ),
+            (
+                Seat::East,
+                PlayerAction::Discard {
+                    tile: tile("W"),
+                    from_drawn: true,
+                },
+            ),
+            (
+                Seat::South,
+                PlayerAction::Discard {
+                    tile: tile("1p"),
+                    from_drawn: false,
+                },
+            ),
+            (
+                Seat::West,
+                PlayerAction::Discard {
+                    tile: tile("S"),
+                    from_drawn: true,
+                },
+            ),
+            (
+                Seat::North,
+                PlayerAction::Discard {
+                    tile: tile("4m"),
+                    from_drawn: true,
+                },
+            ),
+        ] {
+            border_game.apply_action(seat, action).unwrap();
+        }
+        let border_view = project_view(&border_game, Seat::East);
+        let budget = DecisionBudget::Deterministic { max_samples: 64 };
+        let mut rng = ChaCha8Rng::seed_from_u64(3503);
+        let agg_b = decide_with_options(
+            &border_view,
+            &DecisionContext {
+                difficulty: AiDifficulty::Strong,
+                style: AiStyle::AggressiveFast,
+                budget,
+            },
+            false,
+            &mut rng,
+        );
+        let bal_b = decide_with_options(
+            &border_view,
+            &DecisionContext {
+                difficulty: AiDifficulty::Strong,
+                style: AiStyle::Balanced,
+                budget,
+            },
+            false,
+            &mut rng,
+        );
+        let def_b = decide_with_options(
+            &border_view,
+            &DecisionContext {
+                difficulty: AiDifficulty::Strong,
+                style: AiStyle::DefensiveBigHand,
+                budget,
+            },
+            false,
+            &mut rng,
+        );
+        assert_eq!(
+            agg_b,
+            PlayerAction::Discard {
+                tile: tile("5m"),
+                from_drawn: true,
+            }
+        );
+        assert_eq!(
+            bal_b,
+            PlayerAction::Discard {
+                tile: tile("5m"),
+                from_drawn: true,
+            }
+        );
+        assert_eq!(
+            def_b,
+            PlayerAction::Discard {
+                tile: tile("1p"),
+                from_drawn: false,
+            }
+        );
     }
 }

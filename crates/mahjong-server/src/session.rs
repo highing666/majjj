@@ -6,20 +6,21 @@ use std::sync::Arc;
 
 use mahjong_ai::{AiStyle, DecisionBudget, DecisionContext};
 use mahjong_core::{
-    AnyRuleset, Match, MatchMode, PlayerAction, PlayerEvent, PlayerView, PublicPhase,
-    RecordedEvent, Seat, SeededWallProvider, TuidaohuRuleset, WallProvider,
+    AnyRuleset, Match, MatchMode, PlayerAction, PlayerEvent, PublicPhase, RecordedEvent, Seat,
+    SeededWallProvider, TuidaohuRuleset, WallProvider,
 };
 use rand_chacha::ChaCha8Rng;
 use rand_core::{RngCore, SeedableRng};
 use tokio::sync::{mpsc, Mutex};
 use uuid::Uuid;
 
+use crate::ai_pool::{build_ai_pool, default_ai_threads, spawn_ai_jobs, PendingAiJob};
 use crate::lan::{discover_lan_urls, read_local_hostname, read_system_interfaces};
 use crate::protocol::{
     ClientMessage, DestructiveOpKind, LanUrlInfo, LobbyConfig, PendingDestructiveOp, SeatInfo,
     SeatKind, SeatingRule, ServerMessage, TablePhase, TableSnapshot,
 };
-use crate::server::{default_ai_threads, ServerError};
+use crate::server::ServerError;
 
 /// `Send`-safe wrapper around a boxed [`WallProvider`] for injecting deterministic walls in tests.
 pub struct BoxedWallProvider(pub Box<dyn WallProvider + Send>);
@@ -953,7 +954,11 @@ impl TableSession {
         jobs
     }
 
-    fn complete_ai_job(
+    pub(crate) fn cancel_ai_job(&mut self, match_id: u64, expected_seq: u64, seat: Seat) {
+        self.in_flight_ai.remove(&(match_id, expected_seq, seat));
+    }
+
+    pub(crate) fn complete_ai_job(
         &mut self,
         match_id: u64,
         expected_seq: u64,
@@ -1170,57 +1175,6 @@ struct HelloParams {
     seat_token: Option<String>,
 }
 
-struct PendingAiJob {
-    match_id: u64,
-    seq: u64,
-    seat: Seat,
-    view: PlayerView,
-    ctx: DecisionContext,
-    step_seed: u64,
-}
-
-fn spawn_ai_jobs(
-    runtime: Arc<Mutex<TableSession>>,
-    ai_pool: Arc<rayon::ThreadPool>,
-    jobs: Vec<PendingAiJob>,
-) {
-    for job in jobs {
-        let runtime = Arc::clone(&runtime);
-        let ai_pool_for_next = Arc::clone(&ai_pool);
-        let ai_pool_for_job = Arc::clone(&ai_pool);
-        tokio::spawn(async move {
-            let PendingAiJob {
-                match_id,
-                seq,
-                seat,
-                view,
-                ctx,
-                step_seed,
-            } = job;
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            ai_pool_for_job.spawn(move || {
-                let mut rng = ChaCha8Rng::seed_from_u64(step_seed);
-                let action = mahjong_ai::decide(&view, &ctx, &mut rng);
-                let _ = tx.send(action);
-            });
-
-            let Ok(action) = rx.await else {
-                let mut session = runtime.lock().await;
-                session.in_flight_ai.remove(&(match_id, seq, seat));
-                return;
-            };
-
-            let next_jobs = {
-                let mut session = runtime.lock().await;
-                session.complete_ai_job(match_id, seq, seat, action)
-            };
-            if !next_jobs.is_empty() {
-                spawn_ai_jobs(runtime, ai_pool_for_next, next_jobs);
-            }
-        });
-    }
-}
-
 /// Thread-safe handle around the single active [`TableSession`].
 #[derive(Clone)]
 pub struct TableRuntime {
@@ -1265,21 +1219,14 @@ impl TableRuntime {
         options: TableOptions,
         ai_threads: usize,
     ) -> Result<Self, ServerError> {
-        if ai_threads == 0 {
-            return Err(ServerError::InvalidAiThreads(0));
-        }
-        let ai_pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(ai_threads)
-            .thread_name(|i| format!("majjj-ai-{i}"))
-            .build()
-            .map_err(|err| ServerError::AiPool(err.to_string()))?;
+        let ai_pool = build_ai_pool(ai_threads)?;
         Ok(Self {
             inner: Arc::new(Mutex::new(TableSession::with_options(
                 port,
                 local_hostname,
                 options,
             ))),
-            ai_pool: Arc::new(ai_pool),
+            ai_pool,
         })
     }
 

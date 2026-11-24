@@ -14,6 +14,7 @@ use crate::shanten::{
     necessary_tiles_thirteen_orphans_mask, riichi_mask_to_core, shanten_seven_pairs,
     shanten_standard, shanten_thirteen_orphans, ukeire_from_mask, ShantenBreakdown,
 };
+use crate::shared::{gen_range_usize, TERMINAL_OR_HONOR_INDICES, TILE_MASK_34};
 use crate::DecisionContext;
 use xiangting::{calculate_necessary_tiles, PlayerCount};
 
@@ -27,8 +28,6 @@ const PON_FLEXIBILITY_PENALTY_OPEN: f64 = 0.01;
 const EXPOSED_KONG_FLEXIBILITY_PENALTY_CLOSED: f64 = 0.28;
 const EXPOSED_KONG_FLEXIBILITY_PENALTY_OPEN: f64 = 0.08;
 const EV_TIE_EPS: f64 = 1e-9;
-
-const TERMINAL_OR_HONOR_INDICES: [usize; 13] = [0, 8, 9, 17, 18, 26, 27, 28, 29, 30, 31, 32, 33];
 
 /// Hook supplying expected loss from an opponent's `抢杠胡` when attempting `AddedKong`.
 pub trait RobKongRiskModel {
@@ -686,7 +685,7 @@ fn compute_rinshan_ev(
 
     let mut p_win = 0.0f64;
     let mut ev = 0.0f64;
-    let mut bits = waits_mask & ((1u64 << Tile::COUNT) - 1);
+    let mut bits = waits_mask & TILE_MASK_34;
     while bits != 0 {
         let idx = bits.trailing_zeros() as usize;
         bits &= bits - 1;
@@ -889,7 +888,7 @@ fn compute_tenpai_summary(
     let mut sum_weight = 0.0f64;
     let mut sum_weighted_payout = 0.0f64;
 
-    let mut bits = waits_mask & ((1u64 << Tile::COUNT) - 1);
+    let mut bits = waits_mask & TILE_MASK_34;
     while bits != 0 {
         let idx = bits.trailing_zeros() as usize;
         bits &= bits - 1;
@@ -1030,7 +1029,7 @@ fn eval_s1(
     let n_u = f64::from(ctx.total_unseen.max(1));
 
     let mut work = *hand;
-    let mut bits = waits_mask & ((1u64 << Tile::COUNT) - 1);
+    let mut bits = waits_mask & TILE_MASK_34;
     while bits != 0 {
         let x_idx = bits.trailing_zeros() as usize;
         bits &= bits - 1;
@@ -1151,7 +1150,7 @@ fn eval_s2(
     let n_u = f64::from(ctx.total_unseen.max(1));
 
     let mut work = *hand;
-    let mut bits = waits_mask & ((1u64 << Tile::COUNT) - 1);
+    let mut bits = waits_mask & TILE_MASK_34;
     while bits != 0 {
         let x_idx = bits.trailing_zeros() as usize;
         bits &= bits - 1;
@@ -1572,14 +1571,147 @@ fn estimate_expected_win_score(
     avg_base * 1.46
 }
 
-fn gen_range_usize<R: RngCore + ?Sized>(rng: &mut R, bound: usize) -> usize {
-    debug_assert!(bound > 0 && bound <= u32::MAX as usize);
-    let bound_u32 = bound as u32;
-    let threshold = bound_u32.wrapping_neg() % bound_u32;
-    loop {
-        let candidate = rng.next_u32();
-        if candidate >= threshold {
-            return (candidate % bound_u32) as usize;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_common::{tile as tile_one, tiles};
+    use crate::{AiDifficulty, AiStyle, DecisionBudget};
+    use mahjong_core::{
+        build_preset_wall, project_view, Match, MatchMode, PresetWallProvider, Seat,
+        TuidaohuRuleset,
+    };
+    use rand_chacha::ChaCha8Rng;
+    use rand_core::SeedableRng;
+
+    #[test]
+    fn rob_kong_risk_model_hook_subtracts_ev_and_deters_added_kong() {
+        let mut ak_game = Match::new(
+            MatchMode::EastOnly,
+            TuidaohuRuleset,
+            PresetWallProvider::single(
+                Seat::East,
+                build_preset_wall(
+                    &tiles("999m 999p 999s EEE 5m C"),
+                    &tiles("55m 123p 456p 78s 44m B"),
+                    &tiles("888m 888p 888s SSS N"),
+                    &tiles("777m 777p 777s WWW F"),
+                    &tiles("1m 2m 1s 5m"),
+                    &[],
+                )
+                .expect("valid wall"),
+            ),
+        )
+        .expect("match starts");
+        ak_game
+            .apply_action(
+                Seat::East,
+                PlayerAction::Discard {
+                    tile: tile_one("5m"),
+                    from_drawn: false,
+                },
+            )
+            .unwrap();
+        ak_game
+            .apply_action(
+                Seat::South,
+                PlayerAction::Pon {
+                    tile: tile_one("5m"),
+                },
+            )
+            .unwrap();
+        ak_game
+            .apply_action(
+                Seat::South,
+                PlayerAction::Discard {
+                    tile: tile_one("B"),
+                    from_drawn: false,
+                },
+            )
+            .unwrap();
+        ak_game
+            .apply_action(
+                Seat::West,
+                PlayerAction::Discard {
+                    tile: tile_one("1m"),
+                    from_drawn: true,
+                },
+            )
+            .unwrap();
+        ak_game
+            .apply_action(
+                Seat::North,
+                PlayerAction::Discard {
+                    tile: tile_one("2m"),
+                    from_drawn: true,
+                },
+            )
+            .unwrap();
+        ak_game
+            .apply_action(
+                Seat::East,
+                PlayerAction::Discard {
+                    tile: tile_one("1s"),
+                    from_drawn: true,
+                },
+            )
+            .unwrap();
+        let ak_view = project_view(&ak_game, Seat::South);
+
+        let mut rng = ChaCha8Rng::seed_from_u64(505);
+        let ctx = DecisionContext {
+            difficulty: AiDifficulty::Strong,
+            style: AiStyle::Balanced,
+            budget: DecisionBudget::Deterministic { max_samples: 64 },
+        };
+        assert_eq!(
+            decide(&ak_view, &ctx, &mut rng),
+            PlayerAction::AddedKong {
+                tile: tile_one("5m"),
+            }
+        );
+
+        struct HighRobRisk;
+        impl RobKongRiskModel for HighRobRisk {
+            fn rob_kong_risk_ev(&self, _view: &PlayerView, _tile: Tile) -> f64 {
+                5.0
+            }
         }
+
+        let cands_zero = evaluate_candidates(&ak_view, &ZeroRobKongRisk);
+        let cands_risk = evaluate_candidates(&ak_view, &HighRobRisk);
+        let ak_zero = cands_zero
+            .as_slice()
+            .iter()
+            .find(|c| {
+                c.action
+                    == PlayerAction::AddedKong {
+                        tile: tile_one("5m"),
+                    }
+            })
+            .expect("AddedKong candidate present");
+        let ak_risk = cands_risk
+            .as_slice()
+            .iter()
+            .find(|c| {
+                c.action
+                    == PlayerAction::AddedKong {
+                        tile: tile_one("5m"),
+                    }
+            })
+            .expect("AddedKong candidate present");
+        assert!(
+            (ak_zero.ev - ak_risk.ev - 5.0).abs() < 1e-6,
+            "rob_kong_risk_ev must subtract cleanly from AddedKong EV"
+        );
+        let best_under_risk = cands_risk
+            .as_slice()
+            .iter()
+            .max_by(|a, b| a.ev.total_cmp(&b.ev))
+            .expect("non-empty candidates");
+        assert!(
+            matches!(best_under_risk.action, PlayerAction::Discard { .. }),
+            "high rob-kong risk must deter AddedKong in favor of Discard, got {:?}",
+            best_under_risk.action
+        );
     }
 }

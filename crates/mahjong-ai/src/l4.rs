@@ -12,7 +12,7 @@ use rayon::prelude::*;
 use xiangting::{calculate_necessary_tiles, calculate_replacement_number, PlayerCount};
 
 use crate::l2::{select_best_candidate, CandidateBuffer, CandidateEv};
-use crate::l3::{is_passed_hu_zero_risk, L3DefenseModel, L3Profile};
+use crate::l3::{discard_tail_risk_penalty, is_passed_hu_zero_risk, L3DefenseModel, L3Profile};
 use crate::scoring::{
     evaluate_win, evaluate_win_with_extra, kong_net_delta, MeldSummary, ScoringInput, ScoringRules,
 };
@@ -20,6 +20,7 @@ use crate::shanten::{
     core_counts_to_riichi, necessary_tiles_seven_pairs_mask, necessary_tiles_thirteen_orphans_mask,
     riichi_mask_to_core, shanten_seven_pairs, shanten_thirteen_orphans, ukeire_from_mask,
 };
+use crate::shared::splitmix64;
 use crate::{AiDifficulty, DecisionBudget, DecisionContext};
 
 const TRIGGER_MAX_WALL: u8 = 96;
@@ -243,7 +244,7 @@ pub fn decide_with_l4<R: RngCore + ?Sized>(
         }
     };
 
-    let profile = L3Profile::from_context(ctx, l4_enabled);
+    let profile = L3Profile::from_context(ctx);
     let (mut pool_stats, pool_len) = select_candidate_pool(view, model, slice, profile);
     if pool_len <= 1 {
         return select_best_candidate(slice, rng).unwrap_or(view.legal_actions[0]);
@@ -374,6 +375,7 @@ pub fn decide_with_l4<R: RngCore + ?Sized>(
 
 /// Deterministically samples a `SimState` from public `view` and `model` with strict
 /// 136-tile conservation (including locking 4-copy tiles for opponent hidden `ConcealedKong`).
+#[cfg(test)]
 #[must_use]
 pub fn sample_sim_state(view: &PlayerView, model: &L3DefenseModel, seed: u64) -> SimState {
     let opp_weights = build_opponent_tile_weights(view, model);
@@ -451,19 +453,17 @@ fn candidate_style_offset(
             // since a greedy L1 rollout only observes single-turn deal-in loss at 1.0x.
             let eff_w = crate::l3::candidate_effective_risk_weight(cand, view, model, profile);
             let risk = model.discard_risk(tile);
-            let late = view.wall_remaining <= 36;
-            let tail_risk = if (cand.shanten_after >= 2 && model.max_opponent_tenpai() >= 0.26)
-                || (cand.shanten_after >= 1 && cand.ukeire <= 4)
-                || late
-            {
-                (risk - 0.10).max(0.0)
-            } else {
-                0.0
-            };
+            let tail_penalty = discard_tail_risk_penalty(
+                cand,
+                risk,
+                profile,
+                model.max_opponent_tenpai() >= 0.26,
+                view.wall_remaining <= 36,
+            );
             if eff_w > 1.20 {
                 offset -= (eff_w - 1.20) * 0.55 * risk;
             }
-            offset -= profile.risk_weight * 2.5 * tail_risk;
+            offset -= tail_penalty;
         }
         PlayerAction::Pon { .. } | PlayerAction::ExposedKong { .. } => {
             offset += if profile.meld_bias > 0.0 {
@@ -1488,18 +1488,19 @@ fn resolve_discard_step(
     None
 }
 
-fn check_ron_reactions(
+fn check_hu_reactions(
     sim: &SimState,
-    discarder: usize,
+    source_seat: usize,
     tile_idx: usize,
     skip_seat: Option<usize>,
+    win_kind: WinKind,
     profile: L3Profile,
 ) -> Option<f64> {
     let tile_bit = 1u64 << tile_idx;
     let tile = Tile::new(tile_idx as u8).expect("idx bounded by Tile::COUNT");
     let viewer = usize::from(sim.viewer);
     let input = ScoringInput {
-        win_kind: WinKind::Ron,
+        win_kind,
         turn_source: None,
         wall_remaining: sim.wall_len(),
     };
@@ -1509,7 +1510,7 @@ fn check_ron_reactions(
     let mut viewer_delta = 0.0f64;
 
     for offset in 1..4 {
-        let reactor = (discarder + offset) % 4;
+        let reactor = (source_seat + offset) % 4;
         if skip_seat == Some(reactor) {
             continue;
         }
@@ -1526,13 +1527,32 @@ fn check_ron_reactions(
             if reactor == viewer {
                 viewer_delta += f64::from(eval.base_points);
             }
-            if discarder == viewer {
-                viewer_delta -= f64::from(eval.base_points) * profile.risk_weight * 1.30;
+            if source_seat == viewer {
+                match win_kind {
+                    WinKind::Ron => {
+                        viewer_delta -= f64::from(eval.base_points) * profile.risk_weight * 1.30;
+                    }
+                    WinKind::RobKongHu => {
+                        viewer_delta -=
+                            (f64::from(eval.base_points) + 4.0) * profile.rob_kong_risk_multiplier;
+                    }
+                    WinKind::Tsumo => unreachable!("check_hu_reactions only handles Ron/RobKongHu"),
+                }
             }
         }
     }
 
     any_winner.then(|| f64::from(sim.kong_deltas[viewer]) + viewer_delta)
+}
+
+fn check_ron_reactions(
+    sim: &SimState,
+    discarder: usize,
+    tile_idx: usize,
+    skip_seat: Option<usize>,
+    profile: L3Profile,
+) -> Option<f64> {
+    check_hu_reactions(sim, discarder, tile_idx, skip_seat, WinKind::Ron, profile)
 }
 
 fn check_rob_kong_hu(
@@ -1541,42 +1561,7 @@ fn check_rob_kong_hu(
     tile_idx: usize,
     profile: L3Profile,
 ) -> Option<f64> {
-    let tile_bit = 1u64 << tile_idx;
-    let tile = Tile::new(tile_idx as u8).expect("idx bounded by Tile::COUNT");
-    let viewer = usize::from(sim.viewer);
-    let input = ScoringInput {
-        win_kind: WinKind::RobKongHu,
-        turn_source: None,
-        wall_remaining: sim.wall_len(),
-    };
-    let rules = sim.scoring_rules();
-
-    let mut any_rob = false;
-    let mut viewer_delta = 0.0f64;
-
-    for offset in 1..4 {
-        let reactor = (actor + offset) % 4;
-        if (sim.passed_hu_mask & (1u8 << reactor)) != 0
-            || (sim.passed_hu_tile_masks[reactor] & tile_bit) != 0
-            || (sim.wait_masks[reactor] & tile_bit) == 0
-        {
-            continue;
-        }
-        if let Some(eval) =
-            evaluate_win_with_extra(&sim.hands[reactor], tile, &sim.melds[reactor], input, rules)
-        {
-            any_rob = true;
-            if reactor == viewer {
-                viewer_delta += f64::from(eval.base_points);
-            }
-            if actor == viewer {
-                viewer_delta -=
-                    (f64::from(eval.base_points) + 4.0) * profile.rob_kong_risk_multiplier;
-            }
-        }
-    }
-
-    any_rob.then(|| f64::from(sim.kong_deltas[viewer]) + viewer_delta)
+    check_hu_reactions(sim, actor, tile_idx, None, WinKind::RobKongHu, profile)
 }
 
 fn add_kong_delta(sim: &mut SimState, actor: usize, kind: KongKind, from_seat: Option<usize>) {
@@ -1940,11 +1925,9 @@ struct SplitMix64(u64);
 impl SplitMix64 {
     #[inline]
     fn next_u64(&mut self) -> u64 {
+        let out = splitmix64(self.0);
         self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
+        out
     }
 
     #[inline]
@@ -1966,14 +1949,6 @@ impl SplitMix64 {
 }
 
 #[inline]
-fn splitmix64(mut z: u64) -> u64 {
-    z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^ (z >> 31)
-}
-
-#[inline]
 fn derive_sample_seed(master_seed: u64, sample_idx: usize) -> u64 {
     splitmix64(master_seed ^ (sample_idx as u64).wrapping_mul(0xD6E8_FEB8_6659_FD93))
 }
@@ -1983,4 +1958,283 @@ fn derive_rollout_seed(master_seed: u64, cand_idx: usize, sample_idx: usize) -> 
     let c = (cand_idx as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     let s = (sample_idx as u64).wrapping_mul(0x94D0_49BB_1331_11EB);
     splitmix64(master_seed ^ c ^ s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::l3::{decide_with_options, evaluate_l3_candidates};
+    use crate::test_common::{tile, tiles};
+    use crate::{decide, AiStyle};
+    use mahjong_core::{
+        build_preset_wall, project_view, Match, MatchMode, PresetWallProvider, TuidaohuRuleset,
+    };
+    use rand_chacha::ChaCha8Rng;
+    use rand_core::SeedableRng;
+
+    fn assert_copy<T: Copy>() {}
+
+    fn strong_det_ctx(max_samples: usize) -> DecisionContext {
+        DecisionContext {
+            difficulty: AiDifficulty::Strong,
+            style: AiStyle::Balanced,
+            budget: DecisionBudget::Deterministic { max_samples },
+        }
+    }
+
+    fn verify_sim_conservation(sim: &SimState, view: &PlayerView) {
+        let mut tile_totals = [0u8; Tile::COUNT];
+
+        for seat in Seat::ALL {
+            let idx = seat.index();
+            for (k, &c) in sim.hands[idx].iter().enumerate() {
+                tile_totals[k] = tile_totals[k].saturating_add(c);
+            }
+            for (k, &c) in sim.melds[idx].counts.iter().enumerate() {
+                tile_totals[k] = tile_totals[k].saturating_add(c);
+            }
+            for entry in &view.seats[idx].river {
+                if entry.claimed_by.is_none() {
+                    tile_totals[entry.tile.index()] =
+                        tile_totals[entry.tile.index()].saturating_add(1);
+                }
+            }
+        }
+
+        for &t in &sim.wall[usize::from(sim.wall_head)..usize::from(sim.wall_tail)] {
+            tile_totals[usize::from(t)] = tile_totals[usize::from(t)].saturating_add(1);
+        }
+
+        let grand_total: usize = tile_totals.iter().map(|&c| usize::from(c)).sum();
+        assert_eq!(
+            grand_total,
+            Tile::DECK_SIZE,
+            "136-tile conservation violated"
+        );
+        for (k, &cnt) in tile_totals.iter().enumerate() {
+            assert_eq!(cnt, 4, "tile index {k} must have exact count 4, got {cnt}");
+        }
+    }
+
+    fn high_tension_meld_view() -> PlayerView {
+        let wall = build_preset_wall(
+            &tiles("11m 23m 56m 78p 22s 67s 9m C"),
+            &tiles("WW 444m 999p 666m 1s 9s"),
+            &tiles("11s 99s EE 23s 44p 2p 7p 8p"),
+            &tiles("666s 333m 888m 555s 1m"),
+            &tiles("N B S F E"),
+            &[],
+        )
+        .expect("valid wall");
+        let mut game = Match::new(
+            MatchMode::EastOnly,
+            TuidaohuRuleset,
+            PresetWallProvider::single(Seat::East, wall),
+        )
+        .expect("match starts");
+        for (seat, action) in [
+            (
+                Seat::East,
+                PlayerAction::Discard {
+                    tile: tile("C"),
+                    from_drawn: false,
+                },
+            ),
+            (
+                Seat::South,
+                PlayerAction::Discard {
+                    tile: tile("1s"),
+                    from_drawn: false,
+                },
+            ),
+            (Seat::West, PlayerAction::Pon { tile: tile("1s") }),
+            (
+                Seat::West,
+                PlayerAction::Discard {
+                    tile: tile("2p"),
+                    from_drawn: false,
+                },
+            ),
+            (
+                Seat::North,
+                PlayerAction::Discard {
+                    tile: tile("B"),
+                    from_drawn: true,
+                },
+            ),
+            (
+                Seat::East,
+                PlayerAction::Discard {
+                    tile: tile("S"),
+                    from_drawn: true,
+                },
+            ),
+            (
+                Seat::South,
+                PlayerAction::Discard {
+                    tile: tile("9s"),
+                    from_drawn: false,
+                },
+            ),
+            (Seat::West, PlayerAction::Pon { tile: tile("9s") }),
+            (
+                Seat::West,
+                PlayerAction::Discard {
+                    tile: tile("7p"),
+                    from_drawn: false,
+                },
+            ),
+            (
+                Seat::North,
+                PlayerAction::Discard {
+                    tile: tile("1m"),
+                    from_drawn: false,
+                },
+            ),
+        ] {
+            game.apply_action(seat, action).expect("step applies");
+        }
+        project_view(&game, Seat::East)
+    }
+
+    #[test]
+    fn sample_sim_state_conserves_136_tiles_with_hidden_concealed_kongs() {
+        assert_copy::<SimState>();
+        let ctx = strong_det_ctx(32);
+        let profile = L3Profile::from_context(&ctx);
+
+        let mut game1 = Match::new(
+            MatchMode::EastOnly,
+            TuidaohuRuleset,
+            PresetWallProvider::single(
+                Seat::East,
+                build_preset_wall(
+                    &tiles("1111m 234m 456p 89s 55z"),
+                    &tiles("234m 123p 234s 67s EE"),
+                    &tiles("888m 888p 888s SSS B"),
+                    &tiles("777m 777p 777s WWW N"),
+                    &tiles("2p 5s 6p"),
+                    &tiles("3p"),
+                )
+                .expect("valid wall"),
+            ),
+        )
+        .expect("match starts");
+        game1
+            .apply_action(Seat::East, PlayerAction::ConcealedKong { tile: tile("1m") })
+            .expect("East concealed kong");
+        game1
+            .apply_action(
+                Seat::East,
+                PlayerAction::Discard {
+                    tile: tile("3p"),
+                    from_drawn: true,
+                },
+            )
+            .expect("East discards 3p");
+        let south_view1 = project_view(&game1, Seat::South);
+        let model1 = L3DefenseModel::new(&south_view1, profile);
+        for seed in 1..=32u64 {
+            let sim = sample_sim_state(&south_view1, &model1, seed);
+            verify_sim_conservation(&sim, &south_view1);
+        }
+
+        let mut game2 = Match::new(
+            MatchMode::EastOnly,
+            TuidaohuRuleset,
+            PresetWallProvider::single(
+                Seat::East,
+                build_preset_wall(
+                    &tiles("1111m 234m 123p 89s 55z"),
+                    &tiles("9999p 234m 567s 6s EE"),
+                    &tiles("567m 123s 456p 45s FF"),
+                    &tiles("777m 777p 777s WWW N"),
+                    &tiles("2p 5p 6p"),
+                    &tiles("3p 4p"),
+                )
+                .expect("valid wall"),
+            ),
+        )
+        .expect("match starts");
+        game2
+            .apply_action(Seat::East, PlayerAction::ConcealedKong { tile: tile("1m") })
+            .expect("East concealed kong");
+        game2
+            .apply_action(
+                Seat::East,
+                PlayerAction::Discard {
+                    tile: tile("3p"),
+                    from_drawn: true,
+                },
+            )
+            .expect("East discards 3p");
+        game2
+            .apply_action(
+                Seat::South,
+                PlayerAction::ConcealedKong { tile: tile("9p") },
+            )
+            .expect("South concealed kong");
+        game2
+            .apply_action(
+                Seat::South,
+                PlayerAction::Discard {
+                    tile: tile("4p"),
+                    from_drawn: true,
+                },
+            )
+            .expect("South discards 4p");
+
+        let west_view2 = project_view(&game2, Seat::West);
+        let model2 = L3DefenseModel::new(&west_view2, profile);
+        for seed in 1..=32u64 {
+            let sim = sample_sim_state(&west_view2, &model2, seed * 17);
+            verify_sim_conservation(&sim, &west_view2);
+        }
+    }
+
+    #[test]
+    fn should_trigger_and_decide_with_options_gate_l4_search() {
+        let view = high_tension_meld_view();
+        let strong_ctx = strong_det_ctx(128);
+        let (cands_strong, model_strong) = evaluate_l3_candidates(&view, &strong_ctx);
+        assert!(
+            should_trigger(
+                &view,
+                &strong_ctx,
+                true,
+                cands_strong.as_slice(),
+                &model_strong
+            ),
+            "high tension meld view must trigger L4 for Strong"
+        );
+
+        let inter_ctx = DecisionContext {
+            difficulty: AiDifficulty::Intermediate,
+            style: AiStyle::Balanced,
+            budget: DecisionBudget::Deterministic { max_samples: 256 },
+        };
+        let (cands_inter, model_inter) = evaluate_l3_candidates(&view, &inter_ctx);
+        assert!(!should_trigger(
+            &view,
+            &inter_ctx,
+            false,
+            cands_inter.as_slice(),
+            &model_inter
+        ));
+        assert!(!should_trigger(
+            &view,
+            &inter_ctx,
+            true,
+            cands_inter.as_slice(),
+            &model_inter
+        ));
+
+        for seed in 0..16u64 {
+            let mut r1 = ChaCha8Rng::seed_from_u64(seed);
+            let mut r2 = ChaCha8Rng::seed_from_u64(seed);
+            let a_decide = decide(&view, &inter_ctx, &mut r1);
+            let a_no_l4 = decide_with_options(&view, &inter_ctx, false, &mut r2);
+            assert_eq!(a_decide, a_no_l4, "Intermediate must match L1-L3 directly");
+        }
+    }
 }
