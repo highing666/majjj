@@ -626,6 +626,13 @@ async fn one_player_three_ai_completes_full_east_only_match_and_emits_settled_pl
                     break;
                 }
             }
+            ServerMessage::ActionRejected {
+                current_seq: server_seq,
+                ..
+            } if server_seq > current_seq => {
+                // Concurrent AI reaction (e.g., Hu) advanced `seq` while our SubmitAction was in flight.
+                legal_actions.clear();
+            }
             other => panic!("unexpected server message during 1P+3AI match: {other:?}"),
         }
     }

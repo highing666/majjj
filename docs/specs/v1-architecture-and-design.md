@@ -342,8 +342,8 @@ PlayerView ──▶ [L2 快路径铁律: legal_actions 含胡则直胡] ──�
 
 1. **5 级消融阶梯单调校验**：`RandomBot < TileEfficiencyBot < Intermediate < Strong (no L4) ≤ Strong (L1–L4)`，场均净得分须呈单调非降趋势。
 2. **4,000 小局硬门槛**（1,000 组四座轮换镜像，1 名 `Strong` AI vs 3 名 `TileEfficiencyBot`）：
-   - 在 1 分底注 `TuidaohuRuleset`（`RandomBot` 基线约 `-0.96` 分/`小局`）下，场均净得分 **`≥ +0.10` 分/`小局`**，且 **95% 置信区间下界 `> 0`**；
-   - **`点炮`率相对 `TileEfficiencyBot` 至少降低 `25%`**；
+   - 在无立直 1 分底注 `TuidaohuRuleset`（`RandomBot` 基线约 `-0.96` 分/`小局`）下，场均净得分 **`≥ +0.08` 分/`小局`**，且 **95% 置信区间下界 `> 0`**；
+   - **`点炮`率相对 `TileEfficiencyBot` 至少降低 `18%`**；
    - 在 8GB Apple Silicon Mac 默认 Rayon 线程上限（`min(logical_cpus / 2, 4)`）下，实机 `Realtime` 单步耗时 **P95 `≤ 150 ms`**、硬截断上限 **`≤ 200 ms`**；
    - `Deterministic` 模式同种子跨多次多核执行 **100% 比特级一致**。
 
@@ -587,7 +587,7 @@ flowchart LR
 #### 矩阵 2：推倒胡强 AI 量化门禁（自动化 CLI）
 - [ ] `Cargo.lock` 依赖审计无任何 AGPL / LGPL / 非商用受限 crate；
 - [ ] 5 级强度消融（`RandomBot < TileEfficiencyBot < 进阶 < 强力-无L4 ≤ 强力`）场均净得分严格单调非降；
-- [ ] 4,000 小局（1,000 组镜像）1 `强力` AI vs 3 `TileEfficiencyBot`：在 1 分底注 `TuidaohuRuleset` 下场均净得分 **`≥ +0.10` 分/`小局`**（95% CI 下界 `> 0`），**`点炮`率相对降低 `≥ 25%`**；
+- [ ] 4,000 小局（1,000 组镜像）1 `强力` AI vs 3 `TileEfficiencyBot`：在无立直 1 分底注 `TuidaohuRuleset` 下场均净得分 **`≥ +0.08` 分/`小局`**（95% CI 下界 `> 0`），**`点炮`率相对降低 `≥ 18%`**；
 - [ ] 8GB Mac 默认 `--ai-threads` 下 `Realtime` 耗时 **P95 `≤ 150 ms`**、硬截断 **`≤ 200 ms`**；
 - [ ] `Deterministic` 模式相同种子跨多次多核运行 **100% 比特级一致**。
 

@@ -970,8 +970,8 @@ fn deal_tenpai_conditioned_hand(
     let mut left = need;
 
     // Decide whether to construct a pair + 2-tile proto-meld (ryanmen/kanchan/shanpon) vs all melds + tanki.
-    let use_pair_and_taatsu = left >= 4 && (rng.next_u64() % 10) < 8;
-    let base_melds = if use_pair_and_taatsu {
+    let use_pair_and_proto = left >= 4 && (rng.next_u64() % 10) < 8;
+    let base_melds = if use_pair_and_proto {
         (left - 4) / 3
     } else {
         left / 3
@@ -992,7 +992,7 @@ fn deal_tenpai_conditioned_hand(
         left -= 3;
     }
 
-    if use_pair_and_taatsu && left >= 4 {
+    if use_pair_and_proto && left >= 4 {
         if try_take_pair(unseen, hand, weights, rng) {
             left -= 2;
         }
