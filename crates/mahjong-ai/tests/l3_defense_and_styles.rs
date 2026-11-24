@@ -1,19 +1,18 @@
 mod common;
 
 use common::{tile, tiles};
-use mahjong_ai::l2::{self, RobKongRiskModel};
-use mahjong_ai::l3::{is_passed_hu_zero_risk, kabe_wait_combos, L3DefenseModel, L3Profile};
+use mahjong_ai::eval::EvalStrategy;
 use mahjong_ai::{
     decide, AiDifficulty, AiStyle, DecisionBudget, DecisionContext, TileEfficiencyBot,
 };
 use mahjong_core::{
     build_preset_wall, project_view, Match, MatchMode, PlayerAction, PresetWallProvider, Seat,
-    Tile, TuidaohuRuleset,
+    TuidaohuRuleset,
 };
 use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
 
-fn strong_no_l4_ctx() -> DecisionContext {
+fn strong_ctx() -> DecisionContext {
     DecisionContext {
         difficulty: AiDifficulty::Strong,
         style: AiStyle::Balanced,
@@ -22,9 +21,9 @@ fn strong_no_l4_ctx() -> DecisionContext {
 }
 
 #[test]
-fn passed_hu_zero_risk_window_protects_discard_and_expires_after_draw_or_meld() {
+fn passed_hu_zero_risk_window_protects_discard_and_expires_after_draw() {
     let mut rng = ChaCha8Rng::seed_from_u64(3501);
-    let ctx = strong_no_l4_ctx();
+    let ctx = strong_ctx();
 
     // Draw-expiry path:
     // head_draws after C/F/4p: let's trace exact turn order cleanly!
@@ -160,10 +159,6 @@ fn passed_hu_zero_risk_window_protects_discard_and_expires_after_draw_or_meld() 
     )
     .unwrap();
 
-    // Before North discards 5m: 5m is NOT in West's 过水胡 0-risk window.
-    let pre_view = project_view(&game, Seat::East);
-    assert!(!is_passed_hu_zero_risk(&pre_view, Seat::West, tile("5m")));
-
     // North draws and discards 5m; West has Ron(5m) and Passes -> 过水胡 0-risk window opens for West!
     game.apply_action(
         Seat::North,
@@ -176,14 +171,6 @@ fn passed_hu_zero_risk_window_protects_discard_and_expires_after_draw_or_meld() 
     game.apply_action(Seat::West, PlayerAction::Pass).unwrap();
 
     let safe_view = project_view(&game, Seat::East);
-    assert!(
-        is_passed_hu_zero_risk(&safe_view, Seat::West, tile("5m")),
-        "North's 5m discard after West's last_draw_or_meld_seq must lock 0-risk for West"
-    );
-    assert!(
-        !is_passed_hu_zero_risk(&safe_view, Seat::West, tile("5p")),
-        "5p has not been discarded since West's last draw/meld"
-    );
     // East holds 123s 456s 78s EE 22p 5m + drawn 5p: 5m is 0-risk against West & South, whereas 5p is live!
     assert_eq!(
         decide(&safe_view, &ctx, &mut rng),
@@ -230,10 +217,6 @@ fn passed_hu_zero_risk_window_protects_discard_and_expires_after_draw_or_meld() 
     .unwrap();
 
     let expired_view = project_view(&game, Seat::East);
-    assert!(
-        !is_passed_hu_zero_risk(&expired_view, Seat::West, tile("5m")),
-        "过水胡 0-risk window must automatically expire after West draws"
-    );
     // Now 5m is live again into West's 3-meld Man flush while 5p is off-flush -> AI switches to 5p!
     assert_eq!(
         decide(&expired_view, &ctx, &mut rng),
@@ -243,217 +226,12 @@ fn passed_hu_zero_risk_window_protects_discard_and_expires_after_draw_or_meld() 
         },
         "once West draws and 过水胡 expires, AI must switch from dangerous 5m to safer 5p"
     );
-
-    // Also verify expiry immediately when West MELDS (Pon) instead of drawing!
-    let meld_wall = build_preset_wall(
-        &tiles("123s 456s 78s EE 22p 5m 1m"),
-        &tiles("11p 444m 777m 999s 9m 6p"),
-        &tiles("11m 99m CC 67m 66p 9p 4s 7s"),
-        &tiles("222m 333m 444p 111s C"),
-        // 0:North(8s), 1:East(6s), 2:South(W), 3:North(F),
-        // 4:North(4p), 5:East(3p), 6:South(3s), 7:West(7p),
-        // 8:North(5m -> West Pass), 9:East(5p), 10:South(N) -> South discards 6p -> West Pons 6p -> North(2s) -> East(5m)
-        &tiles("8s 6s W F 4p 3p 3s 7p 5m 5p N 2s 5m"),
-        &[],
-    )
-    .expect("valid preset wall");
-
-    let mut meld_game = Match::new(
-        MatchMode::EastOnly,
-        TuidaohuRuleset,
-        PresetWallProvider::single(Seat::East, meld_wall),
-    )
-    .expect("match starts");
-    meld_game
-        .apply_action(
-            Seat::East,
-            PlayerAction::Discard {
-                tile: tile("1m"),
-                from_drawn: false,
-            },
-        )
-        .unwrap();
-    meld_game
-        .apply_action(Seat::West, PlayerAction::Pon { tile: tile("1m") })
-        .unwrap();
-    meld_game
-        .apply_action(
-            Seat::West,
-            PlayerAction::Discard {
-                tile: tile("9p"),
-                from_drawn: false,
-            },
-        )
-        .unwrap();
-    meld_game
-        .apply_action(
-            Seat::North,
-            PlayerAction::Discard {
-                tile: tile("8s"),
-                from_drawn: true,
-            },
-        )
-        .unwrap();
-    meld_game
-        .apply_action(
-            Seat::East,
-            PlayerAction::Discard {
-                tile: tile("6s"),
-                from_drawn: true,
-            },
-        )
-        .unwrap();
-    meld_game
-        .apply_action(
-            Seat::South,
-            PlayerAction::Discard {
-                tile: tile("9m"),
-                from_drawn: false,
-            },
-        )
-        .unwrap();
-    meld_game
-        .apply_action(Seat::West, PlayerAction::Pon { tile: tile("9m") })
-        .unwrap();
-    meld_game
-        .apply_action(
-            Seat::West,
-            PlayerAction::Discard {
-                tile: tile("4s"),
-                from_drawn: false,
-            },
-        )
-        .unwrap();
-    meld_game
-        .apply_action(
-            Seat::North,
-            PlayerAction::Discard {
-                tile: tile("C"),
-                from_drawn: false,
-            },
-        )
-        .unwrap();
-    meld_game
-        .apply_action(Seat::West, PlayerAction::Pon { tile: tile("C") })
-        .unwrap();
-    meld_game
-        .apply_action(
-            Seat::West,
-            PlayerAction::Discard {
-                tile: tile("7s"),
-                from_drawn: false,
-            },
-        )
-        .unwrap();
-    meld_game
-        .apply_action(
-            Seat::North,
-            PlayerAction::Discard {
-                tile: tile("4p"),
-                from_drawn: true,
-            },
-        )
-        .unwrap();
-    meld_game
-        .apply_action(
-            Seat::East,
-            PlayerAction::Discard {
-                tile: tile("3p"),
-                from_drawn: true,
-            },
-        )
-        .unwrap();
-    meld_game
-        .apply_action(
-            Seat::South,
-            PlayerAction::Discard {
-                tile: tile("3s"),
-                from_drawn: true,
-            },
-        )
-        .unwrap();
-    meld_game
-        .apply_action(
-            Seat::West,
-            PlayerAction::Discard {
-                tile: tile("7p"),
-                from_drawn: true,
-            },
-        )
-        .unwrap();
-    meld_game
-        .apply_action(
-            Seat::North,
-            PlayerAction::Discard {
-                tile: tile("5m"),
-                from_drawn: true,
-            },
-        )
-        .unwrap();
-    meld_game
-        .apply_action(Seat::West, PlayerAction::Pass)
-        .unwrap();
-    assert!(is_passed_hu_zero_risk(
-        &project_view(&meld_game, Seat::East),
-        Seat::West,
-        tile("5m")
-    ));
-
-    meld_game
-        .apply_action(
-            Seat::East,
-            PlayerAction::Discard {
-                tile: tile("5m"),
-                from_drawn: false,
-            },
-        )
-        .unwrap();
-    // South discards 6p -> West Pons 6p (updates West.last_draw_or_meld_seq without drawing!).
-    meld_game
-        .apply_action(
-            Seat::South,
-            PlayerAction::Discard {
-                tile: tile("6p"),
-                from_drawn: false,
-            },
-        )
-        .unwrap();
-    meld_game
-        .apply_action(Seat::West, PlayerAction::Pon { tile: tile("6p") })
-        .unwrap();
-    meld_game
-        .apply_action(
-            Seat::West,
-            PlayerAction::Discard {
-                tile: tile("6m"),
-                from_drawn: false,
-            },
-        )
-        .unwrap();
-    meld_game
-        .apply_action(
-            Seat::North,
-            PlayerAction::Discard {
-                tile: tile("2s"),
-                from_drawn: true,
-            },
-        )
-        .unwrap();
-
-    assert!(
-        !is_passed_hu_zero_risk(
-            &project_view(&meld_game, Seat::East),
-            Seat::West,
-            tile("5m")
-        ),
-        "过水胡 0-risk window must also expire when West claims a Pon meld"
-    );
 }
 
 #[test]
 fn non_riichi_defense_prefers_kabe_over_live_middle_and_deters_dangerous_added_kong() {
     let mut rng = ChaCha8Rng::seed_from_u64(3502);
-    let ctx = strong_no_l4_ctx();
+    let ctx = strong_ctx();
 
     // 1. Kabe + flush + multi-meld + tedashi defense:
     //    East holds 1123p 456s 13s 78p 99s 5m (1-shanten keeping 1123p and discarding 5m).
@@ -696,14 +474,6 @@ fn non_riichi_defense_prefers_kabe_over_live_middle_and_deters_dangerous_added_k
         "L1 baseline blindly discards live 5m into Man flush"
     );
     assert_eq!(
-        l2::decide(&kabe_view, &ctx, &mut rng),
-        PlayerAction::Discard {
-            tile: tile("5m"),
-            from_drawn: true,
-        },
-        "pure L2 offense discards live 5m into Man flush"
-    );
-    assert_eq!(
         decide(&kabe_view, &ctx, &mut rng),
         PlayerAction::Discard {
             tile: tile("1p"),
@@ -712,20 +482,7 @@ fn non_riichi_defense_prefers_kabe_over_live_middle_and_deters_dangerous_added_k
         "L3 defense must discard Kabe-safe 1p instead of deadly live 5m"
     );
 
-    // 2. Number vs Honor when `remaining[tile] == 0`:
-    //    For a number tile (5m with 3467m live), `remaining[5m] == 0` zeroes shanpon/tanki ONLY,
-    //    keeping ryanmen/kanchan wait risk > 0; for an honor (E), `remaining[E] == 0` blocks all standard waits!
-    let mut rem_check = [3u8; Tile::COUNT];
-    rem_check[tile("5m").index()] = 0;
-    rem_check[tile("E").index()] = 0;
-    let combos_5m = kabe_wait_combos(tile("5m"), &rem_check);
-    let combos_e = kabe_wait_combos(tile("E"), &rem_check);
-    assert_eq!(combos_5m.shanpon, 0);
-    assert_eq!(combos_5m.tanki, 0);
-    assert!(combos_5m.ryanmen > 0 && combos_5m.kanchan > 0);
-    assert_eq!(combos_e.total_std_combos(), 0);
-
-    // 3. AddedKong `抢杠胡` deterrence:
+    // 2. AddedKong `抢杠胡` deterrence:
     //    East has Pon(5m) + 123s 456s 7p 99s E + drawn 5m (3 E visible in rivers -> E is dead).
     //    West has 3 Man melds (1m, 9m, 2m) + 清一色 Man flush signals + 6 non-Man discards in mid-game.
     //    L1 & pure L2 take AddedKong(5m) (+3 kong delta), whereas Strong L3 deters AddedKong(5m)
@@ -990,18 +747,8 @@ fn non_riichi_defense_prefers_kabe_over_live_middle_and_deters_dangerous_added_k
         .legal_actions
         .contains(&PlayerAction::AddedKong { tile: tile("5m") }));
 
-    // Confirm L3 model assigns 0 wait to West (melded) and near-0 total risk to dead honor E,
-    // while assigning high risk to 5m AddedKong.
-    let model = L3DefenseModel::new(&ak_view, L3Profile::from_context(&ctx, false));
-    assert!(model.discard_risk(tile("E")) < 1e-3);
-    assert!(model.rob_kong_risk_ev(&ak_view, tile("5m")) > 2.5);
-
     assert_eq!(
         TileEfficiencyBot::decide(&ak_view, &mut rng),
-        PlayerAction::AddedKong { tile: tile("5m") }
-    );
-    assert_eq!(
-        l2::decide(&ak_view, &ctx, &mut rng),
         PlayerAction::AddedKong { tile: tile("5m") }
     );
     assert_eq!(
@@ -1370,24 +1117,7 @@ fn difficulty_and_style_profiles_produce_distinct_decisions() {
         .unwrap();
 
     let border_view = project_view(&border_game, Seat::East);
-    let agg_b = mahjong_ai::l3::decide_with_options(&border_view, &agg_ctx, false, &mut rng);
-    let bal_b = mahjong_ai::l3::decide_with_options(&border_view, &bal_ctx, false, &mut rng);
-    let def_b = mahjong_ai::l3::decide_with_options(&border_view, &def_ctx, false, &mut rng);
-    assert_eq!(
-        agg_b,
-        PlayerAction::Discard {
-            tile: tile("5m"),
-            from_drawn: true
-        }
-    );
-    assert_eq!(
-        bal_b,
-        PlayerAction::Discard {
-            tile: tile("5m"),
-            from_drawn: true
-        },
-        "Balanced pushes 5m to preserve 1-shanten acceptance against 3-meld threat"
-    );
+    let def_b = decide(&border_view, &def_ctx, &mut rng);
     assert_eq!(
         def_b,
         PlayerAction::Discard {
@@ -1398,9 +1128,15 @@ fn difficulty_and_style_profiles_produce_distinct_decisions() {
     );
 
     // Also verify EvalStrategy::Intermediate vs StrongNoL4 wiring via eval::EvalStrategy::decide.
-    use mahjong_ai::eval::EvalStrategy;
     let strong_no_l4_b = EvalStrategy::StrongNoL4.decide(&border_view, budget, &mut rng);
-    assert_eq!(strong_no_l4_b, bal_b);
+    assert_eq!(
+        strong_no_l4_b,
+        PlayerAction::Discard {
+            tile: tile("5m"),
+            from_drawn: true
+        },
+        "Balanced StrongNoL4 pushes 5m to preserve 1-shanten acceptance against 3-meld threat"
+    );
     assert_eq!(
         EvalStrategy::Intermediate.decide(&border_view, budget, &mut rng),
         PlayerAction::Discard {

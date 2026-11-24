@@ -1,15 +1,20 @@
-//! Pure synchronous, stateless mahjong AI decision contract and Slice 2 placeholder bot.
+//! Pure synchronous, stateless mahjong AI decision contract and L1–L4 decision pipeline.
 
 pub use mahjong_core;
 
+mod calibrate;
 pub mod eval;
-pub mod l2;
-pub mod l3;
-pub mod l3_weights;
-pub mod l4;
-pub mod scoring;
-#[doc(hidden)]
-pub mod shanten;
+mod l2;
+mod l3;
+mod l3_weights;
+mod l4;
+mod scoring;
+mod shanten;
+mod shared;
+
+#[cfg(test)]
+#[path = "../tests/common/mod.rs"]
+mod test_common;
 
 use mahjong_core::{PlayerAction, PlayerView, Tile};
 use rand_core::RngCore;
@@ -19,10 +24,10 @@ use ts_rs::TS;
 /// AI difficulty tier selectable at table setup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, TS)]
 pub enum AiDifficulty {
-    /// Full L1-L4 evaluation pipeline (Slice 3); delegates to [`TileEfficiencyBot`] in Slice 2.
+    /// Full L1–L4 evaluation pipeline (expected value, non-Riichi defense, and Monte Carlo search).
     #[default]
     Strong,
-    /// Intermediate L1-L3 evaluation (Slice 3); delegates to [`TileEfficiencyBot`] in Slice 2.
+    /// Intermediate L1–L3 evaluation (expected value and light defense without L4 Monte Carlo search).
     Intermediate,
 }
 
@@ -95,7 +100,7 @@ impl RandomBot {
             return PlayerAction::ConfirmNextHand;
         }
 
-        let idx = gen_range_usize(rng, view.legal_actions.len());
+        let idx = shared::gen_range_usize(rng, view.legal_actions.len());
         view.legal_actions[idx]
     }
 }
@@ -120,19 +125,8 @@ impl TileEfficiencyBot {
             "TileEfficiencyBot::decide requires non-empty legal_actions"
         );
 
-        // Iron Rule 1: Always take any legal win immediately.
-        if let Some(&win) = view.legal_actions.iter().find(|a| {
-            matches!(
-                a,
-                PlayerAction::Tsumo | PlayerAction::RobKongHu { .. } | PlayerAction::Ron { .. }
-            )
-        }) {
-            return win;
-        }
-
-        // BetweenHands: Always confirm next hand; never auto-pick EndMatch.
-        if view.legal_actions.contains(&PlayerAction::ConfirmNextHand) {
-            return PlayerAction::ConfirmNextHand;
+        if let Some(action) = l2::fast_path_action(view) {
+            return action;
         }
 
         if let Some(action) = choose_turn_action(view, rng) {
@@ -149,8 +143,9 @@ impl TileEfficiencyBot {
 
 /// Pure synchronous, stateless AI entry point consuming only a seat-projected [`PlayerView`].
 ///
-/// Routes through the L1-L3 decision pipeline (`l3::decide`) with tactical iron rules,
-/// all 11 Tuidaohu fan items, kong scoring, and non-Riichi defense.
+/// Routes through the L1–L4 decision pipeline (`l3::decide` / `l4::decide_with_l4`) with
+/// tactical iron rules, all 11 Tuidaohu fan items, kong scoring, non-Riichi defense, and
+/// opportunistic Monte Carlo search (for [`AiDifficulty::Strong`]).
 #[must_use]
 pub fn decide<R: RngCore + ?Sized>(
     view: &PlayerView,
@@ -244,40 +239,14 @@ fn evaluate_best_discard<R: RngCore + ?Sized>(
     } else if tied_tiles.len() == 1 {
         tied_tiles[0]
     } else {
-        tied_tiles[gen_range_usize(rng, tied_tiles.len())]
+        tied_tiles[shared::gen_range_usize(rng, tied_tiles.len())]
     };
 
-    let action = resolve_discard_action(view, best_tile)?;
+    let action = l2::resolve_discard_action(view, best_tile)?;
     Some(DiscardChoice {
         shanten: best_shanten,
         action,
     })
-}
-
-fn resolve_discard_action(view: &PlayerView, best_tile: Tile) -> Option<PlayerAction> {
-    // Iron Rule 2: Default to 摸切 (from_drawn = true) when discarding the drawn tile.
-    if view.hand.drawn_tile == Some(best_tile) {
-        let tsumogiri = PlayerAction::Discard {
-            tile: best_tile,
-            from_drawn: true,
-        };
-        if view.legal_actions.contains(&tsumogiri) {
-            return Some(tsumogiri);
-        }
-    }
-
-    let shouqie = PlayerAction::Discard {
-        tile: best_tile,
-        from_drawn: false,
-    };
-    if view.legal_actions.contains(&shouqie) {
-        return Some(shouqie);
-    }
-
-    view.legal_actions
-        .iter()
-        .copied()
-        .find(|a| matches!(a, PlayerAction::Discard { tile, .. } if *tile == best_tile))
 }
 
 fn choose_turn_kong(view: &PlayerView, best_discard_shanten: Option<i8>) -> Option<PlayerAction> {
@@ -371,16 +340,4 @@ fn best_shanten_after_one_discard(
         }
     }
     best
-}
-
-fn gen_range_usize<R: RngCore + ?Sized>(rng: &mut R, bound: usize) -> usize {
-    debug_assert!(bound > 0 && bound <= u32::MAX as usize);
-    let bound_u32 = bound as u32;
-    let threshold = bound_u32.wrapping_neg() % bound_u32;
-    loop {
-        let candidate = rng.next_u32();
-        if candidate >= threshold {
-            return (candidate % bound_u32) as usize;
-        }
-    }
 }

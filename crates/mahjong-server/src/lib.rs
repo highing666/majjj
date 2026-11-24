@@ -3,11 +3,13 @@
 pub use mahjong_ai;
 pub use mahjong_core;
 
+pub mod ai_pool;
 pub mod lan;
 pub mod protocol;
 pub mod server;
 pub mod session;
 pub mod static_assets;
 
-pub use server::{default_ai_threads, ServerConfig, ServerError, ServerHandle};
+pub use ai_pool::default_ai_threads;
+pub use server::{ServerConfig, ServerError, ServerHandle};
 pub use session::{BoxedWallProvider, TableOptions, WallProviderFactory};

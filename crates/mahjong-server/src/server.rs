@@ -17,19 +17,13 @@ use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
+use crate::ai_pool::default_ai_threads;
 use crate::lan::read_local_hostname;
 use crate::protocol::{HealthResponse, ServerMessage};
 use crate::session::{OutboundSignal, TableOptions, TableRuntime};
 use crate::static_assets::{
     DiskStaticAssets, NoopStaticAssets, StaticAssetError, StaticAssetSource,
 };
-
-/// Computes the default worker count for the dedicated Rayon AI thinking pool:
-/// `(available_parallelism / 2).clamp(1, 4)` (or `1` if parallelism cannot be queried).
-#[must_use]
-pub fn default_ai_threads() -> usize {
-    std::thread::available_parallelism().map_or(1, |n| (n.get() / 2).clamp(1, 4))
-}
 
 /// Configuration for starting `mahjong-server`.
 #[derive(Debug, Clone)]
