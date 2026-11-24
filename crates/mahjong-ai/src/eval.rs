@@ -250,10 +250,17 @@ pub fn run_duplicate_matchup(config: &EvalConfig) -> Result<EvalReport, EvalErro
         .map_err(|err| EvalError::ThreadPoolBuild(err.to_string()))?;
 
     let groups: Vec<Result<GroupResult, EvalError>> = pool.install(|| {
-        (0..config.groups)
-            .into_par_iter()
-            .map(|deal| evaluate_group(config, deal as u64))
-            .collect()
+        if matches!(config.budget, DecisionBudget::Realtime { .. }) {
+            // Measure single-decision Realtime latency without outer group work-stealing.
+            (0..config.groups)
+                .map(|deal| evaluate_group(config, deal as u64))
+                .collect()
+        } else {
+            (0..config.groups)
+                .into_par_iter()
+                .map(|deal| evaluate_group(config, deal as u64))
+                .collect()
+        }
     });
 
     let mut group_means = Vec::with_capacity(config.groups);

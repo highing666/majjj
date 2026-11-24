@@ -999,7 +999,7 @@ fn l2_values_all_pungs_luxury_seven_pairs_and_gates_thirteen_orphans() {
     );
     lux_toggle_view.rule_profile.allow_four_of_kind_seven_pairs = false;
     assert_eq!(
-        decide(&lux_toggle_view, &ctx, &mut rng),
+        mahjong_ai::l2::decide(&lux_toggle_view, &ctx, &mut rng),
         PlayerAction::Discard {
             tile: tile_one("1m"),
             from_drawn: false,

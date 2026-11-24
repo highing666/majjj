@@ -6,8 +6,8 @@ use mahjong_core::{MeldView, PlayerAction, PlayerView, Seat, Suit, Tile};
 use rand_core::RngCore;
 
 use crate::l2::{
-    evaluate_candidates, evaluate_pon_with_scorer, fast_path_action, select_best_candidate,
-    CandidateBuffer, CandidateEv, RobKongRiskModel,
+    evaluate_candidates, evaluate_pon_with_scorer, fast_path_action, CandidateBuffer, CandidateEv,
+    RobKongRiskModel,
 };
 use crate::l3_weights::{TENPAI_FEATURE_COUNT, TENPAI_WEIGHTS, WAIT_FEATURE_COUNT, WAIT_WEIGHTS};
 use crate::scoring::MeldSummary;
@@ -809,7 +809,7 @@ pub fn evaluate_l3_candidates(
     (buf, model)
 }
 
-/// Runs the L1-L3 decision pipeline with explicit `l4_enabled` control (ready for Ticket #36).
+/// Runs the L1-L4 decision pipeline with explicit `l4_enabled` control.
 ///
 /// # Panics
 ///
@@ -830,8 +830,8 @@ pub fn decide_with_options<R: RngCore + ?Sized>(
         return action;
     }
 
-    let (candidates, _model) = evaluate_l3_candidates(view, ctx, l4_enabled);
-    select_best_candidate(candidates.as_slice(), rng).unwrap_or(view.legal_actions[0])
+    let (candidates, model) = evaluate_l3_candidates(view, ctx, l4_enabled);
+    crate::l4::decide_with_l4(view, ctx, l4_enabled, &candidates, &model, rng)
 }
 
 /// Runs the default L1-L3 pipeline (`l4_enabled = true` for `Strong`, `false` for `Intermediate`).

@@ -1370,9 +1370,9 @@ fn difficulty_and_style_profiles_produce_distinct_decisions() {
         .unwrap();
 
     let border_view = project_view(&border_game, Seat::East);
-    let agg_b = decide(&border_view, &agg_ctx, &mut rng);
-    let bal_b = decide(&border_view, &bal_ctx, &mut rng);
-    let def_b = decide(&border_view, &def_ctx, &mut rng);
+    let agg_b = mahjong_ai::l3::decide_with_options(&border_view, &agg_ctx, false, &mut rng);
+    let bal_b = mahjong_ai::l3::decide_with_options(&border_view, &bal_ctx, false, &mut rng);
+    let def_b = mahjong_ai::l3::decide_with_options(&border_view, &def_ctx, false, &mut rng);
     assert_eq!(
         agg_b,
         PlayerAction::Discard {
