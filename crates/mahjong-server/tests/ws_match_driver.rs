@@ -626,6 +626,13 @@ async fn one_player_three_ai_completes_full_east_only_match_and_emits_settled_pl
                     break;
                 }
             }
+            ServerMessage::ActionRejected {
+                current_seq: server_seq,
+                ..
+            } if server_seq > current_seq => {
+                // Concurrent AI reaction (e.g., Hu) advanced `seq` while our SubmitAction was in flight.
+                legal_actions.clear();
+            }
             other => panic!("unexpected server message during 1P+3AI match: {other:?}"),
         }
     }
@@ -1612,7 +1619,7 @@ async fn zero_ai_threads_returns_invalid_ai_threads_error() {
 async fn bounded_rayon_pool_drives_one_player_matches_with_deterministic_budget_and_responsive_health(
 ) {
     let options =
-        TableOptions::seeded(999).with_ai_budget(DecisionBudget::Deterministic { max_samples: 32 });
+        TableOptions::seeded(999).with_ai_budget(DecisionBudget::Deterministic { max_samples: 16 });
     let server = ServerConfig {
         bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
         port: 0,
@@ -1852,7 +1859,7 @@ async fn bounded_rayon_pool_drives_one_player_matches_with_deterministic_budget_
 #[tokio::test]
 async fn bounded_rayon_pool_drives_two_player_east_only_and_free_table_with_deterministic_budget() {
     let options = TableOptions::seeded(2026)
-        .with_ai_budget(DecisionBudget::Deterministic { max_samples: 32 });
+        .with_ai_budget(DecisionBudget::Deterministic { max_samples: 16 });
     let server = ServerConfig {
         bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
         port: 0,
@@ -2223,6 +2230,319 @@ async fn bounded_rayon_pool_one_thread_handles_concurrent_multi_ai_reaction_wind
         },
         other => panic!("expected HandSettled, got {other:?}"),
     }
+
+    let _ = human.close(None).await;
+    server.shutdown().await;
+}
+
+fn assert_valid_hand_settlement(settlement: &mahjong_core::HandSettlement) {
+    assert_eq!(
+        settlement.score_deltas.iter().sum::<i32>(),
+        0,
+        "hand score_deltas must be zero-sum: {settlement:?}"
+    );
+    let mut kong_sum = [0i32; 4];
+    for kt in &settlement.kong_transfers {
+        assert_eq!(
+            kt.score_deltas.iter().sum::<i32>(),
+            0,
+            "kong transfer must be zero-sum: {kt:?}"
+        );
+        for (idx, &d) in kt.score_deltas.iter().enumerate() {
+            kong_sum[idx] += d;
+        }
+    }
+    match &settlement.outcome {
+        HandOutcome::DrawGame => {
+            assert_eq!(settlement.score_deltas, kong_sum);
+        }
+        HandOutcome::Win { winners, .. } => {
+            assert!(!winners.is_empty());
+            for w in winners {
+                assert!(w.total_fan <= 4, "fan_cap exceeded: {w:?}");
+                assert_eq!(
+                    w.base_points,
+                    1i32 << w.total_fan,
+                    "base_points must equal 2^total_fan: {w:?}"
+                );
+                assert!(!w.items.is_empty(), "winner items must be populated: {w:?}");
+            }
+        }
+    }
+}
+
+fn assert_no_snapshot_leakage(viewer: Seat, snap: &TableSnapshot) {
+    if let Some(view) = &snap.player_view {
+        assert_eq!(view.viewer, viewer);
+        for other_seat in Seat::ALL {
+            if other_seat != viewer {
+                assert!(
+                    view.seats[other_seat.index()]
+                        .melds
+                        .iter()
+                        .all(|m| !matches!(m, MeldView::ConcealedKong { tile: Some(_), .. })),
+                    "snapshot leaked opponent ConcealedKong tile"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn realtime_budget_drives_strong_ai_east_only_and_intermediate_ai_free_table_with_valid_settlement(
+) {
+    let default_cfg = ServerConfig::default();
+    assert!(
+        (1..=4).contains(&default_cfg.ai_threads),
+        "default ai_threads must be bounded in 1..=4, got {}",
+        default_cfg.ai_threads
+    );
+
+    // Default TableOptions::seeded(777) leaves ai_budget == None -> Realtime { 128, 120, 180 }.
+    let server = ServerConfig {
+        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        port: 0,
+        static_dir: None,
+        ..default_cfg
+    }
+    .spawn_with_options(TableOptions::seeded(777))
+    .await
+    .expect("spawn server with default bounded AI threads and Realtime budget");
+    let addr = server.addr();
+
+    let mut human = connect_and_hello(addr, "rt-full-1", "Alice").await;
+    send_msg(&mut human, &ClientMessage::JoinSeat { seat: None }).await;
+    let _ = recv_snapshot(&mut human).await;
+    send_msg(
+        &mut human,
+        &ClientMessage::UpdateLobbyConfig {
+            mode: MatchMode::EastOnly,
+            seating: SeatingRule::FixedOpposite,
+            ai_difficulty: AiDifficulty::Strong,
+            pace: TablePace::Fast,
+        },
+    )
+    .await;
+    send_msg(&mut human, &ClientMessage::StartMatch).await;
+
+    let init_snap = recv_snapshot(&mut human).await;
+    let human_seat = init_snap.your_seat.expect("human seated");
+    assert_no_snapshot_leakage(human_seat, &init_snap);
+
+    async fn drive_1p_realtime_checked(
+        addr: std::net::SocketAddr,
+        ws: &mut WsClient,
+        human_seat: Seat,
+        initial_snap: TableSnapshot,
+        stop_after_one_hand: bool,
+        step_offset: u64,
+    ) -> (TableSnapshot, usize) {
+        let mut rng = ChaCha8Rng::seed_from_u64(4040 + step_offset);
+        let mut current_seq = initial_snap.seq;
+        let mut legal_actions = initial_snap.player_view.expect("human view").legal_actions;
+        let mut action_counter = step_offset;
+        let mut hands_settled = 0usize;
+        let mut checked_ping = false;
+        let mut saw_pong = false;
+
+        loop {
+            if !legal_actions.is_empty() {
+                if stop_after_one_hand && legal_actions.contains(&PlayerAction::ConfirmNextHand) {
+                    assert!(checked_ping && saw_pong);
+                    send_msg(ws, &ClientMessage::RequestSnapshot).await;
+                    let snap = loop {
+                        match recv_msg(ws).await {
+                            ServerMessage::TableSnapshot(s) => break s,
+                            ServerMessage::EventBatch { events, .. } => {
+                                assert_no_event_leakage(human_seat, &events);
+                                continue;
+                            }
+                            ServerMessage::LobbyUpdated { .. } => continue,
+                            other => {
+                                panic!("unexpected msg awaiting BetweenHands snapshot: {other:?}")
+                            }
+                        }
+                    };
+                    assert_no_snapshot_leakage(human_seat, &snap);
+                    return (snap, hands_settled);
+                }
+
+                action_counter += 1;
+                let action = if legal_actions.contains(&PlayerAction::ConfirmNextHand) {
+                    PlayerAction::ConfirmNextHand
+                } else {
+                    send_msg(ws, &ClientMessage::RequestSnapshot).await;
+                    let snap = loop {
+                        match recv_msg(ws).await {
+                            ServerMessage::TableSnapshot(s) => break s,
+                            ServerMessage::ServerPong { ts_ms } => {
+                                assert_eq!(ts_ms, 5151);
+                                saw_pong = true;
+                                continue;
+                            }
+                            ServerMessage::EventBatch {
+                                from_seq,
+                                to_seq,
+                                events,
+                                ..
+                            } => {
+                                if !events.is_empty() {
+                                    assert_eq!(from_seq, current_seq + 1);
+                                    current_seq = to_seq;
+                                }
+                                assert_no_event_leakage(human_seat, &events);
+                                for ev in &events {
+                                    if let PlayerEventKind::HandSettled { settlement } = &ev.kind {
+                                        assert_valid_hand_settlement(settlement);
+                                        hands_settled += 1;
+                                    }
+                                }
+                                continue;
+                            }
+                            ServerMessage::LobbyUpdated { .. } => continue,
+                            other => panic!("unexpected msg awaiting snapshot: {other:?}"),
+                        }
+                    };
+                    assert_no_snapshot_leakage(human_seat, &snap);
+                    if snap.phase == TablePhase::Finished {
+                        assert!(checked_ping && saw_pong);
+                        return (snap, hands_settled);
+                    }
+                    current_seq = snap.seq;
+                    let view = snap.player_view.expect("human view");
+                    legal_actions = view.legal_actions.clone();
+                    if legal_actions.is_empty() {
+                        continue;
+                    }
+                    if stop_after_one_hand && legal_actions.contains(&PlayerAction::ConfirmNextHand)
+                    {
+                        return (
+                            TableSnapshot {
+                                player_view: Some(view),
+                                ..snap
+                            },
+                            hands_settled,
+                        );
+                    }
+                    TileEfficiencyBot::decide(&view, &mut rng)
+                };
+
+                send_msg(
+                    ws,
+                    &ClientMessage::SubmitAction {
+                        expected_seq: current_seq,
+                        client_action_id: format!("rt-e2e-{action_counter}"),
+                        action,
+                    },
+                )
+                .await;
+
+                if !checked_ping {
+                    checked_ping = true;
+                    send_msg(ws, &ClientMessage::ClientPing { ts_ms: 5151 }).await;
+                    let health = fetch_health(addr).await;
+                    assert_eq!(health.phase, TablePhase::InMatch);
+                    assert_eq!(health.online_humans, 1);
+                }
+            }
+
+            match recv_msg(ws).await {
+                ServerMessage::ServerPong { ts_ms } => {
+                    assert_eq!(ts_ms, 5151);
+                    saw_pong = true;
+                }
+                ServerMessage::EventBatch {
+                    from_seq,
+                    to_seq,
+                    events,
+                    updated_legal_actions,
+                } => {
+                    if !events.is_empty() {
+                        assert_eq!(from_seq, current_seq + 1);
+                        current_seq = to_seq;
+                    }
+                    assert_no_event_leakage(human_seat, &events);
+                    for ev in &events {
+                        if let PlayerEventKind::HandSettled { settlement } = &ev.kind {
+                            assert_valid_hand_settlement(settlement);
+                            hands_settled += 1;
+                        }
+                    }
+                    legal_actions = updated_legal_actions;
+                }
+                ServerMessage::TableSnapshot(snap) if snap.phase == TablePhase::Finished => {
+                    assert_no_snapshot_leakage(human_seat, &snap);
+                    if !saw_pong {
+                        assert_no_pending_messages_via_ping(ws, 5152).await;
+                        saw_pong = true;
+                    }
+                    assert!(checked_ping && saw_pong);
+                    return (snap, hands_settled);
+                }
+                other => panic!("unexpected server message during Realtime E2E match: {other:?}"),
+            }
+        }
+    }
+
+    let (east_fin, east_hands) =
+        drive_1p_realtime_checked(addr, &mut human, human_seat, init_snap, false, 0).await;
+    assert_eq!(east_fin.phase, TablePhase::Finished);
+    assert!(east_hands >= 4, "EastOnly must settle >= 4 hands");
+    let east_summary = east_fin
+        .player_view
+        .expect("final view")
+        .match_summary
+        .expect("EastOnly MatchSummary");
+    assert_eq!(east_summary.mode, MatchMode::EastOnly);
+    assert!(east_summary.hands_played >= 4);
+    assert_eq!(east_summary.net_deltas.iter().sum::<i32>(), 0);
+
+    // Rematch in FreeTable with Intermediate AI under default Realtime budget.
+    send_msg(
+        &mut human,
+        &ClientMessage::UpdateLobbyConfig {
+            mode: MatchMode::FreeTable,
+            seating: SeatingRule::FixedAdjacent,
+            ai_difficulty: AiDifficulty::Intermediate,
+            pace: TablePace::Fast,
+        },
+    )
+    .await;
+    send_msg(&mut human, &ClientMessage::StartMatch).await;
+    let free_init = loop {
+        match recv_msg(&mut human).await {
+            ServerMessage::TableSnapshot(s) if s.phase == TablePhase::InMatch => break s,
+            ServerMessage::LobbyUpdated { .. } | ServerMessage::TableSnapshot(_) => continue,
+            other => panic!("unexpected msg starting Realtime FreeTable rematch: {other:?}"),
+        }
+    };
+    let free_seat = free_init.your_seat.expect("human seated in FreeTable");
+    assert_no_snapshot_leakage(free_seat, &free_init);
+
+    let (_between, free_hands) =
+        drive_1p_realtime_checked(addr, &mut human, free_seat, free_init, true, 10_000).await;
+    assert!(free_hands >= 1);
+
+    send_msg(&mut human, &ClientMessage::RequestEndFreeTable).await;
+    let free_fin = loop {
+        match recv_msg(&mut human).await {
+            ServerMessage::TableSnapshot(s) if s.phase == TablePhase::Finished => break s,
+            ServerMessage::EventBatch { events, .. } => {
+                assert_no_event_leakage(free_seat, &events);
+                continue;
+            }
+            ServerMessage::LobbyUpdated { .. } | ServerMessage::TableSnapshot(_) => continue,
+            other => panic!("unexpected msg awaiting FreeTable finish: {other:?}"),
+        }
+    };
+    let free_summary = free_fin
+        .player_view
+        .expect("final FreeTable view")
+        .match_summary
+        .expect("FreeTable MatchSummary");
+    assert_eq!(free_summary.mode, MatchMode::FreeTable);
+    assert!(free_summary.hands_played >= 1);
+    assert_eq!(free_summary.net_deltas.iter().sum::<i32>(), 0);
 
     let _ = human.close(None).await;
     server.shutdown().await;

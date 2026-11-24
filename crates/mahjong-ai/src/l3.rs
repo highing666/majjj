@@ -65,7 +65,7 @@ impl L3Profile {
     pub const fn from_context(ctx: &DecisionContext, l4_enabled: bool) -> Self {
         let (base_risk, base_rob, base_shrink, style_scale) = match ctx.difficulty {
             AiDifficulty::Strong => (1.00, 1.25, 0.90, 1.00),
-            AiDifficulty::Intermediate => (0.40, 0.46, 0.32, 0.45),
+            AiDifficulty::Intermediate => (0.22, 0.30, 0.18, 0.35),
         };
         let (risk_mult, speed_bias, big_hand_bias, meld_bias) = match ctx.style {
             AiStyle::AggressiveFast => (0.55, 0.45, -0.08, 0.25),
@@ -752,22 +752,46 @@ pub fn evaluate_l3_candidates(
     let peak_weighted = model.peak_weighted_threat();
     let threat = threat_level(max_opp_tenpai, any_opp_tenpai, peak_weighted);
     let fold_threat = high_fold_threat(max_opp_tenpai, any_opp_tenpai, peak_weighted);
-    let (min_hand_risk, _safe_shield_count) = closed_hand_risk_summary(view, &model);
+    let (min_hand_risk, safe_shield_count) = closed_hand_risk_summary(view, &model);
+    let fold_escape_factor = if safe_shield_count >= 1 || min_hand_risk <= 0.025 {
+        1.0
+    } else if min_hand_risk <= 0.045 {
+        0.78
+    } else {
+        0.55
+    };
+    let effective_fold_threat = fold_threat * fold_escape_factor;
 
     for cand in buf.as_mut_slice() {
         let off = style_adjusted_offense(cand, profile);
         match cand.action {
             PlayerAction::Discard { tile, .. } => {
-                let eff_w = effective_risk_weight(cand, view, threat, fold_threat, profile);
-                cand.ev = off - eff_w * model.discard_risk(tile);
+                let eff_w =
+                    effective_risk_weight(cand, view, threat, effective_fold_threat, profile);
+                let risk = model.discard_risk(tile);
+                let late = view.wall_remaining <= 38;
+                let tail_risk = if (cand.shanten_after >= 2 && effective_fold_threat > 0.05)
+                    || (cand.shanten_after >= 1 && cand.ukeire <= 4)
+                    || (cand.shanten_after >= 1 && late)
+                {
+                    (risk - 0.10).max(0.0)
+                } else {
+                    0.0
+                };
+                cand.ev = off - eff_w * risk - profile.risk_weight * 2.5 * tail_risk;
             }
             PlayerAction::Pon { tile } => {
                 let shrink = pon_shrink_penalty(cand.shanten_after, cand.ukeire, threat, profile);
                 if let Some(updated) =
                     evaluate_pon_with_scorer(view, tile, |pon_cand, disc_tile| {
                         let pon_off = style_adjusted_offense(pon_cand, profile) + profile.meld_bias;
-                        let eff_w =
-                            effective_risk_weight(pon_cand, view, threat, fold_threat, profile);
+                        let eff_w = effective_risk_weight(
+                            pon_cand,
+                            view,
+                            threat,
+                            effective_fold_threat,
+                            profile,
+                        );
                         // Pass still requires discarding on our next turn; charge Pon only for
                         // excess danger beyond the safest tile already in hand.
                         let excess_risk = (model.discard_risk(disc_tile) - min_hand_risk).max(0.0);
@@ -883,9 +907,9 @@ fn threat_level(max_opp_tenpai: f64, any_opp_tenpai: f64, peak_weighted: f64) ->
 }
 
 fn high_fold_threat(max_opp_tenpai: f64, any_opp_tenpai: f64, peak_weighted: f64) -> f64 {
-    let peak_fold = ((max_opp_tenpai - 0.26) / 0.24).clamp(0.0, 1.9);
-    let any_fold = ((any_opp_tenpai - 0.51) / 0.30).clamp(0.0, 1.9);
-    let weighted_fold = ((peak_weighted - 0.35) / 0.28).clamp(0.0, 2.1);
+    let peak_fold = ((max_opp_tenpai - 0.24) / 0.24).clamp(0.0, 1.9);
+    let any_fold = ((any_opp_tenpai - 0.48) / 0.28).clamp(0.0, 1.9);
+    let weighted_fold = ((peak_weighted - 0.33) / 0.28).clamp(0.0, 2.1);
     peak_fold.max(any_fold).max(weighted_fold)
 }
 
@@ -900,28 +924,65 @@ fn effective_risk_weight(
 
     let shanten_scale = if cand.shanten_after <= 0 {
         if cand.ukeire == 0 {
-            5.00 + 3.50 * fold_threat
+            7.00 + 5.00 * fold_threat
+        } else if cand.ukeire <= 3 && cand.expected_win_score < 2.4 {
+            1.10 + 1.25 * threat + 3.00 * fold_threat
         } else {
-            0.14 + 0.16 * fold_threat
+            0.22 + 0.35 * fold_threat
         }
     } else if cand.shanten_after == 1 {
-        if cand.ukeire >= 6 || cand.expected_win_score >= 2.4 {
-            let late_guard = if late_factor >= 0.58 {
-                1.80 * (late_factor - 0.55) * fold_threat
+        if cand.expected_win_score >= 2.4 || cand.ukeire >= 8 {
+            let late_guard = if late_factor >= 0.54 {
+                3.60 * (late_factor - 0.52) * (0.55 + fold_threat)
             } else {
                 0.0
             };
             0.10 + 0.25 * threat + late_guard
+        } else if cand.ukeire >= 5 {
+            let late_guard = if late_factor >= 0.45 {
+                6.00 * (late_factor - 0.43) * (0.65 + fold_threat)
+            } else {
+                0.0
+            };
+            0.14 + 0.35 * threat + late_guard
         } else {
-            // Weak 1-shanten (`ukeire <= 5`): fold cleanly under elevated multi-turn threat.
-            0.14 + 0.30 * threat + 5.20 * fold_threat + 2.50 * late_factor * fold_threat
+            // Weak, cheap 1-shanten (`ukeire <= 4`): push when calm, fold decisively under threat.
+            let late_extra = if late_factor >= 0.52 {
+                7.50 * (late_factor - 0.45) * fold_threat
+            } else {
+                0.0
+            };
+            0.30 + 1.20 * threat
+                + 8.50 * fold_threat
+                + 4.00 * late_factor * fold_threat
+                + late_extra
         }
     } else {
-        // Far from tenpai (`s >= 2`): push cleanly when calm, decisive 7-10x Betaori under tenpai threat.
-        0.12 + 0.35 * threat + 7.20 * fold_threat + 2.80 * late_factor * fold_threat
+        // Slow/far from tenpai (`s >= 2`): push when calm, decisive Betaori under tenpai threat.
+        let late_extra = if late_factor >= 0.52 {
+            9.50 * (late_factor - 0.45) * fold_threat
+        } else {
+            0.0
+        };
+        0.32 + 1.35 * threat + 10.50 * fold_threat + 4.80 * late_factor * fold_threat + late_extra
     };
 
     profile.risk_weight * shanten_scale
+}
+
+/// Computes the L3 effective risk weight for a candidate using precomputed `model` threats.
+pub(crate) fn candidate_effective_risk_weight(
+    cand: &CandidateEv,
+    view: &PlayerView,
+    model: &L3DefenseModel,
+    profile: L3Profile,
+) -> f64 {
+    let max_opp_tenpai = model.max_opponent_tenpai();
+    let any_opp_tenpai = model.any_opponent_tenpai();
+    let peak_weighted = model.peak_weighted_threat();
+    let threat = threat_level(max_opp_tenpai, any_opp_tenpai, peak_weighted);
+    let fold_threat = high_fold_threat(max_opp_tenpai, any_opp_tenpai, peak_weighted);
+    effective_risk_weight(cand, view, threat, fold_threat, profile)
 }
 
 fn pon_shrink_penalty(shanten_after: i8, ukeire: u16, threat: f64, profile: L3Profile) -> f64 {
@@ -931,10 +992,10 @@ fn pon_shrink_penalty(shanten_after: i8, ukeire: u16, threat: f64, profile: L3Pr
         if ukeire >= 6 {
             0.0
         } else {
-            0.06 * profile.meld_shrink_weight * (threat - 0.30).max(0.0)
+            0.08 * profile.meld_shrink_weight * (threat - 0.28).max(0.0)
         }
     } else {
-        0.14 * profile.meld_shrink_weight * (threat - 0.15).max(0.0)
+        0.18 * profile.meld_shrink_weight * (threat - 0.15).max(0.0)
     }
 }
 

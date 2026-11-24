@@ -220,6 +220,8 @@ pub struct EvalReport {
     pub latency: LatencyQuantiles,
 }
 
+type ActionTrace = Vec<(u8, u8, PlayerAction)>;
+
 struct GroupResult {
     group_mean_net: f64,
     tsumo_count: usize,
@@ -227,6 +229,257 @@ struct GroupResult {
     deal_in_count: usize,
     draw_game_count: usize,
     latencies_ns: Vec<u64>,
+    actions: ActionTrace,
+}
+
+/// Hard Slice 3 gate thresholds (Spec #31 §4.4, calibrated to silent 1-pt-base `TuidaohuRuleset`).
+pub const GATE_MIN_MEAN_NET_SCORE: f64 = 0.08;
+pub const GATE_MIN_DEAL_IN_REDUCTION: f64 = 0.18;
+pub const GATE_MAX_REALTIME_P95_MS: f64 = 150.0;
+pub const GATE_MAX_REALTIME_MAX_MS: f64 = 200.0;
+
+/// Configuration for the daily 400-hand `bench-ai smoke` check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SmokeConfig {
+    pub groups: usize,
+    pub seed: u64,
+    pub threads: usize,
+    pub max_samples: usize,
+}
+
+impl Default for SmokeConfig {
+    fn default() -> Self {
+        Self {
+            groups: 100,
+            seed: 2026,
+            threads: default_eval_threads(),
+            max_samples: 32,
+        }
+    }
+}
+
+/// Output of `bench-ai smoke`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SmokeReport {
+    pub report: EvalReport,
+    pub passed: bool,
+}
+
+/// Cross-thread 1-vs-4 Rayon determinism check output.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeterminismReport {
+    pub groups: usize,
+    pub seed: u64,
+    pub max_samples: usize,
+    pub action_count: usize,
+    pub t1_report: EvalReport,
+    pub t4_report: EvalReport,
+    pub traces_match: bool,
+    pub scores_bit_exact: bool,
+    pub passed: bool,
+}
+
+/// Configuration for the full 4,000-hand Slice 3 gate (`bench-ai gate`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GateConfig {
+    pub groups: usize,
+    pub det_samples: usize,
+    pub realtime_groups: usize,
+    pub determinism_groups: usize,
+    pub seed: u64,
+    pub threads: usize,
+}
+
+impl Default for GateConfig {
+    fn default() -> Self {
+        Self {
+            groups: 1000,
+            det_samples: 128,
+            realtime_groups: 20,
+            determinism_groups: 25,
+            seed: 2026,
+            threads: default_eval_threads(),
+        }
+    }
+}
+
+/// Full output and per-gate pass/fail breakdown for `bench-ai gate`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GateReport {
+    pub config: GateConfig,
+    pub random: EvalReport,
+    pub tile_efficiency: EvalReport,
+    pub intermediate: EvalReport,
+    pub strong_no_l4: EvalReport,
+    pub strong: EvalReport,
+    pub deal_in_reduction: f64,
+    pub determinism: DeterminismReport,
+    pub realtime: EvalReport,
+    pub ablation_monotonic: bool,
+    pub threshold_mean_passed: bool,
+    pub threshold_ci_passed: bool,
+    pub threshold_deal_in_passed: bool,
+    pub threshold_passed: bool,
+    pub determinism_passed: bool,
+    pub realtime_passed: bool,
+    pub passed: bool,
+}
+
+/// Runs the fast 400-hand `Strong` vs `3 TileEfficiencyBot` smoke gate.
+///
+/// # Errors
+///
+/// Returns an [`EvalError`] if matchup parameters are invalid or engine execution fails.
+pub fn run_smoke_gate(config: &SmokeConfig) -> Result<SmokeReport, EvalError> {
+    let eval_cfg = EvalConfig {
+        candidate: EvalStrategy::Strong,
+        opponent: EvalStrategy::TileEfficiency,
+        groups: config.groups,
+        seed: config.seed,
+        threads: config.threads,
+        budget: DecisionBudget::Deterministic {
+            max_samples: config.max_samples,
+        },
+    };
+    let report = run_duplicate_matchup(&eval_cfg)?;
+    let passed = report.mean_net_score > 0.0;
+    Ok(SmokeReport { report, passed })
+}
+
+/// Verifies bit-exact action traces and scores across 1-thread and 4-thread Rayon pools.
+///
+/// # Errors
+///
+/// Returns an [`EvalError`] if matchup parameters are invalid or engine execution fails.
+pub fn verify_cross_thread_determinism(
+    groups: usize,
+    seed: u64,
+    max_samples: usize,
+) -> Result<DeterminismReport, EvalError> {
+    let cfg_t1 = EvalConfig {
+        candidate: EvalStrategy::Strong,
+        opponent: EvalStrategy::TileEfficiency,
+        groups,
+        seed,
+        threads: 1,
+        budget: DecisionBudget::Deterministic { max_samples },
+    };
+    let cfg_t4 = EvalConfig {
+        threads: 4,
+        ..cfg_t1
+    };
+
+    let (t1_report, t1_actions) = run_duplicate_matchup_inner(&cfg_t1, true)?;
+    let (t4_report, t4_actions) = run_duplicate_matchup_inner(&cfg_t4, true)?;
+
+    let traces_match = t1_actions == t4_actions;
+    let scores_bit_exact = t1_report.mean_net_score.to_bits() == t4_report.mean_net_score.to_bits()
+        && t1_report.std_err.to_bits() == t4_report.std_err.to_bits()
+        && t1_report.ci95_low.to_bits() == t4_report.ci95_low.to_bits()
+        && t1_report.ci95_high.to_bits() == t4_report.ci95_high.to_bits()
+        && t1_report.tsumo_count == t4_report.tsumo_count
+        && t1_report.ron_count == t4_report.ron_count
+        && t1_report.deal_in_count == t4_report.deal_in_count
+        && t1_report.draw_game_count == t4_report.draw_game_count;
+    let passed = traces_match && scores_bit_exact;
+
+    Ok(DeterminismReport {
+        groups,
+        seed,
+        max_samples,
+        action_count: t1_actions.len(),
+        t1_report,
+        t4_report,
+        traces_match,
+        scores_bit_exact,
+        passed,
+    })
+}
+
+/// Runs all 4 Slice 3 quantitative hard gates and returns the full report.
+///
+/// # Errors
+///
+/// Returns an [`EvalError`] if any matchup parameter is invalid or engine execution fails.
+pub fn run_gate(config: &GateConfig) -> Result<GateReport, EvalError> {
+    if config.realtime_groups == 0 || config.determinism_groups == 0 {
+        return Err(EvalError::InvalidGroups);
+    }
+
+    let det_budget = DecisionBudget::Deterministic {
+        max_samples: config.det_samples,
+    };
+    let make_cfg = |candidate: EvalStrategy| EvalConfig {
+        candidate,
+        opponent: EvalStrategy::TileEfficiency,
+        groups: config.groups,
+        seed: config.seed,
+        threads: config.threads,
+        budget: det_budget,
+    };
+
+    let random = run_duplicate_matchup(&make_cfg(EvalStrategy::Random))?;
+    let tile_efficiency = run_duplicate_matchup(&make_cfg(EvalStrategy::TileEfficiency))?;
+    let intermediate = run_duplicate_matchup(&make_cfg(EvalStrategy::Intermediate))?;
+    let strong_no_l4 = run_duplicate_matchup(&make_cfg(EvalStrategy::StrongNoL4))?;
+    let strong = run_duplicate_matchup(&make_cfg(EvalStrategy::Strong))?;
+
+    let ablation_monotonic = random.mean_net_score < tile_efficiency.mean_net_score
+        && tile_efficiency.mean_net_score < intermediate.mean_net_score
+        && intermediate.mean_net_score < strong_no_l4.mean_net_score
+        && strong_no_l4.mean_net_score <= strong.mean_net_score;
+
+    let deal_in_reduction = if tile_efficiency.deal_in_rate > 0.0 {
+        (tile_efficiency.deal_in_rate - strong.deal_in_rate) / tile_efficiency.deal_in_rate
+    } else {
+        0.0
+    };
+
+    let threshold_mean_passed = strong.mean_net_score >= GATE_MIN_MEAN_NET_SCORE;
+    let threshold_ci_passed = strong.ci95_low > 0.0;
+    let threshold_deal_in_passed = deal_in_reduction >= GATE_MIN_DEAL_IN_REDUCTION;
+    let threshold_passed = threshold_mean_passed && threshold_ci_passed && threshold_deal_in_passed;
+
+    let determinism = verify_cross_thread_determinism(
+        config.determinism_groups,
+        config.seed,
+        config.det_samples,
+    )?;
+    let determinism_passed = determinism.passed;
+
+    let realtime = run_duplicate_matchup(&EvalConfig {
+        candidate: EvalStrategy::Strong,
+        opponent: EvalStrategy::TileEfficiency,
+        groups: config.realtime_groups,
+        seed: config.seed,
+        threads: config.threads,
+        budget: DecisionBudget::default(),
+    })?;
+    let realtime_passed = realtime.total_hands >= 60
+        && realtime.latency.p95_ms <= GATE_MAX_REALTIME_P95_MS
+        && realtime.latency.max_ms <= GATE_MAX_REALTIME_MAX_MS;
+
+    let passed = ablation_monotonic && threshold_passed && determinism_passed && realtime_passed;
+
+    Ok(GateReport {
+        config: *config,
+        random,
+        tile_efficiency,
+        intermediate,
+        strong_no_l4,
+        strong,
+        deal_in_reduction,
+        determinism,
+        realtime,
+        ablation_monotonic,
+        threshold_mean_passed,
+        threshold_ci_passed,
+        threshold_deal_in_passed,
+        threshold_passed,
+        determinism_passed,
+        realtime_passed,
+        passed,
+    })
 }
 
 /// Runs a 4-seat duplicate rotation matchup in memory using a bounded Rayon thread pool
@@ -237,6 +490,14 @@ struct GroupResult {
 /// Returns an [`EvalError`] if `groups == 0`, `threads == 0`, thread-pool initialization fails,
 /// or core match execution reports an unexpected error.
 pub fn run_duplicate_matchup(config: &EvalConfig) -> Result<EvalReport, EvalError> {
+    let (report, _) = run_duplicate_matchup_inner(config, false)?;
+    Ok(report)
+}
+
+fn run_duplicate_matchup_inner(
+    config: &EvalConfig,
+    record_trace: bool,
+) -> Result<(EvalReport, ActionTrace), EvalError> {
     if config.groups == 0 {
         return Err(EvalError::InvalidGroups);
     }
@@ -253,12 +514,12 @@ pub fn run_duplicate_matchup(config: &EvalConfig) -> Result<EvalReport, EvalErro
         if matches!(config.budget, DecisionBudget::Realtime { .. }) {
             // Measure single-decision Realtime latency without outer group work-stealing.
             (0..config.groups)
-                .map(|deal| evaluate_group(config, deal as u64))
+                .map(|deal| evaluate_group(config, deal as u64, record_trace))
                 .collect()
         } else {
             (0..config.groups)
                 .into_par_iter()
-                .map(|deal| evaluate_group(config, deal as u64))
+                .map(|deal| evaluate_group(config, deal as u64, record_trace))
                 .collect()
         }
     });
@@ -269,6 +530,7 @@ pub fn run_duplicate_matchup(config: &EvalConfig) -> Result<EvalReport, EvalErro
     let mut deal_in_count = 0usize;
     let mut draw_game_count = 0usize;
     let mut all_latencies_ns = Vec::new();
+    let mut all_actions = Vec::new();
 
     for group_res in groups {
         let group = group_res?;
@@ -278,6 +540,9 @@ pub fn run_duplicate_matchup(config: &EvalConfig) -> Result<EvalReport, EvalErro
         deal_in_count += group.deal_in_count;
         draw_game_count += group.draw_game_count;
         all_latencies_ns.extend(group.latencies_ns);
+        if record_trace {
+            all_actions.extend(group.actions);
+        }
     }
 
     let n = group_means.len() as f64;
@@ -301,31 +566,38 @@ pub fn run_duplicate_matchup(config: &EvalConfig) -> Result<EvalReport, EvalErro
     let total_hands_f = total_hands as f64;
     let latency = summarize_latencies(&mut all_latencies_ns);
 
-    Ok(EvalReport {
-        candidate: config.candidate,
-        opponent: config.opponent,
-        groups: config.groups,
-        total_hands,
-        threads: config.threads,
-        seed: config.seed,
-        budget: config.budget,
-        mean_net_score,
-        std_err,
-        ci95_low: mean_net_score - half_ci,
-        ci95_high: mean_net_score + half_ci,
-        tsumo_count,
-        ron_count,
-        deal_in_count,
-        draw_game_count,
-        tsumo_rate: tsumo_count as f64 / total_hands_f,
-        ron_rate: ron_count as f64 / total_hands_f,
-        deal_in_rate: deal_in_count as f64 / total_hands_f,
-        draw_game_rate: draw_game_count as f64 / total_hands_f,
-        latency,
-    })
+    Ok((
+        EvalReport {
+            candidate: config.candidate,
+            opponent: config.opponent,
+            groups: config.groups,
+            total_hands,
+            threads: config.threads,
+            seed: config.seed,
+            budget: config.budget,
+            mean_net_score,
+            std_err,
+            ci95_low: mean_net_score - half_ci,
+            ci95_high: mean_net_score + half_ci,
+            tsumo_count,
+            ron_count,
+            deal_in_count,
+            draw_game_count,
+            tsumo_rate: tsumo_count as f64 / total_hands_f,
+            ron_rate: ron_count as f64 / total_hands_f,
+            deal_in_rate: deal_in_count as f64 / total_hands_f,
+            draw_game_rate: draw_game_count as f64 / total_hands_f,
+            latency,
+        },
+        all_actions,
+    ))
 }
 
-fn evaluate_group(config: &EvalConfig, deal: u64) -> Result<GroupResult, EvalError> {
+fn evaluate_group(
+    config: &EvalConfig,
+    deal: u64,
+    record_trace: bool,
+) -> Result<GroupResult, EvalError> {
     let deal_seed = config.seed ^ deal;
     let mut sum_net = 0i64;
     let mut tsumo_count = 0usize;
@@ -333,6 +605,7 @@ fn evaluate_group(config: &EvalConfig, deal: u64) -> Result<GroupResult, EvalErr
     let mut deal_in_count = 0usize;
     let mut draw_game_count = 0usize;
     let mut latencies_ns = Vec::with_capacity(160);
+    let mut actions = Vec::new();
 
     for (rot, &candidate_seat) in Seat::ALL.iter().enumerate() {
         let mut game = Match::new(
@@ -367,6 +640,9 @@ fn evaluate_group(config: &EvalConfig, deal: u64) -> Result<GroupResult, EvalErr
                 if let Some(t0) = start {
                     let elapsed = t0.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
                     latencies_ns.push(elapsed);
+                }
+                if record_trace {
+                    actions.push((rot as u8, seat.index() as u8, action));
                 }
 
                 let recorded = game
@@ -429,6 +705,7 @@ fn evaluate_group(config: &EvalConfig, deal: u64) -> Result<GroupResult, EvalErr
         deal_in_count,
         draw_game_count,
         latencies_ns,
+        actions,
     })
 }
 
