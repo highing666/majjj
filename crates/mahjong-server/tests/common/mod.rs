@@ -58,6 +58,7 @@ pub async fn spawn_server(static_dir: Option<PathBuf>) -> ServerHandle {
         bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
         port: 0,
         static_dir,
+        ..ServerConfig::default()
     }
     .spawn()
     .await
@@ -70,6 +71,7 @@ pub async fn spawn_seeded_server(seed: u64, static_dir: Option<PathBuf>) -> Serv
         bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
         port: 0,
         static_dir,
+        ..ServerConfig::default()
     }
     .spawn_with_options(TableOptions::seeded(seed))
     .await
@@ -82,6 +84,7 @@ pub async fn spawn_with_wall_factory(seed: u64, factory: WallProviderFactory) ->
         bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
         port: 0,
         static_dir: None,
+        ..ServerConfig::default()
     }
     .spawn_with_options(TableOptions::with_wall_factory(seed, factory))
     .await

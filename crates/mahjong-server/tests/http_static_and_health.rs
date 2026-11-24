@@ -203,6 +203,7 @@ async fn bind_conflict_fails_explicitly_without_falling_back_to_ephemeral_port()
         bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
         port: occupied_port,
         static_dir: None,
+        ..ServerConfig::default()
     }
     .spawn()
     .await

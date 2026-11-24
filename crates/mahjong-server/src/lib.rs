@@ -9,5 +9,5 @@ pub mod server;
 pub mod session;
 pub mod static_assets;
 
-pub use server::{ServerConfig, ServerError, ServerHandle};
+pub use server::{default_ai_threads, ServerConfig, ServerError, ServerHandle};
 pub use session::{BoxedWallProvider, TableOptions, WallProviderFactory};
