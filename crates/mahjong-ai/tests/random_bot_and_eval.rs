@@ -332,3 +332,105 @@ fn bench_ai_calibrate_l3_runs_in_memory_and_emits_metrics_and_const_tables() {
     );
     assert!(stdout.contains("pub const WAIT_WEIGHTS"), "stdout={stdout}");
 }
+
+#[test]
+fn smoke_and_gate_apis_and_cli_enforce_slice3_thresholds() {
+    use mahjong_ai::eval::{
+        run_gate, run_smoke_gate, verify_cross_thread_determinism, GateConfig, SmokeConfig,
+    };
+
+    let smoke_def = SmokeConfig::default();
+    assert_eq!(smoke_def.groups, 100);
+    assert_eq!(smoke_def.max_samples, 32);
+    assert_eq!(smoke_def.threads, default_eval_threads());
+
+    let gate_def = GateConfig::default();
+    assert_eq!(gate_def.groups, 1000);
+    assert_eq!(gate_def.groups * 4, 4000);
+    assert_eq!(gate_def.det_samples, 128);
+    assert!(gate_def.realtime_groups * 4 >= 60);
+    assert_eq!(gate_def.threads, default_eval_threads());
+
+    let det = verify_cross_thread_determinism(1, 2026, 4).expect("determinism check runs");
+    assert!(det.traces_match);
+    assert!(det.scores_bit_exact);
+    assert!(det.passed);
+
+    let small_smoke = run_smoke_gate(&SmokeConfig {
+        groups: 1,
+        seed: 2026,
+        threads: default_eval_threads(),
+        max_samples: 4,
+    })
+    .expect("small smoke succeeds");
+    assert_eq!(small_smoke.report.total_hands, 4);
+    assert_eq!(small_smoke.passed, small_smoke.report.mean_net_score > 0.0);
+
+    let small_gate = run_gate(&GateConfig {
+        groups: 1,
+        det_samples: 4,
+        realtime_groups: 1,
+        determinism_groups: 1,
+        seed: 2026,
+        threads: default_eval_threads(),
+    })
+    .expect("small gate runs");
+    assert_eq!(small_gate.strong.total_hands, 4);
+    assert_eq!(small_gate.realtime.total_hands, 4);
+    assert!(small_gate.determinism.passed);
+    let expected_reduction = if small_gate.tile_efficiency.deal_in_rate > 0.0 {
+        (small_gate.tile_efficiency.deal_in_rate - small_gate.strong.deal_in_rate)
+            / small_gate.tile_efficiency.deal_in_rate
+    } else {
+        0.0
+    };
+    assert!((small_gate.deal_in_reduction - expected_reduction).abs() < 1e-12);
+
+    let bin = env!("CARGO_BIN_EXE_bench-ai");
+    let smoke_cli = std::process::Command::new(bin)
+        .args(["smoke", "--groups", "1", "--seed", "2026", "--samples", "4"])
+        .output()
+        .expect("spawn bench-ai smoke");
+    let smoke_stdout = String::from_utf8_lossy(&smoke_cli.stdout);
+    assert!(
+        smoke_stdout.contains("bench-ai smoke"),
+        "stdout={smoke_stdout}"
+    );
+    assert!(
+        smoke_stdout.contains("mean_net_score"),
+        "stdout={smoke_stdout}"
+    );
+
+    let gate_cli = std::process::Command::new(bin)
+        .args([
+            "gate",
+            "--groups",
+            "1",
+            "--det-samples",
+            "4",
+            "--realtime-groups",
+            "1",
+            "--determinism-groups",
+            "1",
+            "--seed",
+            "2026",
+        ])
+        .output()
+        .expect("spawn bench-ai gate");
+    let gate_stdout = String::from_utf8_lossy(&gate_cli.stdout);
+    assert!(
+        gate_stdout.contains("5-Level Ablation"),
+        "stdout={gate_stdout}"
+    );
+    assert!(
+        gate_stdout.contains("4,000-Hand Hard Gate") || gate_stdout.contains("Hard Threshold"),
+        "stdout={gate_stdout}"
+    );
+    assert!(gate_stdout.contains("Determinism"), "stdout={gate_stdout}");
+    assert!(gate_stdout.contains("Realtime"), "stdout={gate_stdout}");
+    // On 3 groups with current ruleset, mean_net_score < 1.5 so gate MUST exit non-zero.
+    assert!(
+        !gate_cli.status.success(),
+        "expected gate failure to exit non-zero"
+    );
+}

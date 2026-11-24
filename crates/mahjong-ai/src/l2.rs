@@ -20,10 +20,10 @@ use xiangting::{calculate_necessary_tiles, PlayerCount};
 /// Maximum `shanten_thirteen_orphans` at which `十三幺` is allowed to compete.
 pub const THIRTEEN_ORPHANS_MAX_SHANTEN: i8 = 3;
 
-const SURVIVAL_PER_ROUND: f64 = 0.87;
-const WIN_DEFENSE_BONUS_PER_WIN: f64 = 0.65;
-const PON_FLEXIBILITY_PENALTY_CLOSED: f64 = 0.10;
-const PON_FLEXIBILITY_PENALTY_OPEN: f64 = 0.05;
+const SURVIVAL_PER_ROUND: f64 = 0.85;
+const WIN_DEFENSE_BONUS_PER_WIN: f64 = 0.80;
+const PON_FLEXIBILITY_PENALTY_CLOSED: f64 = 0.04;
+const PON_FLEXIBILITY_PENALTY_OPEN: f64 = 0.02;
 const EXPOSED_KONG_FLEXIBILITY_PENALTY_CLOSED: f64 = 0.55;
 const EXPOSED_KONG_FLEXIBILITY_PENALTY_OPEN: f64 = 0.20;
 const EV_TIE_EPS: f64 = 1e-9;
@@ -1342,7 +1342,12 @@ fn eval_s_ge_3(
     let reach_prob =
         (0.28_f64).powi(i32::from(eff_sh)) * (0.25 + 0.75 * step_rate) * horizon_factor;
     let p_win = reach_prob.min(0.95);
-    let ev = p_win * (e_win_score + WIN_DEFENSE_BONUS_PER_WIN)
+    let dampened_score = if e_win_score > 2.0 {
+        2.0 + 0.35 * (e_win_score - 2.0)
+    } else {
+        e_win_score
+    };
+    let ev = p_win * (dampened_score + WIN_DEFENSE_BONUS_PER_WIN)
         + 1e-5 * f64::from(ukeire)
         + 2e-6 * two_step;
 

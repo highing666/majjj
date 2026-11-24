@@ -759,7 +759,14 @@ pub fn evaluate_l3_candidates(
         match cand.action {
             PlayerAction::Discard { tile, .. } => {
                 let eff_w = effective_risk_weight(cand, view, threat, fold_threat, profile);
-                cand.ev = off - eff_w * model.discard_risk(tile);
+                let risk = model.discard_risk(tile);
+                let late = view.wall_remaining <= 44;
+                let tail_risk = if cand.shanten_after >= 2 || cand.ukeire <= 5 || late {
+                    (risk - 0.10).max(0.0)
+                } else {
+                    0.0
+                };
+                cand.ev = off - eff_w * risk - profile.risk_weight * 2.5 * tail_risk;
             }
             PlayerAction::Pon { tile } => {
                 let shrink = pon_shrink_penalty(cand.shanten_after, cand.ukeire, threat, profile);
@@ -900,28 +907,45 @@ fn effective_risk_weight(
 
     let shanten_scale = if cand.shanten_after <= 0 {
         if cand.ukeire == 0 {
-            5.00 + 3.50 * fold_threat
+            6.50 + 4.50 * fold_threat
+        } else if cand.ukeire <= 3 && cand.expected_win_score < 2.4 {
+            0.95 + 1.00 * threat + 2.00 * fold_threat
         } else {
-            0.14 + 0.16 * fold_threat
+            0.42 + 0.55 * fold_threat
         }
     } else if cand.shanten_after == 1 {
         if cand.ukeire >= 6 || cand.expected_win_score >= 2.4 {
-            let late_guard = if late_factor >= 0.58 {
-                1.80 * (late_factor - 0.55) * fold_threat
+            let late_guard = if late_factor >= 0.42 {
+                5.50 * (late_factor - 0.40) * (0.70 + fold_threat)
             } else {
                 0.0
             };
-            0.10 + 0.25 * threat + late_guard
+            0.09 + 0.22 * threat + late_guard
         } else {
-            // Weak 1-shanten (`ukeire <= 5`): fold cleanly under elevated multi-turn threat.
-            0.14 + 0.30 * threat + 5.20 * fold_threat + 2.50 * late_factor * fold_threat
+            // Weak, cheap 1-shanten (`ukeire <= 5`): fold cleanly under elevated multi-turn threat.
+            0.85 + 2.00 * threat + 9.00 * fold_threat + 4.00 * late_factor * fold_threat
         }
     } else {
-        // Far from tenpai (`s >= 2`): push cleanly when calm, decisive 7-10x Betaori under tenpai threat.
-        0.12 + 0.35 * threat + 7.20 * fold_threat + 2.80 * late_factor * fold_threat
+        // Far from tenpai (`s >= 2`): push when calm, decisive Betaori under tenpai threat.
+        0.90 + 2.50 * threat + 11.50 * fold_threat + 4.80 * late_factor * fold_threat
     };
 
     profile.risk_weight * shanten_scale
+}
+
+/// Computes the L3 effective risk weight for a candidate using precomputed `model` threats.
+pub(crate) fn candidate_effective_risk_weight(
+    cand: &CandidateEv,
+    view: &PlayerView,
+    model: &L3DefenseModel,
+    profile: L3Profile,
+) -> f64 {
+    let max_opp_tenpai = model.max_opponent_tenpai();
+    let any_opp_tenpai = model.any_opponent_tenpai();
+    let peak_weighted = model.peak_weighted_threat();
+    let threat = threat_level(max_opp_tenpai, any_opp_tenpai, peak_weighted);
+    let fold_threat = high_fold_threat(max_opp_tenpai, any_opp_tenpai, peak_weighted);
+    effective_risk_weight(cand, view, threat, fold_threat, profile)
 }
 
 fn pon_shrink_penalty(shanten_after: i8, ukeire: u16, threat: f64, profile: L3Profile) -> f64 {
