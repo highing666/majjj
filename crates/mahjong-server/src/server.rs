@@ -17,6 +17,7 @@ use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
+use crate::ai_pool::default_ai_threads;
 use crate::lan::read_local_hostname;
 use crate::protocol::{HealthResponse, ServerMessage};
 use crate::session::{OutboundSignal, TableOptions, TableRuntime};
@@ -33,6 +34,8 @@ pub struct ServerConfig {
     pub port: u16,
     /// Optional built frontend static asset directory.
     pub static_dir: Option<PathBuf>,
+    /// Worker thread count for the dedicated Rayon AI thinking pool (defaults to [`default_ai_threads`]).
+    pub ai_threads: usize,
 }
 
 impl Default for ServerConfig {
@@ -41,6 +44,7 @@ impl Default for ServerConfig {
             bind: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
             port: 8789,
             static_dir: None,
+            ai_threads: default_ai_threads(),
         }
     }
 }
@@ -62,6 +66,12 @@ pub enum ServerError {
         #[source]
         source: std::io::Error,
     },
+    /// Configured AI thread pool size is invalid (e.g. `0`).
+    #[error("invalid AI thread count {0}: must be at least 1")]
+    InvalidAiThreads(usize),
+    /// Dedicated Rayon AI thread pool could not be constructed.
+    #[error("failed to initialize AI thread pool: {0}")]
+    AiPool(String),
 }
 
 /// Running server handle returned by [`ServerConfig::spawn`].
@@ -119,12 +129,18 @@ impl ServerConfig {
     ///
     /// # Errors
     ///
-    /// Returns [`ServerError::StaticDir`] if `static_dir` cannot be opened, or
+    /// Returns [`ServerError::InvalidAiThreads`] if `ai_threads == 0`,
+    /// [`ServerError::AiPool`] if the AI thread pool cannot be constructed,
+    /// [`ServerError::StaticDir`] if `static_dir` cannot be opened, or
     /// [`ServerError::Bind`] if binding `bind:port` fails.
     pub async fn spawn_with_options(
         self,
         options: TableOptions,
     ) -> Result<ServerHandle, ServerError> {
+        if self.ai_threads == 0 {
+            return Err(ServerError::InvalidAiThreads(0));
+        }
+
         let static_assets: Arc<dyn StaticAssetSource> =
             match &self.static_dir {
                 Some(dir) => Arc::new(DiskStaticAssets::new(dir).map_err(|source| {
@@ -153,9 +169,15 @@ impl ServerConfig {
             .ok()
             .flatten();
 
+        let session = TableRuntime::try_with_options_and_threads(
+            local_addr.port(),
+            local_hostname,
+            options,
+            self.ai_threads,
+        )?;
         let state = AppState {
             port: local_addr.port(),
-            session: TableRuntime::with_options(local_addr.port(), local_hostname, options),
+            session,
             static_assets,
         };
         let router = build_router(state);

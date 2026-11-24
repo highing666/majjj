@@ -1,57 +1,17 @@
+mod common;
+
+use common::{tile, tiles};
 use mahjong_ai::{
     decide, AiDifficulty, AiStyle, DecisionBudget, DecisionContext, TileEfficiencyBot,
 };
 use mahjong_core::{
     build_preset_wall, project_event, project_view, HandOutcome, Match, MatchMode, MatchSummary,
-    PlayerAction, PlayerEventKind, PresetWallProvider, PublicPhase, Seat, SeededWallProvider, Tile,
+    PlayerAction, PlayerEventKind, PresetWallProvider, PublicPhase, Seat, SeededWallProvider,
     TuidaohuRuleset,
 };
 use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
 use ts_rs::TS;
-
-fn tiles(spec: &str) -> Vec<Tile> {
-    let mut out = Vec::new();
-    for token in spec.split_whitespace() {
-        let bytes = token.as_bytes();
-        if let Some((&suffix, digits)) = bytes.split_last() {
-            if matches!(suffix, b'm' | b's' | b'p' | b'z') && !digits.is_empty() {
-                for &d in digits {
-                    let raw = match (suffix, d) {
-                        (b'm', b'1'..=b'9') => d - b'1',
-                        (b's', b'1'..=b'9') => 9 + (d - b'1'),
-                        (b'p', b'1'..=b'9') => 18 + (d - b'1'),
-                        (b'z', b'1'..=b'7') => 27 + (d - b'1'),
-                        _ => panic!("invalid digit {:?} in tile token {token:?}", d as char),
-                    };
-                    out.push(Tile::new(raw).expect("validated tile index in 0..34"));
-                }
-                continue;
-            }
-        }
-
-        for &ch in bytes {
-            let raw = match ch {
-                b'E' => 27,
-                b'S' => 28,
-                b'W' => 29,
-                b'N' => 30,
-                b'C' => 31,
-                b'F' => 32,
-                b'B' => 33,
-                _ => panic!("invalid honor tile char {:?} in {token:?}", ch as char),
-            };
-            out.push(Tile::new(raw).expect("validated honor index in 27..34"));
-        }
-    }
-    out
-}
-
-fn tile(token: &str) -> Tile {
-    let parsed = tiles(token);
-    assert_eq!(parsed.len(), 1, "expected single tile from {token:?}");
-    parsed[0]
-}
 
 #[test]
 fn contract_types_defaults_serde_and_ts_exports() {
@@ -251,7 +211,6 @@ fn iron_rule_1_wins_immediately_and_between_hands_confirms_next_hand() {
 #[test]
 fn tile_efficiency_reduces_shanten_accounts_visible_and_defaults_to_tsumogiri() {
     let mut rng = ChaCha8Rng::seed_from_u64(42);
-    let ctx = DecisionContext::default();
 
     // 1. Sheds isolated honor C to reach tenpai (shanten = 0).
     let wall1 = build_preset_wall(
@@ -270,7 +229,7 @@ fn tile_efficiency_reduces_shanten_accounts_visible_and_defaults_to_tsumogiri() 
     )
     .expect("match starts");
     assert_eq!(
-        decide(&project_view(&game1, Seat::East), &ctx, &mut rng),
+        TileEfficiencyBot::decide(&project_view(&game1, Seat::East), &mut rng),
         PlayerAction::Discard {
             tile: tile("C"),
             from_drawn: false
@@ -333,7 +292,7 @@ fn tile_efficiency_reduces_shanten_accounts_visible_and_defaults_to_tsumogiri() 
     let east_drawn_view = project_view(&game2, Seat::East);
     assert_eq!(east_drawn_view.hand.drawn_tile, Some(tile("5p")));
     assert_eq!(
-        decide(&east_drawn_view, &ctx, &mut rng),
+        TileEfficiencyBot::decide(&east_drawn_view, &mut rng),
         PlayerAction::Discard {
             tile: tile("5p"),
             from_drawn: true
@@ -426,7 +385,7 @@ fn tile_efficiency_reduces_shanten_accounts_visible_and_defaults_to_tsumogiri() 
         )
         .unwrap();
     let north_view = project_view(&game3, Seat::North);
-    let choice3 = decide(&north_view, &ctx, &mut rng);
+    let choice3 = TileEfficiencyBot::decide(&north_view, &mut rng);
     assert!(
         matches!(
             choice3,
@@ -452,7 +411,7 @@ fn tile_efficiency_reduces_shanten_accounts_visible_and_defaults_to_tsumogiri() 
     )
     .expect("match starts");
     assert_eq!(
-        decide(&project_view(&game4, Seat::East), &ctx, &mut rng),
+        TileEfficiencyBot::decide(&project_view(&game4, Seat::East), &mut rng),
         PlayerAction::Discard {
             tile: tile("W"),
             from_drawn: false
@@ -475,7 +434,7 @@ fn tile_efficiency_reduces_shanten_accounts_visible_and_defaults_to_tsumogiri() 
     )
     .expect("match starts");
     assert_eq!(
-        decide(&project_view(&game5, Seat::East), &ctx, &mut rng),
+        TileEfficiencyBot::decide(&project_view(&game5, Seat::East), &mut rng),
         PlayerAction::Discard {
             tile: tile("1p"),
             from_drawn: false
@@ -500,7 +459,7 @@ fn tile_efficiency_reduces_shanten_accounts_visible_and_defaults_to_tsumogiri() 
     .expect("match starts");
     let mut seven_pair_view = project_view(&game6, Seat::East);
     assert_eq!(
-        decide(&seven_pair_view, &ctx, &mut rng),
+        TileEfficiencyBot::decide(&seven_pair_view, &mut rng),
         PlayerAction::Discard {
             tile: tile("C"),
             from_drawn: false
@@ -509,7 +468,7 @@ fn tile_efficiency_reduces_shanten_accounts_visible_and_defaults_to_tsumogiri() 
     // When 4-of-a-kind seven pairs is disallowed, breaking 1111m gives higher ukeire (6s + C vs only 6s).
     seven_pair_view.rule_profile.allow_four_of_kind_seven_pairs = false;
     assert_eq!(
-        decide(&seven_pair_view, &ctx, &mut rng),
+        TileEfficiencyBot::decide(&seven_pair_view, &mut rng),
         PlayerAction::Discard {
             tile: tile("1m"),
             from_drawn: false
@@ -533,7 +492,7 @@ fn tile_efficiency_reduces_shanten_accounts_visible_and_defaults_to_tsumogiri() 
     )
     .expect("match starts");
     assert_eq!(
-        decide(&project_view(&game7, Seat::East), &ctx, &mut rng),
+        TileEfficiencyBot::decide(&project_view(&game7, Seat::East), &mut rng),
         PlayerAction::Discard {
             tile: tile("5m"),
             from_drawn: false
@@ -544,7 +503,6 @@ fn tile_efficiency_reduces_shanten_accounts_visible_and_defaults_to_tsumogiri() 
 #[test]
 fn turn_kongs_and_discard_reactions_follow_shanten_rules() {
     let mut rng = ChaCha8Rng::seed_from_u64(77);
-    let ctx = DecisionContext::default();
 
     // 1a. ConcealedKong declared when it does not worsen shanten (0 -> 0).
     let game_ck_yes = Match::new(
@@ -565,7 +523,7 @@ fn turn_kongs_and_discard_reactions_follow_shanten_rules() {
     )
     .expect("match starts");
     assert_eq!(
-        decide(&project_view(&game_ck_yes, Seat::East), &ctx, &mut rng),
+        TileEfficiencyBot::decide(&project_view(&game_ck_yes, Seat::East), &mut rng),
         PlayerAction::ConcealedKong { tile: tile("1m") }
     );
 
@@ -588,7 +546,7 @@ fn turn_kongs_and_discard_reactions_follow_shanten_rules() {
     )
     .expect("match starts");
     assert_eq!(
-        decide(&project_view(&game_ck_no_std, Seat::East), &ctx, &mut rng),
+        TileEfficiencyBot::decide(&project_view(&game_ck_no_std, Seat::East), &mut rng),
         PlayerAction::Discard {
             tile: tile("5z"),
             from_drawn: false
@@ -614,7 +572,7 @@ fn turn_kongs_and_discard_reactions_follow_shanten_rules() {
     )
     .expect("match starts");
     assert_eq!(
-        decide(&project_view(&game_ck_no_7p, Seat::East), &ctx, &mut rng),
+        TileEfficiencyBot::decide(&project_view(&game_ck_no_7p, Seat::East), &mut rng),
         PlayerAction::Discard {
             tile: tile("C"),
             from_drawn: false
@@ -692,7 +650,7 @@ fn turn_kongs_and_discard_reactions_follow_shanten_rules() {
         .legal_actions
         .contains(&PlayerAction::AddedKong { tile: tile("5m") }));
     assert_eq!(
-        decide(&ak_yes_view, &ctx, &mut rng),
+        TileEfficiencyBot::decide(&ak_yes_view, &mut rng),
         PlayerAction::AddedKong { tile: tile("5m") }
     );
 
@@ -767,7 +725,7 @@ fn turn_kongs_and_discard_reactions_follow_shanten_rules() {
         .legal_actions
         .contains(&PlayerAction::AddedKong { tile: tile("5m") }));
     assert_eq!(
-        decide(&ak_no_view, &ctx, &mut rng),
+        TileEfficiencyBot::decide(&ak_no_view, &mut rng),
         PlayerAction::Discard {
             tile: tile("N"),
             from_drawn: false
@@ -806,7 +764,7 @@ fn turn_kongs_and_discard_reactions_follow_shanten_rules() {
         .legal_actions
         .contains(&PlayerAction::ExposedKong { tile: tile("1m") }));
     assert_eq!(
-        decide(&ek_yes_view, &ctx, &mut rng),
+        TileEfficiencyBot::decide(&ek_yes_view, &mut rng),
         PlayerAction::ExposedKong { tile: tile("1m") }
     );
 
@@ -838,11 +796,7 @@ fn turn_kongs_and_discard_reactions_follow_shanten_rules() {
         )
         .unwrap();
     assert_eq!(
-        decide(
-            &project_view(&game_ek_no_break, Seat::South),
-            &ctx,
-            &mut rng
-        ),
+        TileEfficiencyBot::decide(&project_view(&game_ek_no_break, Seat::South), &mut rng),
         PlayerAction::Pass
     );
 
@@ -873,7 +827,7 @@ fn turn_kongs_and_discard_reactions_follow_shanten_rules() {
         )
         .unwrap();
     assert_eq!(
-        decide(&project_view(&game_ek_no_sh2, Seat::South), &ctx, &mut rng),
+        TileEfficiencyBot::decide(&project_view(&game_ek_no_sh2, Seat::South), &mut rng),
         PlayerAction::Pass
     );
 
@@ -909,7 +863,7 @@ fn turn_kongs_and_discard_reactions_follow_shanten_rules() {
         .legal_actions
         .contains(&PlayerAction::Pon { tile: tile("1m") }));
     assert_eq!(
-        decide(&pon_yes_view, &ctx, &mut rng),
+        TileEfficiencyBot::decide(&pon_yes_view, &mut rng),
         PlayerAction::Pon { tile: tile("1m") }
     );
 
@@ -941,7 +895,7 @@ fn turn_kongs_and_discard_reactions_follow_shanten_rules() {
         )
         .unwrap();
     assert_eq!(
-        decide(&project_view(&game_pon_no, Seat::South), &ctx, &mut rng),
+        TileEfficiencyBot::decide(&project_view(&game_pon_no, Seat::South), &mut rng),
         PlayerAction::Pass
     );
 
@@ -972,7 +926,7 @@ fn turn_kongs_and_discard_reactions_follow_shanten_rules() {
         )
         .unwrap();
     assert_eq!(
-        decide(&project_view(&game_pon_no_7p, Seat::South), &ctx, &mut rng),
+        TileEfficiencyBot::decide(&project_view(&game_pon_no_7p, Seat::South), &mut rng),
         PlayerAction::Pass
     );
 }
@@ -1126,17 +1080,18 @@ fn run_bot_match(
 
 #[test]
 fn multi_hand_east_only_and_free_table_deterministic_zero_panic() {
+    let det_budget = DecisionBudget::Deterministic { max_samples: 16 };
     let varied_contexts = [
         DecisionContext {
             difficulty: AiDifficulty::Strong,
             style: AiStyle::Balanced,
-            budget: DecisionBudget::Deterministic { max_samples: 64 },
+            budget: det_budget,
         },
         DecisionContext {
             difficulty: AiDifficulty::Intermediate,
             style: AiStyle::AggressiveFast,
             budget: DecisionBudget::Realtime {
-                max_samples: 128,
+                max_samples: 16,
                 soft_ms: 120,
                 hard_ms: 180,
             },
@@ -1144,9 +1099,13 @@ fn multi_hand_east_only_and_free_table_deterministic_zero_panic() {
         DecisionContext {
             difficulty: AiDifficulty::Strong,
             style: AiStyle::DefensiveBigHand,
-            budget: DecisionBudget::default(),
+            budget: det_budget,
         },
-        DecisionContext::default(),
+        DecisionContext {
+            difficulty: AiDifficulty::Strong,
+            style: AiStyle::Balanced,
+            budget: det_budget,
+        },
     ];
 
     let mut total_hands = 0usize;
@@ -1168,27 +1127,37 @@ fn multi_hand_east_only_and_free_table_deterministic_zero_panic() {
         total_pons += trace.pons;
     }
 
-    // Same-seed determinism check (exact action-by-action & summary parity).
-    let replay_a = run_bot_match(MatchMode::EastOnly, 107, 107 * 31, varied_contexts, None);
-    let replay_b = run_bot_match(MatchMode::EastOnly, 107, 107 * 31, varied_contexts, None);
+    // Same-seed determinism check (exact action-by-action & summary parity under Deterministic budget).
+    let det_budget = DecisionBudget::Deterministic { max_samples: 16 };
+    let det_varied_contexts = varied_contexts.map(|mut c| {
+        c.budget = det_budget;
+        c
+    });
+    let replay_a = run_bot_match(
+        MatchMode::EastOnly,
+        107,
+        107 * 31,
+        det_varied_contexts,
+        None,
+    );
+    let replay_b = run_bot_match(
+        MatchMode::EastOnly,
+        107,
+        107 * 31,
+        det_varied_contexts,
+        None,
+    );
     assert_eq!(replay_a.actions_taken, replay_b.actions_taken);
     assert_eq!(replay_a.summary, replay_b.summary);
 
     // FreeTable multi-hand progression (> 4 hands across wind rotation) ending cleanly.
-    let free_a = run_bot_match(
-        MatchMode::FreeTable,
-        777,
-        999,
-        [DecisionContext::default(); 4],
-        Some(6),
-    );
-    let free_b = run_bot_match(
-        MatchMode::FreeTable,
-        777,
-        999,
-        [DecisionContext::default(); 4],
-        Some(6),
-    );
+    let free_det_ctx = DecisionContext {
+        difficulty: AiDifficulty::Strong,
+        style: AiStyle::Balanced,
+        budget: det_budget,
+    };
+    let free_a = run_bot_match(MatchMode::FreeTable, 777, 999, [free_det_ctx; 4], Some(6));
+    let free_b = run_bot_match(MatchMode::FreeTable, 777, 999, [free_det_ctx; 4], Some(6));
     assert_eq!(free_a.actions_taken, free_b.actions_taken);
     let free_summary = free_a.summary.expect("FreeTable finishes on EndMatch");
     assert_eq!(free_summary.hands_played, 6);
@@ -1205,7 +1174,11 @@ fn multi_hand_east_only_and_free_table_deterministic_zero_panic() {
 
 #[test]
 fn symmetric_rng_tiebreak_and_hidden_opponent_concealed_kong_handling() {
-    let ctx = DecisionContext::default();
+    let ctx = DecisionContext {
+        difficulty: AiDifficulty::Strong,
+        style: AiStyle::Balanced,
+        budget: DecisionBudget::Deterministic { max_samples: 16 },
+    };
 
     // 1. Symmetric tie-break between isolated W and N uses RNG deterministically.
     let tie_game = Match::new(

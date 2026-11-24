@@ -28,7 +28,13 @@ if grep -rnE 'async |\.await\b|std::(fs|net)|std::thread::sleep' crates/mahjong-
   exit 1
 fi
 
-cargo metadata --format-version 1 --offline | node -e '
+host_triple="$(rustc -vV | sed -n 's/^host: //p')"
+if [ -z "$host_triple" ]; then
+  echo "ERROR: failed to determine rustc host triple" >&2
+  exit 1
+fi
+meta_json="$(cargo metadata --format-version 1 --filter-platform "$host_triple" --offline)"
+printf '%s' "$meta_json" | node -e '
 const fs = require("fs");
 const allowed = new Set([
   "MIT",
