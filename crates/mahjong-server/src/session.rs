@@ -19,6 +19,7 @@ use crate::protocol::{
     ClientMessage, DestructiveOpKind, LanUrlInfo, LobbyConfig, PendingDestructiveOp, SeatInfo,
     SeatKind, SeatingRule, ServerMessage, TablePhase, TableSnapshot,
 };
+use crate::server::{default_ai_threads, ServerError};
 
 /// `Send`-safe wrapper around a boxed [`WallProvider`] for injecting deterministic walls in tests.
 pub struct BoxedWallProvider(pub Box<dyn WallProvider + Send>);
@@ -41,12 +42,14 @@ pub type WallProviderFactory = Arc<dyn Fn() -> BoxedWallProvider + Send + Sync>;
 pub struct TableOptions {
     wall_factory: WallProviderFactory,
     rng_seed: Option<u64>,
+    ai_budget: Option<DecisionBudget>,
 }
 
 impl std::fmt::Debug for TableOptions {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TableOptions")
             .field("rng_seed", &self.rng_seed)
+            .field("ai_budget", &self.ai_budget)
             .finish_non_exhaustive()
     }
 }
@@ -58,6 +61,7 @@ impl Default for TableOptions {
                 BoxedWallProvider(Box::new(SeededWallProvider::new(random_u64())))
             }),
             rng_seed: None,
+            ai_budget: None,
         }
     }
 }
@@ -74,6 +78,7 @@ impl TableOptions {
         Self {
             wall_factory,
             rng_seed: Some(seed),
+            ai_budget: None,
         }
     }
 
@@ -83,7 +88,15 @@ impl TableOptions {
         Self {
             wall_factory,
             rng_seed: Some(seed),
+            ai_budget: None,
         }
+    }
+
+    /// Overrides the AI [`DecisionBudget`] used for `mahjong_ai::decide` (defaults to `Realtime`).
+    #[must_use]
+    pub fn with_ai_budget(mut self, budget: DecisionBudget) -> Self {
+        self.ai_budget = Some(budget);
+        self
     }
 }
 
@@ -864,7 +877,7 @@ impl TableSession {
         DecisionContext {
             difficulty: slot.info.ai_difficulty.unwrap_or(self.config.ai_difficulty),
             style: slot.info.ai_style.unwrap_or(AiStyle::Balanced),
-            budget: DecisionBudget::default(),
+            budget: self.options.ai_budget.unwrap_or_default(),
         }
     }
 
@@ -1166,9 +1179,15 @@ struct PendingAiJob {
     step_seed: u64,
 }
 
-fn spawn_ai_jobs(runtime: Arc<Mutex<TableSession>>, jobs: Vec<PendingAiJob>) {
+fn spawn_ai_jobs(
+    runtime: Arc<Mutex<TableSession>>,
+    ai_pool: Arc<rayon::ThreadPool>,
+    jobs: Vec<PendingAiJob>,
+) {
     for job in jobs {
         let runtime = Arc::clone(&runtime);
+        let ai_pool_for_next = Arc::clone(&ai_pool);
+        let ai_pool_for_job = Arc::clone(&ai_pool);
         tokio::spawn(async move {
             let PendingAiJob {
                 match_id,
@@ -1178,12 +1197,14 @@ fn spawn_ai_jobs(runtime: Arc<Mutex<TableSession>>, jobs: Vec<PendingAiJob>) {
                 ctx,
                 step_seed,
             } = job;
-            let Ok(action) = tokio::task::spawn_blocking(move || {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            ai_pool_for_job.spawn(move || {
                 let mut rng = ChaCha8Rng::seed_from_u64(step_seed);
-                mahjong_ai::decide(&view, &ctx, &mut rng)
-            })
-            .await
-            else {
+                let action = mahjong_ai::decide(&view, &ctx, &mut rng);
+                let _ = tx.send(action);
+            });
+
+            let Ok(action) = rx.await else {
                 let mut session = runtime.lock().await;
                 session.in_flight_ai.remove(&(match_id, seq, seat));
                 return;
@@ -1194,7 +1215,7 @@ fn spawn_ai_jobs(runtime: Arc<Mutex<TableSession>>, jobs: Vec<PendingAiJob>) {
                 session.complete_ai_job(match_id, seq, seat, action)
             };
             if !next_jobs.is_empty() {
-                spawn_ai_jobs(runtime, next_jobs);
+                spawn_ai_jobs(runtime, ai_pool_for_next, next_jobs);
             }
         });
     }
@@ -1204,6 +1225,7 @@ fn spawn_ai_jobs(runtime: Arc<Mutex<TableSession>>, jobs: Vec<PendingAiJob>) {
 #[derive(Clone)]
 pub struct TableRuntime {
     inner: Arc<Mutex<TableSession>>,
+    ai_pool: Arc<rayon::ThreadPool>,
 }
 
 impl TableRuntime {
@@ -1220,16 +1242,45 @@ impl TableRuntime {
         Self::with_options(port, local_hostname, TableOptions::default())
     }
 
-    /// Creates a fresh table runtime with custom [`TableOptions`].
+    /// Creates a fresh table runtime with custom [`TableOptions`] and the default AI thread pool size.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the dedicated Rayon AI thread pool fails to initialize.
     #[must_use]
     pub fn with_options(port: u16, local_hostname: Option<String>, options: TableOptions) -> Self {
-        Self {
+        Self::try_with_options_and_threads(port, local_hostname, options, default_ai_threads())
+            .expect("default AI thread pool must initialize")
+    }
+
+    /// Creates a fresh table runtime with custom [`TableOptions`] and explicit AI thread pool size.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::InvalidAiThreads`] if `ai_threads == 0`, or
+    /// [`ServerError::AiPool`] if the Rayon thread pool cannot be constructed.
+    pub fn try_with_options_and_threads(
+        port: u16,
+        local_hostname: Option<String>,
+        options: TableOptions,
+        ai_threads: usize,
+    ) -> Result<Self, ServerError> {
+        if ai_threads == 0 {
+            return Err(ServerError::InvalidAiThreads(0));
+        }
+        let ai_pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(ai_threads)
+            .thread_name(|i| format!("majjj-ai-{i}"))
+            .build()
+            .map_err(|err| ServerError::AiPool(err.to_string()))?;
+        Ok(Self {
             inner: Arc::new(Mutex::new(TableSession::with_options(
                 port,
                 local_hostname,
                 options,
             ))),
-        }
+            ai_pool: Arc::new(ai_pool),
+        })
     }
 
     /// Allocates a unique internal connection ID for a new WebSocket connection.
@@ -1384,7 +1435,7 @@ impl TableRuntime {
         };
 
         if !ai_jobs.is_empty() {
-            spawn_ai_jobs(Arc::clone(&self.inner), ai_jobs);
+            spawn_ai_jobs(Arc::clone(&self.inner), Arc::clone(&self.ai_pool), ai_jobs);
         }
 
         outcome
