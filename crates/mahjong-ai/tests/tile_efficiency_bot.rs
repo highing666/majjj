@@ -1,57 +1,17 @@
+mod common;
+
+use common::{tile, tiles};
 use mahjong_ai::{
     decide, AiDifficulty, AiStyle, DecisionBudget, DecisionContext, TileEfficiencyBot,
 };
 use mahjong_core::{
     build_preset_wall, project_event, project_view, HandOutcome, Match, MatchMode, MatchSummary,
-    PlayerAction, PlayerEventKind, PresetWallProvider, PublicPhase, Seat, SeededWallProvider, Tile,
+    PlayerAction, PlayerEventKind, PresetWallProvider, PublicPhase, Seat, SeededWallProvider,
     TuidaohuRuleset,
 };
 use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
 use ts_rs::TS;
-
-fn tiles(spec: &str) -> Vec<Tile> {
-    let mut out = Vec::new();
-    for token in spec.split_whitespace() {
-        let bytes = token.as_bytes();
-        if let Some((&suffix, digits)) = bytes.split_last() {
-            if matches!(suffix, b'm' | b's' | b'p' | b'z') && !digits.is_empty() {
-                for &d in digits {
-                    let raw = match (suffix, d) {
-                        (b'm', b'1'..=b'9') => d - b'1',
-                        (b's', b'1'..=b'9') => 9 + (d - b'1'),
-                        (b'p', b'1'..=b'9') => 18 + (d - b'1'),
-                        (b'z', b'1'..=b'7') => 27 + (d - b'1'),
-                        _ => panic!("invalid digit {:?} in tile token {token:?}", d as char),
-                    };
-                    out.push(Tile::new(raw).expect("validated tile index in 0..34"));
-                }
-                continue;
-            }
-        }
-
-        for &ch in bytes {
-            let raw = match ch {
-                b'E' => 27,
-                b'S' => 28,
-                b'W' => 29,
-                b'N' => 30,
-                b'C' => 31,
-                b'F' => 32,
-                b'B' => 33,
-                _ => panic!("invalid honor tile char {:?} in {token:?}", ch as char),
-            };
-            out.push(Tile::new(raw).expect("validated honor index in 27..34"));
-        }
-    }
-    out
-}
-
-fn tile(token: &str) -> Tile {
-    let parsed = tiles(token);
-    assert_eq!(parsed.len(), 1, "expected single tile from {token:?}");
-    parsed[0]
-}
 
 #[test]
 fn contract_types_defaults_serde_and_ts_exports() {

@@ -2,7 +2,9 @@
 
 pub use mahjong_core;
 
-mod shanten;
+pub mod eval;
+#[doc(hidden)]
+pub mod shanten;
 
 use mahjong_core::{PlayerAction, PlayerView, Tile};
 use rand_core::RngCore;
@@ -63,6 +65,34 @@ pub struct DecisionContext {
     pub style: AiStyle,
     /// Search budget mode.
     pub budget: DecisionBudget,
+}
+
+/// Purely random legal-action baseline bot for offline ablation benchmarking.
+///
+/// Strictly picks from `view.legal_actions`, confirms next hands in `BetweenHands`
+/// (never auto-ending `FreeTable` matches), and otherwise chooses uniformly at random.
+pub struct RandomBot;
+
+impl RandomBot {
+    /// Selects a strictly legal action solely from `view` and `rng`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `view.legal_actions` is empty.
+    #[must_use]
+    pub fn decide<R: RngCore + ?Sized>(view: &PlayerView, rng: &mut R) -> PlayerAction {
+        assert!(
+            !view.legal_actions.is_empty(),
+            "RandomBot::decide requires non-empty legal_actions"
+        );
+
+        if view.legal_actions.contains(&PlayerAction::ConfirmNextHand) {
+            return PlayerAction::ConfirmNextHand;
+        }
+
+        let idx = gen_range_usize(rng, view.legal_actions.len());
+        view.legal_actions[idx]
+    }
 }
 
 /// Stateless Slice 2 placeholder AI and Slice 3 quantitative baseline.
@@ -170,7 +200,7 @@ fn evaluate_best_discard<R: RngCore + ?Sized>(
         let tile = Tile::new(idx as u8).expect("idx bounded by Tile::COUNT");
         hand[idx] -= 1;
         let sh = shanten::compute_shanten(&hand, melds, allow_quad);
-        let ukeire = shanten::compute_ukeire(&mut hand, melds, allow_quad, &remaining);
+        let ukeire = shanten::compute_ukeire(&hand, melds, allow_quad, &remaining);
         hand[idx] += 1;
 
         let tie_prio = shanten::discard_tie_priority(tile, &pre_hand);
