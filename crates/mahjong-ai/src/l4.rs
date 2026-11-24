@@ -23,15 +23,15 @@ use crate::shanten::{
 use crate::{AiDifficulty, DecisionBudget, DecisionContext};
 
 const TRIGGER_MAX_WALL: u8 = 96;
-const TRIGGER_SCORE_GAP: f64 = 0.40;
-const TRIGGER_MELD_SCORE_GAP: f64 = 0.85;
-const TRIGGER_TENPAI_PROB: f64 = 0.25;
+const TRIGGER_SCORE_GAP: f64 = 0.55;
+const TRIGGER_MELD_SCORE_GAP: f64 = 1.15;
+const TRIGGER_TENPAI_PROB: f64 = 0.22;
 
 const MAX_CANDIDATES: usize = 8;
 const BASE_CANDIDATES: usize = 6;
 const BATCH_SAMPLES: usize = 16;
 const MAX_ROLLOUT_PLIES: usize = 56;
-const PRIOR_WEIGHT: f64 = 380.0;
+const PRIOR_WEIGHT: f64 = 56.0;
 const SOFT_SEPARATION_MARGIN: f64 = 0.35;
 const HARD_MARGIN_MS: u64 = 15;
 const THIRTEEN_ORPHANS_MAX_SHANTEN: i8 = 3;
@@ -82,6 +82,8 @@ pub struct SimState {
     pub pending_discarder: u8,
     /// Most recently drawn tile (`0..34`) or `NO_DRAWN_TILE`.
     pub drawn_tile: u8,
+    /// True when the viewer's root candidate is a defensive fold/pivot (`Betaori`).
+    pub viewer_folding: bool,
 }
 
 impl SimState {
@@ -187,7 +189,7 @@ pub fn should_trigger(
         return true;
     }
 
-    if model.max_opponent_tenpai() >= TRIGGER_TENPAI_PROB && gap < 0.70 {
+    if model.max_opponent_tenpai() >= TRIGGER_TENPAI_PROB && gap < 0.90 {
         return true;
     }
 
@@ -196,7 +198,8 @@ pub fn should_trigger(
         .map(|c| c.shanten_after)
         .min()
         .unwrap_or(i8::MAX);
-    (best_shanten <= 1 || view.wall_remaining <= 56) && gap < TRIGGER_SCORE_GAP
+    ((best_shanten <= 1 && view.wall_remaining <= 68) || view.wall_remaining <= 56)
+        && gap < TRIGGER_SCORE_GAP
 }
 
 /// Executes L4 opportunistic Flat Monte Carlo search with progressive pruning and
@@ -308,8 +311,26 @@ pub fn decide_with_l4<R: RngCore + ?Sized>(
                 let cand_idx = active_indices[active_pos];
                 let sample_idx = sample_offset + offset;
                 let rollout_seed = derive_rollout_seed(master_seed, cand_idx, sample_idx);
-                let sim = base_states[offset];
-                let action = pool_stats[cand_idx].cand.action;
+                let cand_stat = &pool_stats[cand_idx];
+                let action = cand_stat.cand.action;
+                let mut sim = base_states[offset];
+                if let PlayerAction::Discard { tile, .. } = action {
+                    let eff_w = crate::l3::candidate_effective_risk_weight(
+                        &cand_stat.cand,
+                        view,
+                        model,
+                        profile,
+                    );
+                    if (cand_stat.cand.shanten_after >= 2 && model.max_opponent_tenpai() >= 0.24)
+                        || (cand_stat.cand.shanten_after == 1
+                            && cand_stat.cand.ukeire <= 4
+                            && model.max_opponent_tenpai() >= 0.28
+                            && model.discard_risk(tile) <= 0.04)
+                        || (eff_w >= 2.2 && model.discard_risk(tile) <= 0.05)
+                    {
+                        sim.viewer_folding = true;
+                    }
+                }
                 *out = evaluate_rollout(sim, action, profile, rollout_seed);
             });
 
@@ -383,6 +404,7 @@ fn empty_sim_state() -> SimState {
         pending_discard_tile: 0,
         pending_discarder: 0,
         drawn_tile: NO_DRAWN_TILE,
+        viewer_folding: false,
     }
 }
 
@@ -429,14 +451,17 @@ fn candidate_style_offset(
             // since a greedy L1 rollout only observes single-turn deal-in loss at 1.0x.
             let eff_w = crate::l3::candidate_effective_risk_weight(cand, view, model, profile);
             let risk = model.discard_risk(tile);
-            let late = view.wall_remaining <= 44;
-            let tail_risk = if cand.shanten_after >= 2 || cand.ukeire <= 5 || late {
+            let late = view.wall_remaining <= 36;
+            let tail_risk = if (cand.shanten_after >= 2 && model.max_opponent_tenpai() >= 0.26)
+                || (cand.shanten_after >= 1 && cand.ukeire <= 4)
+                || late
+            {
                 (risk - 0.10).max(0.0)
             } else {
                 0.0
             };
-            if eff_w > 0.02 {
-                offset -= (eff_w - 0.02) * risk;
+            if eff_w > 1.20 {
+                offset -= (eff_w - 1.20) * 0.55 * risk;
             }
             offset -= profile.risk_weight * 2.5 * tail_risk;
         }
@@ -657,9 +682,11 @@ fn build_opponent_tile_weights(
             .copied()
             .fold(0.0f64, f64::max)
             .max(sig.all_honors_prob);
-        if max_flush < 0.15 && sig.p_tenpai < 0.25 {
+        if max_flush < 0.15 && sig.p_tenpai < 0.22 {
             continue;
         }
+        let river = &view.seats[s_idx].river;
+        let recent_start = river.len().saturating_sub(4);
         for (idx, w_slot) in weights[s_idx].iter_mut().enumerate() {
             let tile = Tile::new(idx as u8).expect("idx bounded by Tile::COUNT");
             let mut w = 100i32;
@@ -687,8 +714,16 @@ fn build_opponent_tile_weights(
                     w -= (85.0 * other_conc) as i32;
                 }
             }
-            if sig.p_tenpai >= 0.25 && !is_passed_hu_zero_risk(view, seat, tile) {
-                w += (30.0 * sig.p_tenpai) as i32;
+            if sig.p_tenpai >= 0.22 {
+                if is_passed_hu_zero_risk(view, seat, tile) {
+                    w = (w * 2) / 5;
+                } else if river[recent_start..].iter().any(|d| d.tile == tile) {
+                    w /= 3;
+                } else if river[..recent_start].iter().any(|d| d.tile == tile) {
+                    w = (w * 3) / 5;
+                } else {
+                    w += (35.0 * sig.p_tenpai) as i32;
+                }
             }
             *w_slot = w.max(8) as u32;
         }
@@ -805,40 +840,34 @@ fn sample_sim_state_with_weights(
                 &mut sim.hands[s_idx],
                 &opp_weights[s_idx],
                 need,
+                true,
                 &mut rng,
             );
-        } else {
-            // Non-tenpai opponent: mild best-of-2 random deal (mostly 1-3 shanten).
-            let mut best_hand = [0u8; Tile::COUNT];
-            let mut best_unseen = unseen;
-            let mut best_sh = i8::MAX;
-            let trials = if need <= 7 { 2 } else { 1 };
-            for _ in 0..trials {
-                let mut cand_hand = [0u8; Tile::COUNT];
-                let mut cand_unseen = unseen;
-                for _ in 0..need {
-                    let k = sample_weighted_tile(&cand_unseen, &opp_weights[s_idx], &mut rng);
-                    cand_unseen[k] -= 1;
-                    cand_hand[k] += 1;
-                }
-                if trials == 1 {
-                    best_hand = cand_hand;
-                    best_unseen = cand_unseen;
-                    break;
-                }
-                let sh = fast_rollout_shanten(
-                    &cand_hand,
-                    usize::from(sim.melds[s_idx].count),
-                    sim.allow_four_of_kind_seven_pairs,
+        } else if view.wall_remaining <= 56 && need >= 4 {
+            // Mid/late-game non-tenpai opponents are typically 1-shanten or 2-shanten, not 3.8-shanten.
+            let mid_rate = ((64.0 - f64::from(view.wall_remaining)) / 48.0).clamp(0.25, 0.85);
+            if (rng.next_u64() % 1000) < (mid_rate * 1000.0) as u64 {
+                deal_tenpai_conditioned_hand(
+                    &mut unseen,
+                    &mut sim.hands[s_idx],
+                    &opp_weights[s_idx],
+                    need,
+                    false,
+                    &mut rng,
                 );
-                if sh < best_sh {
-                    best_sh = sh;
-                    best_hand = cand_hand;
-                    best_unseen = cand_unseen;
+            } else {
+                for _ in 0..need {
+                    let k = sample_weighted_tile(&unseen, &opp_weights[s_idx], &mut rng);
+                    unseen[k] -= 1;
+                    sim.hands[s_idx][k] += 1;
                 }
             }
-            sim.hands[s_idx] = best_hand;
-            unseen = best_unseen;
+        } else {
+            for _ in 0..need {
+                let k = sample_weighted_tile(&unseen, &opp_weights[s_idx], &mut rng);
+                unseen[k] -= 1;
+                sim.hands[s_idx][k] += 1;
+            }
         }
     }
 
@@ -879,19 +908,19 @@ fn sample_sim_state_with_weights(
     }
 
     for s_idx in 0..4 {
-        if s_idx != usize::from(sim.viewer) {
+        if s_idx != usize::from(sim.viewer) || sim.in_discard_reaction {
             sim.wait_masks[s_idx] = compute_wait_mask(
                 &sim.hands[s_idx],
                 &sim.melds[s_idx],
                 sim.allow_four_of_kind_seven_pairs,
             );
-            let opp_seat = Seat::ALL[s_idx];
-            let opp_seq = view.seats[s_idx].last_draw_or_meld_seq;
+            let seat = Seat::ALL[s_idx];
+            let seat_seq = view.seats[s_idx].last_draw_or_meld_seq;
             let mut lock_mask = 0u64;
             for sv in &view.seats {
-                if sv.seat != opp_seat {
+                if sv.seat != seat {
                     for d in &sv.river {
-                        if d.seq > opp_seq {
+                        if d.seq > seat_seq {
                             lock_mask |= 1u64 << d.tile.index();
                         }
                     }
@@ -935,16 +964,22 @@ fn deal_tenpai_conditioned_hand(
     hand: &mut [u8; Tile::COUNT],
     weights: &[u32; Tile::COUNT],
     need: usize,
+    full_tenpai: bool,
     rng: &mut SplitMix64,
 ) {
     let mut left = need;
 
     // Decide whether to construct a pair + 2-tile proto-meld (ryanmen/kanchan/shanpon) vs all melds + tanki.
     let use_pair_and_taatsu = left >= 4 && (rng.next_u64() % 10) < 8;
-    let target_melds = if use_pair_and_taatsu {
+    let base_melds = if use_pair_and_taatsu {
         (left - 4) / 3
     } else {
         left / 3
+    };
+    let target_melds = if full_tenpai {
+        base_melds
+    } else {
+        base_melds.saturating_sub(1)
     };
 
     for _ in 0..target_melds {
@@ -964,6 +999,10 @@ fn deal_tenpai_conditioned_hand(
         if left >= 2 && try_take_proto_meld(unseen, hand, weights, rng) {
             left -= 2;
         }
+    }
+    if !full_tenpai && left >= 2 {
+        let _ = try_take_proto_meld(unseen, hand, weights, rng);
+        left = need.saturating_sub(hand.iter().map(|&c| usize::from(c)).sum::<usize>());
     }
 
     for _ in 0..left {
@@ -1180,6 +1219,11 @@ fn evaluate_rollout(
             debug_assert!(sim.hands[viewer][t_idx] >= 4);
             sim.hands[viewer][t_idx] -= 4;
             sim.melds[viewer] = sim.melds[viewer].with_added_concealed_kong(tile);
+            sim.wait_masks[viewer] = compute_wait_mask(
+                &sim.hands[viewer],
+                &sim.melds[viewer],
+                sim.allow_four_of_kind_seven_pairs,
+            );
             add_kong_delta(&mut sim, viewer, KongKind::ConcealedKong, None);
             let Some(drawn) = sim.pop_wall_tail() else {
                 return f64::from(sim.kong_deltas[viewer]);
@@ -1198,6 +1242,11 @@ fn evaluate_rollout(
             sim.hands[viewer][t_idx] -= 1;
             sim.melds[viewer] = sim.melds[viewer].with_upgraded_added_kong(tile);
             sim.pon_masks[viewer] &= !(1u64 << t_idx);
+            sim.wait_masks[viewer] = compute_wait_mask(
+                &sim.hands[viewer],
+                &sim.melds[viewer],
+                sim.allow_four_of_kind_seven_pairs,
+            );
             add_kong_delta(&mut sim, viewer, KongKind::AddedKong, None);
             let Some(drawn) = sim.pop_wall_tail() else {
                 return f64::from(sim.kong_deltas[viewer]);
@@ -1238,6 +1287,11 @@ fn evaluate_rollout(
             sim.melds[viewer] = sim.melds[viewer].with_added_exposed_kong(tile);
             sim.passed_hu_mask &= !(1u8 << viewer);
             sim.passed_hu_tile_masks[viewer] = 0;
+            sim.wait_masks[viewer] = compute_wait_mask(
+                &sim.hands[viewer],
+                &sim.melds[viewer],
+                sim.allow_four_of_kind_seven_pairs,
+            );
             add_kong_delta(&mut sim, viewer, KongKind::ExposedKong, Some(discarder));
             let Some(drawn) = sim.pop_wall_tail() else {
                 return f64::from(sim.kong_deltas[viewer]);
@@ -1251,6 +1305,10 @@ fn evaluate_rollout(
             let discarder = usize::from(sim.pending_discarder);
             let t_idx = usize::from(sim.pending_discard_tile);
             sim.passed_pon_masks[viewer] |= 1u64 << t_idx;
+            if (sim.wait_masks[viewer] & (1u64 << t_idx)) != 0 {
+                sim.passed_hu_mask |= 1u8 << viewer;
+                sim.passed_hu_tile_masks[viewer] |= 1u64 << t_idx;
+            }
             if let Some(ron_score) =
                 check_ron_reactions(&sim, discarder, t_idx, Some(viewer), profile)
             {
@@ -1469,7 +1527,7 @@ fn check_ron_reactions(
                 viewer_delta += f64::from(eval.base_points);
             }
             if discarder == viewer {
-                viewer_delta -= f64::from(eval.base_points) * profile.risk_weight;
+                viewer_delta -= f64::from(eval.base_points) * profile.risk_weight * 1.30;
             }
         }
     }
@@ -1576,6 +1634,45 @@ fn maybe_rollout_concealed_kong(sim: &SimState, actor: usize) -> Option<usize> {
 fn choose_rollout_discard(sim: &mut SimState, actor: usize, rng: &mut SplitMix64) -> (usize, i8) {
     let melds_count = usize::from(sim.melds[actor].count);
     let allow_quad = sim.allow_four_of_kind_seven_pairs;
+
+    // When the viewer is in defensive fold mode (`Betaori`), discard safest public tiles
+    // (`public_remaining == 0` / honors / terminals) instead of blindly pushing into tenpai.
+    if sim.viewer_folding && actor == usize::from(sim.viewer) {
+        let mut safest_idx = 0usize;
+        let mut safest_score = i32::MIN;
+        for idx in 0..Tile::COUNT {
+            let cnt = sim.hands[actor][idx];
+            if cnt == 0 {
+                continue;
+            }
+            let rem = i32::from(sim.public_remaining[idx]);
+            let mut s = -rem * 20;
+            if rem == 0 {
+                s += 100;
+            }
+            if idx >= 27 {
+                s += 45;
+            } else {
+                let rank = idx % 9;
+                if rank == 0 || rank == 8 {
+                    s += 28;
+                } else if rank == 1 || rank == 7 {
+                    s += 10;
+                }
+            }
+            if cnt >= 2 {
+                s += 12;
+            }
+            if s > safest_score {
+                safest_score = s;
+                safest_idx = idx;
+            }
+        }
+        sim.hands[actor][safest_idx] -= 1;
+        let sh = fast_rollout_shanten(&sim.hands[actor], melds_count, allow_quad);
+        sim.hands[actor][safest_idx] += 1;
+        return (safest_idx, sh);
+    }
 
     let mut best_sh = i8::MAX;
     let mut tied = [0usize; 14];

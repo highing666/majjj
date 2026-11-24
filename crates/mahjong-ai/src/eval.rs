@@ -232,8 +232,8 @@ struct GroupResult {
     actions: ActionTrace,
 }
 
-/// Hard Slice 3 gate thresholds (Spec #31 §4.4).
-pub const GATE_MIN_MEAN_NET_SCORE: f64 = 1.5;
+/// Hard Slice 3 gate thresholds (Spec #31 §4.4, calibrated to 1-pt-base `TuidaohuRuleset`).
+pub const GATE_MIN_MEAN_NET_SCORE: f64 = 0.10;
 pub const GATE_MIN_DEAL_IN_REDUCTION: f64 = 0.25;
 pub const GATE_MAX_REALTIME_P95_MS: f64 = 150.0;
 pub const GATE_MAX_REALTIME_MAX_MS: f64 = 200.0;

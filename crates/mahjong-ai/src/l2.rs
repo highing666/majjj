@@ -21,11 +21,11 @@ use xiangting::{calculate_necessary_tiles, PlayerCount};
 pub const THIRTEEN_ORPHANS_MAX_SHANTEN: i8 = 3;
 
 const SURVIVAL_PER_ROUND: f64 = 0.85;
-const WIN_DEFENSE_BONUS_PER_WIN: f64 = 0.80;
-const PON_FLEXIBILITY_PENALTY_CLOSED: f64 = 0.04;
-const PON_FLEXIBILITY_PENALTY_OPEN: f64 = 0.02;
-const EXPOSED_KONG_FLEXIBILITY_PENALTY_CLOSED: f64 = 0.55;
-const EXPOSED_KONG_FLEXIBILITY_PENALTY_OPEN: f64 = 0.20;
+const WIN_DEFENSE_BONUS_PER_WIN: f64 = 0.92;
+const PON_FLEXIBILITY_PENALTY_CLOSED: f64 = 0.02;
+const PON_FLEXIBILITY_PENALTY_OPEN: f64 = 0.01;
+const EXPOSED_KONG_FLEXIBILITY_PENALTY_CLOSED: f64 = 0.28;
+const EXPOSED_KONG_FLEXIBILITY_PENALTY_OPEN: f64 = 0.08;
 const EV_TIE_EPS: f64 = 1e-9;
 
 const TERMINAL_OR_HONOR_INDICES: [usize; 13] = [0, 8, 9, 17, 18, 26, 27, 28, 29, 30, 31, 32, 33];
@@ -1568,8 +1568,8 @@ fn estimate_expected_win_score(
     let avg_base = (std_weight * std_base + seven_weight * seven_base + o13_weight * o13_base)
         / (std_weight + seven_weight + o13_weight);
 
-    // Expected payout multiplier across Tsumo (3x, ~30% of wins) and Ron (1x, ~70% of wins).
-    avg_base * 1.60
+    // Expected payout multiplier across Tsumo (3x, ~22% of wins) and Ron (1x, ~78% of wins).
+    avg_base * 1.46
 }
 
 fn gen_range_usize<R: RngCore + ?Sized>(rng: &mut R, bound: usize) -> usize {

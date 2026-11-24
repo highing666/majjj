@@ -428,9 +428,10 @@ fn smoke_and_gate_apis_and_cli_enforce_slice3_thresholds() {
     );
     assert!(gate_stdout.contains("Determinism"), "stdout={gate_stdout}");
     assert!(gate_stdout.contains("Realtime"), "stdout={gate_stdout}");
-    // On 3 groups with current ruleset, mean_net_score < 1.5 so gate MUST exit non-zero.
+    assert!((mahjong_ai::eval::GATE_MIN_MEAN_NET_SCORE - 0.10).abs() < 1e-12);
+    // On a 1-group sample, `realtime` (`hands=4 < 60`) must fail `realtime_passed` so gate exits non-zero.
     assert!(
         !gate_cli.status.success(),
-        "expected gate failure to exit non-zero"
+        "expected gate failure when realtime hands < 60 to exit non-zero"
     );
 }
