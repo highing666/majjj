@@ -6,6 +6,7 @@ pub mod eval;
 pub mod l2;
 pub mod l3;
 pub mod l3_weights;
+pub mod l4;
 pub mod scoring;
 #[doc(hidden)]
 pub mod shanten;

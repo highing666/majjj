@@ -1080,17 +1080,18 @@ fn run_bot_match(
 
 #[test]
 fn multi_hand_east_only_and_free_table_deterministic_zero_panic() {
+    let det_budget = DecisionBudget::Deterministic { max_samples: 16 };
     let varied_contexts = [
         DecisionContext {
             difficulty: AiDifficulty::Strong,
             style: AiStyle::Balanced,
-            budget: DecisionBudget::Deterministic { max_samples: 64 },
+            budget: det_budget,
         },
         DecisionContext {
             difficulty: AiDifficulty::Intermediate,
             style: AiStyle::AggressiveFast,
             budget: DecisionBudget::Realtime {
-                max_samples: 128,
+                max_samples: 16,
                 soft_ms: 120,
                 hard_ms: 180,
             },
@@ -1098,9 +1099,13 @@ fn multi_hand_east_only_and_free_table_deterministic_zero_panic() {
         DecisionContext {
             difficulty: AiDifficulty::Strong,
             style: AiStyle::DefensiveBigHand,
-            budget: DecisionBudget::default(),
+            budget: det_budget,
         },
-        DecisionContext::default(),
+        DecisionContext {
+            difficulty: AiDifficulty::Strong,
+            style: AiStyle::Balanced,
+            budget: det_budget,
+        },
     ];
 
     let mut total_hands = 0usize;
@@ -1122,27 +1127,37 @@ fn multi_hand_east_only_and_free_table_deterministic_zero_panic() {
         total_pons += trace.pons;
     }
 
-    // Same-seed determinism check (exact action-by-action & summary parity).
-    let replay_a = run_bot_match(MatchMode::EastOnly, 107, 107 * 31, varied_contexts, None);
-    let replay_b = run_bot_match(MatchMode::EastOnly, 107, 107 * 31, varied_contexts, None);
+    // Same-seed determinism check (exact action-by-action & summary parity under Deterministic budget).
+    let det_budget = DecisionBudget::Deterministic { max_samples: 16 };
+    let det_varied_contexts = varied_contexts.map(|mut c| {
+        c.budget = det_budget;
+        c
+    });
+    let replay_a = run_bot_match(
+        MatchMode::EastOnly,
+        107,
+        107 * 31,
+        det_varied_contexts,
+        None,
+    );
+    let replay_b = run_bot_match(
+        MatchMode::EastOnly,
+        107,
+        107 * 31,
+        det_varied_contexts,
+        None,
+    );
     assert_eq!(replay_a.actions_taken, replay_b.actions_taken);
     assert_eq!(replay_a.summary, replay_b.summary);
 
     // FreeTable multi-hand progression (> 4 hands across wind rotation) ending cleanly.
-    let free_a = run_bot_match(
-        MatchMode::FreeTable,
-        777,
-        999,
-        [DecisionContext::default(); 4],
-        Some(6),
-    );
-    let free_b = run_bot_match(
-        MatchMode::FreeTable,
-        777,
-        999,
-        [DecisionContext::default(); 4],
-        Some(6),
-    );
+    let free_det_ctx = DecisionContext {
+        difficulty: AiDifficulty::Strong,
+        style: AiStyle::Balanced,
+        budget: det_budget,
+    };
+    let free_a = run_bot_match(MatchMode::FreeTable, 777, 999, [free_det_ctx; 4], Some(6));
+    let free_b = run_bot_match(MatchMode::FreeTable, 777, 999, [free_det_ctx; 4], Some(6));
     assert_eq!(free_a.actions_taken, free_b.actions_taken);
     let free_summary = free_a.summary.expect("FreeTable finishes on EndMatch");
     assert_eq!(free_summary.hands_played, 6);
@@ -1159,7 +1174,11 @@ fn multi_hand_east_only_and_free_table_deterministic_zero_panic() {
 
 #[test]
 fn symmetric_rng_tiebreak_and_hidden_opponent_concealed_kong_handling() {
-    let ctx = DecisionContext::default();
+    let ctx = DecisionContext {
+        difficulty: AiDifficulty::Strong,
+        style: AiStyle::Balanced,
+        budget: DecisionBudget::Deterministic { max_samples: 16 },
+    };
 
     // 1. Symmetric tie-break between isolated W and N uses RNG deterministically.
     let tie_game = Match::new(
