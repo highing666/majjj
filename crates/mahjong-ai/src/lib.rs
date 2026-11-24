@@ -4,6 +4,8 @@ pub use mahjong_core;
 
 pub mod eval;
 pub mod l2;
+pub mod l3;
+pub mod l3_weights;
 pub mod scoring;
 #[doc(hidden)]
 pub mod shanten;
@@ -146,15 +148,15 @@ impl TileEfficiencyBot {
 
 /// Pure synchronous, stateless AI entry point consuming only a seat-projected [`PlayerView`].
 ///
-/// Routes through the L2 multi-turn expected-value pipeline (`l2::decide`) with tactical
-/// iron rules, all 11 Tuidaohu fan items, and kong scoring.
+/// Routes through the L1-L3 decision pipeline (`l3::decide`) with tactical iron rules,
+/// all 11 Tuidaohu fan items, kong scoring, and non-Riichi defense.
 #[must_use]
 pub fn decide<R: RngCore + ?Sized>(
     view: &PlayerView,
     ctx: &DecisionContext,
     rng: &mut R,
 ) -> PlayerAction {
-    l2::decide(view, ctx, rng)
+    l3::decide(view, ctx, rng)
 }
 
 fn choose_turn_action<R: RngCore + ?Sized>(view: &PlayerView, rng: &mut R) -> Option<PlayerAction> {

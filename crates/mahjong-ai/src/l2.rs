@@ -551,6 +551,44 @@ fn evaluate_kong_action(
     }
 }
 
+pub(crate) fn evaluate_pon_with_scorer<F>(
+    view: &PlayerView,
+    pon_tile: Tile,
+    utility_fn: F,
+) -> Option<CandidateEv>
+where
+    F: FnMut(&CandidateEv, Tile) -> f64,
+{
+    let mut work_hand = hand_counts(view);
+    if work_hand[pon_tile.index()] < 2 {
+        return None;
+    }
+    let remaining = compute_remaining(view);
+    let melds_before = MeldSummary::from_meld_views(&view.seats[view.viewer.index()].melds);
+    let melds_after = melds_before.with_added_pon(pon_tile);
+    let rules = ScoringRules::from_profile(&view.rule_profile);
+    let mut caches = DpCaches::new();
+    let ctx = EvalEnv {
+        remaining: &remaining,
+        total_unseen: remaining.iter().map(|&c| u16::from(c)).sum(),
+        wall_remaining: view.wall_remaining,
+        turns_left: estimated_turns_left(view.wall_remaining),
+        rules,
+    };
+
+    work_hand[pon_tile.index()] -= 2;
+    let cand = evaluate_pon_inner(
+        PlayerAction::Pon { tile: pon_tile },
+        &mut work_hand,
+        &melds_before,
+        &melds_after,
+        &ctx,
+        &mut caches,
+        utility_fn,
+    );
+    Some(cand)
+}
+
 fn evaluate_pon_action(
     action: PlayerAction,
     work_hand: &mut [u8; Tile::COUNT],
@@ -559,48 +597,77 @@ fn evaluate_pon_action(
     ctx: &EvalEnv<'_>,
     caches: &mut DpCaches,
 ) -> CandidateEv {
-    let mut best: Option<HandEval> = None;
-    for idx in 0..Tile::COUNT {
-        if work_hand[idx] == 0 {
-            continue;
-        }
-        work_hand[idx] -= 1;
-        let eval = eval_closed_hand(work_hand, melds_after, ctx, caches);
-        work_hand[idx] += 1;
+    evaluate_pon_inner(
+        action,
+        work_hand,
+        melds_before,
+        melds_after,
+        ctx,
+        caches,
+        |cand, _| cand.ev,
+    )
+}
 
-        if best.is_none_or(|prev| {
-            (eval.ev > prev.ev + EV_TIE_EPS)
-                || ((eval.ev - prev.ev).abs() <= EV_TIE_EPS
-                    && (-eval.shanten, eval.ukeire) > (-prev.shanten, prev.ukeire))
-        }) {
-            best = Some(eval);
-        }
-    }
-
-    let eval = best.unwrap_or(HandEval {
-        ev: 0.0,
-        p_tenpai: 0.0,
-        p_win: 0.0,
-        expected_win_score: 0.0,
-        shanten: i8::MAX,
-        ukeire: 0,
-    });
+fn evaluate_pon_inner<F>(
+    action: PlayerAction,
+    work_hand: &mut [u8; Tile::COUNT],
+    melds_before: &MeldSummary,
+    melds_after: &MeldSummary,
+    ctx: &EvalEnv<'_>,
+    caches: &mut DpCaches,
+    mut utility_fn: F,
+) -> CandidateEv
+where
+    F: FnMut(&CandidateEv, Tile) -> f64,
+{
     let flex_penalty = if melds_before.is_menqing {
         PON_FLEXIBILITY_PENALTY_CLOSED
     } else {
         PON_FLEXIBILITY_PENALTY_OPEN
     };
 
-    CandidateEv {
-        action,
-        ev: eval.ev - flex_penalty,
-        p_tenpai: eval.p_tenpai,
-        p_win: eval.p_win,
-        expected_win_score: eval.expected_win_score,
-        shanten_after: eval.shanten,
-        ukeire: eval.ukeire,
-        tie_priority: 0,
+    let mut best: Option<(f64, CandidateEv)> = None;
+    for d_idx in 0..Tile::COUNT {
+        if work_hand[d_idx] == 0 {
+            continue;
+        }
+        let discard_tile = Tile::new(d_idx as u8).expect("idx bounded by Tile::COUNT");
+        work_hand[d_idx] -= 1;
+        let eval = eval_closed_hand(work_hand, melds_after, ctx, caches);
+        work_hand[d_idx] += 1;
+
+        let mut cand = CandidateEv {
+            action,
+            ev: eval.ev - flex_penalty,
+            p_tenpai: eval.p_tenpai,
+            p_win: eval.p_win,
+            expected_win_score: eval.expected_win_score,
+            shanten_after: eval.shanten,
+            ukeire: eval.ukeire,
+            tie_priority: 0,
+        };
+        let utility = utility_fn(&cand, discard_tile);
+        cand.ev = utility;
+
+        if best.is_none_or(|(prev_u, prev_c)| {
+            (utility > prev_u + EV_TIE_EPS)
+                || ((utility - prev_u).abs() <= EV_TIE_EPS
+                    && (-cand.shanten_after, cand.ukeire) > (-prev_c.shanten_after, prev_c.ukeire))
+        }) {
+            best = Some((utility, cand));
+        }
     }
+
+    best.map(|(_, cand)| cand).unwrap_or(CandidateEv {
+        action,
+        ev: -flex_penalty,
+        p_tenpai: 0.0,
+        p_win: 0.0,
+        expected_win_score: 0.0,
+        shanten_after: i8::MAX,
+        ukeire: 0,
+        tie_priority: 0,
+    })
 }
 
 fn compute_rinshan_ev(
@@ -1374,6 +1441,8 @@ fn estimate_expected_win_score(
                 0 => 1.0,
                 1 => 0.65,
                 2 if suit_counts[s] >= 10 => 0.25,
+                3 if suit_counts[s] >= 9 => 0.10,
+                4 if suit_counts[s] >= 8 => 0.04,
                 _ => 0.0,
             }
         };
@@ -1384,6 +1453,8 @@ fn estimate_expected_win_score(
                 0 => (1.0_f64 - full_p).max(0.0),
                 1 if suit_counts[s] + honor_cnt >= 10 => 0.50,
                 2 if suit_counts[s] + honor_cnt >= 10 => 0.16,
+                3 if suit_counts[s] + honor_cnt >= 9 => 0.08,
+                4 if suit_counts[s] + honor_cnt >= 8 => 0.03,
                 _ => 0.0,
             }
         };
@@ -1411,6 +1482,10 @@ fn estimate_expected_win_score(
             0.65
         } else if triplets == 2 && live_pairs >= 2 && total_pairs >= 3 {
             0.25
+        } else if triplets == 1 && live_pairs >= 2 && total_pairs >= 4 {
+            0.12
+        } else if triplets == 0 && live_pairs >= 3 && total_pairs >= 4 {
+            0.08
         } else {
             0.0
         }
@@ -1447,6 +1522,8 @@ fn estimate_expected_win_score(
                     0.85
                 } else if s7 == bd.standard && s7 <= 1 {
                     0.35
+                } else if s7 == 2 {
+                    0.18
                 } else {
                     0.05
                 };
