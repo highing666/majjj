@@ -120,6 +120,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
+name = "bitflags"
+version = "2.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
+
+[[package]]
 name = "block-buffer"
 version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -497,9 +503,12 @@ dependencies = [
  "mahjong-core",
  "rand_chacha 0.3.1",
  "rand_core 0.6.4",
+ "rayon",
  "serde",
  "serde_json",
+ "shanten-dp",
  "ts-rs",
+ "xiangting",
 ]
 
 [[package]]
@@ -783,6 +792,16 @@ dependencies = [
  "cfg-if",
  "cpufeatures",
  "digest",
+]
+
+[[package]]
+name = "shanten-dp"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aacec8e3a9374129ac7347dce3e8a7c5d1745183aa18b9066a8ea15f8ffc47dc"
+dependencies = [
+ "bitflags",
+ "thiserror",
 ]
 
 [[package]]
@@ -1252,6 +1271,15 @@ name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
+
+[[package]]
+name = "xiangting"
+version = "6.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f876f341b7ed1840bc6980f4ed8e3fbb9c2eb02305e91048bdd402d0f61a6f7"
+dependencies = [
+ "thiserror",
+]
 
 [[package]]
 name = "zerocopy"
