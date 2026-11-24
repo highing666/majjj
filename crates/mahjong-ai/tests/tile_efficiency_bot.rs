@@ -211,7 +211,6 @@ fn iron_rule_1_wins_immediately_and_between_hands_confirms_next_hand() {
 #[test]
 fn tile_efficiency_reduces_shanten_accounts_visible_and_defaults_to_tsumogiri() {
     let mut rng = ChaCha8Rng::seed_from_u64(42);
-    let ctx = DecisionContext::default();
 
     // 1. Sheds isolated honor C to reach tenpai (shanten = 0).
     let wall1 = build_preset_wall(
@@ -230,7 +229,7 @@ fn tile_efficiency_reduces_shanten_accounts_visible_and_defaults_to_tsumogiri() 
     )
     .expect("match starts");
     assert_eq!(
-        decide(&project_view(&game1, Seat::East), &ctx, &mut rng),
+        TileEfficiencyBot::decide(&project_view(&game1, Seat::East), &mut rng),
         PlayerAction::Discard {
             tile: tile("C"),
             from_drawn: false
@@ -293,7 +292,7 @@ fn tile_efficiency_reduces_shanten_accounts_visible_and_defaults_to_tsumogiri() 
     let east_drawn_view = project_view(&game2, Seat::East);
     assert_eq!(east_drawn_view.hand.drawn_tile, Some(tile("5p")));
     assert_eq!(
-        decide(&east_drawn_view, &ctx, &mut rng),
+        TileEfficiencyBot::decide(&east_drawn_view, &mut rng),
         PlayerAction::Discard {
             tile: tile("5p"),
             from_drawn: true
@@ -386,7 +385,7 @@ fn tile_efficiency_reduces_shanten_accounts_visible_and_defaults_to_tsumogiri() 
         )
         .unwrap();
     let north_view = project_view(&game3, Seat::North);
-    let choice3 = decide(&north_view, &ctx, &mut rng);
+    let choice3 = TileEfficiencyBot::decide(&north_view, &mut rng);
     assert!(
         matches!(
             choice3,
@@ -412,7 +411,7 @@ fn tile_efficiency_reduces_shanten_accounts_visible_and_defaults_to_tsumogiri() 
     )
     .expect("match starts");
     assert_eq!(
-        decide(&project_view(&game4, Seat::East), &ctx, &mut rng),
+        TileEfficiencyBot::decide(&project_view(&game4, Seat::East), &mut rng),
         PlayerAction::Discard {
             tile: tile("W"),
             from_drawn: false
@@ -435,7 +434,7 @@ fn tile_efficiency_reduces_shanten_accounts_visible_and_defaults_to_tsumogiri() 
     )
     .expect("match starts");
     assert_eq!(
-        decide(&project_view(&game5, Seat::East), &ctx, &mut rng),
+        TileEfficiencyBot::decide(&project_view(&game5, Seat::East), &mut rng),
         PlayerAction::Discard {
             tile: tile("1p"),
             from_drawn: false
@@ -460,7 +459,7 @@ fn tile_efficiency_reduces_shanten_accounts_visible_and_defaults_to_tsumogiri() 
     .expect("match starts");
     let mut seven_pair_view = project_view(&game6, Seat::East);
     assert_eq!(
-        decide(&seven_pair_view, &ctx, &mut rng),
+        TileEfficiencyBot::decide(&seven_pair_view, &mut rng),
         PlayerAction::Discard {
             tile: tile("C"),
             from_drawn: false
@@ -469,7 +468,7 @@ fn tile_efficiency_reduces_shanten_accounts_visible_and_defaults_to_tsumogiri() 
     // When 4-of-a-kind seven pairs is disallowed, breaking 1111m gives higher ukeire (6s + C vs only 6s).
     seven_pair_view.rule_profile.allow_four_of_kind_seven_pairs = false;
     assert_eq!(
-        decide(&seven_pair_view, &ctx, &mut rng),
+        TileEfficiencyBot::decide(&seven_pair_view, &mut rng),
         PlayerAction::Discard {
             tile: tile("1m"),
             from_drawn: false
@@ -493,7 +492,7 @@ fn tile_efficiency_reduces_shanten_accounts_visible_and_defaults_to_tsumogiri() 
     )
     .expect("match starts");
     assert_eq!(
-        decide(&project_view(&game7, Seat::East), &ctx, &mut rng),
+        TileEfficiencyBot::decide(&project_view(&game7, Seat::East), &mut rng),
         PlayerAction::Discard {
             tile: tile("5m"),
             from_drawn: false
@@ -504,7 +503,6 @@ fn tile_efficiency_reduces_shanten_accounts_visible_and_defaults_to_tsumogiri() 
 #[test]
 fn turn_kongs_and_discard_reactions_follow_shanten_rules() {
     let mut rng = ChaCha8Rng::seed_from_u64(77);
-    let ctx = DecisionContext::default();
 
     // 1a. ConcealedKong declared when it does not worsen shanten (0 -> 0).
     let game_ck_yes = Match::new(
@@ -525,7 +523,7 @@ fn turn_kongs_and_discard_reactions_follow_shanten_rules() {
     )
     .expect("match starts");
     assert_eq!(
-        decide(&project_view(&game_ck_yes, Seat::East), &ctx, &mut rng),
+        TileEfficiencyBot::decide(&project_view(&game_ck_yes, Seat::East), &mut rng),
         PlayerAction::ConcealedKong { tile: tile("1m") }
     );
 
@@ -548,7 +546,7 @@ fn turn_kongs_and_discard_reactions_follow_shanten_rules() {
     )
     .expect("match starts");
     assert_eq!(
-        decide(&project_view(&game_ck_no_std, Seat::East), &ctx, &mut rng),
+        TileEfficiencyBot::decide(&project_view(&game_ck_no_std, Seat::East), &mut rng),
         PlayerAction::Discard {
             tile: tile("5z"),
             from_drawn: false
@@ -574,7 +572,7 @@ fn turn_kongs_and_discard_reactions_follow_shanten_rules() {
     )
     .expect("match starts");
     assert_eq!(
-        decide(&project_view(&game_ck_no_7p, Seat::East), &ctx, &mut rng),
+        TileEfficiencyBot::decide(&project_view(&game_ck_no_7p, Seat::East), &mut rng),
         PlayerAction::Discard {
             tile: tile("C"),
             from_drawn: false
@@ -652,7 +650,7 @@ fn turn_kongs_and_discard_reactions_follow_shanten_rules() {
         .legal_actions
         .contains(&PlayerAction::AddedKong { tile: tile("5m") }));
     assert_eq!(
-        decide(&ak_yes_view, &ctx, &mut rng),
+        TileEfficiencyBot::decide(&ak_yes_view, &mut rng),
         PlayerAction::AddedKong { tile: tile("5m") }
     );
 
@@ -727,7 +725,7 @@ fn turn_kongs_and_discard_reactions_follow_shanten_rules() {
         .legal_actions
         .contains(&PlayerAction::AddedKong { tile: tile("5m") }));
     assert_eq!(
-        decide(&ak_no_view, &ctx, &mut rng),
+        TileEfficiencyBot::decide(&ak_no_view, &mut rng),
         PlayerAction::Discard {
             tile: tile("N"),
             from_drawn: false
@@ -766,7 +764,7 @@ fn turn_kongs_and_discard_reactions_follow_shanten_rules() {
         .legal_actions
         .contains(&PlayerAction::ExposedKong { tile: tile("1m") }));
     assert_eq!(
-        decide(&ek_yes_view, &ctx, &mut rng),
+        TileEfficiencyBot::decide(&ek_yes_view, &mut rng),
         PlayerAction::ExposedKong { tile: tile("1m") }
     );
 
@@ -798,11 +796,7 @@ fn turn_kongs_and_discard_reactions_follow_shanten_rules() {
         )
         .unwrap();
     assert_eq!(
-        decide(
-            &project_view(&game_ek_no_break, Seat::South),
-            &ctx,
-            &mut rng
-        ),
+        TileEfficiencyBot::decide(&project_view(&game_ek_no_break, Seat::South), &mut rng),
         PlayerAction::Pass
     );
 
@@ -833,7 +827,7 @@ fn turn_kongs_and_discard_reactions_follow_shanten_rules() {
         )
         .unwrap();
     assert_eq!(
-        decide(&project_view(&game_ek_no_sh2, Seat::South), &ctx, &mut rng),
+        TileEfficiencyBot::decide(&project_view(&game_ek_no_sh2, Seat::South), &mut rng),
         PlayerAction::Pass
     );
 
@@ -869,7 +863,7 @@ fn turn_kongs_and_discard_reactions_follow_shanten_rules() {
         .legal_actions
         .contains(&PlayerAction::Pon { tile: tile("1m") }));
     assert_eq!(
-        decide(&pon_yes_view, &ctx, &mut rng),
+        TileEfficiencyBot::decide(&pon_yes_view, &mut rng),
         PlayerAction::Pon { tile: tile("1m") }
     );
 
@@ -901,7 +895,7 @@ fn turn_kongs_and_discard_reactions_follow_shanten_rules() {
         )
         .unwrap();
     assert_eq!(
-        decide(&project_view(&game_pon_no, Seat::South), &ctx, &mut rng),
+        TileEfficiencyBot::decide(&project_view(&game_pon_no, Seat::South), &mut rng),
         PlayerAction::Pass
     );
 
@@ -932,7 +926,7 @@ fn turn_kongs_and_discard_reactions_follow_shanten_rules() {
         )
         .unwrap();
     assert_eq!(
-        decide(&project_view(&game_pon_no_7p, Seat::South), &ctx, &mut rng),
+        TileEfficiencyBot::decide(&project_view(&game_pon_no_7p, Seat::South), &mut rng),
         PlayerAction::Pass
     );
 }
