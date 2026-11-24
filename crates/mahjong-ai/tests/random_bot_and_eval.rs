@@ -272,3 +272,63 @@ fn bench_ai_cli_runs_matchup_and_rejects_invalid_threads() {
         "rt_stdout={rt_stdout}"
     );
 }
+
+#[test]
+fn bench_ai_calibrate_l3_runs_in_memory_and_emits_metrics_and_const_tables() {
+    use mahjong_ai::eval::{run_calibrate_l3, CalibrateConfig};
+
+    let cfg = CalibrateConfig {
+        hands: 40,
+        seed: 2026,
+        threads: 2,
+    };
+    let report = run_calibrate_l3(&cfg).expect("calibration succeeds");
+    assert_eq!(report.hands, 40);
+    assert!(report.tenpai_metrics.val_samples > 0);
+    assert!(report.wait_metrics.val_samples > 0);
+    assert!(
+        report.tenpai_metrics.val_log_loss < report.tenpai_metrics.val_baseline_log_loss,
+        "tenpai model must improve validation log-loss over prior baseline: {:?}",
+        report.tenpai_metrics
+    );
+    assert!(
+        report.wait_metrics.val_log_loss <= report.wait_metrics.val_baseline_log_loss + 0.02,
+        "wait model validation log-loss should be bounded near or below baseline on small sample: {:?}",
+        report.wait_metrics
+    );
+    assert!(report.tenpai_weights.iter().all(|w| w.is_finite()));
+    assert!(report.wait_weights.iter().all(|w| w.is_finite()));
+
+    let bad_hands = CalibrateConfig { hands: 0, ..cfg };
+    assert!(run_calibrate_l3(&bad_hands).is_err());
+    let bad_threads = CalibrateConfig { threads: 0, ..cfg };
+    assert!(run_calibrate_l3(&bad_threads).is_err());
+
+    let bin = env!("CARGO_BIN_EXE_bench-ai");
+    let cli_out = std::process::Command::new(bin)
+        .args([
+            "calibrate-l3",
+            "--hands",
+            "30",
+            "--seed",
+            "2026",
+            "--threads",
+            "2",
+        ])
+        .output()
+        .expect("spawn bench-ai calibrate-l3");
+    assert!(
+        cli_out.status.success(),
+        "bench-ai calibrate-l3 failed: stderr={}",
+        String::from_utf8_lossy(&cli_out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&cli_out.stdout);
+    assert!(stdout.contains("TENPAI_WEIGHTS"), "stdout={stdout}");
+    assert!(stdout.contains("WAIT_WEIGHTS"), "stdout={stdout}");
+    assert!(stdout.contains("val_log_loss="), "stdout={stdout}");
+    assert!(
+        stdout.contains("pub const TENPAI_WEIGHTS"),
+        "stdout={stdout}"
+    );
+    assert!(stdout.contains("pub const WAIT_WEIGHTS"), "stdout={stdout}");
+}

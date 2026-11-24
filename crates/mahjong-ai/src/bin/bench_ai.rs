@@ -5,15 +5,26 @@ use std::process::ExitCode;
 use std::str::FromStr;
 
 use mahjong_ai::eval::{
-    default_eval_threads, run_duplicate_matchup, EvalConfig, EvalReport, EvalStrategy,
+    default_eval_threads, run_calibrate_l3, run_duplicate_matchup, CalibrateConfig,
+    CalibrateReport, EvalConfig, EvalReport, EvalStrategy, LogisticMetrics,
 };
+use mahjong_ai::l3_weights::{TENPAI_FEATURE_COUNT, WAIT_FEATURE_COUNT};
 use mahjong_ai::DecisionBudget;
+
+enum CliOutput {
+    Matchup(EvalReport),
+    Calibrate(CalibrateReport),
+}
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
     match parse_and_run(&args) {
-        Ok(Some(report)) => {
+        Ok(Some(CliOutput::Matchup(report))) => {
             print_report(&report);
+            ExitCode::SUCCESS
+        }
+        Ok(Some(CliOutput::Calibrate(report))) => {
+            print_calibration(&report);
             ExitCode::SUCCESS
         }
         Ok(None) => {
@@ -27,7 +38,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn parse_and_run(args: &[String]) -> Result<Option<EvalReport>, String> {
+fn parse_and_run(args: &[String]) -> Result<Option<CliOutput>, String> {
     if args.is_empty() || matches!(args[0].as_str(), "-h" | "--help") {
         return Ok(None);
     }
@@ -36,10 +47,15 @@ fn parse_and_run(args: &[String]) -> Result<Option<EvalReport>, String> {
         "matchup" => {
             let cfg = parse_matchup_args(&args[1..])?;
             let report = run_duplicate_matchup(&cfg).map_err(|e| e.to_string())?;
-            Ok(Some(report))
+            Ok(Some(CliOutput::Matchup(report)))
+        }
+        "calibrate-l3" => {
+            let cfg = parse_calibrate_args(&args[1..])?;
+            let report = run_calibrate_l3(&cfg).map_err(|e| e.to_string())?;
+            Ok(Some(CliOutput::Calibrate(report)))
         }
         other => Err(format!(
-            "unknown subcommand '{other}' (expected: matchup; pass --help for usage)"
+            "unknown subcommand '{other}' (expected: matchup, calibrate-l3; pass --help for usage)"
         )),
     }
 }
@@ -109,6 +125,58 @@ fn parse_matchup_args(args: &[String]) -> Result<EvalConfig, String> {
         seed,
         threads,
         budget,
+    })
+}
+
+fn parse_calibrate_args(args: &[String]) -> Result<CalibrateConfig, String> {
+    let mut hands = 20_000usize;
+    let mut seed = 2026u64;
+    let mut threads = default_eval_threads();
+
+    let mut idx = 0usize;
+    while idx < args.len() {
+        let arg = args[idx].as_str();
+        if matches!(arg, "-h" | "--help") {
+            return Err(
+                "usage: bench-ai calibrate-l3 --hands <N> --seed <u64> --threads <T>".to_string(),
+            );
+        }
+
+        let (flag, value) = if let Some((k, v)) = arg.split_once('=') {
+            idx += 1;
+            (k, v)
+        } else {
+            let val = args
+                .get(idx + 1)
+                .ok_or_else(|| format!("missing value for flag '{arg}'"))?;
+            idx += 2;
+            (arg, val.as_str())
+        };
+
+        match flag {
+            "--hands" => {
+                hands = value
+                    .parse::<usize>()
+                    .map_err(|e| format!("invalid --hands '{value}': {e}"))?;
+            }
+            "--seed" => {
+                seed = value
+                    .parse::<u64>()
+                    .map_err(|e| format!("invalid --seed '{value}': {e}"))?;
+            }
+            "--threads" => {
+                threads = value
+                    .parse::<usize>()
+                    .map_err(|e| format!("invalid --threads '{value}': {e}"))?;
+            }
+            other => return Err(format!("unknown flag '{other}'")),
+        }
+    }
+
+    Ok(CalibrateConfig {
+        hands,
+        seed,
+        threads,
     })
 }
 
@@ -216,10 +284,50 @@ fn print_report(report: &EvalReport) {
     );
 }
 
+fn print_calibration(report: &CalibrateReport) {
+    println!("=== bench-ai calibrate-l3 ===");
+    println!(
+        "hands: {} | seed: {} | threads: {}",
+        report.hands, report.seed, report.threads
+    );
+    print_metrics("tenpai_model", &report.tenpai_metrics);
+    print_metrics("wait_model", &report.wait_metrics);
+    println!();
+    println!("/// Calibrated weights for `P(Tenpai_opp)` (index 0 = intercept).");
+    println!("pub const TENPAI_WEIGHTS: [f64; TENPAI_FEATURE_COUNT] = [");
+    let _ = TENPAI_FEATURE_COUNT;
+    for (idx, w) in report.tenpai_weights.iter().enumerate() {
+        println!("    {w:.8}, // {idx}");
+    }
+    println!("];");
+    println!();
+    println!("/// Calibrated weights for `P(Wait_opp(tile) | Tenpai_opp)` (index 0 = intercept).");
+    println!("pub const WAIT_WEIGHTS: [f64; WAIT_FEATURE_COUNT] = [");
+    let _ = WAIT_FEATURE_COUNT;
+    for (idx, w) in report.wait_weights.iter().enumerate() {
+        println!("    {w:.8}, // {idx}");
+    }
+    println!("];");
+}
+
+fn print_metrics(label: &str, m: &LogisticMetrics) {
+    println!(
+        "{label}: train={} val={} pos_rate={:.4} pred_mean={:.4} baseline_log_loss={:.6} val_log_loss={:.6} brier={:.6}",
+        m.train_samples,
+        m.val_samples,
+        m.val_pos_rate,
+        m.val_pred_mean,
+        m.val_baseline_log_loss,
+        m.val_log_loss,
+        m.val_brier
+    );
+}
+
 fn print_usage() {
     println!(
         "Usage:
   bench-ai matchup [--candidate <name>] [--opponent <name>] [--groups <N>] [--seed <u64>] [--threads <T>] [--budget deterministic:<S>|realtime:<S>:<soft>:<hard>]
+  bench-ai calibrate-l3 [--hands <N>] [--seed <u64>] [--threads <T>]
 
 Strategies:
   random | tile-efficiency | intermediate | strong-no-l4 | strong"
