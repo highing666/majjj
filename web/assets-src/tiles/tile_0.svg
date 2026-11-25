@@ -1,0 +1,10 @@
+<svg viewBox="0 0 100 136" xmlns="http://www.w3.org/2000/svg">
+  <rect x="2.5" y="5.5" width="95" height="128" rx="11" fill="#1E5C5E"/>
+  <rect x="2.5" y="2.5" width="95" height="126" rx="10.5" fill="#F5EEDF" stroke="#181A20" stroke-width="3"/>
+  <rect x="4" y="3" width="92" height="6" rx="3" fill="#FFFDF5" opacity="0.72"/>
+  <rect x="4" y="119.5" width="92" height="9" rx="3" fill="#E4D8BE"/>
+  <g>
+      <text x="50" y="53" text-anchor="middle" font-family="'Songti SC','STSong','PingFang SC',serif" font-weight="900" font-size="38" fill="#181A20" stroke="#181A20" stroke-width="0.6">一</text>
+      <text x="50" y="106" text-anchor="middle" font-family="'Songti SC','STSong','PingFang SC',serif" font-weight="900" font-size="44" fill="#C7352B" stroke="#181A20" stroke-width="1.2">萬</text>
+    </g>
+</svg>
