@@ -6,15 +6,23 @@
   import { TableSceneRenderer, type TableRenderParams } from "./tableRenderer";
   import { loadTileAtlas, type TileAtlas } from "./tileAtlas";
   import { computeCanvasResolution, extractContentBoxSize } from "./viewModel";
+  import {
+    createWebGLRecoveryController,
+    type WebGLRecoveryState,
+  } from "./webglRecovery";
 
   interface Props {
     snapshot: TableSnapshot;
     pendingAddedKong: PendingAddedKong | null;
     inputLocked: boolean;
     confirmDiscard?: boolean;
+    paperGrainEnabled?: boolean;
     onDiscard: (tile: Tile, fromDrawn: boolean) => void;
     onTileHover?: (tile: Tile, fromDrawn: boolean) => void;
     onTileSelect?: (tile: Tile, fromDrawn: boolean) => void;
+    onFrameTick?: () => void;
+    onWebGLRecoveryChange?: (state: WebGLRecoveryState) => void;
+    onRefresh?: () => void;
   }
 
   let {
@@ -22,20 +30,41 @@
     pendingAddedKong,
     inputLocked,
     confirmDiscard = false,
+    paperGrainEnabled = true,
     onDiscard,
     onTileHover,
     onTileSelect,
+    onFrameTick,
+    onWebGLRecoveryChange,
+    onRefresh,
   }: Props = $props();
 
   let hostEl = $state<HTMLDivElement | null>(null);
-  let initError = $state<string | null>(null);
   let sceneRenderer = $state<TableSceneRenderer | null>(null);
+  let recoveryState = $state<WebGLRecoveryState>({
+    status: "active",
+    restoreCount: 0,
+    needsRefresh: false,
+    errorMessage: null,
+  });
+
   const renderParams = $derived<TableRenderParams>({
     snapshot,
     pendingAddedKong,
     inputLocked,
     confirmDiscard,
+    paperGrainEnabled,
   });
+
+  let latestRenderParams: TableRenderParams | null = null;
+
+  function triggerRefresh(): void {
+    if (onRefresh) {
+      onRefresh();
+    } else if (typeof window !== "undefined") {
+      window.location.reload();
+    }
+  }
 
   $effect(() => {
     const container = hostEl;
@@ -48,7 +77,81 @@
     let atlas: TileAtlas | null = null;
     let renderer: TableSceneRenderer | null = null;
     let resizeObserver: ResizeObserver | null = null;
-    let canvasEl: HTMLCanvasElement | null = null;
+    let unbindCanvasRecovery: (() => void) | null = null;
+    let currentWidth = 640;
+    let currentHeight = 480;
+
+    const createRendererForAtlas = (
+      pixiApp: Application,
+      loadedAtlas: TileAtlas,
+      width: number,
+      height: number,
+    ): TableSceneRenderer => {
+      const nextRenderer = new TableSceneRenderer(pixiApp.stage, loadedAtlas, {
+        onDiscard: (tile, fromDrawn) => {
+          onDiscard(tile, fromDrawn);
+        },
+        onTileHover: (tile, fromDrawn) => {
+          onTileHover?.(tile, fromDrawn);
+        },
+        onTileSelect: (tile, fromDrawn) => {
+          onTileSelect?.(tile, fromDrawn);
+        },
+      });
+      nextRenderer.resize(width, height);
+      if (latestRenderParams !== null) {
+        nextRenderer.render(latestRenderParams);
+      }
+      return nextRenderer;
+    };
+
+    const recovery = createWebGLRecoveryController({
+      rebuildResources: async () => {
+        if (disposed || !app) {
+          throw new Error("牌桌画布已销毁");
+        }
+        const prevRenderer = renderer;
+        const prevAtlas = atlas;
+        renderer = null;
+        atlas = null;
+        sceneRenderer = null;
+        prevRenderer?.destroy();
+        prevAtlas?.destroy();
+
+        const rebuiltAtlas = await loadTileAtlas();
+        if (disposed || !app) {
+          rebuiltAtlas.destroy();
+          return;
+        }
+        atlas = rebuiltAtlas;
+        const rect = container.getBoundingClientRect();
+        currentWidth = Math.max(320, Math.round(rect.width || currentWidth));
+        currentHeight = Math.max(280, Math.round(rect.height || currentHeight));
+        const rebuiltRenderer = createRendererForAtlas(
+          app,
+          rebuiltAtlas,
+          currentWidth,
+          currentHeight,
+        );
+        renderer = rebuiltRenderer;
+        sceneRenderer = rebuiltRenderer;
+        if (!document.hidden) {
+          app.ticker.start();
+        }
+      },
+    });
+
+    const syncRecoveryState = (next: WebGLRecoveryState) => {
+      recoveryState = next;
+      onWebGLRecoveryChange?.(next);
+    };
+    syncRecoveryState(recovery.getState());
+    const unsubscribeRecovery = recovery.subscribe((next) => {
+      if (next.status === "context_lost") {
+        app?.ticker.stop();
+      }
+      syncRecoveryState(next);
+    });
 
     const handleVisibilityChange = () => {
       if (!app) {
@@ -56,27 +159,22 @@
       }
       if (document.hidden) {
         app.ticker.stop();
-      } else {
+      } else if (recovery.getState().status === "active") {
         app.ticker.start();
       }
     };
 
-    const handleContextLost = (event: Event) => {
-      event.preventDefault();
-    };
-
-    const handleContextRestored = () => {
-      if (disposed || !app || !renderer) {
-        return;
+    const handleTickerFrame = () => {
+      if (!disposed && !document.hidden) {
+        onFrameTick?.();
       }
-      renderer.render(renderParams);
     };
 
     const boot = async () => {
       try {
         const rect = container.getBoundingClientRect();
-        const initWidth = Math.max(320, Math.round(rect.width || 640));
-        const initHeight = Math.max(280, Math.round(rect.height || 480));
+        currentWidth = Math.max(320, Math.round(rect.width || 640));
+        currentHeight = Math.max(280, Math.round(rect.height || 480));
         const resolution = computeCanvasResolution(
           window.devicePixelRatio || 1,
         );
@@ -88,8 +186,8 @@
           autoDensity: true,
           antialias: true,
           backgroundColor: 0x14282e,
-          width: initWidth,
-          height: initHeight,
+          width: currentWidth,
+          height: currentHeight,
         });
 
         if (disposed) {
@@ -106,28 +204,25 @@
 
         app = nextApp;
         atlas = loadedAtlas;
-        canvasEl = nextApp.canvas;
+        const canvasEl = nextApp.canvas;
         canvasEl.style.width = "100%";
         canvasEl.style.height = "100%";
         canvasEl.style.display = "block";
         canvasEl.style.touchAction = "none";
         container.replaceChildren(canvasEl);
 
-        renderer = new TableSceneRenderer(nextApp.stage, loadedAtlas, {
-          onDiscard: (tile, fromDrawn) => {
-            onDiscard(tile, fromDrawn);
-          },
-          onTileHover: (tile, fromDrawn) => {
-            onTileHover?.(tile, fromDrawn);
-          },
-          onTileSelect: (tile, fromDrawn) => {
-            onTileSelect?.(tile, fromDrawn);
-          },
-        });
-        renderer.resize(initWidth, initHeight);
-        renderer.render(renderParams);
+        renderer = createRendererForAtlas(
+          nextApp,
+          loadedAtlas,
+          currentWidth,
+          currentHeight,
+        );
         sceneRenderer = renderer;
-        initError = null;
+
+        nextApp.ticker.add(handleTickerFrame);
+        if (document.hidden) {
+          nextApp.ticker.stop();
+        }
 
         if (typeof ResizeObserver !== "undefined") {
           resizeObserver = new ResizeObserver((entries) => {
@@ -136,27 +231,24 @@
             }
             for (const entry of entries) {
               const size = extractContentBoxSize(entry);
-              const w = Math.max(320, size.width);
-              const h = Math.max(280, size.height);
-              app.renderer.resize(w, h);
-              renderer.resize(w, h);
+              currentWidth = Math.max(320, size.width);
+              currentHeight = Math.max(280, size.height);
+              app.renderer.resize(currentWidth, currentHeight);
+              renderer.resize(currentWidth, currentHeight);
             }
           });
           resizeObserver.observe(container);
         }
 
         document.addEventListener("visibilitychange", handleVisibilityChange);
-        canvasEl.addEventListener("webglcontextlost", handleContextLost);
-        canvasEl.addEventListener(
-          "webglcontextrestored",
-          handleContextRestored,
-        );
+        unbindCanvasRecovery = recovery.bindCanvas(canvasEl);
       } catch (err) {
         if (!disposed) {
-          initError =
+          const detail =
             err instanceof Error
               ? err.message
               : "WebGL2 牌桌画布初始化失败";
+          recovery.reportUnrecoverable(detail);
         }
       }
     };
@@ -167,15 +259,14 @@
       disposed = true;
       sceneRenderer = null;
       document.removeEventListener("visibilitychange", handleVisibilityChange);
-      if (canvasEl) {
-        canvasEl.removeEventListener("webglcontextlost", handleContextLost);
-        canvasEl.removeEventListener(
-          "webglcontextrestored",
-          handleContextRestored,
-        );
-      }
+      unbindCanvasRecovery?.();
+      unsubscribeRecovery();
+      recovery.dispose();
       if (resizeObserver) {
         resizeObserver.disconnect();
+      }
+      if (app) {
+        app.ticker.remove(handleTickerFrame);
       }
       if (renderer) {
         renderer.destroy();
@@ -192,6 +283,7 @@
 
   $effect(() => {
     const params = renderParams;
+    latestRenderParams = params;
     if (sceneRenderer) {
       sceneRenderer.render(params);
     }
@@ -199,10 +291,17 @@
 </script>
 
 <div class="table-canvas-host" bind:this={hostEl}>
-  {#if initError}
+  {#if recoveryState.needsRefresh}
     <div class="canvas-fallback" role="alert">
-      <strong>无法启动 2D 牌桌渲染</strong>
-      <span>{initError}</span>
+      <strong>2D 牌桌渲染已中断</strong>
+      <span>{recoveryState.errorMessage}</span>
+      <button class="btn btn-primary" type="button" onclick={triggerRefresh}>
+        刷新页面
+      </button>
+    </div>
+  {:else if recoveryState.status === "context_lost" || recoveryState.status === "restoring"}
+    <div class="canvas-status" role="status">
+      正在重建牌桌画布纹理，请稍候…
     </div>
   {/if}
 </div>
@@ -231,14 +330,32 @@
   }
 
   .canvas-fallback {
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    background: rgba(16, 32, 38, 0.94);
     height: 100%;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 8px;
+    gap: 10px;
     padding: 20px;
     color: #f5eedf;
+    text-align: center;
+  }
+
+  .canvas-status {
+    position: absolute;
+    inset: 0;
+    z-index: 4;
+    background: rgba(16, 32, 38, 0.72);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    color: #f5eedf;
+    font-weight: 600;
     text-align: center;
   }
 </style>

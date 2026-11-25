@@ -7,6 +7,7 @@
     getBrowserDevicePreferencesStore,
     type DevicePreferences,
   } from "./lib/preferences/devicePreferences";
+  import { createWakeLockController } from "./lib/platform/wakeLock";
   import ComicImpactOverlay from "./lib/presentation/ComicImpactOverlay.svelte";
   import { createPresentationEffectsBus } from "./lib/presentation/effectsBus";
   import {
@@ -21,10 +22,15 @@
   import ActionBar from "./lib/table/ActionBar.svelte";
   import DestructiveOpModal from "./lib/table/DestructiveOpModal.svelte";
   import MatchSummaryView from "./lib/table/MatchSummaryView.svelte";
+  import {
+    createRenderQualityController,
+    type RenderQualityState,
+  } from "./lib/table/renderQuality";
   import SettlementModal from "./lib/table/SettlementModal.svelte";
   import TableCanvas from "./lib/table/TableCanvas.svelte";
   import { formatRoundTitle, seatLabel } from "./lib/table/tiles";
   import { findLegalDiscardAction } from "./lib/table/viewModel";
+  import type { WebGLRecoveryState } from "./lib/table/webglRecovery";
   import AudioResumeCapsule from "./lib/ui/AudioResumeCapsule.svelte";
   import SettingsModal from "./lib/ui/SettingsModal.svelte";
 
@@ -34,6 +40,11 @@
   const effectsBus = createPresentationEffectsBus(
     initialDevicePrefs.reduced_effects,
   );
+  const renderQuality = createRenderQualityController({
+    effectsBus,
+    initialManualReducedEffects: initialDevicePrefs.reduced_effects,
+  });
+  const wakeLock = createWakeLockController();
   const presentationQueue = createPresentationQueue({ effectsBus });
   const audioRouter = createAudioEventRouter({
     initialPreferences: initialDevicePrefs,
@@ -43,6 +54,8 @@
     presentationQueue.getState(),
   );
   let devicePrefs = $state<DevicePreferences>(initialDevicePrefs);
+  let renderQualityState = $state<RenderQualityState>(renderQuality.getState());
+  let webglRecoveryState = $state<WebGLRecoveryState | null>(null);
   let audioStatus = $state<AudioStatus>(audioRouter.getStatus());
   let settingsOpen = $state(false);
   const initialNickname = client.getIdentity().nickname;
@@ -53,6 +66,9 @@
     });
     const unsubscribePrefs = preferencesStore.subscribe((next) => {
       devicePrefs = next;
+    });
+    const unsubscribeRenderQuality = renderQuality.subscribe((next) => {
+      renderQualityState = next;
     });
     const unsubscribePresentation = presentationQueue.subscribe((next) => {
       presentationState = next;
@@ -74,8 +90,11 @@
       unsubscribeSemantic();
       unsubscribeAudioStatus();
       unsubscribePresentation();
+      unsubscribeRenderQuality();
       unsubscribePrefs();
       unsubscribeClient();
+      wakeLock.dispose();
+      renderQuality.dispose();
       audioRouter.dispose();
       presentationQueue.dispose();
       effectsBus.dispose();
@@ -84,11 +103,20 @@
   });
 
   $effect(() => {
-    effectsBus.setReducedEffects(devicePrefs.reduced_effects);
+    renderQuality.setManualReducedEffects(devicePrefs.reduced_effects);
     audioRouter.applyPreferences(devicePrefs);
   });
 
   const snapshot = $derived(sessionState.snapshot);
+
+  $effect(() => {
+    const phase = snapshot?.phase ?? null;
+    wakeLock.syncPhase(phase);
+    if (phase !== "InMatch") {
+      webglRecoveryState = null;
+      renderQuality.resetSamplingWindow();
+    }
+  });
   const playerView = $derived(snapshot?.player_view ?? null);
   const presentedSnapshot = $derived(
     presentationState.snapshot ?? sessionState.snapshot,
@@ -206,6 +234,16 @@
     </div>
   {/if}
 
+  {#if webglRecoveryState?.needsRefresh}
+    <div class="banner banner-danger" role="alert">
+      <div>
+        <strong>2D 牌桌渲染异常</strong>
+        <div>{webglRecoveryState.errorMessage}</div>
+      </div>
+      <button class="btn" type="button" onclick={reloadPage}>刷新页面</button>
+    </div>
+  {/if}
+
   {#if snapshot === null}
     <section class="card placeholder-card">
       <h1>麻将牌局 · Majjj</h1>
@@ -298,7 +336,11 @@
             pendingAddedKong={presentationState.pendingAddedKong}
             {inputLocked}
             confirmDiscard={devicePrefs.confirm_discard}
+            paperGrainEnabled={renderQualityState.paperGrainEnabled}
             onDiscard={handleCanvasDiscard}
+            onFrameTick={() => renderQuality.recordFrame()}
+            onWebGLRecoveryChange={(state) => (webglRecoveryState = state)}
+            onRefresh={reloadPage}
             onTileHover={(tile, fromDrawn) =>
               presentationQueue.emitLocalUiAction({
                 type: "UiTileHover",
