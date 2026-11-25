@@ -16,6 +16,7 @@
     onLeaveSeat: () => void;
     onUpdateConfig: (config: LobbyConfig) => void;
     onStartMatch: () => void;
+    onOpenSettings?: () => void;
   }
 
   let {
@@ -27,6 +28,7 @@
     onLeaveSeat,
     onUpdateConfig,
     onStartMatch,
+    onOpenSettings,
   }: Props = $props();
 
   let lastAppliedNickname = $state("");
@@ -172,9 +174,20 @@
             家庭局域网直连牌桌，任一已入座玩家均可对等调整规则并开局。
           </p>
         </div>
-        <span class="tag">
-          已入座 {humanCount} 人 · 空位将补 {aiFillCount} 名 AI
-        </span>
+        <div class="lobby-head-actions">
+          <span class="tag">
+            已入座 {humanCount} 人 · 空位将补 {aiFillCount} 名 AI
+          </span>
+          {#if onOpenSettings}
+            <button
+              class="btn btn-subtle settings-trigger"
+              type="button"
+              onclick={onOpenSettings}
+            >
+              偏好设置
+            </button>
+          {/if}
+        </div>
       </div>
 
       <form class="nickname-form" onsubmit={handleNicknameSubmit}>
@@ -407,6 +420,18 @@
     align-items: flex-start;
     gap: 10px;
     margin-bottom: 14px;
+  }
+
+  .lobby-head-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .settings-trigger {
+    padding: 5px 10px;
+    font-size: 12px;
   }
 
   .nickname-form {
