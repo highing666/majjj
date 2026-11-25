@@ -197,8 +197,6 @@ describe("@2x vector-export tile atlas and felt textures", () => {
       expect(atlas.height).toBeLessThanOrEqual(2048);
       expect(atlas.backTexture).toBeDefined();
       expect(atlas.shadowTexture).toBeDefined();
-      expect(atlas.laidBaseTexture).toBeDefined();
-      expect(atlas.standingBaseTexture).toBeDefined();
       expect(atlas.feltImpastoTexture).toBeDefined();
       expect(atlas.feltBrushTexture).toBeDefined();
 

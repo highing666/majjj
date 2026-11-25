@@ -5,7 +5,6 @@ import {
   Rectangle,
   Sprite,
   Text,
-  TilingSprite,
 } from "pixi.js";
 import type { PublicSeatView } from "../protocol/generated/PublicSeatView";
 import type { Seat } from "../protocol/generated/Seat";
@@ -20,9 +19,17 @@ import {
   type HandTileSlot,
 } from "./discardInteraction";
 import {
+  BRASS,
+  disposeContainerChildren,
+  renderFeltBackdrop,
+} from "./feltBackdrop";
+import {
   computeBottomRiverSlotPoint,
   computeCenterSealLayout,
+  computeOpponentHandSlots,
+  computeRiverSlotPoint,
   computeTableLayout,
+  computeViewerHandSlots,
   type Rect,
   type TableLayout,
 } from "./layout";
@@ -40,10 +47,6 @@ import {
   getRelativeSeats,
 } from "./viewModel";
 
-const FELT_BG = 0x14282e;
-const SPOTLIGHT_AMBER = 0xffce80;
-const VIGNETTE_INDIGO = 0x080c1a;
-const BRASS = 0xd4a857;
 const SEAL_BG = 0x0d1b20;
 const TEXT_LIGHT = 0xf5eedf;
 const TEXT_MUTED = 0xcfdad9;
@@ -70,22 +73,6 @@ export interface TableRendererCallbacks {
   onTileHover?: (tile: Tile, fromDrawn: boolean) => void;
   onTileSelect?: (tile: Tile, fromDrawn: boolean) => void;
   onTileUnhover?: () => void;
-}
-
-function disposeChildren(container: Container): void {
-  const children = container.removeChildren();
-  for (const child of children) {
-    if (child instanceof Container && child.children.length > 0) {
-      disposeChildren(child);
-    }
-    if (child instanceof Sprite || child instanceof TilingSprite) {
-      child.destroy({ texture: false });
-    } else if (child instanceof Text) {
-      child.destroy();
-    } else {
-      child.destroy({ children: false });
-    }
-  }
 }
 
 interface ShadowedTilePair {
@@ -175,34 +162,6 @@ function fitTextToWidth(label: Text, maxWidth: number): void {
   if (maxWidth > 0 && label.width > maxWidth && label.width > 0) {
     label.scale.set(maxWidth / label.width);
   }
-}
-
-function drawArtDecoCorner(
-  g: Graphics,
-  x: number,
-  y: number,
-  sx: number,
-  sy: number,
-  arm: number,
-): void {
-  g.moveTo(x, y + sy * arm)
-    .lineTo(x, y)
-    .lineTo(x + sx * arm, y)
-    .stroke({ width: 2, color: BRASS, alpha: 0.56 });
-
-  const inset = 6;
-  const innerArm = Math.round(arm * 0.52);
-  g.moveTo(x + sx * inset, y + sy * (inset + innerArm))
-    .lineTo(x + sx * inset, y + sy * inset)
-    .lineTo(x + sx * (inset + innerArm), y + sy * inset)
-    .stroke({ width: 1.2, color: BRASS, alpha: 0.36 });
-
-  const px = x + sx * (inset + 4);
-  const py = y + sy * (inset + 4);
-  g.poly([px, py - 3, px + 3, py, px, py + 3, px - 3, py]).fill({
-    color: BRASS,
-    alpha: 0.5,
-  });
 }
 
 /**
@@ -354,7 +313,7 @@ export class TableSceneRenderer {
       (entry) => entry.claimed_by === null,
     ).length;
 
-    this.drawFelt(layout);
+    renderFeltBackdrop(this.feltLayer, layout, this.atlas);
     this.drawCenterSeal(layout, view.turn, view.wall_remaining);
     this.drawRivers(layout, relative, seatByName, findLatestRiverSeq(view.seats));
     this.drawMelds(layout, relative, seatByName, params.pendingAddedKong);
@@ -402,97 +361,17 @@ export class TableSceneRenderer {
   private clearAll(includeAuxiliaryLayers: boolean): void {
     this.cancelSnapBackAnimation();
     this.viewerHandVisuals = [];
-    disposeChildren(this.feltLayer);
-    disposeChildren(this.centerSealLayer);
-    disposeChildren(this.riverLayer);
-    disposeChildren(this.meldLayer);
-    disposeChildren(this.opponentHandLayer);
-    disposeChildren(this.badgeLayer);
-    disposeChildren(this.viewerHandLayer);
+    disposeContainerChildren(this.feltLayer);
+    disposeContainerChildren(this.centerSealLayer);
+    disposeContainerChildren(this.riverLayer);
+    disposeContainerChildren(this.meldLayer);
+    disposeContainerChildren(this.opponentHandLayer);
+    disposeContainerChildren(this.badgeLayer);
+    disposeContainerChildren(this.viewerHandLayer);
     if (includeAuxiliaryLayers) {
-      disposeChildren(this.ghostLayer);
-      disposeChildren(this.effectsLayer);
+      disposeContainerChildren(this.ghostLayer);
+      disposeContainerChildren(this.effectsLayer);
     }
-  }
-
-  private drawFelt(layout: TableLayout): void {
-    disposeChildren(this.feltLayer);
-
-    const baseBg = new Graphics();
-    baseBg.rect(0, 0, layout.width, layout.height).fill({ color: FELT_BG });
-    this.feltLayer.addChild(baseBg);
-
-    const impastoTile = new TilingSprite({
-      texture: this.atlas.feltImpastoTexture,
-      width: layout.width,
-      height: layout.height,
-      tileScale: { x: 0.75, y: 0.75 },
-    });
-    this.feltLayer.addChild(impastoTile);
-
-    const brushOverlay = new TilingSprite({
-      texture: this.atlas.feltBrushTexture,
-      width: layout.width,
-      height: layout.height,
-      tileScale: { x: 0.85, y: 0.85 },
-      alpha: 0.52,
-    });
-    this.feltLayer.addChild(brushOverlay);
-
-    // Warm amber central spotlight + cool indigo corner vignette + vintage brass Art Deco corners
-    const overlay = new Graphics();
-    const rx = Math.max(140, layout.width * 0.42);
-    const ry = Math.max(110, layout.height * 0.4);
-    const spotSteps = [1.0, 0.72, 0.46];
-    for (const scale of spotSteps) {
-      overlay
-        .ellipse(layout.cx, layout.cy, rx * scale, ry * scale)
-        .fill({ color: SPOTLIGHT_AMBER, alpha: 0.042 });
-    }
-
-    // Cool indigo edge vignette framing
-    const vigSteps = [
-      { inset: 0, width: 22, alpha: 0.36 },
-      { inset: 12, width: 28, alpha: 0.22 },
-      { inset: 28, width: 34, alpha: 0.1 },
-    ];
-    for (const v of vigSteps) {
-      overlay
-        .rect(
-          v.inset,
-          v.inset,
-          Math.max(1, layout.width - v.inset * 2),
-          Math.max(1, layout.height - v.inset * 2),
-        )
-        .stroke({ width: v.width, color: VIGNETTE_INDIGO, alpha: v.alpha });
-    }
-
-    // Subtle table rail + vintage brass Art Deco corner accents
-    const pad = layout.isWide ? 10 : 6;
-    const arm = layout.isWide ? 36 : 22;
-    overlay
-      .roundRect(
-        pad - 2,
-        pad - 2,
-        layout.width - (pad - 2) * 2,
-        layout.height - (pad - 2) * 2,
-        12,
-      )
-      .stroke({ width: 1, color: BRASS, alpha: 0.16 });
-
-    drawArtDecoCorner(overlay, pad, pad, 1, 1, arm);
-    drawArtDecoCorner(overlay, layout.width - pad, pad, -1, 1, arm);
-    drawArtDecoCorner(overlay, pad, layout.height - pad, 1, -1, arm);
-    drawArtDecoCorner(
-      overlay,
-      layout.width - pad,
-      layout.height - pad,
-      -1,
-      -1,
-      arm,
-    );
-
-    this.feltLayer.addChild(overlay);
   }
 
   private drawCenterSeal(
@@ -500,7 +379,7 @@ export class TableSceneRenderer {
     turn: NonNullable<TableSnapshot["player_view"]>["turn"],
     wallRemaining: number,
   ): void {
-    disposeChildren(this.centerSealLayer);
+    disposeContainerChildren(this.centerSealLayer);
     const { centerSeal } = layout;
     const sealLayout = computeCenterSealLayout(centerSeal);
     const cx = centerSeal.x + centerSeal.width / 2;
@@ -552,8 +431,8 @@ export class TableSceneRenderer {
     seatByName: Map<Seat, PublicSeatView>,
     latestSeq: number,
   ): void {
-    disposeChildren(this.riverLayer);
-    const { riverTileW: tw, riverTileH: th, riverGap: gap } = layout;
+    disposeContainerChildren(this.riverLayer);
+    const { riverTileW: tw, riverTileH: th } = layout;
 
     const placeRiverTile = (
       tile: Tile,
@@ -574,12 +453,14 @@ export class TableSceneRenderer {
         rotation,
         1.5,
       );
+      const isHorizontal = rotation === 0 || Math.abs(rotation - Math.PI) < 0.01;
+      const rw = isHorizontal ? tw : th;
+      const rh = isHorizontal ? th : tw;
+
       if (isTsumogiri) {
         sprite.alpha = 0.84;
         sprite.tint = 0xd2dada;
 
-        const rw = rotation === 0 || Math.abs(rotation - Math.PI) < 0.01 ? tw : th;
-        const rh = rotation === 0 || Math.abs(rotation - Math.PI) < 0.01 ? th : tw;
         const dot = new Graphics();
         dot
           .circle(x + rw * 0.28, y - rh * 0.28, Math.max(1.5, tw * 0.08))
@@ -589,8 +470,6 @@ export class TableSceneRenderer {
 
       if (isLatest) {
         const ring = new Graphics();
-        const rw = rotation === 0 || Math.abs(rotation - Math.PI) < 0.01 ? tw : th;
-        const rh = rotation === 0 || Math.abs(rotation - Math.PI) < 0.01 ? th : tw;
         ring
           .roundRect(x - rw / 2 - 1.5, y - rh / 2 - 1.5, rw + 3, rh + 3, 4)
           .stroke({ width: 2, color: ACTIVE_GLOW });
@@ -598,100 +477,25 @@ export class TableSceneRenderer {
       }
     };
 
-    // Bottom river: uses shared `computeBottomRiverSlotPoint` (row 0 closest to center seal)
-    const bottomRows = buildVisibleRiverRows(
-      seatByName.get(relative.bottom)?.river ?? [],
-      6,
-    );
-    bottomRows.forEach((row, rIdx) => {
-      row.forEach((entry, cIdx) => {
-        const pt = computeBottomRiverSlotPoint(layout, rIdx * 6 + cIdx);
-        placeRiverTile(
-          entry.tile,
-          pt.x,
-          pt.y,
-          0,
-          entry.is_tsumogiri,
-          entry.seq === latestSeq,
-        );
+    for (const side of ["bottom", "top", "left", "right"] as const) {
+      const rows = buildVisibleRiverRows(
+        seatByName.get(relative[side])?.river ?? [],
+        6,
+      );
+      rows.forEach((row, rIdx) => {
+        row.forEach((entry, cIdx) => {
+          const slot = computeRiverSlotPoint(layout, side, rIdx * 6 + cIdx);
+          placeRiverTile(
+            entry.tile,
+            slot.x,
+            slot.y,
+            slot.rotation,
+            entry.is_tsumogiri,
+            entry.seq === latestSeq,
+          );
+        });
       });
-    });
-
-    // Top river: row 0 closest to center seal, growing upward
-    const topRows = buildVisibleRiverRows(
-      seatByName.get(relative.top)?.river ?? [],
-      6,
-    );
-    topRows.forEach((row, rIdx) => {
-      row.forEach((entry, cIdx) => {
-        const x =
-          layout.rivers.top.x +
-          layout.rivers.top.width -
-          cIdx * (tw + gap) -
-          tw / 2;
-        const y =
-          layout.rivers.top.y +
-          layout.rivers.top.height -
-          rIdx * (th + gap) -
-          th / 2;
-        placeRiverTile(
-          entry.tile,
-          x,
-          y,
-          Math.PI,
-          entry.is_tsumogiri,
-          entry.seq === latestSeq,
-        );
-      });
-    });
-
-    // Left river: row 0 closest to center seal, growing leftward
-    const leftRows = buildVisibleRiverRows(
-      seatByName.get(relative.left)?.river ?? [],
-      6,
-    );
-    leftRows.forEach((row, rIdx) => {
-      row.forEach((entry, cIdx) => {
-        const x =
-          layout.rivers.left.x +
-          layout.rivers.left.width -
-          rIdx * (th + gap) -
-          th / 2;
-        const y = layout.rivers.left.y + cIdx * (tw + gap) + tw / 2;
-        placeRiverTile(
-          entry.tile,
-          x,
-          y,
-          Math.PI / 2,
-          entry.is_tsumogiri,
-          entry.seq === latestSeq,
-        );
-      });
-    });
-
-    // Right river: row 0 closest to center seal, growing rightward
-    const rightRows = buildVisibleRiverRows(
-      seatByName.get(relative.right)?.river ?? [],
-      6,
-    );
-    rightRows.forEach((row, rIdx) => {
-      row.forEach((entry, cIdx) => {
-        const x = layout.rivers.right.x + rIdx * (th + gap) + th / 2;
-        const y =
-          layout.rivers.right.y +
-          layout.rivers.right.height -
-          cIdx * (tw + gap) -
-          tw / 2;
-        placeRiverTile(
-          entry.tile,
-          x,
-          y,
-          -Math.PI / 2,
-          entry.is_tsumogiri,
-          entry.seq === latestSeq,
-        );
-      });
-    });
+    }
   }
 
   private drawMelds(
@@ -700,7 +504,7 @@ export class TableSceneRenderer {
     seatByName: Map<Seat, PublicSeatView>,
     pendingAddedKong: PendingAddedKong | null,
   ): void {
-    disposeChildren(this.meldLayer);
+    disposeContainerChildren(this.meldLayer);
     const { meldTileW: mw, meldTileH: mh } = layout;
     const tileGap = 1;
     const groupGap = 8;
@@ -840,61 +644,19 @@ export class TableSceneRenderer {
     relative: ReturnType<typeof getRelativeSeats>,
     seatByName: Map<Seat, PublicSeatView>,
   ): void {
-    disposeChildren(this.opponentHandLayer);
-    const {
-      oppHandTileW: ow,
-      oppHandTileH: oh,
-      oppSideTileW: sw,
-      oppSideTileH: sh,
-    } = layout;
-    const gap = 1;
-
-    // Top opponent
-    const topCount = seatByName.get(relative.top)?.hand_count ?? 0;
-    const topSpan = topCount * ow + Math.max(0, topCount - 1) * gap;
-    const topStartX = layout.cx - topSpan / 2;
-    const topY = layout.oppHands.top.y + oh / 2;
-    for (let i = 0; i < topCount; i += 1) {
-      addShadowedTileSprite(
-        this.opponentHandLayer,
-        this.atlas,
-        null,
-        topStartX + i * (ow + gap) + ow / 2,
-        topY,
-        ow,
-        oh,
-        Math.PI,
-        1.5,
-      );
-    }
-
-    // Left and right opponents
-    const sideHands = [
-      {
-        seat: relative.left,
-        x: layout.oppHands.left.x + sh / 2,
-        rotation: Math.PI / 2,
-      },
-      {
-        seat: relative.right,
-        x: layout.oppHands.right.x + sh / 2,
-        rotation: -Math.PI / 2,
-      },
-    ];
-    for (const side of sideHands) {
-      const count = seatByName.get(side.seat)?.hand_count ?? 0;
-      const span = count * sw + Math.max(0, count - 1) * gap;
-      const startY = layout.cy - span / 2;
-      for (let i = 0; i < count; i += 1) {
+    disposeContainerChildren(this.opponentHandLayer);
+    for (const side of ["top", "left", "right"] as const) {
+      const count = seatByName.get(relative[side])?.hand_count ?? 0;
+      for (const slot of computeOpponentHandSlots(layout, side, count)) {
         addShadowedTileSprite(
           this.opponentHandLayer,
           this.atlas,
           null,
-          side.x,
-          startY + i * (sw + gap) + sw / 2,
-          sw,
-          sh,
-          side.rotation,
+          slot.x,
+          slot.y,
+          slot.width,
+          slot.height,
+          slot.rotation,
           1.5,
         );
       }
@@ -910,7 +672,7 @@ export class TableSceneRenderer {
     dealer: Seat,
     activeSeat: Seat | null,
   ): void {
-    disposeChildren(this.badgeLayer);
+    disposeContainerChildren(this.badgeLayer);
 
     const drawBadge = (seat: Seat, rect: Rect) => {
       const seatView = seatByName.get(seat);
@@ -1020,7 +782,7 @@ export class TableSceneRenderer {
   ): Set<string> {
     this.cancelSnapBackAnimation();
     this.viewerHandVisuals = [];
-    disposeChildren(this.viewerHandLayer);
+    disposeContainerChildren(this.viewerHandLayer);
     const legalSlotIds = new Set<string>();
     const view = params.snapshot.player_view;
     if (!view) {
@@ -1028,31 +790,22 @@ export class TableSceneRenderer {
     }
 
     const { closed_tiles, drawn_tile } = view.hand;
-    const {
-      handTileW: tw,
-      handTileH: th,
-      handGap: gap,
-      drawnGap,
-      bottomHandY: baseY,
-    } = layout;
-
     const hasDrawn = drawn_tile !== null;
-    const totalCount = closed_tiles.length + (hasDrawn ? 1 : 0);
-    if (totalCount === 0) {
+    if (closed_tiles.length === 0 && !hasDrawn) {
       return legalSlotIds;
     }
 
-    const closedW =
-      closed_tiles.length * tw + Math.max(0, closed_tiles.length - 1) * gap;
-    const fullW = closedW + (hasDrawn ? drawnGap + tw : 0);
-    const startX = Math.round(layout.cx - fullW / 2);
+    const handSlots = computeViewerHandSlots(
+      layout,
+      closed_tiles.length,
+      hasDrawn,
+    );
 
     const addInteractiveHandTile = (
       slotId: string,
       tile: Tile,
       fromDrawn: boolean,
-      x: number,
-      y: number,
+      geom: (typeof handSlots.closed)[number],
     ) => {
       const legal =
         !params.inputLocked &&
@@ -1062,8 +815,7 @@ export class TableSceneRenderer {
         legalSlotIds.add(slotId);
       }
 
-      const restX = x + tw / 2;
-      const restY = y + th / 2;
+      const { x, y, restX, restY, width: tw, height: th } = geom;
       const { sprite, shadow } = addShadowedTilePair(
         this.viewerHandLayer,
         this.atlas,
@@ -1129,19 +881,23 @@ export class TableSceneRenderer {
     };
 
     closed_tiles.forEach((tile, idx) => {
-      const x = startX + idx * (tw + gap);
-      addInteractiveHandTile(`closed-${idx}`, tile, false, x, baseY);
+      addInteractiveHandTile(
+        `closed-${idx}`,
+        tile,
+        false,
+        handSlots.closed[idx],
+      );
     });
 
-    if (drawn_tile !== null) {
-      const drawnX = startX + closedW + drawnGap;
+    if (drawn_tile !== null && handSlots.drawn !== null) {
+      const { x: drawnX, y: baseY, width: tw, height: th } = handSlots.drawn;
       const marker = new Graphics();
       marker
         .roundRect(drawnX - 2, baseY - 2, tw + 4, th + 4, 6)
         .stroke({ width: 1.5, color: BRASS, alpha: 0.72 });
       this.viewerHandLayer.addChild(marker);
 
-      addInteractiveHandTile("drawn", drawn_tile, true, drawnX, baseY);
+      addInteractiveHandTile("drawn", drawn_tile, true, handSlots.drawn);
     }
 
     return legalSlotIds;
@@ -1254,7 +1010,7 @@ export class TableSceneRenderer {
   }
 
   private drawGhostPreview(state: DiscardInteractionState): void {
-    disposeChildren(this.ghostLayer);
+    disposeContainerChildren(this.ghostLayer);
     const layout = this.lastLayout;
     if (!layout) {
       return;

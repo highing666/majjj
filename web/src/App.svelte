@@ -110,7 +110,7 @@
   const snapshot = $derived(sessionState.snapshot);
 
   $effect(() => {
-    const phase = snapshot?.phase ?? null;
+    const phase = presentedSnapshot?.phase ?? null;
     wakeLock.syncPhase(phase);
     if (phase !== "InMatch") {
       webglRecoveryState = null;
@@ -132,8 +132,8 @@
     actionsDisabled || sessionState.pendingActionId !== null,
   );
   const settlementVisible = $derived(
-    snapshot !== null &&
-      snapshot.phase === "InMatch" &&
+    presentedSnapshot !== null &&
+      presentedSnapshot.phase === "InMatch" &&
       presentationState.settlementVisible &&
       presentedPlayerView?.phase === "BetweenHands" &&
       presentedPlayerView.last_settlement !== null,
@@ -201,7 +201,7 @@
   }
 </script>
 
-<main class="app-shell" class:app-shell-match={snapshot?.phase === "InMatch"}>
+<main class="app-shell" class:app-shell-match={presentedSnapshot?.phase === "InMatch"}>
   {#if sessionState.replacedByNewTab}
     <div class="banner banner-danger" role="alert">
       <div>
@@ -244,14 +244,14 @@
     </div>
   {/if}
 
-  {#if snapshot === null}
+  {#if presentedSnapshot === null}
     <section class="card placeholder-card">
       <h1>麻将牌局 · Majjj</h1>
       <p>正在获取当前牌桌状态，请稍候…</p>
     </section>
-  {:else if snapshot.phase === "Lobby"}
+  {:else if presentedSnapshot.phase === "Lobby"}
     <LobbyView
-      {snapshot}
+      snapshot={snapshot ?? presentedSnapshot}
       {initialNickname}
       disabled={actionsDisabled}
       onUpdateNickname={(name) => client.updateNickname(name)}
@@ -261,12 +261,12 @@
       onStartMatch={() => client.startMatch()}
       onOpenSettings={() => (settingsOpen = true)}
     />
-  {:else if snapshot.phase === "InMatch"}
+  {:else if presentedSnapshot.phase === "InMatch"}
     <section class="match-shell">
       <header class="match-topbar">
         <div class="topbar-info">
           <span class="tag tag-mode">
-            {matchModeLabel(snapshot.config.mode)}
+            {matchModeLabel(presentedSnapshot.config.mode)}
           </span>
           {#if presentedPlayerView}
             <span class="topbar-round">
@@ -274,7 +274,7 @@
             </span>
             {#if presentationState.pendingAddedKong !== null}
               <span class="tag tag-pending">补杠待确认…</span>
-            {:else if presentedPlayerView.phase === "Playing" && presentedPlayerView.turn.active_seat === snapshot.your_seat}
+            {:else if presentedPlayerView.phase === "Playing" && presentedPlayerView.turn.active_seat === presentedSnapshot.your_seat}
               <span class="tag tag-turn">轮到你行动</span>
             {:else if presentedPlayerView.phase === "Playing" && presentedPlayerView.turn.active_seat !== null}
               <span class="tag">等待{seatLabel(presentedPlayerView.turn.active_seat)}</span>
@@ -286,18 +286,18 @@
           <div class="pace-switch" role="group" aria-label="牌桌节奏">
             <button
               class="pace-btn"
-              class:pace-active={snapshot.pace === "Standard"}
+              class:pace-active={(snapshot?.pace ?? presentedSnapshot.pace) === "Standard"}
               type="button"
-              disabled={actionsDisabled || snapshot.your_seat === null}
+              disabled={actionsDisabled || (snapshot?.your_seat ?? presentedSnapshot.your_seat) === null}
               onclick={() => handleSetPace("Standard")}
             >
               标准节奏
             </button>
             <button
               class="pace-btn"
-              class:pace-active={snapshot.pace === "Fast"}
+              class:pace-active={(snapshot?.pace ?? presentedSnapshot.pace) === "Fast"}
               type="button"
-              disabled={actionsDisabled || snapshot.your_seat === null}
+              disabled={actionsDisabled || (snapshot?.your_seat ?? presentedSnapshot.your_seat) === null}
               onclick={() => handleSetPace("Fast")}
             >
               快速节奏
@@ -316,6 +316,7 @@
             class="btn btn-subtle topbar-btn"
             type="button"
             disabled={actionsDisabled ||
+              snapshot === null ||
               snapshot.your_seat === null ||
               snapshot.pending_destructive_op !== null}
             onclick={() => client.requestDisbandMatch()}
@@ -386,7 +387,8 @@
               "ConfirmNextHand",
             )}
             disabled={inputLocked}
-            destructivePending={snapshot.pending_destructive_op !== null}
+            destructivePending={snapshot !== null &&
+              snapshot.pending_destructive_op !== null}
             onConfirmNextHand={handleConfirmNextHand}
             onRequestEndFreeTable={() => client.requestEndFreeTable()}
           />
@@ -400,7 +402,7 @@
         </section>
       {/if}
 
-      {#if snapshot.pending_destructive_op !== null}
+      {#if snapshot !== null && snapshot.pending_destructive_op !== null}
         <DestructiveOpModal
           op={snapshot.pending_destructive_op}
           seats={snapshot.seats}
@@ -410,13 +412,13 @@
         />
       {/if}
     </section>
-  {:else if playerView?.match_summary}
+  {:else if presentedPlayerView?.match_summary}
     <MatchSummaryView
-      summary={playerView.match_summary}
-      config={snapshot.config}
-      seats={snapshot.seats}
-      yourSeat={snapshot.your_seat}
-      lastSettlement={playerView.last_settlement}
+      summary={presentedPlayerView.match_summary}
+      config={presentedSnapshot.config}
+      seats={presentedSnapshot.seats}
+      yourSeat={presentedSnapshot.your_seat}
+      lastSettlement={presentedPlayerView.last_settlement}
       disabled={actionsDisabled}
       onUpdateConfig={(config) => client.updateLobbyConfig(config)}
       onStartMatch={() => client.startMatch()}
@@ -428,7 +430,7 @@
       <p class="placeholder-note">
         当前牌桌已进入总结算阶段。
       </p>
-      {#if snapshot.your_seat !== null}
+      {#if presentedSnapshot.your_seat !== null}
         <div class="fallback-actions">
           <button
             class="btn btn-subtle"

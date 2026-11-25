@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   computeBottomRiverSlotPoint,
   computeCenterSealLayout,
+  computeOpponentHandSlots,
+  computeRiverSlotPoint,
   computeTableLayout,
+  computeViewerHandSlots,
   type Rect,
 } from "./layout";
 
@@ -165,5 +168,67 @@ describe("Scheme C four-corner minimal computeTableLayout", () => {
     // Row 2
     expect(p12.x).toBe(p0.x);
     expect(p12.y - p6.y).toBe(layout.riverTileH + layout.riverGap);
+  });
+
+  it("computes river slots, opponent hand slots, and viewer hand slots strictly inside their layout bounds", () => {
+    const layout = computeTableLayout(1280, 720);
+
+    // All 4 river sides stay within their river rect and have expected orientations
+    const expectedRotations = {
+      bottom: 0,
+      top: Math.PI,
+      left: Math.PI / 2,
+      right: -Math.PI / 2,
+    } as const;
+    for (const side of ["bottom", "top", "left", "right"] as const) {
+      const rect = layout.rivers[side];
+      const horizontal = side === "bottom" || side === "top";
+      const halfW = (horizontal ? layout.riverTileW : layout.riverTileH) / 2;
+      const halfH = (horizontal ? layout.riverTileH : layout.riverTileW) / 2;
+      for (const idx of [0, 5, 6, 17]) {
+        const pt = computeRiverSlotPoint(layout, side, idx);
+        expect(pt.rotation).toBe(expectedRotations[side]);
+        expect(pt.x - halfW).toBeGreaterThanOrEqual(rect.x - 0.001);
+        expect(pt.x + halfW).toBeLessThanOrEqual(rect.x + rect.width + 0.001);
+        expect(pt.y - halfH).toBeGreaterThanOrEqual(rect.y - 0.001);
+        expect(pt.y + halfH).toBeLessThanOrEqual(rect.y + rect.height + 0.001);
+      }
+    }
+    expect(computeBottomRiverSlotPoint(layout, 7)).toEqual({
+      x: computeRiverSlotPoint(layout, "bottom", 7).x,
+      y: computeRiverSlotPoint(layout, "bottom", 7).y,
+    });
+
+    // Opponent hands (14 tiles) stay inside oppHands bounds
+    for (const side of ["top", "left", "right"] as const) {
+      const slots = computeOpponentHandSlots(layout, side, 14);
+      expect(slots).toHaveLength(14);
+      const rect = layout.oppHands[side];
+      for (const s of slots) {
+        const boxW = side === "top" ? s.width : s.height;
+        const boxH = side === "top" ? s.height : s.width;
+        expect(s.x - boxW / 2).toBeGreaterThanOrEqual(rect.x - 0.001);
+        expect(s.x + boxW / 2).toBeLessThanOrEqual(rect.x + rect.width + 0.001);
+        expect(s.y - boxH / 2).toBeGreaterThanOrEqual(rect.y - 0.001);
+        expect(s.y + boxH / 2).toBeLessThanOrEqual(rect.y + rect.height + 0.001);
+      }
+    }
+
+    // Viewer 13+1 hand slots align with viewerHandRect and preserve drawnGap
+    const fullHand = computeViewerHandSlots(layout, 13, true);
+    expect(fullHand.closed).toHaveLength(13);
+    expect(fullHand.drawn).not.toBeNull();
+    expect(fullHand.closed[0].x).toBe(layout.viewerHandRect.x);
+    expect(fullHand.closed[0].y).toBe(layout.viewerHandRect.y);
+    expect(fullHand.drawn!.x - (fullHand.closed[12].x + fullHand.closed[12].width)).toBe(
+      layout.drawnGap,
+    );
+    expect(fullHand.drawn!.x + fullHand.drawn!.width).toBe(
+      layout.viewerHandRect.x + layout.viewerHandRect.width,
+    );
+
+    const thirteenHand = computeViewerHandSlots(layout, 13, false);
+    expect(thirteenHand.closed).toHaveLength(13);
+    expect(thirteenHand.drawn).toBeNull();
   });
 });

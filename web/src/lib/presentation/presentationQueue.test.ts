@@ -594,6 +594,125 @@ describe("PresentationQueue", () => {
     queue.dispose();
   });
 
+  it("plays final-hand HandSettled impact while keeping presentedSnapshot.phase at InMatch before transitioning to Finished on MatchFinished or skipActiveImpact()", () => {
+    const queue = createPresentationQueue();
+    const states: PresentationState[] = [];
+    queue.subscribe((s) => states.push(s));
+    queue.enqueueServerMessage({ TableSnapshot: makeSnapshot(1, "Standard") });
+
+    const summary = {
+      mode: "EastOnly" as const,
+      hands_played: 4,
+      initial_scores: [0, 0, 0, 0] as [number, number, number, number],
+      final_scores: [24, -8, -8, -8] as [number, number, number, number],
+      net_deltas: [24, -8, -8, -8] as [number, number, number, number],
+    };
+
+    // EastOnly final hand: HandSettled + MatchFinished arrive in the same EventBatch
+    queue.enqueueServerMessage({
+      EventBatch: {
+        from_seq: 2,
+        to_seq: 3,
+        events: [
+          {
+            seq: 2,
+            kind: {
+              HandSettled: {
+                settlement: makeSettlement(
+                  {
+                    Win: {
+                      discarder: null,
+                      winning_tile: 31,
+                      winners: [
+                        {
+                          seat: "East",
+                          win_kind: "Tsumo",
+                          total_fan: 4,
+                          base_points: 16,
+                          items: [{ code: "QingYiSe", label: "清一色", fan: 4 }],
+                        },
+                      ],
+                    },
+                  },
+                  [24, -8, -8, -8],
+                ),
+              },
+            },
+          },
+          {
+            seq: 3,
+            kind: {
+              MatchFinished: { summary },
+            },
+          },
+        ],
+        updated_legal_actions: [],
+      },
+    });
+
+    // Impact must play first while presented snapshot remains InMatch (TableCanvas + ComicImpactOverlay stay mounted)
+    expect(queue.getState().snapshot?.phase).toBe("InMatch");
+    expect(queue.getState().snapshot?.player_view?.phase).toBe("BetweenHands");
+    expect(queue.getState().activeImpact).toMatchObject({
+      kind: "hu",
+      label: "自摸！",
+      skippable: true,
+    });
+    expect(queue.getState().settlementVisible).toBe(false);
+    expect(queue.getState().isPlaying).toBe(true);
+
+    vi.advanceTimersByTime(1099);
+    expect(queue.getState().snapshot?.phase).toBe("InMatch");
+    expect(queue.getState().activeImpact).not.toBeNull();
+
+    // Once impact finishes, MatchFinished applies and transitions to Finished
+    vi.advanceTimersByTime(1);
+    expect(queue.getState().activeImpact).toBeNull();
+    expect(queue.getState().snapshot?.phase).toBe("Finished");
+    expect(queue.getState().snapshot?.player_view?.phase).toBe("MatchFinished");
+    expect(queue.getState().snapshot?.player_view?.match_summary).toEqual(summary);
+    expect(queue.getState().settlementVisible).toBe(false);
+    expect(queue.getState().isPlaying).toBe(false);
+
+    // Also verify skipActiveImpact() on DrawGame + MatchFinished transitions cleanly without flashing settlementVisible
+    queue.enqueueServerMessage({ TableSnapshot: makeSnapshot(10, "Standard") });
+    states.length = 0;
+    queue.enqueueServerMessage({
+      EventBatch: {
+        from_seq: 11,
+        to_seq: 12,
+        events: [
+          {
+            seq: 11,
+            kind: { HandSettled: { settlement: makeSettlement("DrawGame") } },
+          },
+          {
+            seq: 12,
+            kind: { MatchFinished: { summary } },
+          },
+        ],
+        updated_legal_actions: [],
+      },
+    });
+
+    expect(queue.getState().snapshot?.phase).toBe("InMatch");
+    expect(queue.getState().activeImpact).toMatchObject({
+      kind: "draw_game",
+      label: "荒庄",
+      skippable: true,
+    });
+
+    expect(queue.skipActiveImpact()).toBe(true);
+    expect(queue.getState().activeImpact).toBeNull();
+    expect(queue.getState().snapshot?.phase).toBe("Finished");
+    expect(queue.getState().snapshot?.player_view?.phase).toBe("MatchFinished");
+    expect(queue.getState().settlementVisible).toBe(false);
+    expect(queue.getState().isPlaying).toBe(false);
+    expect(states.some((s) => s.settlementVisible)).toBe(false);
+
+    queue.dispose();
+  });
+
   it("emits UiActionPrompted strictly when viewer gains newly actionable legal prompt actions", () => {
     const queue = createPresentationQueue();
     const semanticEvents: SemanticGameEvent[] = [];

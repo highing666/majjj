@@ -20,6 +20,9 @@ export interface RelativeSeats {
   left: Seat;
 }
 
+export type RelativeSlot = keyof RelativeSeats;
+export type RelativeRole = "自家" | "下家" | "对家" | "上家";
+
 export interface MeldTileSlot {
   tile: Tile | null;
   faceUp: boolean;
@@ -88,24 +91,48 @@ export function getRelativeSeats(viewer: Seat): RelativeSeats {
   };
 }
 
+const SLOT_TO_ROLE: Record<RelativeSlot, RelativeRole> = {
+  bottom: "自家",
+  right: "下家",
+  top: "对家",
+  left: "上家",
+};
+
+/**
+ * Maps `target` seat to its viewer-relative canvas slot (`bottom` / `right` / `top` / `left`).
+ */
+export function seatRelativeSlot(viewer: Seat, target: Seat): RelativeSlot {
+  const rel = getRelativeSeats(viewer);
+  if (target === rel.bottom) {
+    return "bottom";
+  }
+  if (target === rel.right) {
+    return "right";
+  }
+  if (target === rel.top) {
+    return "top";
+  }
+  return "left";
+}
+
 /**
  * Returns the viewer-relative role label for `target`.
  */
-export function seatRelativeRole(
-  viewer: Seat,
-  target: Seat,
-): "自家" | "下家" | "对家" | "上家" {
-  const rel = getRelativeSeats(viewer);
-  if (target === rel.bottom) {
-    return "自家";
-  }
-  if (target === rel.right) {
-    return "下家";
-  }
-  if (target === rel.top) {
-    return "对家";
-  }
-  return "上家";
+export function seatRelativeRole(viewer: Seat, target: Seat): RelativeRole {
+  return SLOT_TO_ROLE[seatRelativeSlot(viewer, target)];
+}
+
+/**
+ * Formats a canonical seat display title (`东座 · 房主`, `南座 · AI 2`, or `西座`).
+ */
+export function formatSeatDisplayName(
+  seat: Seat,
+  seats?: readonly [SeatInfo, SeatInfo, SeatInfo, SeatInfo] | null,
+): string {
+  const idx = seatIndex(seat);
+  const info = seats?.[idx];
+  const name = info?.nickname || (info?.kind === "Ai" ? `AI ${idx + 1}` : "");
+  return name ? `${seatLabel(seat)} · ${name}` : seatLabel(seat);
 }
 
 /**

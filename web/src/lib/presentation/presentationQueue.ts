@@ -10,6 +10,7 @@ import {
   type SessionState,
 } from "../session/reducer";
 import {
+  IMPACT_DURATION_MS,
   createPresentationEffectsBus,
   registerPiltoverImpactSubscriber,
   type PiltoverImpactFrame,
@@ -79,14 +80,12 @@ const PACE_MULTIPLIER: Record<TablePace, number> = {
 const BACKLOG_ACCEL_THRESHOLD = 3;
 const BACKLOG_ACCEL_FACTOR = 1.6;
 
-const BASE_DURATION_MS = {
+const REGULAR_EVENT_DURATION_MS: Record<string, number> = {
   TileDrawn: 140,
   TileDiscarded: 180,
   AddedKongAttempted: 180,
-  MeldDeclared: 700,
-  HandSettledWin: 1100,
-  HandSettledDraw: 600,
-} as const;
+  MeldDeclared: IMPACT_DURATION_MS.MeldDeclared,
+};
 
 const defaultScheduler: PresentationScheduler = {
   setTimeout: (cb, ms) => globalThis.setTimeout(cb, ms),
@@ -98,35 +97,19 @@ function isRegularQueueItem(item: QueueItem): boolean {
   if (item.kind !== "event") {
     return false;
   }
-  const { kind } = item.event;
-  return (
-    "TileDrawn" in kind ||
-    "TileDiscarded" in kind ||
-    "AddedKongAttempted" in kind ||
-    "MeldDeclared" in kind
-  );
+  const kindKey = Object.keys(item.event.kind)[0];
+  return kindKey !== undefined && kindKey in REGULAR_EVENT_DURATION_MS;
 }
 
 function resolveBaseDurationMs(event: PlayerEvent): number {
   const { kind } = event;
-  if ("TileDrawn" in kind) {
-    return BASE_DURATION_MS.TileDrawn;
-  }
-  if ("TileDiscarded" in kind) {
-    return BASE_DURATION_MS.TileDiscarded;
-  }
-  if ("AddedKongAttempted" in kind) {
-    return BASE_DURATION_MS.AddedKongAttempted;
-  }
-  if ("MeldDeclared" in kind) {
-    return BASE_DURATION_MS.MeldDeclared;
-  }
   if ("HandSettled" in kind) {
     return kind.HandSettled.settlement.outcome === "DrawGame"
-      ? BASE_DURATION_MS.HandSettledDraw
-      : BASE_DURATION_MS.HandSettledWin;
+      ? IMPACT_DURATION_MS.HandSettledDraw
+      : IMPACT_DURATION_MS.HandSettledWin;
   }
-  return 0;
+  const kindKey = Object.keys(kind)[0];
+  return (kindKey !== undefined ? REGULAR_EVENT_DURATION_MS[kindKey] : undefined) ?? 0;
 }
 
 function shouldShowSettlement(snapshot: TableSnapshot | null): boolean {

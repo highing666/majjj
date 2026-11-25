@@ -1,3 +1,5 @@
+import type { RelativeSlot } from "./viewModel";
+
 export interface Rect {
   x: number;
   y: number;
@@ -10,12 +12,38 @@ export interface Point {
   y: number;
 }
 
+export interface RiverSlotPlacement extends Point {
+  rotation: number;
+}
+
+export interface OpponentHandSlotGeometry extends Point {
+  width: number;
+  height: number;
+  rotation: number;
+}
+
+export interface ViewerHandSlotGeometry {
+  x: number;
+  y: number;
+  restX: number;
+  restY: number;
+  width: number;
+  height: number;
+}
+
+export interface ViewerHandGeometry {
+  closed: ViewerHandSlotGeometry[];
+  drawn: ViewerHandSlotGeometry | null;
+}
+
 export interface CenterSealLayout {
   windFontSize: number;
   wallFontSize: number;
   windY: number;
   wallY: number;
 }
+
+const OPP_HAND_GAP = 1;
 
 export interface TableLayout {
   width: number;
@@ -35,6 +63,7 @@ export interface TableLayout {
   oppHandTileH: number;
   oppSideTileW: number;
   oppSideTileH: number;
+  oppGap: number;
   oppHands: {
     top: Rect;
     left: Rect;
@@ -46,8 +75,6 @@ export interface TableLayout {
   meldTileW: number;
   meldTileH: number;
   centerSeal: Rect;
-  /** Alias of `centerSeal` for backward compatibility. */
-  hub: Rect;
   rivers: {
     bottom: Rect;
     top: Rect;
@@ -150,7 +177,7 @@ export function computeTableLayout(
   };
 
   // Opponent hand sizing & placement
-  const oppGap = 1;
+  const oppGap = OPP_HAND_GAP;
   const oppHandTileW = clamp(Math.round(handTileW * 0.44), 14, 24);
   const oppHandTileH = Math.round(oppHandTileW * 1.36);
   const maxTopOppW = 14 * oppHandTileW + 13 * oppGap;
@@ -305,6 +332,7 @@ export function computeTableLayout(
     oppHandTileH,
     oppSideTileW,
     oppSideTileH,
+    oppGap,
     oppHands: {
       top: topOppRect,
       left: leftOppRect,
@@ -316,7 +344,6 @@ export function computeTableLayout(
     meldTileW,
     meldTileH,
     centerSeal,
-    hub: centerSeal,
     rivers: {
       bottom: bottomRiver,
       top: topRiver,
@@ -369,6 +396,48 @@ export function computeCenterSealLayout(seal: Rect): CenterSealLayout {
 }
 
 /**
+ * Computes the center point and rotation of the `visibleIndex`-th slot in any seat's 6-per-row river.
+ */
+export function computeRiverSlotPoint(
+  layout: TableLayout,
+  side: RelativeSlot,
+  visibleIndex: number,
+): RiverSlotPlacement {
+  const safeIndex = Math.max(0, Math.floor(visibleIndex));
+  const col = safeIndex % 6;
+  const row = Math.floor(safeIndex / 6);
+  const { riverTileW: tw, riverTileH: th, riverGap: gap } = layout;
+  const rect = layout.rivers[side];
+
+  switch (side) {
+    case "bottom":
+      return {
+        x: rect.x + col * (tw + gap) + tw / 2,
+        y: rect.y + row * (th + gap) + th / 2,
+        rotation: 0,
+      };
+    case "top":
+      return {
+        x: rect.x + rect.width - col * (tw + gap) - tw / 2,
+        y: rect.y + rect.height - row * (th + gap) - th / 2,
+        rotation: Math.PI,
+      };
+    case "left":
+      return {
+        x: rect.x + rect.width - row * (th + gap) - th / 2,
+        y: rect.y + col * (tw + gap) + tw / 2,
+        rotation: Math.PI / 2,
+      };
+    case "right":
+      return {
+        x: rect.x + row * (th + gap) + th / 2,
+        y: rect.y + rect.height - col * (tw + gap) - tw / 2,
+        rotation: -Math.PI / 2,
+      };
+  }
+}
+
+/**
  * Computes the center point `(x, y)` of the `visibleIndex`-th slot in the bottom player's 6-per-row river.
  * Shared between `tableRenderer.ts` and Ticket #42 discard ghost preview.
  */
@@ -376,12 +445,102 @@ export function computeBottomRiverSlotPoint(
   layout: TableLayout,
   visibleIndex: number,
 ): Point {
-  const safeIndex = Math.max(0, Math.floor(visibleIndex));
-  const col = safeIndex % 6;
-  const row = Math.floor(safeIndex / 6);
-  const { riverTileW: tw, riverTileH: th, riverGap: gap } = layout;
-  return {
-    x: layout.rivers.bottom.x + col * (tw + gap) + tw / 2,
-    y: layout.rivers.bottom.y + row * (th + gap) + th / 2,
-  };
+  const { x, y } = computeRiverSlotPoint(layout, "bottom", visibleIndex);
+  return { x, y };
+}
+
+/**
+ * Computes center coordinates, tile dimensions, and rotations for an opponent's concealed hand.
+ */
+export function computeOpponentHandSlots(
+  layout: TableLayout,
+  side: "top" | "left" | "right",
+  count: number,
+): OpponentHandSlotGeometry[] {
+  const safeCount = Math.max(0, Math.floor(count));
+  if (safeCount === 0) {
+    return [];
+  }
+  const gap = layout.oppGap;
+
+  if (side === "top") {
+    const { oppHandTileW: ow, oppHandTileH: oh } = layout;
+    const span = safeCount * ow + Math.max(0, safeCount - 1) * gap;
+    const rect = layout.oppHands.top;
+    const startX = rect.x + (rect.width - span) / 2;
+    const y = rect.y + oh / 2;
+    return Array.from({ length: safeCount }, (_, i) => ({
+      x: startX + i * (ow + gap) + ow / 2,
+      y,
+      width: ow,
+      height: oh,
+      rotation: Math.PI,
+    }));
+  }
+
+  const { oppSideTileW: sw, oppSideTileH: sh } = layout;
+  const span = safeCount * sw + Math.max(0, safeCount - 1) * gap;
+  const rect = layout.oppHands[side];
+  const startY = rect.y + (rect.height - span) / 2;
+  const x = rect.x + sh / 2;
+  const rotation = side === "left" ? Math.PI / 2 : -Math.PI / 2;
+  return Array.from({ length: safeCount }, (_, i) => ({
+    x,
+    y: startY + i * (sw + gap) + sw / 2,
+    width: sw,
+    height: sh,
+    rotation,
+  }));
+}
+
+/**
+ * Computes slot geometry for the viewer's closed tiles plus optional separated drawn tile.
+ */
+export function computeViewerHandSlots(
+  layout: TableLayout,
+  closedCount: number,
+  hasDrawn: boolean,
+): ViewerHandGeometry {
+  const safeClosed = Math.max(0, Math.floor(closedCount));
+  const {
+    handTileW: tw,
+    handTileH: th,
+    handGap: gap,
+    drawnGap,
+    bottomHandY: y,
+  } = layout;
+
+  const closedW = safeClosed * tw + Math.max(0, safeClosed - 1) * gap;
+  const fullW = closedW + (hasDrawn ? drawnGap + tw : 0);
+  const startX = Math.round(layout.cx - fullW / 2);
+
+  const closed: ViewerHandSlotGeometry[] = Array.from(
+    { length: safeClosed },
+    (_, idx) => {
+      const x = startX + idx * (tw + gap);
+      return {
+        x,
+        y,
+        restX: x + tw / 2,
+        restY: y + th / 2,
+        width: tw,
+        height: th,
+      };
+    },
+  );
+
+  let drawn: ViewerHandSlotGeometry | null = null;
+  if (hasDrawn) {
+    const drawnX = startX + closedW + drawnGap;
+    drawn = {
+      x: drawnX,
+      y,
+      restX: drawnX + tw / 2,
+      restY: y + th / 2,
+      width: tw,
+      height: th,
+    };
+  }
+
+  return { closed, drawn };
 }
