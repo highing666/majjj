@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { createAudioEventRouter } from "./lib/audio/audioRouter";
+  import type { AudioStatus } from "./lib/audio/audioTypes";
   import { matchModeLabel, patchLobbyConfig } from "./lib/lobby/lobbyConfig";
   import LobbyView from "./lib/lobby/LobbyView.svelte";
   import {
@@ -23,6 +25,7 @@
   import TableCanvas from "./lib/table/TableCanvas.svelte";
   import { formatRoundTitle, seatLabel } from "./lib/table/tiles";
   import { findLegalDiscardAction } from "./lib/table/viewModel";
+  import AudioResumeCapsule from "./lib/ui/AudioResumeCapsule.svelte";
   import SettingsModal from "./lib/ui/SettingsModal.svelte";
 
   const client = createTableClient();
@@ -32,11 +35,15 @@
     initialDevicePrefs.reduced_effects,
   );
   const presentationQueue = createPresentationQueue({ effectsBus });
+  const audioRouter = createAudioEventRouter({
+    initialPreferences: initialDevicePrefs,
+  });
   let sessionState = $state<SessionState>(client.getState());
   let presentationState = $state<PresentationState>(
     presentationQueue.getState(),
   );
   let devicePrefs = $state<DevicePreferences>(initialDevicePrefs);
+  let audioStatus = $state<AudioStatus>(audioRouter.getStatus());
   let settingsOpen = $state(false);
   const initialNickname = client.getIdentity().nickname;
 
@@ -50,15 +57,26 @@
     const unsubscribePresentation = presentationQueue.subscribe((next) => {
       presentationState = next;
     });
+    const unsubscribeAudioStatus = audioRouter.subscribe((next) => {
+      audioStatus = next;
+    });
+    const unsubscribeSemantic = presentationQueue.onSemanticEvent((event) => {
+      audioRouter.handleSemanticEvent(event);
+    });
+    const unbindAudioGestures = audioRouter.bindGestureUnlock(window);
     const unsubscribeMessages = client.onServerMessage((message) => {
       presentationQueue.enqueueServerMessage(message);
     });
     client.connect();
     return () => {
       unsubscribeMessages();
+      unbindAudioGestures();
+      unsubscribeSemantic();
+      unsubscribeAudioStatus();
       unsubscribePresentation();
       unsubscribePrefs();
       unsubscribeClient();
+      audioRouter.dispose();
       presentationQueue.dispose();
       effectsBus.dispose();
       client.dispose();
@@ -67,6 +85,7 @@
 
   $effect(() => {
     effectsBus.setReducedEffects(devicePrefs.reduced_effects);
+    audioRouter.applyPreferences(devicePrefs);
   });
 
   const snapshot = $derived(sessionState.snapshot);
@@ -403,6 +422,11 @@
     onResetPreferences={() => preferencesStore.reset()}
     onChangePace={handleSettingsPaceChange}
     onClose={() => (settingsOpen = false)}
+  />
+
+  <AudioResumeCapsule
+    visible={audioStatus.needsResumeCapsule}
+    onResume={() => audioRouter.unlockFromGesture()}
   />
 
   <footer class="footer-bar">

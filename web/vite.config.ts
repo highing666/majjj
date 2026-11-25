@@ -3,6 +3,7 @@ import { defineConfig } from "vite";
 
 export default defineConfig({
   plugins: [svelte()],
+  assetsInclude: ["**/*.m4a"],
   server: {
     host: true,
     port: 5173,
