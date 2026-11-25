@@ -618,4 +618,58 @@ describe("TableClient", () => {
 
     client.dispose();
   });
+
+  it("delivers parsed ServerMessage frames to onServerMessage listeners until unsubscribed or disposed", () => {
+    const sockets: MockWebSocket[] = [];
+    const client = createTableClient({
+      wsUrl: "ws://localhost:8789/ws",
+      storage: createMemoryStorage(),
+      createWebSocket: (url) => {
+        const ws = new MockWebSocket(url);
+        sockets.push(ws);
+        return ws;
+      },
+      windowEvents: null,
+    });
+
+    const received: ServerMessage[] = [];
+    const unsubscribe = client.onServerMessage((msg) => {
+      received.push(msg);
+    });
+
+    client.connect();
+    sockets[0].emitOpen();
+
+    const snap = makeSnapshot({ seq: 1 });
+    sockets[0].emitServerMessage({ TableSnapshot: snap });
+    sockets[0].emitServerMessage({
+      EventBatch: {
+        from_seq: 2,
+        to_seq: 2,
+        events: [
+          {
+            seq: 2,
+            kind: {
+              TileDiscarded: { seat: "East", tile: 5, is_tsumogiri: true },
+            },
+          },
+        ],
+        updated_legal_actions: [],
+      },
+    });
+
+    expect(received).toHaveLength(2);
+    expect(received[0]).toEqual({ TableSnapshot: snap });
+    expect(
+      typeof received[1] === "object" &&
+        received[1] !== null &&
+        "EventBatch" in received[1],
+    ).toBe(true);
+
+    unsubscribe();
+    sockets[0].emitServerMessage({ ServerPong: { ts_ms: 99 } });
+    expect(received).toHaveLength(2);
+
+    client.dispose();
+  });
 });
