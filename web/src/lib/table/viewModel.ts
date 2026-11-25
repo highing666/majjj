@@ -3,12 +3,13 @@ import type { MatchSummary } from "../protocol/generated/MatchSummary";
 import type { MeldView } from "../protocol/generated/MeldView";
 import type { PlayerAction } from "../protocol/generated/PlayerAction";
 import type { PlayerView } from "../protocol/generated/PlayerView";
+import type { PublicSeatView } from "../protocol/generated/PublicSeatView";
 import type { RevealedMeld } from "../protocol/generated/RevealedMeld";
 import type { Seat } from "../protocol/generated/Seat";
 import type { SeatInfo } from "../protocol/generated/SeatInfo";
 import type { Tile } from "../protocol/generated/Tile";
 import { parseMeld, type MeldKind } from "../protocol/melds";
-import { ALL_SEATS, seatIndex, seatLabel } from "../protocol/seats";
+import { ALL_SEATS, seatIndex, seatLabel, seatShortWind } from "../protocol/seats";
 import type { PendingAddedKong } from "../session/reducer";
 import { getTileLabel } from "./tiles";
 
@@ -18,6 +19,9 @@ export interface RelativeSeats {
   top: Seat;
   left: Seat;
 }
+
+export type RelativeSlot = keyof RelativeSeats;
+export type RelativeRole = "自家" | "下家" | "对家" | "上家";
 
 export interface MeldTileSlot {
   tile: Tile | null;
@@ -48,6 +52,21 @@ export interface CanvasSize {
   height: number;
 }
 
+export interface SeatBadgeModel {
+  wind: string;
+  isDealer: boolean;
+  isActive: boolean;
+  isOffline: boolean;
+  name: string;
+  scoreText: string;
+}
+
+export interface ShortcutContext {
+  disabled: boolean;
+  hasModalOpen: boolean;
+  isInputFocused: boolean;
+}
+
 export interface MatchStandingRow {
   rank: number;
   seat: Seat;
@@ -72,24 +91,48 @@ export function getRelativeSeats(viewer: Seat): RelativeSeats {
   };
 }
 
+const SLOT_TO_ROLE: Record<RelativeSlot, RelativeRole> = {
+  bottom: "自家",
+  right: "下家",
+  top: "对家",
+  left: "上家",
+};
+
+/**
+ * Maps `target` seat to its viewer-relative canvas slot (`bottom` / `right` / `top` / `left`).
+ */
+export function seatRelativeSlot(viewer: Seat, target: Seat): RelativeSlot {
+  const rel = getRelativeSeats(viewer);
+  if (target === rel.bottom) {
+    return "bottom";
+  }
+  if (target === rel.right) {
+    return "right";
+  }
+  if (target === rel.top) {
+    return "top";
+  }
+  return "left";
+}
+
 /**
  * Returns the viewer-relative role label for `target`.
  */
-export function seatRelativeRole(
-  viewer: Seat,
-  target: Seat,
-): "自家" | "下家" | "对家" | "上家" {
-  const rel = getRelativeSeats(viewer);
-  if (target === rel.bottom) {
-    return "自家";
-  }
-  if (target === rel.right) {
-    return "下家";
-  }
-  if (target === rel.top) {
-    return "对家";
-  }
-  return "上家";
+export function seatRelativeRole(viewer: Seat, target: Seat): RelativeRole {
+  return SLOT_TO_ROLE[seatRelativeSlot(viewer, target)];
+}
+
+/**
+ * Formats a canonical seat display title (`东座 · 房主`, `南座 · AI 2`, or `西座`).
+ */
+export function formatSeatDisplayName(
+  seat: Seat,
+  seats?: readonly [SeatInfo, SeatInfo, SeatInfo, SeatInfo] | null,
+): string {
+  const idx = seatIndex(seat);
+  const info = seats?.[idx];
+  const name = info?.nickname || (info?.kind === "Ai" ? `AI ${idx + 1}` : "");
+  return name ? `${seatLabel(seat)} · ${name}` : seatLabel(seat);
 }
 
 /**
@@ -437,4 +480,45 @@ export function extractContentBoxSize(entry: {
     };
   }
   return { width: 1, height: 1 };
+}
+
+/**
+ * Resolves a keyboard shortcut (`H`/`G`/`P`/`Esc`) to an unambiguous `PlayerAction`,
+ * suppressing shortcuts when disabled, a modal is open, or an input element has focus.
+ */
+export function resolveActionBarShortcut(
+  items: readonly ActionBarItem[],
+  rawKey: string,
+  ctx: ShortcutContext,
+): PlayerAction | null {
+  if (ctx.disabled || ctx.hasModalOpen || ctx.isInputFocused || items.length === 0) {
+    return null;
+  }
+  const key = rawKey.toLowerCase();
+  const candidates = items.filter((item) => item.shortcutKey === key);
+  return candidates.length === 1 ? candidates[0].action : null;
+}
+
+/**
+ * Builds the compact Scheme C corner seat badge view model.
+ */
+export function buildSeatBadgeModel(
+  seat: Seat,
+  seatView: PublicSeatView,
+  seatInfo: SeatInfo,
+  viewer: Seat,
+  dealer: Seat,
+  activeSeat: Seat | null,
+): SeatBadgeModel {
+  const role = seatRelativeRole(viewer, seat);
+  const rawName = seatInfo.nickname || (seatInfo.kind === "Ai" ? "AI" : role);
+  const name = rawName.length > 7 ? `${rawName.slice(0, 6)}…` : rawName;
+  return {
+    wind: seatShortWind(seat),
+    isDealer: dealer === seat,
+    isActive: activeSeat === seat,
+    isOffline: seatInfo.kind === "Human" && !seatInfo.connected,
+    name,
+    scoreText: formatScoreDelta(seatView.score),
+  };
 }

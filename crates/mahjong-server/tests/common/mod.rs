@@ -11,10 +11,10 @@ use http_body_util::BodyExt;
 use hyper::header::{CACHE_CONTROL, CONTENT_TYPE};
 use hyper::{Request, StatusCode};
 use hyper_util::rt::TokioIo;
-use mahjong_core::Tile;
+use mahjong_core::{build_preset_wall, PlayerAction, PlayerEvent, Tile};
 use mahjong_server::protocol::{ClientMessage, HealthResponse, ServerMessage, TableSnapshot};
 use mahjong_server::session::{TableOptions, WallProviderFactory};
-use mahjong_server::{ServerConfig, ServerHandle};
+use mahjong_server::{PacingMode, ServerConfig, ServerHandle};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
@@ -73,7 +73,7 @@ pub async fn spawn_seeded_server(seed: u64, static_dir: Option<PathBuf>) -> Serv
         static_dir,
         ..ServerConfig::default()
     }
-    .spawn_with_options(TableOptions::seeded(seed))
+    .spawn_with_options(TableOptions::seeded(seed).with_pacing(PacingMode::Immediate))
     .await
     .expect("spawn seeded server")
 }
@@ -86,7 +86,9 @@ pub async fn spawn_with_wall_factory(seed: u64, factory: WallProviderFactory) ->
         static_dir: None,
         ..ServerConfig::default()
     }
-    .spawn_with_options(TableOptions::with_wall_factory(seed, factory))
+    .spawn_with_options(
+        TableOptions::with_wall_factory(seed, factory).with_pacing(PacingMode::Immediate),
+    )
     .await
     .expect("spawn server with wall factory")
 }
@@ -179,6 +181,32 @@ pub async fn recv_snapshot(ws: &mut WsClient) -> TableSnapshot {
             other => panic!("expected TableSnapshot, got {other:?}"),
         }
     }
+}
+
+#[allow(dead_code)]
+pub async fn recv_event_batch(
+    ws: &mut WsClient,
+) -> (u64, u64, Vec<PlayerEvent>, Vec<PlayerAction>) {
+    loop {
+        match recv_msg(ws).await {
+            ServerMessage::EventBatch {
+                from_seq,
+                to_seq,
+                events,
+                updated_legal_actions,
+            } => return (from_seq, to_seq, events, updated_legal_actions),
+            ServerMessage::LobbyUpdated { .. } => continue,
+            other => panic!("expected EventBatch, got {other:?}"),
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub fn no_reaction_wall() -> Vec<Tile> {
+    let base_13 = tiles("1m 4m 7m 1s 4s 7s 1p 4p 7p E S W N");
+    let mut east_14 = base_13.clone();
+    east_14.push(tile("C"));
+    build_preset_wall(&east_14, &base_13, &base_13, &base_13, &[], &[]).expect("valid 136 wall")
 }
 
 #[allow(dead_code)]

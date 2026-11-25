@@ -25,12 +25,16 @@ import {
   buildMatchStandings,
   buildMeldRenderItems,
   buildRevealedMeldItems,
+  buildSeatBadgeModel,
   buildVisibleRiverRows,
   computeCanvasResolution,
   extractContentBoxSize,
   findLegalDiscardAction,
   formatScoreDelta,
+  formatSeatDisplayName,
   getRelativeSeats,
+  resolveActionBarShortcut,
+  seatRelativeSlot,
 } from "./viewModel";
 
 function makePlayerView(overrides: Partial<PlayerView> = {}): PlayerView {
@@ -189,6 +193,58 @@ describe("table viewModel helpers", () => {
       top: "East",
       left: "South",
     });
+    expect(seatRelativeSlot("West", "West")).toBe("bottom");
+    expect(seatRelativeSlot("West", "North")).toBe("right");
+    expect(seatRelativeSlot("West", "East")).toBe("top");
+    expect(seatRelativeSlot("West", "South")).toBe("left");
+
+    const sampleSeats = [
+      {
+        seat: "East",
+        kind: "Human",
+        nickname: "房主",
+        connected: true,
+        ai_assisted: false,
+        ai_difficulty: null,
+        ai_style: null,
+        voice_pack_id: null,
+      },
+      {
+        seat: "South",
+        kind: "Ai",
+        nickname: "",
+        connected: true,
+        ai_assisted: false,
+        ai_difficulty: "Strong",
+        ai_style: "Balanced",
+        voice_pack_id: null,
+      },
+      {
+        seat: "West",
+        kind: "Human",
+        nickname: "",
+        connected: true,
+        ai_assisted: false,
+        ai_difficulty: null,
+        ai_style: null,
+        voice_pack_id: null,
+      },
+      {
+        seat: "North",
+        kind: "Ai",
+        nickname: "AI北",
+        connected: true,
+        ai_assisted: false,
+        ai_difficulty: "Strong",
+        ai_style: "Balanced",
+        voice_pack_id: null,
+      },
+    ] as const;
+    expect(formatSeatDisplayName("East", sampleSeats)).toBe("东座 · 房主");
+    expect(formatSeatDisplayName("South", sampleSeats)).toBe("南座 · AI 2");
+    expect(formatSeatDisplayName("West", sampleSeats)).toBe("西座");
+    expect(formatSeatDisplayName("North", sampleSeats)).toBe("北座 · AI北");
+    expect(formatSeatDisplayName("East", null)).toBe("东座");
   });
 
   it("omits claimed discards and chunks rivers strictly into 6-tile rows", () => {
@@ -442,6 +498,106 @@ describe("table viewModel helpers", () => {
       nickname: "AI 1",
       finalScore: 12,
       netDelta: 12,
+    });
+  });
+
+  it("resolves H/G/P/Esc ActionBar shortcuts only when unobstructed and unambiguous", () => {
+    const view = makePlayerView({
+      legal_actions: [{ Pon: { tile: 27 } }, "Pass"],
+    });
+    const items = buildActionBarItems(view);
+
+    expect(
+      resolveActionBarShortcut(items, "p", {
+        disabled: false,
+        hasModalOpen: false,
+        isInputFocused: false,
+      }),
+    ).toEqual({ Pon: { tile: 27 } });
+
+    expect(
+      resolveActionBarShortcut(items, "Escape", {
+        disabled: false,
+        hasModalOpen: false,
+        isInputFocused: false,
+      }),
+    ).toBe("Pass");
+
+    // Disabled when modal open, input focused, or ActionBar disabled
+    expect(
+      resolveActionBarShortcut(items, "p", {
+        disabled: false,
+        hasModalOpen: true,
+        isInputFocused: false,
+      }),
+    ).toBeNull();
+    expect(
+      resolveActionBarShortcut(items, "p", {
+        disabled: false,
+        hasModalOpen: false,
+        isInputFocused: true,
+      }),
+    ).toBeNull();
+    expect(
+      resolveActionBarShortcut(items, "Escape", {
+        disabled: true,
+        hasModalOpen: false,
+        isInputFocused: false,
+      }),
+    ).toBeNull();
+
+    // Ambiguous multiple kong actions do not fire blindly on G
+    const multiKongItems = buildActionBarItems(
+      makePlayerView({
+        legal_actions: [
+          { ConcealedKong: { tile: 31 } },
+          { AddedKong: { tile: 9 } },
+          "Pass",
+        ],
+      }),
+    );
+    expect(
+      resolveActionBarShortcut(multiKongItems, "g", {
+        disabled: false,
+        hasModalOpen: false,
+        isInputFocused: false,
+      }),
+    ).toBeNull();
+  });
+
+  it("builds corner seat badge view models with dealer, active, offline, and score tags", () => {
+    const model = buildSeatBadgeModel(
+      "South",
+      {
+        seat: "South",
+        score: 8,
+        hand_count: 13,
+        river: [],
+        melds: [],
+        last_draw_or_meld_seq: 0,
+      },
+      {
+        seat: "South",
+        kind: "Human",
+        nickname: "小红",
+        connected: false,
+        ai_assisted: false,
+        ai_difficulty: null,
+        ai_style: null,
+        voice_pack_id: null,
+      },
+      "East",
+      "South",
+      "South",
+    );
+
+    expect(model).toEqual({
+      wind: "南",
+      isDealer: true,
+      isActive: true,
+      isOffline: true,
+      name: "小红",
+      scoreText: "+8",
     });
   });
 });

@@ -2,7 +2,7 @@
   import type { PlayerAction } from "../protocol/generated/PlayerAction";
   import type { PlayerView } from "../protocol/generated/PlayerView";
   import TileBadge from "./TileBadge.svelte";
-  import { buildActionBarItems } from "./viewModel";
+  import { buildActionBarItems, resolveActionBarShortcut } from "./viewModel";
 
   interface Props {
     playerView: PlayerView;
@@ -21,26 +21,22 @@
   const items = $derived(buildActionBarItems(playerView));
 
   function handleKeyDown(event: KeyboardEvent): void {
-    if (disabled || hasModalOpen || items.length === 0) {
-      return;
-    }
     const target = event.target as HTMLElement | null;
-    if (
+    const isInputFocused = Boolean(
       target &&
-      (target.tagName === "INPUT" ||
-        target.tagName === "SELECT" ||
-        target.tagName === "TEXTAREA" ||
-        target.isContentEditable)
-    ) {
-      return;
-    }
-
-    const key = event.key.toLowerCase();
-    const candidates = items.filter((item) => item.shortcutKey === key);
-
-    if (candidates.length === 1) {
+        (target.tagName === "INPUT" ||
+          target.tagName === "SELECT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable),
+    );
+    const matched = resolveActionBarShortcut(items, event.key, {
+      disabled,
+      hasModalOpen,
+      isInputFocused,
+    });
+    if (matched !== null) {
       event.preventDefault();
-      onAction(candidates[0].action);
+      onAction(matched);
     }
   }
 </script>
@@ -76,23 +72,26 @@
     align-items: center;
     justify-content: center;
     gap: 8px;
-    padding: 10px 14px;
+    padding: 8px 12px;
     border-radius: 14px;
-    background: rgba(15, 32, 38, 0.94);
-    border: 1.5px solid #d4a857;
-    box-shadow: 0 10px 26px rgba(10, 20, 24, 0.35);
+    background: rgba(13, 24, 29, 0.94);
+    border: 2px solid #d4a857;
+    box-shadow:
+      0 4px 0 #181a20,
+      0 12px 28px rgba(8, 12, 20, 0.55);
   }
 
   .action-btn {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    padding: 8px 14px;
-    border-radius: 10px;
-    border: 1.5px solid #181a20;
-    font-weight: 700;
+    padding: 7px 13px;
+    border-radius: 9px;
+    border: 2px solid #181a20;
+    font-weight: 800;
     font-size: 15px;
-    color: #fff;
+    color: #fffaf0;
+    box-shadow: 0 3px 0 #181a20;
     transition:
       transform 0.08s ease,
       filter 0.12s ease;
@@ -100,7 +99,7 @@
 
   .action-btn:hover:not(:disabled) {
     filter: brightness(1.08);
-    transform: translateY(-1px);
+    transform: translateY(-2px);
   }
 
   .action-btn:active:not(:disabled) {
@@ -108,29 +107,29 @@
   }
 
   .tone-hu {
-    background: linear-gradient(180deg, #cb4028 0%, #9b2916 100%);
+    background: linear-gradient(180deg, #d83d2e 0%, #9f2518 100%);
     border-color: #f5be58;
   }
 
   .tone-kong {
-    background: linear-gradient(180deg, #2b6f72 0%, #1c4e50 100%);
-    border-color: #8ccac8;
+    background: linear-gradient(180deg, #21857d 0%, #155753 100%);
+    border-color: #93d0cb;
   }
 
   .tone-pon {
-    background: linear-gradient(180deg, #b87826 0%, #8d5814 100%);
-    border-color: #f2cb79;
+    background: linear-gradient(180deg, #d48924 0%, #995d12 100%);
+    border-color: #f3cc7b;
   }
 
   .tone-pass {
-    background: #33484f;
+    background: #2c3e45;
     border-color: #5b747d;
     color: #e4ecef;
   }
 
   .action-tile-name {
     font-size: 12px;
-    opacity: 0.9;
+    opacity: 0.92;
   }
 
   .action-kbd {
@@ -138,8 +137,9 @@
     font-size: 11px;
     padding: 1px 5px;
     border-radius: 4px;
-    background: rgba(0, 0, 0, 0.28);
-    color: rgba(255, 255, 255, 0.85);
+    background: rgba(0, 0, 0, 0.34);
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    color: rgba(255, 250, 240, 0.9);
   }
 
   @media (max-width: 640px) {
@@ -147,8 +147,13 @@
       display: none;
     }
 
+    .action-bar {
+      padding: 6px 10px;
+      gap: 6px;
+    }
+
     .action-btn {
-      padding: 8px 12px;
+      padding: 6px 10px;
       font-size: 14px;
     }
   }

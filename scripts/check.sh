@@ -41,7 +41,7 @@ fi
 
 if [ "$sandbox_mode" -eq 1 ]; then
   cargo test -p mahjong-core -p mahjong-ai
-  cargo test -p mahjong-server --bin mahjong-server --test lan_discovery --test ts_contract_drift
+  cargo test -p mahjong-server --bin mahjong-server --test lan_discovery --test pacing_virtual_clock --test ts_contract_drift
 else
   cargo test --workspace
 fi

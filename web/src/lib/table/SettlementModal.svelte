@@ -13,7 +13,11 @@
   } from "../protocol/seats";
   import TileBadge from "./TileBadge.svelte";
   import { formatRoundTitle, getTileLabel } from "./tiles";
-  import { buildRevealedMeldItems, formatScoreDelta } from "./viewModel";
+  import {
+    buildRevealedMeldItems,
+    formatScoreDelta,
+    formatSeatDisplayName,
+  } from "./viewModel";
 
   interface Props {
     settlement: HandSettlement;
@@ -44,11 +48,7 @@
   }: Props = $props();
 
   function seatName(seat: Seat): string {
-    const idx = seatIndex(seat);
-    const info = seats[idx];
-    const nickname =
-      info?.nickname || (info?.kind === "Ai" ? `AI ${idx + 1}` : "");
-    return nickname ? `${seatLabel(seat)} · ${nickname}` : seatLabel(seat);
+    return formatSeatDisplayName(seat, seats);
   }
 
   function winKindLabel(kind: WinKind): string {

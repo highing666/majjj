@@ -19,7 +19,7 @@ use mahjong_server::protocol::{
     TableSnapshot,
 };
 use mahjong_server::session::{BoxedWallProvider, TableOptions, TableRuntime, WallProviderFactory};
-use mahjong_server::{ServerConfig, ServerError};
+use mahjong_server::{PacingMode, ServerConfig, ServerError};
 use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
 
@@ -41,6 +41,10 @@ async fn recv_event_batch(ws: &mut WsClient) -> (u64, u64, Vec<PlayerEvent>, Vec
         } => (from_seq, to_seq, events, updated_legal_actions),
         other => panic!("expected EventBatch, got {other:?}"),
     }
+}
+
+fn is_stale_seq_rejection(submitted_seqs: &HashSet<u64>, reason: &str, server_seq: u64) -> bool {
+    reason.starts_with("expected seq ") && submitted_seqs.iter().any(|&seq| seq < server_seq)
 }
 
 #[test]
@@ -488,6 +492,7 @@ async fn one_player_three_ai_completes_full_east_only_match_and_emits_settled_pl
     let human_seat = initial_snap.your_seat.expect("human seated");
 
     let mut current_seq = initial_snap.seq;
+    let mut submitted_seqs = HashSet::new();
     let mut legal_actions = initial_snap.player_view.unwrap().legal_actions;
     let mut rng = ChaCha8Rng::seed_from_u64(9001);
     let mut action_counter: u64 = 0;
@@ -576,6 +581,12 @@ async fn one_player_three_ai_completes_full_east_only_match_and_emits_settled_pl
                             );
                             continue;
                         }
+                        ServerMessage::ActionRejected {
+                            reason,
+                            current_seq: server_seq,
+                        } if is_stale_seq_rejection(&submitted_seqs, &reason, server_seq) => {
+                            continue;
+                        }
                         other => panic!("unexpected message while awaiting snapshot: {other:?}"),
                     }
                 };
@@ -592,6 +603,7 @@ async fn one_player_three_ai_completes_full_east_only_match_and_emits_settled_pl
                 TileEfficiencyBot::decide(&view, &mut rng)
             };
 
+            submitted_seqs.insert(current_seq);
             send_msg(
                 &mut human,
                 &ClientMessage::SubmitAction {
@@ -627,11 +639,13 @@ async fn one_player_three_ai_completes_full_east_only_match_and_emits_settled_pl
                 }
             }
             ServerMessage::ActionRejected {
+                reason,
                 current_seq: server_seq,
-                ..
-            } if server_seq > current_seq => {
-                // Concurrent AI reaction (e.g., Hu) advanced `seq` while our SubmitAction was in flight.
-                legal_actions.clear();
+            } if is_stale_seq_rejection(&submitted_seqs, &reason, server_seq) => {
+                // Concurrent AI reaction advanced `seq` while our SubmitAction was in flight.
+                if server_seq > current_seq {
+                    legal_actions.clear();
+                }
             }
             other => panic!("unexpected server message during 1P+3AI match: {other:?}"),
         }
@@ -1618,8 +1632,9 @@ async fn zero_ai_threads_returns_invalid_ai_threads_error() {
 #[tokio::test]
 async fn bounded_rayon_pool_drives_one_player_matches_with_deterministic_budget_and_responsive_health(
 ) {
-    let options =
-        TableOptions::seeded(999).with_ai_budget(DecisionBudget::Deterministic { max_samples: 16 });
+    let options = TableOptions::seeded(999)
+        .with_ai_budget(DecisionBudget::Deterministic { max_samples: 16 })
+        .with_pacing(PacingMode::Immediate);
     let server = ServerConfig {
         bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
         port: 0,
@@ -1639,6 +1654,7 @@ async fn bounded_rayon_pool_drives_one_player_matches_with_deterministic_budget_
     let initial_snap = recv_snapshot(&mut human).await;
     let human_seat = initial_snap.your_seat.expect("human seated");
     let mut current_seq = initial_snap.seq;
+    let mut submitted_seqs = HashSet::new();
     let mut legal_actions = initial_snap.player_view.unwrap().legal_actions;
     let mut rng = ChaCha8Rng::seed_from_u64(3301);
     let mut action_counter = 0u64;
@@ -1673,6 +1689,12 @@ async fn bounded_rayon_pool_drives_one_player_matches_with_deterministic_budget_
                             }
                             continue;
                         }
+                        ServerMessage::ActionRejected {
+                            reason,
+                            current_seq: server_seq,
+                        } if is_stale_seq_rejection(&submitted_seqs, &reason, server_seq) => {
+                            continue;
+                        }
                         other => panic!("unexpected msg awaiting snapshot: {other:?}"),
                     }
                 };
@@ -1689,6 +1711,7 @@ async fn bounded_rayon_pool_drives_one_player_matches_with_deterministic_budget_
             };
 
             let action_id = format!("r1p-{action_counter}");
+            submitted_seqs.insert(current_seq);
             send_msg(
                 &mut human,
                 &ClientMessage::SubmitAction {
@@ -1742,6 +1765,14 @@ async fn bounded_rayon_pool_drives_one_player_matches_with_deterministic_budget_
             ServerMessage::TableSnapshot(snap) if snap.phase == TablePhase::Finished => {
                 break;
             }
+            ServerMessage::ActionRejected {
+                reason,
+                current_seq: server_seq,
+            } if is_stale_seq_rejection(&submitted_seqs, &reason, server_seq) => {
+                if server_seq > current_seq {
+                    legal_actions.clear();
+                }
+            }
             other => panic!("unexpected server message during bounded rayon 1P match: {other:?}"),
         }
     }
@@ -1771,6 +1802,7 @@ async fn bounded_rayon_pool_drives_one_player_matches_with_deterministic_budget_
         }
     };
     current_seq = free_snap.seq;
+    submitted_seqs.clear();
     legal_actions = free_snap.player_view.unwrap().legal_actions;
 
     loop {
@@ -1796,6 +1828,12 @@ async fn bounded_rayon_pool_drives_one_player_matches_with_deterministic_budget_
                         }
                         continue;
                     }
+                    ServerMessage::ActionRejected {
+                        reason,
+                        current_seq: server_seq,
+                    } if is_stale_seq_rejection(&submitted_seqs, &reason, server_seq) => {
+                        continue;
+                    }
                     other => panic!("unexpected msg awaiting FreeTable snapshot: {other:?}"),
                 }
             };
@@ -1808,6 +1846,7 @@ async fn bounded_rayon_pool_drives_one_player_matches_with_deterministic_budget_
             }
             if !legal_actions.is_empty() {
                 let action = TileEfficiencyBot::decide(&view, &mut rng);
+                submitted_seqs.insert(current_seq);
                 send_msg(
                     &mut human,
                     &ClientMessage::SubmitAction {
@@ -1832,6 +1871,14 @@ async fn bounded_rayon_pool_drives_one_player_matches_with_deterministic_budget_
                     current_seq = to_seq;
                 }
                 legal_actions = updated_legal_actions;
+            }
+            ServerMessage::ActionRejected {
+                reason,
+                current_seq: server_seq,
+            } if is_stale_seq_rejection(&submitted_seqs, &reason, server_seq) => {
+                if server_seq > current_seq {
+                    legal_actions.clear();
+                }
             }
             other => panic!("unexpected msg in FreeTable hand: {other:?}"),
         }
@@ -1859,7 +1906,8 @@ async fn bounded_rayon_pool_drives_one_player_matches_with_deterministic_budget_
 #[tokio::test]
 async fn bounded_rayon_pool_drives_two_player_east_only_and_free_table_with_deterministic_budget() {
     let options = TableOptions::seeded(2026)
-        .with_ai_budget(DecisionBudget::Deterministic { max_samples: 16 });
+        .with_ai_budget(DecisionBudget::Deterministic { max_samples: 16 })
+        .with_pacing(PacingMode::Immediate);
     let server = ServerConfig {
         bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
         port: 0,
@@ -2155,7 +2203,9 @@ async fn bounded_rayon_pool_one_thread_handles_concurrent_multi_ai_reaction_wind
         static_dir: None,
         ai_threads: 1,
     }
-    .spawn_with_options(TableOptions::with_wall_factory(88, factory))
+    .spawn_with_options(
+        TableOptions::with_wall_factory(88, factory).with_pacing(PacingMode::Immediate),
+    )
     .await
     .expect("spawn server with 1 AI thread and Realtime budget");
     let addr = server.addr();
@@ -2305,7 +2355,7 @@ async fn realtime_budget_drives_strong_ai_east_only_and_intermediate_ai_free_tab
         static_dir: None,
         ..default_cfg
     }
-    .spawn_with_options(TableOptions::seeded(777))
+    .spawn_with_options(TableOptions::seeded(777).with_pacing(PacingMode::Immediate))
     .await
     .expect("spawn server with default bounded AI threads and Realtime budget");
     let addr = server.addr();
@@ -2339,6 +2389,7 @@ async fn realtime_budget_drives_strong_ai_east_only_and_intermediate_ai_free_tab
     ) -> (TableSnapshot, usize) {
         let mut rng = ChaCha8Rng::seed_from_u64(4040 + step_offset);
         let mut current_seq = initial_snap.seq;
+        let mut submitted_seqs = HashSet::new();
         let mut legal_actions = initial_snap.player_view.expect("human view").legal_actions;
         let mut action_counter = step_offset;
         let mut hands_settled = 0usize;
@@ -2358,6 +2409,12 @@ async fn realtime_budget_drives_strong_ai_east_only_and_intermediate_ai_free_tab
                                 continue;
                             }
                             ServerMessage::LobbyUpdated { .. } => continue,
+                            ServerMessage::ActionRejected {
+                                reason,
+                                current_seq: server_seq,
+                            } if is_stale_seq_rejection(&submitted_seqs, &reason, server_seq) => {
+                                continue;
+                            }
                             other => {
                                 panic!("unexpected msg awaiting BetweenHands snapshot: {other:?}")
                             }
@@ -2400,6 +2457,12 @@ async fn realtime_budget_drives_strong_ai_east_only_and_intermediate_ai_free_tab
                                 continue;
                             }
                             ServerMessage::LobbyUpdated { .. } => continue,
+                            ServerMessage::ActionRejected {
+                                reason,
+                                current_seq: server_seq,
+                            } if is_stale_seq_rejection(&submitted_seqs, &reason, server_seq) => {
+                                continue;
+                            }
                             other => panic!("unexpected msg awaiting snapshot: {other:?}"),
                         }
                     };
@@ -2427,6 +2490,7 @@ async fn realtime_budget_drives_strong_ai_east_only_and_intermediate_ai_free_tab
                     TileEfficiencyBot::decide(&view, &mut rng)
                 };
 
+                submitted_seqs.insert(current_seq);
                 send_msg(
                     ws,
                     &ClientMessage::SubmitAction {
@@ -2478,6 +2542,14 @@ async fn realtime_budget_drives_strong_ai_east_only_and_intermediate_ai_free_tab
                     }
                     assert!(checked_ping && saw_pong);
                     return (snap, hands_settled);
+                }
+                ServerMessage::ActionRejected {
+                    reason,
+                    current_seq: server_seq,
+                } if is_stale_seq_rejection(&submitted_seqs, &reason, server_seq) => {
+                    if server_seq > current_seq {
+                        legal_actions.clear();
+                    }
                 }
                 other => panic!("unexpected server message during Realtime E2E match: {other:?}"),
             }
