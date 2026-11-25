@@ -4,39 +4,20 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use common::{connect_and_hello, recv_msg, recv_snapshot, send_msg, tile, tiles, WsClient};
+use common::{
+    connect_and_hello, no_reaction_wall, recv_event_batch, recv_msg, recv_snapshot, send_msg, tile,
+    tiles,
+};
 use mahjong_ai::{AiDifficulty, DecisionBudget};
 use mahjong_core::{
-    build_preset_wall, MatchMode, PlayerAction, PlayerEvent, PlayerEventKind, PresetWallProvider,
-    PublicPhase, Seat,
+    build_preset_wall, MatchMode, PlayerAction, PlayerEventKind, PresetWallProvider, PublicPhase,
+    Seat,
 };
 use mahjong_server::protocol::{
     ClientMessage, LobbyConfig, SeatingRule, ServerMessage, TablePace, TablePhase,
 };
 use mahjong_server::session::{BoxedWallProvider, TableOptions, WallProviderFactory};
 use mahjong_server::ServerConfig;
-
-async fn recv_event_batch(ws: &mut WsClient) -> (u64, u64, Vec<PlayerEvent>, Vec<PlayerAction>) {
-    loop {
-        match recv_msg(ws).await {
-            ServerMessage::EventBatch {
-                from_seq,
-                to_seq,
-                events,
-                updated_legal_actions,
-            } => return (from_seq, to_seq, events, updated_legal_actions),
-            ServerMessage::LobbyUpdated { .. } => continue,
-            other => panic!("expected EventBatch, got {other:?}"),
-        }
-    }
-}
-
-fn no_reaction_wall() -> Vec<mahjong_core::Tile> {
-    let base_13 = tiles("1m 4m 7m 1s 4s 7s 1p 4p 7p E S W N");
-    let mut east_14 = base_13.clone();
-    east_14.push(tile("C"));
-    build_preset_wall(&east_14, &base_13, &base_13, &base_13, &[], &[]).expect("valid 136 wall")
-}
 
 async fn spawn_humanized_server(
     seed: u64,

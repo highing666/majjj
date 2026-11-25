@@ -11,7 +11,7 @@ use http_body_util::BodyExt;
 use hyper::header::{CACHE_CONTROL, CONTENT_TYPE};
 use hyper::{Request, StatusCode};
 use hyper_util::rt::TokioIo;
-use mahjong_core::Tile;
+use mahjong_core::{build_preset_wall, PlayerAction, PlayerEvent, Tile};
 use mahjong_server::protocol::{ClientMessage, HealthResponse, ServerMessage, TableSnapshot};
 use mahjong_server::session::{TableOptions, WallProviderFactory};
 use mahjong_server::{PacingMode, ServerConfig, ServerHandle};
@@ -181,6 +181,32 @@ pub async fn recv_snapshot(ws: &mut WsClient) -> TableSnapshot {
             other => panic!("expected TableSnapshot, got {other:?}"),
         }
     }
+}
+
+#[allow(dead_code)]
+pub async fn recv_event_batch(
+    ws: &mut WsClient,
+) -> (u64, u64, Vec<PlayerEvent>, Vec<PlayerAction>) {
+    loop {
+        match recv_msg(ws).await {
+            ServerMessage::EventBatch {
+                from_seq,
+                to_seq,
+                events,
+                updated_legal_actions,
+            } => return (from_seq, to_seq, events, updated_legal_actions),
+            ServerMessage::LobbyUpdated { .. } => continue,
+            other => panic!("expected EventBatch, got {other:?}"),
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub fn no_reaction_wall() -> Vec<Tile> {
+    let base_13 = tiles("1m 4m 7m 1s 4s 7s 1p 4p 7p E S W N");
+    let mut east_14 = base_13.clone();
+    east_14.push(tile("C"));
+    build_preset_wall(&east_14, &base_13, &base_13, &base_13, &[], &[]).expect("valid 136 wall")
 }
 
 #[allow(dead_code)]

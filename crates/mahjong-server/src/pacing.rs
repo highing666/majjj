@@ -3,11 +3,23 @@
 
 use std::time::Duration;
 
-use mahjong_core::{DiscardEntry, PlayerAction, PlayerView, PublicPhase, Seat, Tile};
+use mahjong_core::{
+    DiscardEntry, Match, PlayerAction, PlayerEventKind, PlayerView, PublicPhase, RecordedEvent,
+    Ruleset, Seat, Tile, WallProvider,
+};
 
 use crate::protocol::TablePace;
 
 const PACING_SEED_SALT: u64 = 0x517C_C1B7_2722_0A95;
+
+/// Identity and target release instant for a deferred two-beat `EventBatch`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ReleaseTicket {
+    pub match_id: u64,
+    pub public_seq: u64,
+    pub release_generation: u64,
+    pub release_at: tokio::time::Instant,
+}
 
 /// Controls whether `TableSession` applies humanized server pacing and two-beat discard releases.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -185,6 +197,25 @@ pub(crate) fn apply_discard_to_view(
             }
         }
     }
+}
+
+pub(crate) fn compute_ai_turn_trigger<R: Ruleset, W: WallProvider>(
+    game: &Match<R, W>,
+    emitted: &[RecordedEvent],
+) -> AiTurnTrigger {
+    let mut trigger = AiTurnTrigger::Normal;
+    for event in emitted {
+        match game.project_event(event, Seat::East).kind {
+            PlayerEventKind::HandStarted { .. } => {
+                trigger = AiTurnTrigger::AfterHandStarted;
+            }
+            PlayerEventKind::MeldDeclared { .. } if trigger != AiTurnTrigger::AfterHandStarted => {
+                trigger = AiTurnTrigger::AfterMeldDeclared;
+            }
+            _ => {}
+        }
+    }
+    trigger
 }
 
 fn mix_u64(mut x: u64) -> u64 {

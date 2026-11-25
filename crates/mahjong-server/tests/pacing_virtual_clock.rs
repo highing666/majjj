@@ -1,5 +1,9 @@
+mod common;
+
 use std::sync::Arc;
 use std::time::Duration;
+
+use common::{no_reaction_wall, tile, tiles};
 
 use mahjong_ai::{AiDifficulty, DecisionBudget};
 use mahjong_core::{
@@ -277,80 +281,28 @@ impl TestClient {
         }
     }
 
+    async fn await_legal_actions(&mut self, required: Option<PlayerAction>) -> u64 {
+        loop {
+            match self.recv_msg().await {
+                ServerMessage::EventBatch {
+                    to_seq,
+                    updated_legal_actions,
+                    ..
+                } if !updated_legal_actions.is_empty()
+                    && required
+                        .as_ref()
+                        .is_none_or(|req| updated_legal_actions.contains(req)) =>
+                {
+                    return to_seq;
+                }
+                _ => continue,
+            }
+        }
+    }
+
     fn drain_pending(&mut self) {
         while self.try_recv_msg().is_some() {}
     }
-}
-
-fn tile(token: &str) -> Tile {
-    let bytes = token.as_bytes();
-    if let Some((&suffix, digits)) = bytes.split_last() {
-        if matches!(suffix, b'm' | b's' | b'p' | b'z') && digits.len() == 1 {
-            let d = digits[0];
-            let raw = match (suffix, d) {
-                (b'm', b'1'..=b'9') => d - b'1',
-                (b's', b'1'..=b'9') => 9 + (d - b'1'),
-                (b'p', b'1'..=b'9') => 18 + (d - b'1'),
-                (b'z', b'1'..=b'7') => 27 + (d - b'1'),
-                _ => panic!("invalid tile token {token:?}"),
-            };
-            return Tile::new(raw).expect("valid tile");
-        }
-    }
-    let raw = match token {
-        "E" => 27,
-        "S" => 28,
-        "W" => 29,
-        "N" => 30,
-        "C" => 31,
-        "F" => 32,
-        "B" => 33,
-        _ => panic!("invalid tile token {token:?}"),
-    };
-    Tile::new(raw).expect("valid honor")
-}
-
-fn tiles(tokens: &str) -> Vec<Tile> {
-    let mut out = Vec::new();
-    for token in tokens.split_whitespace() {
-        let bytes = token.as_bytes();
-        if let Some((&suffix, digits)) = bytes.split_last() {
-            if matches!(suffix, b'm' | b's' | b'p' | b'z') && !digits.is_empty() {
-                for &d in digits {
-                    let raw = match (suffix, d) {
-                        (b'm', b'1'..=b'9') => d - b'1',
-                        (b's', b'1'..=b'9') => 9 + (d - b'1'),
-                        (b'p', b'1'..=b'9') => 18 + (d - b'1'),
-                        (b'z', b'1'..=b'7') => 27 + (d - b'1'),
-                        _ => panic!("invalid tile token {token:?}"),
-                    };
-                    out.push(Tile::new(raw).expect("valid tile"));
-                }
-                continue;
-            }
-        }
-        for &ch in bytes {
-            let raw = match ch {
-                b'E' => 27,
-                b'S' => 28,
-                b'W' => 29,
-                b'N' => 30,
-                b'C' => 31,
-                b'F' => 32,
-                b'B' => 33,
-                _ => panic!("invalid honor token {token:?}"),
-            };
-            out.push(Tile::new(raw).expect("valid honor"));
-        }
-    }
-    out
-}
-
-fn no_reaction_draw_game_wall() -> Vec<Tile> {
-    let base_13 = tiles("1m 4m 7m 1s 4s 7s 1p 4p 7p E S W N");
-    let mut east_14 = base_13.clone();
-    east_14.push(tile("C"));
-    build_preset_wall(&east_14, &base_13, &base_13, &base_13, &[], &[]).expect("valid 136 wall")
 }
 
 async fn setup_four_human_match(
@@ -410,7 +362,7 @@ async fn setup_four_human_match(
 
 #[tokio::test(start_paused = true)]
 async fn unclaimed_discard_splits_into_two_beats_and_switches_live_with_set_pace() {
-    let wall = no_reaction_draw_game_wall();
+    let wall = no_reaction_wall();
     let factory: WallProviderFactory = Arc::new(move || {
         BoxedWallProvider(Box::new(PresetWallProvider::single(
             Seat::East,
@@ -577,7 +529,7 @@ async fn unclaimed_discard_splits_into_two_beats_and_switches_live_with_set_pace
 
 #[tokio::test(start_paused = true)]
 async fn zero_wall_draw_game_releases_discard_first_and_settlement_after_beat() {
-    let wall = no_reaction_draw_game_wall();
+    let wall = no_reaction_wall();
     let factory: WallProviderFactory = Arc::new(move || {
         BoxedWallProvider(Box::new(PresetWallProvider::single(
             Seat::East,
@@ -707,7 +659,7 @@ async fn zero_wall_draw_game_releases_discard_first_and_settlement_after_beat() 
 
 #[tokio::test(start_paused = true)]
 async fn pending_window_snapshot_reconnect_idempotency_and_premature_submit_stay_consistent() {
-    let wall = no_reaction_draw_game_wall();
+    let wall = no_reaction_wall();
     let factory: WallProviderFactory = Arc::new(move || {
         BoxedWallProvider(Box::new(PresetWallProvider::single(
             Seat::East,
@@ -842,7 +794,7 @@ async fn pending_window_snapshot_reconnect_idempotency_and_premature_submit_stay
 
 #[tokio::test(start_paused = true)]
 async fn disband_and_rematch_during_pending_release_never_pollute_new_state() {
-    let wall = no_reaction_draw_game_wall();
+    let wall = no_reaction_wall();
     let factory: WallProviderFactory = Arc::new(move || {
         BoxedWallProvider(Box::new(PresetWallProvider::single(
             Seat::East,
@@ -1139,7 +1091,7 @@ async fn assert_dealer_ai_hand_started_buffer(
     max_total_ms: u64,
 ) {
     // FixedAdjacent places the solo Human at East; PresetWallProvider makes South (AI) the dealer.
-    let wall = no_reaction_draw_game_wall();
+    let wall = no_reaction_wall();
     let factory: WallProviderFactory = Arc::new(move || {
         BoxedWallProvider(Box::new(PresetWallProvider::single(
             Seat::South,
@@ -1652,16 +1604,7 @@ async fn ai_rob_kong_hu_matches_win_window_standard() {
     .await;
 
     // Wait until West receives TileDrawn (or legal actions).
-    let mut west_seq = loop {
-        match west.recv_msg().await {
-            ServerMessage::EventBatch {
-                to_seq,
-                updated_legal_actions,
-                ..
-            } if !updated_legal_actions.is_empty() => break to_seq,
-            _ => continue,
-        }
-    };
+    let mut west_seq = west.await_legal_actions(None).await;
 
     // 2. West discards 5m -> East receives Pon(5m) legal action immediately.
     west.send(
@@ -1676,18 +1619,9 @@ async fn ai_rob_kong_hu_matches_win_window_standard() {
         },
     )
     .await;
-    let east_pon_seq = loop {
-        match east.recv_msg().await {
-            ServerMessage::EventBatch {
-                to_seq,
-                updated_legal_actions,
-                ..
-            } if updated_legal_actions.contains(&PlayerAction::Pon { tile: tile("5m") }) => {
-                break to_seq
-            }
-            _ => continue,
-        }
-    };
+    let east_pon_seq = east
+        .await_legal_actions(Some(PlayerAction::Pon { tile: tile("5m") }))
+        .await;
 
     // 3. East Pons 5m, then discards E.
     east.send(
@@ -1699,16 +1633,7 @@ async fn ai_rob_kong_hu_matches_win_window_standard() {
         },
     )
     .await;
-    let east_after_pon_seq = loop {
-        match east.recv_msg().await {
-            ServerMessage::EventBatch {
-                to_seq,
-                updated_legal_actions,
-                ..
-            } if !updated_legal_actions.is_empty() => break to_seq,
-            _ => continue,
-        }
-    };
+    let east_after_pon_seq = east.await_legal_actions(None).await;
     east.send(
         &runtime,
         &ClientMessage::SubmitAction {
@@ -1722,17 +1647,8 @@ async fn ai_rob_kong_hu_matches_win_window_standard() {
     )
     .await;
 
-    // 4. West draws 9s, discards 9s -> North draws B, discards B -> East draws 5m!
-    west_seq = loop {
-        match west.recv_msg().await {
-            ServerMessage::EventBatch {
-                to_seq,
-                updated_legal_actions,
-                ..
-            } if !updated_legal_actions.is_empty() => break to_seq,
-            _ => continue,
-        }
-    };
+    // 4. West draws 9s, discards 9s -> North draws 1s, discards 1s -> East draws 5m!
+    west_seq = west.await_legal_actions(None).await;
     west.send(
         &runtime,
         &ClientMessage::SubmitAction {
@@ -1746,18 +1662,9 @@ async fn ai_rob_kong_hu_matches_win_window_standard() {
     )
     .await;
 
-    let east_added_kong_seq = loop {
-        match east.recv_msg().await {
-            ServerMessage::EventBatch {
-                to_seq,
-                updated_legal_actions,
-                ..
-            } if updated_legal_actions.contains(&PlayerAction::AddedKong { tile: tile("5m") }) => {
-                break to_seq
-            }
-            _ => continue,
-        }
-    };
+    let east_added_kong_seq = east
+        .await_legal_actions(Some(PlayerAction::AddedKong { tile: tile("5m") }))
+        .await;
 
     // 5. East submits AddedKong(5m) -> AddedKongAttempted -> South AI RobKongHu(5m) in [350..550]ms!
     east.send(
@@ -1802,7 +1709,7 @@ async fn ai_rob_kong_hu_matches_win_window_standard() {
 
 #[tokio::test(start_paused = true)]
 async fn disband_and_rematch_while_ai_is_thinking_never_pollute_new_match() {
-    let wall = no_reaction_draw_game_wall();
+    let wall = no_reaction_wall();
     let factory: WallProviderFactory = Arc::new(move || {
         BoxedWallProvider(Box::new(PresetWallProvider::single(
             Seat::East,

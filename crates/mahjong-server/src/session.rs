@@ -17,12 +17,12 @@ use tokio::sync::{mpsc, Mutex};
 use uuid::Uuid;
 
 use crate::ai_pool::{
-    build_ai_pool, default_ai_threads, spawn_scheduled_work, PendingAiJob, PendingReleaseTask,
-    ScheduledWork,
+    build_ai_pool, default_ai_threads, spawn_scheduled_work, PendingAiJob, ScheduledWork,
 };
 use crate::lan::{discover_lan_urls, read_local_hostname, read_system_interfaces};
 use crate::pacing::{
-    apply_discard_to_view, discard_release_delay, target_ai_delay, AiTurnTrigger, PacingMode,
+    apply_discard_to_view, compute_ai_turn_trigger, discard_release_delay, target_ai_delay,
+    AiTurnTrigger, PacingMode, ReleaseTicket,
 };
 use crate::protocol::{
     ClientMessage, DestructiveOpKind, LanUrlInfo, LobbyConfig, PendingDestructiveOp, SeatInfo,
@@ -212,11 +212,9 @@ struct ClientConnection {
 }
 
 struct PendingRelease {
-    release_generation: u64,
-    public_seq: u64,
+    ticket: ReleaseTicket,
     public_views: [PlayerView; 4],
     deferred_events: Vec<RecordedEvent>,
-    release_at: tokio::time::Instant,
     scheduled: bool,
 }
 
@@ -239,7 +237,7 @@ impl ActiveMatchState {
     fn public_seq(&self) -> u64 {
         self.pending_release
             .as_ref()
-            .map_or_else(|| self.game.seq(), |pending| pending.public_seq)
+            .map_or_else(|| self.game.seq(), |pending| pending.ticket.public_seq)
     }
 
     fn public_view(&self, seat: Seat) -> PlayerView {
@@ -956,20 +954,7 @@ impl TableSession {
                     apply_discard_to_view(view, seat, tile, from_drawn, discard_seq);
                 }
                 let release_at = tokio::time::Instant::now() + release_delay;
-                let release_generation = self.bump_release_generation();
-                let active_mut = self.active_match.as_mut().expect("active match exists");
-                active_mut.active_discard_window = None;
-                active_mut.ai_turn_trigger = AiTurnTrigger::Normal;
-                active_mut.pending_release = Some(PendingRelease {
-                    release_generation,
-                    public_seq: discard_seq,
-                    public_views,
-                    deferred_events: emitted,
-                    release_at,
-                    scheduled: false,
-                });
-                self.seq = discard_seq;
-                self.in_flight_ai.clear();
+                self.stage_pending_release(discard_seq, public_views, emitted, release_at);
                 let active_ref = self.active_match.as_ref().expect("active match exists");
                 self.broadcast_discard_only_batch(&active_ref.game, &discard_event);
                 return;
@@ -1006,25 +991,17 @@ impl TableSession {
                 );
                 if !window.had_human_reactor && is_draw_or_draw_game {
                     let release_at = window.emitted_at + release_delay;
-                    let now = tokio::time::Instant::now();
-                    if now < release_at {
+                    if tokio::time::Instant::now() < release_at {
                         let mut public_views = pre_views.take().expect("captured for ai pass");
                         for view in &mut public_views {
                             view.legal_actions.clear();
                         }
-                        let release_generation = self.bump_release_generation();
-                        let active_mut = self.active_match.as_mut().expect("active match exists");
-                        active_mut.ai_turn_trigger = AiTurnTrigger::Normal;
-                        active_mut.pending_release = Some(PendingRelease {
-                            release_generation,
-                            public_seq: window.discard_seq,
+                        self.stage_pending_release(
+                            window.discard_seq,
                             public_views,
-                            deferred_events: emitted,
+                            emitted,
                             release_at,
-                            scheduled: false,
-                        });
-                        self.seq = window.discard_seq;
-                        self.in_flight_ai.clear();
+                        );
                         return;
                     }
                 }
@@ -1032,6 +1009,32 @@ impl TableSession {
         }
 
         self.finalize_emitted_events(emitted);
+    }
+
+    fn stage_pending_release(
+        &mut self,
+        public_seq: u64,
+        public_views: [PlayerView; 4],
+        deferred_events: Vec<RecordedEvent>,
+        release_at: tokio::time::Instant,
+    ) {
+        let release_generation = self.bump_release_generation();
+        let active_mut = self.active_match.as_mut().expect("active match exists");
+        active_mut.active_discard_window = None;
+        active_mut.ai_turn_trigger = AiTurnTrigger::Normal;
+        active_mut.pending_release = Some(PendingRelease {
+            ticket: ReleaseTicket {
+                match_id: active_mut.match_id,
+                public_seq,
+                release_generation,
+                release_at,
+            },
+            public_views,
+            deferred_events,
+            scheduled: false,
+        });
+        self.seq = public_seq;
+        self.in_flight_ai.clear();
     }
 
     fn finalize_emitted_events(&mut self, mut emitted: Vec<RecordedEvent>) {
@@ -1125,7 +1128,7 @@ impl TableSession {
         }
     }
 
-    fn take_unscheduled_pending_release(&mut self) -> Option<PendingReleaseTask> {
+    fn take_unscheduled_pending_release(&mut self) -> Option<ReleaseTicket> {
         if self.phase != TablePhase::InMatch {
             return None;
         }
@@ -1135,12 +1138,7 @@ impl TableSession {
             return None;
         }
         pending.scheduled = true;
-        Some(PendingReleaseTask {
-            match_id: active.match_id,
-            public_seq: pending.public_seq,
-            release_generation: pending.release_generation,
-            release_at: pending.release_at,
-        })
+        Some(pending.ticket)
     }
 
     fn collect_pending_ai_jobs(&mut self) -> Vec<PendingAiJob> {
@@ -1230,24 +1228,20 @@ impl TableSession {
         ))
     }
 
-    pub(crate) fn complete_pending_release(
-        &mut self,
-        match_id: u64,
-        public_seq: u64,
-        release_generation: u64,
-    ) -> ScheduledWork {
+    pub(crate) fn complete_pending_release(&mut self, ticket: ReleaseTicket) -> ScheduledWork {
         if self.phase != TablePhase::InMatch {
             return ScheduledWork::default();
         }
         let Some(active) = self.active_match.as_mut() else {
             return ScheduledWork::default();
         };
-        if active.match_id != match_id {
+        if active.match_id != ticket.match_id {
             return ScheduledWork::default();
         }
-        let matches_pending = active.pending_release.as_ref().is_some_and(|pending| {
-            pending.public_seq == public_seq && pending.release_generation == release_generation
-        });
+        let matches_pending = active
+            .pending_release
+            .as_ref()
+            .is_some_and(|pending| pending.ticket == ticket);
         if !matches_pending {
             return ScheduledWork::default();
         }
@@ -1697,20 +1691,4 @@ impl TableRuntime {
         let mut session = self.inner.lock().await;
         session.on_disconnect(conn_id);
     }
-}
-
-fn compute_ai_turn_trigger(game: &ActiveMatch, emitted: &[RecordedEvent]) -> AiTurnTrigger {
-    let mut trigger = AiTurnTrigger::Normal;
-    for event in emitted {
-        match game.project_event(event, Seat::East).kind {
-            PlayerEventKind::HandStarted { .. } => {
-                trigger = AiTurnTrigger::AfterHandStarted;
-            }
-            PlayerEventKind::MeldDeclared { .. } if trigger != AiTurnTrigger::AfterHandStarted => {
-                trigger = AiTurnTrigger::AfterMeldDeclared;
-            }
-            _ => {}
-        }
-    }
-    trigger
 }

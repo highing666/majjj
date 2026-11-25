@@ -8,7 +8,7 @@ use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
 use tokio::sync::Mutex;
 
-use crate::pacing::{overlapped_wait, AiTurnTrigger};
+use crate::pacing::{overlapped_wait, AiTurnTrigger, ReleaseTicket};
 use crate::server::ServerError;
 use crate::session::TableSession;
 
@@ -48,17 +48,10 @@ pub(crate) struct PendingAiJob {
     pub trigger: AiTurnTrigger,
 }
 
-pub(crate) struct PendingReleaseTask {
-    pub match_id: u64,
-    pub public_seq: u64,
-    pub release_generation: u64,
-    pub release_at: tokio::time::Instant,
-}
-
 #[derive(Default)]
 pub(crate) struct ScheduledWork {
     pub ai_jobs: Vec<PendingAiJob>,
-    pub pending_release: Option<PendingReleaseTask>,
+    pub pending_release: Option<ReleaseTicket>,
 }
 
 impl ScheduledWork {
@@ -72,21 +65,17 @@ pub(crate) fn spawn_scheduled_work(
     ai_pool: Arc<rayon::ThreadPool>,
     work: ScheduledWork,
 ) {
-    if let Some(release) = work.pending_release {
+    if let Some(ticket) = work.pending_release {
         let runtime = Arc::clone(&runtime);
         let ai_pool = Arc::clone(&ai_pool);
         tokio::spawn(async move {
             let now = tokio::time::Instant::now();
-            if release.release_at > now {
-                tokio::time::sleep_until(release.release_at).await;
+            if ticket.release_at > now {
+                tokio::time::sleep_until(ticket.release_at).await;
             }
             let next_work = {
                 let mut session = runtime.lock().await;
-                session.complete_pending_release(
-                    release.match_id,
-                    release.public_seq,
-                    release.release_generation,
-                )
+                session.complete_pending_release(ticket)
             };
             if !next_work.is_empty() {
                 spawn_scheduled_work(runtime, ai_pool, next_work);
