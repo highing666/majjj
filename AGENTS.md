@@ -2,7 +2,7 @@
 
 ### Issue tracker
 
-Issues and specs are tracked in GitHub Issues (`highing666/majjj`) via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+Issues and specs are tracked in GitHub Issues (`highing666/majjj`) via the `gh` CLI (requires `BypassSandbox: true`). To read a spec and its sub-issue task graph without truncation, run `./scripts/fetch-spec-graph.sh <spec-number> <out.md>`. See `docs/agents/issue-tracker.md` for all conventions.
 
 ### Triage labels
 
@@ -26,4 +26,4 @@ Authoritative v1 rules, protocol, AI, AV, and delivery slices: `docs/specs/v1-ar
 
 ### Verification
 
-Run `./scripts/check.sh` (`make check`) before finishing (`fmt`, `clippy`, `web` typecheck/test/build, workspace tests + `ts-rs` drift, boundaries/license audit, web safeguards, and glossary checks). Use `./scripts/check.sh --sandbox` (`make check-sandbox`) + `make test-server` when localhost sockets are sandbox-restricted; run `make web-install` (or `npm ci --offline --prefix web`) in fresh worktrees.
+Run `./scripts/check.sh` (`make check`) before finishing. In sandboxed shells where localhost sockets or `/usr/bin/make` are restricted, run `./scripts/check.sh --sandbox` plus `make test-server` (`BypassSandbox: true`), and hydrate fresh worktrees with `npm ci --offline --prefix web`.
