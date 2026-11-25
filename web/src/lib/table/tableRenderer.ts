@@ -26,6 +26,10 @@ import {
   type Rect,
   type TableLayout,
 } from "./layout";
+import {
+  createPaperGrainFilter,
+  type PaperGrainFilter,
+} from "./paperGrainFilter";
 import type { TileAtlas } from "./tileAtlas";
 import { seatShortWind } from "./tiles";
 import {
@@ -58,6 +62,7 @@ export interface TableRenderParams {
   pendingAddedKong: PendingAddedKong | null;
   inputLocked: boolean;
   confirmDiscard?: boolean;
+  paperGrainEnabled?: boolean;
 }
 
 export interface TableRendererCallbacks {
@@ -228,6 +233,7 @@ export class TableSceneRenderer {
   private snapBackRaf: number | null = null;
   private suppressInteractionApply = false;
   private readonly interaction: DiscardInteractionController;
+  private readonly paperGrainFilter: PaperGrainFilter | null;
 
   private readonly onStagePointerDown = () => {
     this.interaction.tapBlankArea();
@@ -274,6 +280,12 @@ export class TableSceneRenderer {
 
     this.root.eventMode = "static";
     this.root.hitArea = new Rectangle(0, 0, this.width, this.height);
+    this.root.filterArea = new Rectangle(0, 0, this.width, this.height);
+    this.paperGrainFilter =
+      typeof document !== "undefined" ? createPaperGrainFilter() : null;
+    if (this.paperGrainFilter) {
+      this.root.filters = [this.paperGrainFilter];
+    }
     this.root.on("pointerdown", this.onStagePointerDown);
     this.root.on("globalpointermove", this.onStagePointerMove);
     this.root.on("pointerup", this.onStagePointerUp);
@@ -297,10 +309,18 @@ export class TableSceneRenderer {
     return this.lastLayout;
   }
 
+  setPaperGrainEnabled(enabled: boolean): void {
+    if (this.paperGrainFilter) {
+      this.paperGrainFilter.enabled = enabled;
+    }
+  }
+
   resize(width: number, height: number): void {
     this.width = Math.max(320, Math.round(width));
     this.height = Math.max(280, Math.round(height));
-    this.root.hitArea = new Rectangle(0, 0, this.width, this.height);
+    const bounds = new Rectangle(0, 0, this.width, this.height);
+    this.root.hitArea = bounds;
+    this.root.filterArea = bounds;
     if (this.lastParams !== null) {
       this.render(this.lastParams);
     }
@@ -308,6 +328,9 @@ export class TableSceneRenderer {
 
   render(params: TableRenderParams): void {
     this.lastParams = params;
+    if (params.paperGrainEnabled !== undefined) {
+      this.setPaperGrainEnabled(params.paperGrainEnabled);
+    }
     const view = params.snapshot.player_view;
     if (!view) {
       this.clearAll(true);
@@ -369,6 +392,9 @@ export class TableSceneRenderer {
     this.root.off("pointerup", this.onStagePointerUp);
     this.root.off("pointerupoutside", this.onStagePointerUp);
     this.root.off("pointercancel", this.onStagePointerCancel);
+    this.root.filters = [];
+    this.root.filterArea = undefined;
+    this.paperGrainFilter?.destroy();
     this.clearAll(true);
     this.root.removeChildren();
   }
