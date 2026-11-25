@@ -11,10 +11,21 @@
     snapshot: TableSnapshot;
     pendingAddedKong: PendingAddedKong | null;
     inputLocked: boolean;
+    confirmDiscard?: boolean;
     onDiscard: (tile: Tile, fromDrawn: boolean) => void;
+    onTileHover?: (tile: Tile, fromDrawn: boolean) => void;
+    onTileSelect?: (tile: Tile, fromDrawn: boolean) => void;
   }
 
-  let { snapshot, pendingAddedKong, inputLocked, onDiscard }: Props = $props();
+  let {
+    snapshot,
+    pendingAddedKong,
+    inputLocked,
+    confirmDiscard = false,
+    onDiscard,
+    onTileHover,
+    onTileSelect,
+  }: Props = $props();
 
   let hostEl = $state<HTMLDivElement | null>(null);
   let initError = $state<string | null>(null);
@@ -23,6 +34,7 @@
     snapshot,
     pendingAddedKong,
     inputLocked,
+    confirmDiscard,
   });
 
   $effect(() => {
@@ -98,12 +110,18 @@
         canvasEl.style.width = "100%";
         canvasEl.style.height = "100%";
         canvasEl.style.display = "block";
-        canvasEl.style.touchAction = "manipulation";
+        canvasEl.style.touchAction = "none";
         container.replaceChildren(canvasEl);
 
         renderer = new TableSceneRenderer(nextApp.stage, loadedAtlas, {
           onDiscard: (tile, fromDrawn) => {
             onDiscard(tile, fromDrawn);
+          },
+          onTileHover: (tile, fromDrawn) => {
+            onTileHover?.(tile, fromDrawn);
+          },
+          onTileSelect: (tile, fromDrawn) => {
+            onTileSelect?.(tile, fromDrawn);
           },
         });
         renderer.resize(initWidth, initHeight);
