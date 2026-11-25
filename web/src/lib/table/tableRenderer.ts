@@ -1,5 +1,6 @@
 import {
   Container,
+  type FederatedPointerEvent,
   Graphics,
   Rectangle,
   Sprite,
@@ -12,6 +13,12 @@ import type { SeatInfo } from "../protocol/generated/SeatInfo";
 import type { TableSnapshot } from "../protocol/generated/TableSnapshot";
 import type { Tile } from "../protocol/generated/Tile";
 import type { PendingAddedKong } from "../session/reducer";
+import {
+  createDiscardInteractionController,
+  type DiscardInteractionController,
+  type DiscardInteractionState,
+  type HandTileSlot,
+} from "./discardInteraction";
 import {
   computeBottomRiverSlotPoint,
   computeCenterSealLayout,
@@ -50,11 +57,13 @@ export interface TableRenderParams {
   snapshot: TableSnapshot;
   pendingAddedKong: PendingAddedKong | null;
   inputLocked: boolean;
+  confirmDiscard?: boolean;
 }
 
 export interface TableRendererCallbacks {
   onDiscard: (tile: Tile, fromDrawn: boolean) => void;
   onTileHover?: (tile: Tile, fromDrawn: boolean) => void;
+  onTileSelect?: (tile: Tile, fromDrawn: boolean) => void;
   onTileUnhover?: () => void;
 }
 
@@ -74,7 +83,23 @@ function disposeChildren(container: Container): void {
   }
 }
 
-function addShadowedTileSprite(
+interface ShadowedTilePair {
+  sprite: Sprite;
+  shadow: Sprite;
+}
+
+interface ViewerHandVisual {
+  slot: HandTileSlot;
+  sprite: Sprite;
+  shadow: Sprite;
+  selectRing: Graphics;
+  restX: number;
+  restY: number;
+  width: number;
+  height: number;
+}
+
+function addShadowedTilePair(
   layer: Container,
   atlas: TileAtlas,
   tile: Tile | null,
@@ -84,7 +109,7 @@ function addShadowedTileSprite(
   height: number,
   rotation = 0,
   shadowOffsetY = 2,
-): Sprite {
+): ShadowedTilePair {
   const shadow = new Sprite(atlas.shadowTexture);
   shadow.anchor.set(0.5);
   shadow.width = width;
@@ -102,7 +127,31 @@ function addShadowedTileSprite(
   sprite.rotation = rotation;
   sprite.position.set(x, y);
   layer.addChild(sprite);
-  return sprite;
+  return { sprite, shadow };
+}
+
+function addShadowedTileSprite(
+  layer: Container,
+  atlas: TileAtlas,
+  tile: Tile | null,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  rotation = 0,
+  shadowOffsetY = 2,
+): Sprite {
+  return addShadowedTilePair(
+    layer,
+    atlas,
+    tile,
+    x,
+    y,
+    width,
+    height,
+    rotation,
+    shadowOffsetY,
+  ).sprite;
 }
 
 function findLatestRiverSeq(seats: readonly PublicSeatView[]): number {
@@ -173,6 +222,28 @@ export class TableSceneRenderer {
   private height = 600;
   private lastParams: TableRenderParams | null = null;
   private lastLayout: TableLayout | null = null;
+  private bottomVisibleRiverCount = 0;
+  private viewerHandVisuals: ViewerHandVisual[] = [];
+  private readonly lastDragOffsets = new Map<string, { dx: number; dy: number }>();
+  private snapBackRaf: number | null = null;
+  private suppressInteractionApply = false;
+  private readonly interaction: DiscardInteractionController;
+
+  private readonly onStagePointerDown = () => {
+    this.interaction.tapBlankArea();
+  };
+
+  private readonly onStagePointerMove = (e: FederatedPointerEvent) => {
+    this.interaction.pointerMove(e.global.x, e.global.y, performance.now());
+  };
+
+  private readonly onStagePointerUp = (e: FederatedPointerEvent) => {
+    this.interaction.pointerUp(e.global.x, e.global.y, performance.now());
+  };
+
+  private readonly onStagePointerCancel = () => {
+    this.interaction.pointerCancel();
+  };
 
   constructor(
     stage: Container,
@@ -182,6 +253,32 @@ export class TableSceneRenderer {
     this.root = stage;
     this.atlas = atlas;
     this.callbacks = callbacks;
+
+    this.interaction = createDiscardInteractionController({
+      confirmDiscard: false,
+      onCommitDiscard: (tile, fromDrawn) => {
+        this.callbacks.onDiscard(tile, fromDrawn);
+      },
+      onTileHover: (tile, fromDrawn) => {
+        this.callbacks.onTileHover?.(tile, fromDrawn);
+      },
+      onTileSelect: (tile, fromDrawn) => {
+        this.callbacks.onTileSelect?.(tile, fromDrawn);
+      },
+      onStateChange: (state) => {
+        if (!this.suppressInteractionApply) {
+          this.applyInteractionState(state);
+        }
+      },
+    });
+
+    this.root.eventMode = "static";
+    this.root.hitArea = new Rectangle(0, 0, this.width, this.height);
+    this.root.on("pointerdown", this.onStagePointerDown);
+    this.root.on("globalpointermove", this.onStagePointerMove);
+    this.root.on("pointerup", this.onStagePointerUp);
+    this.root.on("pointerupoutside", this.onStagePointerUp);
+    this.root.on("pointercancel", this.onStagePointerCancel);
 
     this.root.addChild(
       this.feltLayer,
@@ -203,6 +300,7 @@ export class TableSceneRenderer {
   resize(width: number, height: number): void {
     this.width = Math.max(320, Math.round(width));
     this.height = Math.max(280, Math.round(height));
+    this.root.hitArea = new Rectangle(0, 0, this.width, this.height);
     if (this.lastParams !== null) {
       this.render(this.lastParams);
     }
@@ -228,6 +326,11 @@ export class TableSceneRenderer {
       infoByName.set(info.seat, info);
     }
 
+    const bottomRiver = seatByName.get(relative.bottom)?.river ?? [];
+    this.bottomVisibleRiverCount = bottomRiver.filter(
+      (entry) => entry.claimed_by === null,
+    ).length;
+
     this.drawFelt(layout);
     this.drawCenterSeal(layout, view.turn, view.wall_remaining);
     this.drawRivers(layout, relative, seatByName, findLatestRiverSeq(view.seats));
@@ -242,15 +345,37 @@ export class TableSceneRenderer {
       view.turn.dealer,
       view.turn.active_seat,
     );
-    this.drawViewerHand(layout, params);
+    const legalSlotIds = this.drawViewerHand(layout, params);
+
+    this.suppressInteractionApply = true;
+    try {
+      this.interaction.setConfirmDiscard(params.confirmDiscard ?? false);
+      this.interaction.setInputLocked(params.inputLocked);
+      this.interaction.syncContext({
+        canDiscard: legalSlotIds.size > 0 && !params.inputLocked,
+        legalSlotIds,
+      });
+    } finally {
+      this.suppressInteractionApply = false;
+    }
+
+    this.applyInteractionState(this.interaction.getState());
   }
 
   destroy(): void {
+    this.cancelSnapBackAnimation();
+    this.root.off("pointerdown", this.onStagePointerDown);
+    this.root.off("globalpointermove", this.onStagePointerMove);
+    this.root.off("pointerup", this.onStagePointerUp);
+    this.root.off("pointerupoutside", this.onStagePointerUp);
+    this.root.off("pointercancel", this.onStagePointerCancel);
     this.clearAll(true);
     this.root.removeChildren();
   }
 
   private clearAll(includeAuxiliaryLayers: boolean): void {
+    this.cancelSnapBackAnimation();
+    this.viewerHandVisuals = [];
     disposeChildren(this.feltLayer);
     disposeChildren(this.centerSealLayer);
     disposeChildren(this.riverLayer);
@@ -863,11 +988,17 @@ export class TableSceneRenderer {
     drawBadge(relative.bottom, layout.badges.bottom);
   }
 
-  private drawViewerHand(layout: TableLayout, params: TableRenderParams): void {
+  private drawViewerHand(
+    layout: TableLayout,
+    params: TableRenderParams,
+  ): Set<string> {
+    this.cancelSnapBackAnimation();
+    this.viewerHandVisuals = [];
     disposeChildren(this.viewerHandLayer);
+    const legalSlotIds = new Set<string>();
     const view = params.snapshot.player_view;
     if (!view) {
-      return;
+      return legalSlotIds;
     }
 
     const { closed_tiles, drawn_tile } = view.hand;
@@ -882,7 +1013,7 @@ export class TableSceneRenderer {
     const hasDrawn = drawn_tile !== null;
     const totalCount = closed_tiles.length + (hasDrawn ? 1 : 0);
     if (totalCount === 0) {
-      return;
+      return legalSlotIds;
     }
 
     const closedW =
@@ -891,6 +1022,7 @@ export class TableSceneRenderer {
     const startX = Math.round(layout.cx - fullW / 2);
 
     const addInteractiveHandTile = (
+      slotId: string,
       tile: Tile,
       fromDrawn: boolean,
       x: number,
@@ -899,42 +1031,68 @@ export class TableSceneRenderer {
       const legal =
         !params.inputLocked &&
         findLegalDiscardAction(view.legal_actions, tile, fromDrawn) !== null;
+      const slot: HandTileSlot = { slotId, tile, fromDrawn, legal };
+      if (legal) {
+        legalSlotIds.add(slotId);
+      }
 
-      const sprite = addShadowedTileSprite(
+      const restX = x + tw / 2;
+      const restY = y + th / 2;
+      const { sprite, shadow } = addShadowedTilePair(
         this.viewerHandLayer,
         this.atlas,
         tile,
-        x + tw / 2,
-        y + th / 2,
+        restX,
+        restY,
         tw,
         th,
         0,
         3,
       );
 
+      const selectRing = new Graphics();
+      selectRing
+        .roundRect(x - 2, y - 14, tw + 4, th + 4, 6)
+        .stroke({ width: 2.2, color: ACTIVE_GLOW });
+      selectRing.visible = false;
+      this.viewerHandLayer.addChild(selectRing);
+
+      this.viewerHandVisuals.push({
+        slot,
+        sprite,
+        shadow,
+        selectRing,
+        restX,
+        restY,
+        width: tw,
+        height: th,
+      });
+
       if (legal) {
         sprite.eventMode = "static";
         sprite.cursor = "pointer";
         sprite.hitArea = new Rectangle(
           -tw / 2,
-          -th / 2 - 10,
+          -th / 2 - 12,
           tw,
-          th + 20,
+          th + 24,
         );
 
-        const restY = y + th / 2;
         sprite.on("pointerover", () => {
-          sprite.y = restY - 10;
-          sprite.tint = 0xfff3d4;
-          this.callbacks.onTileHover?.(tile, fromDrawn);
+          this.interaction.pointerEnter(slot);
         });
         sprite.on("pointerout", () => {
-          sprite.y = restY;
-          sprite.tint = 0xffffff;
+          this.interaction.pointerLeave(slot.slotId);
           this.callbacks.onTileUnhover?.();
         });
-        sprite.on("pointertap", () => {
-          this.callbacks.onDiscard(tile, fromDrawn);
+        sprite.on("pointerdown", (e: FederatedPointerEvent) => {
+          e.stopPropagation();
+          this.interaction.pointerDown(
+            slot,
+            e.global.x,
+            e.global.y,
+            performance.now(),
+          );
         });
       } else {
         sprite.eventMode = "none";
@@ -946,7 +1104,7 @@ export class TableSceneRenderer {
 
     closed_tiles.forEach((tile, idx) => {
       const x = startX + idx * (tw + gap);
-      addInteractiveHandTile(tile, false, x, baseY);
+      addInteractiveHandTile(`closed-${idx}`, tile, false, x, baseY);
     });
 
     if (drawn_tile !== null) {
@@ -957,7 +1115,159 @@ export class TableSceneRenderer {
         .stroke({ width: 1.5, color: BRASS, alpha: 0.72 });
       this.viewerHandLayer.addChild(marker);
 
-      addInteractiveHandTile(drawn_tile, true, drawnX, baseY);
+      addInteractiveHandTile("drawn", drawn_tile, true, drawnX, baseY);
     }
+
+    return legalSlotIds;
+  }
+
+  private cancelSnapBackAnimation(): void {
+    if (this.snapBackRaf !== null && typeof cancelAnimationFrame === "function") {
+      cancelAnimationFrame(this.snapBackRaf);
+    }
+    this.snapBackRaf = null;
+  }
+
+  private startSnapBackAnimation(
+    visual: ViewerHandVisual,
+    fromDx: number,
+    fromDy: number,
+  ): void {
+    this.cancelSnapBackAnimation();
+    if (typeof requestAnimationFrame !== "function") {
+      visual.sprite.position.set(visual.restX, visual.restY);
+      return;
+    }
+    const durationMs = 120;
+    const startMs = performance.now();
+    const step = (nowMs: number) => {
+      const t = Math.min(1, (nowMs - startMs) / durationMs);
+      const ease = 1 - (1 - t) * (1 - t);
+      visual.sprite.position.set(
+        visual.restX + fromDx * (1 - ease),
+        visual.restY + fromDy * (1 - ease),
+      );
+      if (t < 1) {
+        this.snapBackRaf = requestAnimationFrame(step);
+      } else {
+        this.snapBackRaf = null;
+        visual.sprite.position.set(visual.restX, visual.restY);
+      }
+    };
+    this.snapBackRaf = requestAnimationFrame(step);
+  }
+
+  private applyInteractionState(state: DiscardInteractionState): void {
+    if (state.drag !== null) {
+      this.cancelSnapBackAnimation();
+      this.lastDragOffsets.set(state.drag.slotId, {
+        dx: state.drag.dx,
+        dy: state.drag.dy,
+      });
+    }
+
+    for (const v of this.viewerHandVisuals) {
+      const id = v.slot.slotId;
+      const isDragging = state.drag?.slotId === id;
+      const isLifting = state.liftingSlotId === id;
+      const isSelected = state.selectedSlotId === id;
+      const isHovered = state.hoveredSlotId === id;
+
+      v.sprite.width = v.width;
+      v.sprite.height = v.height;
+      v.sprite.rotation = 0;
+      v.sprite.tint = 0xffffff;
+      v.sprite.alpha = state.locked && !isLifting ? 0.86 : 1;
+      v.shadow.position.set(v.restX, v.restY + 3);
+      v.shadow.alpha = 0.65;
+      v.selectRing.visible = false;
+
+      if (isDragging && state.drag) {
+        v.sprite.position.set(v.restX + state.drag.dx, v.restY + state.drag.dy);
+        v.sprite.width = v.width * 1.06;
+        v.sprite.height = v.height * 1.06;
+        v.sprite.rotation = Math.max(-0.12, Math.min(0.12, state.drag.dx * 0.002));
+        v.sprite.tint = state.drag.readyToCommit ? 0xffe7a3 : 0xfff3d4;
+        v.shadow.alpha = 0.28;
+        continue;
+      }
+
+      if (isLifting) {
+        v.sprite.position.set(v.restX, v.restY - 18);
+        v.sprite.tint = 0xfff3d4;
+        v.sprite.alpha = 0.72;
+        v.shadow.alpha = 0.3;
+        continue;
+      }
+
+      if (isSelected || isHovered) {
+        v.sprite.position.set(v.restX, v.restY - 12);
+        v.sprite.tint = 0xfff3d4;
+        v.shadow.alpha = 0.42;
+        v.selectRing.visible = isSelected;
+        continue;
+      }
+
+      if (state.snapBackSlotId === id) {
+        const prev = this.lastDragOffsets.get(id);
+        this.lastDragOffsets.delete(id);
+        if (prev && (Math.abs(prev.dx) > 1 || Math.abs(prev.dy) > 1)) {
+          this.startSnapBackAnimation(v, prev.dx, prev.dy);
+          continue;
+        }
+      }
+
+      v.sprite.position.set(v.restX, v.restY);
+    }
+
+    if (state.drag === null && state.snapBackSlotId === null) {
+      this.lastDragOffsets.clear();
+    }
+
+    this.drawGhostPreview(state);
+  }
+
+  private drawGhostPreview(state: DiscardInteractionState): void {
+    disposeChildren(this.ghostLayer);
+    const layout = this.lastLayout;
+    if (!layout) {
+      return;
+    }
+
+    if (state.drag !== null) {
+      const guideY = layout.bottomHandY - 36;
+      const guideHalfW = Math.min(180, layout.width * 0.3);
+      const guide = new Graphics();
+      const color = state.drag.readyToCommit ? ACTIVE_GLOW : BRASS;
+      const alpha = state.drag.readyToCommit ? 0.92 : 0.48;
+      guide
+        .moveTo(layout.cx - guideHalfW, guideY + 12)
+        .quadraticCurveTo(layout.cx, guideY - 16, layout.cx + guideHalfW, guideY + 12)
+        .stroke({ width: state.drag.readyToCommit ? 3 : 2, color, alpha });
+      this.ghostLayer.addChild(guide);
+    }
+
+    if (state.ghostTile === null) {
+      return;
+    }
+
+    const pt = computeBottomRiverSlotPoint(layout, this.bottomVisibleRiverCount);
+    const { riverTileW: tw, riverTileH: th } = layout;
+
+    const frame = new Graphics();
+    frame
+      .roundRect(pt.x - tw / 2 - 2, pt.y - th / 2 - 2, tw + 4, th + 4, 4)
+      .fill({ color: ACTIVE_GLOW, alpha: 0.14 })
+      .stroke({ width: 1.8, color: ACTIVE_GLOW, alpha: 0.86 });
+    this.ghostLayer.addChild(frame);
+
+    const ghostSprite = new Sprite(this.atlas.getTileTexture(state.ghostTile));
+    ghostSprite.anchor.set(0.5);
+    ghostSprite.width = tw;
+    ghostSprite.height = th;
+    ghostSprite.position.set(pt.x, pt.y);
+    ghostSprite.alpha = 0.56;
+    ghostSprite.tint = 0xfff3d4;
+    this.ghostLayer.addChild(ghostSprite);
   }
 }

@@ -1,6 +1,10 @@
 <script lang="ts">
-  import { matchModeLabel } from "./lib/lobby/lobbyConfig";
+  import { matchModeLabel, patchLobbyConfig } from "./lib/lobby/lobbyConfig";
   import LobbyView from "./lib/lobby/LobbyView.svelte";
+  import {
+    getBrowserDevicePreferencesStore,
+    type DevicePreferences,
+  } from "./lib/preferences/devicePreferences";
   import type { PlayerAction } from "./lib/protocol/generated/PlayerAction";
   import type { TablePace } from "./lib/protocol/generated/TablePace";
   import type { Tile } from "./lib/protocol/generated/Tile";
@@ -13,18 +17,26 @@
   import TableCanvas from "./lib/table/TableCanvas.svelte";
   import { formatRoundTitle, seatLabel } from "./lib/table/tiles";
   import { findLegalDiscardAction } from "./lib/table/viewModel";
+  import SettingsModal from "./lib/ui/SettingsModal.svelte";
 
   const client = createTableClient();
+  const preferencesStore = getBrowserDevicePreferencesStore();
   let sessionState = $state<SessionState>(client.getState());
+  let devicePrefs = $state<DevicePreferences>(preferencesStore.load());
+  let settingsOpen = $state(false);
   const initialNickname = client.getIdentity().nickname;
 
   $effect(() => {
-    const unsubscribe = client.subscribe((next) => {
+    const unsubscribeClient = client.subscribe((next) => {
       sessionState = next;
+    });
+    const unsubscribePrefs = preferencesStore.subscribe((next) => {
+      devicePrefs = next;
     });
     client.connect();
     return () => {
-      unsubscribe();
+      unsubscribeClient();
+      unsubscribePrefs();
       client.dispose();
     };
   });
@@ -39,11 +51,12 @@
     actionsDisabled || sessionState.pendingActionId !== null,
   );
   const hasModalOpen = $derived(
-    snapshot !== null &&
-      (snapshot.pending_destructive_op !== null ||
-        (snapshot.phase === "InMatch" &&
-          playerView?.phase === "BetweenHands" &&
-          playerView.last_settlement !== null)),
+    settingsOpen ||
+      (snapshot !== null &&
+        (snapshot.pending_destructive_op !== null ||
+          (snapshot.phase === "InMatch" &&
+            playerView?.phase === "BetweenHands" &&
+            playerView.last_settlement !== null))),
   );
 
   function reloadPage(): void {
@@ -77,6 +90,17 @@
     }
     if (snapshot?.pace !== pace) {
       client.setPace(pace);
+    }
+  }
+
+  function handleSettingsPaceChange(pace: TablePace): void {
+    if (!snapshot || actionsDisabled || snapshot.your_seat === null) {
+      return;
+    }
+    if (snapshot.phase === "InMatch") {
+      handleSetPace(pace);
+    } else if (snapshot.config.pace !== pace) {
+      client.updateLobbyConfig(patchLobbyConfig(snapshot.config, { pace }));
     }
   }
 </script>
@@ -129,6 +153,7 @@
       onLeaveSeat={() => client.leaveSeat()}
       onUpdateConfig={(config) => client.updateLobbyConfig(config)}
       onStartMatch={() => client.startMatch()}
+      onOpenSettings={() => (settingsOpen = true)}
     />
   {:else if snapshot.phase === "InMatch"}
     <section class="match-shell">
@@ -174,7 +199,15 @@
           </div>
 
           <button
-            class="btn btn-subtle disband-btn"
+            class="btn btn-subtle topbar-btn"
+            type="button"
+            onclick={() => (settingsOpen = true)}
+          >
+            设置
+          </button>
+
+          <button
+            class="btn btn-subtle topbar-btn"
             type="button"
             disabled={actionsDisabled ||
               snapshot.your_seat === null ||
@@ -192,6 +225,7 @@
             {snapshot}
             pendingAddedKong={sessionState.pendingAddedKong}
             {inputLocked}
+            confirmDiscard={devicePrefs.confirm_discard}
             onDiscard={handleCanvasDiscard}
           />
 
@@ -283,6 +317,21 @@
       {/if}
     </section>
   {/if}
+
+  <SettingsModal
+    open={settingsOpen}
+    preferences={devicePrefs}
+    pace={snapshot?.phase === "InMatch"
+      ? snapshot.pace
+      : (snapshot?.config.pace ?? "Standard")}
+    canEditPace={snapshot !== null &&
+      !actionsDisabled &&
+      snapshot.your_seat !== null}
+    onUpdatePreferences={(patch) => preferencesStore.update(patch)}
+    onResetPreferences={() => preferencesStore.reset()}
+    onChangePace={handleSettingsPaceChange}
+    onClose={() => (settingsOpen = false)}
+  />
 
   <footer class="footer-bar">
     <span>
@@ -413,14 +462,14 @@
     color: #181a20;
   }
 
-  .disband-btn {
+  .topbar-btn {
     padding: 4px 10px;
     font-size: 12px;
     color: #f5eedf;
     border-color: rgba(245, 238, 223, 0.28);
   }
 
-  .disband-btn:hover:not(:disabled) {
+  .topbar-btn:hover:not(:disabled) {
     background: rgba(255, 255, 255, 0.1);
   }
 
