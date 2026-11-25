@@ -1,0 +1,725 @@
+import { describe, expect, it, vi } from "vitest";
+import { defaultDevicePreferences } from "../preferences/devicePreferences";
+import {
+  mapLocalUiActionToSemanticEvent,
+  mapPlayerEventToSemanticEvent,
+  type SemanticMappingContext,
+} from "../presentation/semanticEvents";
+import type { PlayerEvent } from "../protocol/generated/PlayerEvent";
+import type { RevealedHand } from "../protocol/generated/RevealedHand";
+import type { SeatInfo } from "../protocol/generated/SeatInfo";
+import { ALL_SEATS } from "../protocol/seats";
+import { createAudioEventRouter } from "./audioRouter";
+import type {
+  AudioBufferLike,
+  AudioBufferSourceNodeLike,
+  AudioContextLike,
+  AudioContextStateLike,
+  AudioNodeLike,
+  AudioParamLike,
+  AudioSessionLike,
+  AudioStatus,
+  BiquadFilterNodeLike,
+  DynamicsCompressorNodeLike,
+  FetchLike,
+  GainNodeLike,
+  OscillatorNodeLike,
+  SfxPlaybackReceipt,
+  SfxSlotId,
+  StereoPannerNodeLike,
+  VoManifest,
+} from "./audioTypes";
+
+function makeFakeParam(initial = 0): AudioParamLike {
+  const param: AudioParamLike = {
+    value: initial,
+    setValueAtTime: vi.fn((v: number) => {
+      param.value = v;
+    }),
+    linearRampToValueAtTime: vi.fn((v: number) => {
+      param.value = v;
+    }),
+    exponentialRampToValueAtTime: vi.fn((v: number) => {
+      param.value = v;
+    }),
+    setTargetAtTime: vi.fn((v: number) => {
+      param.value = v;
+    }),
+    cancelScheduledValues: vi.fn(),
+  };
+  return param;
+}
+
+class FakeEventTarget {
+  private listeners = new Map<string, Set<(event?: unknown) => void>>();
+
+  addEventListener(type: string, fn: (event?: unknown) => void): void {
+    let set = this.listeners.get(type);
+    if (!set) {
+      set = new Set();
+      this.listeners.set(type, set);
+    }
+    set.add(fn);
+  }
+
+  removeEventListener(type: string, fn: (event?: unknown) => void): void {
+    this.listeners.get(type)?.delete(fn);
+  }
+
+  dispatch(type: string): void {
+    for (const fn of this.listeners.get(type) ?? []) {
+      fn({ type });
+    }
+  }
+
+  listenerCount(type: string): number {
+    return this.listeners.get(type)?.size ?? 0;
+  }
+}
+
+function createFakeAudioEnv(initialState: AudioContextStateLike = "suspended") {
+  let state: AudioContextStateLike = initialState;
+  const now = 5.0;
+  const stateListeners = new Set<() => void>();
+  const destination: AudioNodeLike = { connect: vi.fn() };
+  const gainNodes: Array<{ node: GainNodeLike; connectedTo: AudioNodeLike[] }> =
+    [];
+  const compressors: Array<{
+    node: DynamicsCompressorNodeLike;
+    connectedTo: AudioNodeLike[];
+  }> = [];
+  const bufferSources: Array<{
+    node: AudioBufferSourceNodeLike;
+    connectedTo: AudioNodeLike[];
+    createdBufferLength: number | null;
+    startArgs: Array<[number?, number?, number?]>;
+  }> = [];
+  const panners: StereoPannerNodeLike[] = [];
+
+  const ctx: AudioContextLike = {
+    get state() {
+      return state;
+    },
+    currentTime: now,
+    sampleRate: 44100,
+    destination,
+    resume: vi.fn(async () => {
+      if (state === "suspended") {
+        state = "running";
+        for (const fn of stateListeners) fn();
+      }
+    }),
+    close: vi.fn(async () => {
+      state = "closed";
+    }),
+    createGain: (): GainNodeLike => {
+      const connectedTo: AudioNodeLike[] = [];
+      const node: GainNodeLike = {
+        gain: makeFakeParam(1),
+        connect: vi.fn((dest: AudioNodeLike) => {
+          connectedTo.push(dest);
+          return dest;
+        }),
+      };
+      gainNodes.push({ node, connectedTo });
+      return node;
+    },
+    createDynamicsCompressor: (): DynamicsCompressorNodeLike => {
+      const connectedTo: AudioNodeLike[] = [];
+      const node: DynamicsCompressorNodeLike = {
+        threshold: makeFakeParam(-10),
+        knee: makeFakeParam(18),
+        ratio: makeFakeParam(6),
+        attack: makeFakeParam(0.002),
+        release: makeFakeParam(0.12),
+        connect: vi.fn((dest: AudioNodeLike) => {
+          connectedTo.push(dest);
+          return dest;
+        }),
+      };
+      compressors.push({ node, connectedTo });
+      return node;
+    },
+    createStereoPanner: (): StereoPannerNodeLike => {
+      const node: StereoPannerNodeLike = {
+        pan: makeFakeParam(0),
+        connect: vi.fn((dest: AudioNodeLike) => dest),
+      };
+      panners.push(node);
+      return node;
+    },
+    createBuffer: (_ch, length, sampleRate): AudioBufferLike => ({
+      sampleRate,
+      length,
+      duration: length / sampleRate,
+      getChannelData: () => new Float32Array(length),
+    }),
+    createBufferSource: (): AudioBufferSourceNodeLike => {
+      const connectedTo: AudioNodeLike[] = [];
+      const startArgs: Array<[number?, number?, number?]> = [];
+      const record = {
+        node: null as unknown as AudioBufferSourceNodeLike,
+        connectedTo,
+        createdBufferLength: null as number | null,
+        startArgs,
+      };
+      const node: AudioBufferSourceNodeLike = {
+        get buffer() {
+          return internalBuffer;
+        },
+        set buffer(b: AudioBufferLike | null) {
+          internalBuffer = b;
+          record.createdBufferLength = b ? b.length : null;
+        },
+        playbackRate: makeFakeParam(1),
+        onended: null,
+        connect: vi.fn((dest: AudioNodeLike) => {
+          connectedTo.push(dest);
+          return dest;
+        }),
+        start: vi.fn((when?: number, offset?: number, duration?: number) => {
+          startArgs.push([when, offset, duration]);
+        }),
+        stop: vi.fn(),
+      };
+      let internalBuffer: AudioBufferLike | null = null;
+      record.node = node;
+      bufferSources.push(record);
+      return node;
+    },
+    createOscillator: (): OscillatorNodeLike => ({
+      type: "sine",
+      frequency: makeFakeParam(440),
+      onended: null,
+      connect: vi.fn((dest: AudioNodeLike) => dest),
+      start: vi.fn(),
+      stop: vi.fn(),
+    }),
+    createBiquadFilter: (): BiquadFilterNodeLike => ({
+      type: "bandpass",
+      frequency: makeFakeParam(1000),
+      Q: makeFakeParam(1),
+      connect: vi.fn((dest: AudioNodeLike) => dest),
+    }),
+    decodeAudioData: vi.fn(async () => ({
+      sampleRate: 44100,
+      length: 44100,
+      duration: 1,
+      getChannelData: () => new Float32Array(44100),
+    })),
+    addEventListener: (_type, listener) => {
+      stateListeners.add(listener);
+    },
+    removeEventListener: (_type, listener) => {
+      stateListeners.delete(listener);
+    },
+  };
+
+  const audioSession: AudioSessionLike = { type: "ambient" };
+  const docTarget = new FakeEventTarget();
+  let visibilityState: DocumentVisibilityState = "visible";
+
+  return {
+    ctx,
+    destination,
+    audioSession,
+    docTarget,
+    gainNodes,
+    compressors,
+    bufferSources,
+    panners,
+    setState(next: AudioContextStateLike) {
+      state = next;
+      for (const fn of stateListeners) fn();
+    },
+    setVisibility(next: DocumentVisibilityState) {
+      visibilityState = next;
+      docTarget.dispatch("visibilitychange");
+    },
+    getVisibilityState: () => visibilityState,
+  };
+}
+
+function makeSeats(voicePackSeatEast: string | null = null): [SeatInfo, SeatInfo, SeatInfo, SeatInfo] {
+  return ALL_SEATS.map((seat, idx) => ({
+    seat,
+    kind: idx === 0 ? "Human" : "Ai",
+    nickname: `玩家 ${idx + 1}`,
+    connected: true,
+    ai_assisted: false,
+    ai_difficulty: idx === 0 ? null : "Strong",
+    ai_style: idx === 0 ? null : "Balanced",
+    voice_pack_id: idx === 0 ? voicePackSeatEast : null,
+  })) as [SeatInfo, SeatInfo, SeatInfo, SeatInfo];
+}
+
+function emptyRevealedHands(): [RevealedHand, RevealedHand, RevealedHand, RevealedHand] {
+  return [
+    { seat: "East", closed_tiles: [], drawn_tile: null, melds: [] },
+    { seat: "South", closed_tiles: [], drawn_tile: null, melds: [] },
+    { seat: "West", closed_tiles: [], drawn_tile: null, melds: [] },
+    { seat: "North", closed_tiles: [], drawn_tile: null, melds: [] },
+  ];
+}
+
+function makeHandSettledEvent(
+  seq: number,
+  outcome:
+    | "DrawGame"
+    | {
+        Win: {
+          winners: Array<{
+            seat: "East" | "South" | "West" | "North";
+            win_kind: "Tsumo" | "Ron" | "RobKongHu";
+            total_fan: number;
+          }>;
+          discarder: "East" | "South" | "West" | "North" | null;
+          winning_tile: number;
+        };
+      },
+): PlayerEvent {
+  return {
+    seq,
+    kind: {
+      HandSettled: {
+        settlement: {
+          wind_round: "East",
+          hand_number: 1,
+          dealer_streak: 0,
+          dealer: "East",
+          outcome:
+            outcome === "DrawGame"
+              ? "DrawGame"
+              : {
+                  Win: {
+                    winners: outcome.Win.winners.map((w) => ({
+                      seat: w.seat,
+                      win_kind: w.win_kind,
+                      items: [],
+                      total_fan: w.total_fan,
+                      base_points: 1,
+                    })),
+                    discarder: outcome.Win.discarder,
+                    winning_tile: outcome.Win.winning_tile,
+                  },
+                },
+          kong_transfers: [],
+          score_deltas: [0, 0, 0, 0],
+          new_scores: [0, 0, 0, 0],
+          revealed_hands: emptyRevealedHands(),
+        },
+      },
+    },
+  };
+}
+
+function makeContext(
+  wallRemaining = 40,
+  voicePackSeatEast: string | null = null,
+): SemanticMappingContext {
+  return {
+    viewer: "East",
+    seats: makeSeats(voicePackSeatEast),
+    wallRemaining,
+  };
+}
+
+describe("AudioEventRouter", () => {
+  it("builds sfxGain + voGain -> masterGain -> DynamicsCompressorNode -> destination graph and syncs volume/mute", () => {
+    const env = createFakeAudioEnv("running");
+    const prefs = defaultDevicePreferences(false);
+    const router = createAudioEventRouter({
+      initialPreferences: { ...prefs, master_volume: 0.7, sfx_volume: 0.5 },
+      createAudioContext: () => env.ctx,
+      getAudioSession: () => env.audioSession,
+      documentTarget: env.docTarget,
+      getVisibilityState: env.getVisibilityState,
+    });
+
+    router.unlockFromGesture();
+
+    // Gain nodes created in order: masterGain, sfxGain, voGain (or sfxGain, voGain, masterGain)
+    expect(env.compressors).toHaveLength(1);
+    expect(env.compressors[0]!.connectedTo).toContain(env.destination);
+    expect(env.gainNodes).toHaveLength(3);
+
+    const masterRecord = env.gainNodes.find((g) =>
+      g.connectedTo.includes(env.compressors[0]!.node),
+    );
+    expect(masterRecord).toBeDefined();
+    expect(masterRecord!.node.gain.value).toBeCloseTo(0.7, 5);
+
+    const subGainRecords = env.gainNodes.filter((g) =>
+      g.connectedTo.includes(masterRecord!.node),
+    );
+    expect(subGainRecords).toHaveLength(2);
+    const gainValues = subGainRecords.map((g) => g.node.gain.value).sort();
+    expect(gainValues).toEqual([0.5, 1]);
+
+    // Mute sets masterGain to 0; unmute restores 0.7
+    router.applyPreferences({ ...prefs, master_volume: 0.7, sfx_volume: 0.5, muted: true });
+    expect(masterRecord!.node.gain.value).toBe(0);
+    router.applyPreferences({ ...prefs, master_volume: 0.7, sfx_volume: 0.5, muted: false });
+    expect(masterRecord!.node.gain.value).toBeCloseTo(0.7, 5);
+
+    router.dispose();
+  });
+
+  it("layers SFX by public info (tsumogiri vs hand-cut/endgame wall<=24, 3 win tiers), relative panning (-0.35/0/+0.35), and local-only UiActionPrompted", () => {
+    const env = createFakeAudioEnv("running");
+    const played: SfxPlaybackReceipt[] = [];
+    const fakeBackend = {
+      getMode: () => "sprite" as const,
+      ensureLoaded: vi.fn(async () => "sprite" as const),
+      play: vi.fn(
+        (
+          _ctx: AudioContextLike,
+          _dest: AudioNodeLike,
+          slot: SfxSlotId,
+          opts?: { pan?: number },
+        ): SfxPlaybackReceipt => {
+          const receipt: SfxPlaybackReceipt = {
+            backend: "sprite",
+            slot,
+            variantIndex: 0,
+            playbackRate: 1,
+            pan: opts?.pan ?? 0,
+          };
+          played.push(receipt);
+          return receipt;
+        },
+      ),
+      dispose: vi.fn(),
+    };
+
+    const router = createAudioEventRouter({
+      initialPreferences: defaultDevicePreferences(false),
+      createAudioContext: () => env.ctx,
+      sfxBackend: fakeBackend,
+      documentTarget: env.docTarget,
+      getVisibilityState: env.getVisibilityState,
+    });
+
+    router.unlockFromGesture();
+
+    // 1. Tsumogiri in mid-game (wall=40) -> discard_light; South (下家) -> +0.35
+    const tsumogiriEvent: PlayerEvent = {
+      seq: 1,
+      kind: { TileDiscarded: { seat: "South", tile: 0, is_tsumogiri: true } },
+    };
+    router.handleSemanticEvent(
+      mapPlayerEventToSemanticEvent(tsumogiriEvent, makeContext(40)),
+    );
+    expect(played.at(-1)).toMatchObject({ slot: "discard_light", pan: 0.35 });
+
+    // 2. Hand-cut (is_tsumogiri=false) in mid-game -> discard_heavy; North (上家) -> -0.35
+    const handCutEvent: PlayerEvent = {
+      seq: 2,
+      kind: { TileDiscarded: { seat: "North", tile: 1, is_tsumogiri: false } },
+    };
+    router.handleSemanticEvent(
+      mapPlayerEventToSemanticEvent(handCutEvent, makeContext(40)),
+    );
+    expect(played.at(-1)).toMatchObject({ slot: "discard_heavy", pan: -0.35 });
+
+    // 3. Tsumogiri in endgame (wall <= 24) -> discard_heavy; West (对家) -> 0
+    const endgameDiscard: PlayerEvent = {
+      seq: 3,
+      kind: { TileDiscarded: { seat: "West", tile: 2, is_tsumogiri: true } },
+    };
+    router.handleSemanticEvent(
+      mapPlayerEventToSemanticEvent(endgameDiscard, makeContext(24)),
+    );
+    expect(played.at(-1)).toMatchObject({ slot: "discard_heavy", pan: 0 });
+
+    // 4. AddedKongAttempted -> added_kong_suspense; MeldDeclared(Pon) -> meld_pon; MeldDeclared(AddedKong) -> meld_kong
+    router.handleSemanticEvent(
+      mapPlayerEventToSemanticEvent(
+        { seq: 4, kind: { AddedKongAttempted: { seat: "South", tile: 5 } } },
+        makeContext(24),
+      ),
+    );
+    expect(played.at(-1)).toMatchObject({
+      slot: "added_kong_suspense",
+      pan: 0.35,
+    });
+
+    router.handleSemanticEvent(
+      mapPlayerEventToSemanticEvent(
+        {
+          seq: 5,
+          kind: {
+            MeldDeclared: {
+              seat: "North",
+              meld: { Pon: { tile: 5, from_seat: "East", seq: 4 } },
+              kong_score_deltas: [0, 0, 0, 0],
+            },
+          },
+        },
+        makeContext(24),
+      ),
+    );
+    expect(played.at(-1)).toMatchObject({ slot: "meld_pon", pan: -0.35 });
+
+    router.handleSemanticEvent(
+      mapPlayerEventToSemanticEvent(
+        {
+          seq: 6,
+          kind: {
+            MeldDeclared: {
+              seat: "East",
+              meld: { ConcealedKong: { tile: 9, seq: 6 } },
+              kong_score_deltas: [6, -2, -2, -2],
+            },
+          },
+        },
+        makeContext(24),
+      ),
+    );
+    expect(played.at(-1)).toMatchObject({ slot: "meld_kong", pan: 0 });
+
+    // 5. Win 3 tiers (0-1 / 2-3 / 4 fan) + DrawGame
+    const makeWin = (totalFan: number, seat: "East" | "South" = "East"): PlayerEvent =>
+      makeHandSettledEvent(7, {
+        Win: {
+          winners: [{ seat, win_kind: "Tsumo", total_fan: totalFan }],
+          discarder: null,
+          winning_tile: 0,
+        },
+      });
+
+    router.handleSemanticEvent(
+      mapPlayerEventToSemanticEvent(makeWin(1), makeContext(20)),
+    );
+    expect(played.at(-1)?.slot).toBe("win_tier_1");
+
+    router.handleSemanticEvent(
+      mapPlayerEventToSemanticEvent(makeWin(3, "South"), makeContext(20)),
+    );
+    expect(played.at(-1)).toMatchObject({ slot: "win_tier_2", pan: 0.35 });
+
+    router.handleSemanticEvent(
+      mapPlayerEventToSemanticEvent(makeWin(4), makeContext(20)),
+    );
+    expect(played.at(-1)?.slot).toBe("win_tier_3");
+
+    router.handleSemanticEvent(
+      mapPlayerEventToSemanticEvent(
+        makeHandSettledEvent(8, "DrawGame"),
+        makeContext(0),
+      ),
+    );
+    expect(played.at(-1)?.slot).toBe("draw_game");
+
+    // 6. TileDrawn panning & local UI events (hover/select/pass/confirm)
+    router.handleSemanticEvent(
+      mapPlayerEventToSemanticEvent(
+        { seq: 9, kind: { TileDrawn: { seat: "North", tile: null, is_replacement: false, wall_remaining: 39 } } },
+        makeContext(39),
+      ),
+    );
+    expect(played.at(-1)).toMatchObject({ slot: "draw", pan: -0.35 });
+
+    router.handleSemanticEvent(
+      mapLocalUiActionToSemanticEvent({ type: "UiTileHover", tile: 0, fromDrawn: false }, makeContext(39)),
+    );
+    expect(played.at(-1)?.slot).toBe("hover");
+
+    router.handleSemanticEvent(
+      mapLocalUiActionToSemanticEvent({ type: "UiTileSelect", tile: 0, fromDrawn: true }, makeContext(39)),
+    );
+    expect(played.at(-1)?.slot).toBe("select");
+
+    router.handleSemanticEvent(
+      mapLocalUiActionToSemanticEvent({ type: "UiPassClicked" }, makeContext(39)),
+    );
+    expect(played.at(-1)?.slot).toBe("pass");
+
+    router.handleSemanticEvent(
+      mapLocalUiActionToSemanticEvent({ type: "UiConfirmNextHand" }, makeContext(39)),
+    );
+    expect(played.at(-1)?.slot).toBe("confirm");
+
+    // 7. UiActionPrompted strictly local-only (must belong to viewer and have actions)
+    const countBefore = played.length;
+    const nonSelfPrompt = {
+      ...mapLocalUiActionToSemanticEvent(
+        { type: "UiActionPrompted", actions: [{ Pon: { tile: 5 } }] },
+        makeContext(20),
+      ),
+      relativeRole: "下家" as const,
+    };
+    router.handleSemanticEvent(nonSelfPrompt);
+    expect(played.length).toBe(countBefore);
+
+    const selfPrompt = mapLocalUiActionToSemanticEvent(
+      { type: "UiActionPrompted", actions: [{ Pon: { tile: 5 } }] },
+      makeContext(20),
+    );
+    router.handleSemanticEvent(selfPrompt);
+    expect(played.at(-1)?.slot).toBe("action_prompt");
+
+    router.dispose();
+  });
+
+  it("passes SeatInfo.voice_pack_id to v2 VO pipeline and ducks sfxGain to 0.45 when triggered", async () => {
+    const env = createFakeAudioEnv("running");
+    const fetchFn: FetchLike = vi.fn(async (url: string) => {
+      if (url === "/assets/vo/piltover-vi/manifest.json") {
+        const manifest: VoManifest = {
+          pack_id: "piltover-vi",
+          version: 2,
+          clips: { Hu: ["vi_hu.m4a"] },
+        };
+        return {
+          ok: true,
+          status: 200,
+          json: async () => manifest,
+          arrayBuffer: async () => new ArrayBuffer(0),
+        };
+      }
+      if (url === "/assets/vo/piltover-vi/vi_hu.m4a") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({}),
+          arrayBuffer: async () => new ArrayBuffer(12),
+        };
+      }
+      return {
+        ok: false,
+        status: 404,
+        json: async () => ({}),
+        arrayBuffer: async () => new ArrayBuffer(0),
+      };
+    });
+
+    const router = createAudioEventRouter({
+      initialPreferences: { ...defaultDevicePreferences(false), sfx_volume: 1 },
+      createAudioContext: () => env.ctx,
+      fetchFn,
+      documentTarget: env.docTarget,
+      getVisibilityState: env.getVisibilityState,
+    });
+    router.unlockFromGesture();
+
+    const winWithVoicePack = makeHandSettledEvent(1, {
+      Win: {
+        winners: [{ seat: "East", win_kind: "Tsumo", total_fan: 4 }],
+        discarder: null,
+        winning_tile: 0,
+      },
+    });
+
+    router.handleSemanticEvent(
+      mapPlayerEventToSemanticEvent(
+        winWithVoicePack,
+        makeContext(20, "piltover-vi"),
+      ),
+    );
+
+    // Wait for async VO pack load + playback trigger
+    await vi.waitFor(() => {
+      const sfxGainNode = env.gainNodes[1]!.node;
+      expect(sfxGainNode.gain.value).toBeCloseTo(0.45, 5);
+    });
+
+    router.dispose();
+  });
+
+  it("enforces Safari audioSession, W3C interrupted guard, 1-sample gesture unlock, visibilitychange resume, and needsResumeCapsule", () => {
+    const env = createFakeAudioEnv("suspended");
+    const gestureTarget = new FakeEventTarget();
+    const statuses: AudioStatus[] = [];
+
+    const router = createAudioEventRouter({
+      initialPreferences: defaultDevicePreferences(false),
+      createAudioContext: () => env.ctx,
+      getAudioSession: () => env.audioSession,
+      documentTarget: env.docTarget,
+      getVisibilityState: env.getVisibilityState,
+    });
+
+    router.subscribe((s) => statuses.push(s));
+
+    // Default before first gesture: uninitialized -> needsResumeCapsule is true
+    expect(router.getStatus().state).toBe("uninitialized");
+    expect(router.getStatus().needsResumeCapsule).toBe(true);
+
+    // Register synchronous gesture unlock on pointerdown/touchend/click/keydown
+    const unbind = router.bindGestureUnlock(gestureTarget);
+    expect(gestureTarget.listenerCount("pointerdown")).toBe(1);
+    expect(gestureTarget.listenerCount("touchend")).toBe(1);
+    expect(gestureTarget.listenerCount("click")).toBe(1);
+    expect(gestureTarget.listenerCount("keydown")).toBe(1);
+
+    // Synchronous gesture while suspended -> sets audioSession='playback', calls resume(), plays 1-sample silent buffer
+    gestureTarget.dispatch("pointerdown");
+    expect(env.audioSession.type).toBe("playback");
+    expect(env.ctx.resume).toHaveBeenCalledTimes(1);
+    expect(
+      env.bufferSources.some(
+        (s) =>
+          s.createdBufferLength === 1 &&
+          s.connectedTo.includes(env.destination) &&
+          s.startArgs[0]?.[0] === 0,
+      ),
+    ).toBe(true);
+    expect(router.getStatus().state).toBe("running");
+    expect(router.getStatus().needsResumeCapsule).toBe(false);
+
+    // Toggle iOS audioSession to ambient
+    router.applyPreferences({
+      ...defaultDevicePreferences(false),
+      ios_audio_session: "ambient",
+    });
+    expect(env.audioSession.type).toBe("ambient");
+
+    // Transition to W3C 'interrupted' (e.g. Siri/phone call on iPhone)
+    env.setState("interrupted");
+    expect(router.getStatus().needsResumeCapsule).toBe(true);
+
+    const resumeCallsBeforeInterrupted = (
+      env.ctx.resume as ReturnType<typeof vi.fn>
+    ).mock.calls.length;
+
+    // MUST NEVER call resume() while state === "interrupted"
+    router.unlockFromGesture();
+    env.setVisibility("visible");
+    router.handleSemanticEvent(
+      mapLocalUiActionToSemanticEvent(
+        { type: "UiConfirmNextHand" },
+        makeContext(30),
+      ),
+    );
+    expect((env.ctx.resume as ReturnType<typeof vi.fn>).mock.calls.length).toBe(
+      resumeCallsBeforeInterrupted,
+    );
+
+    // Transition to 'suspended', then visibilitychange -> visible resumes
+    env.setState("suspended");
+    expect(router.getStatus().needsResumeCapsule).toBe(true);
+    env.setVisibility("visible");
+    expect((env.ctx.resume as ReturnType<typeof vi.fn>).mock.calls.length).toBe(
+      resumeCallsBeforeInterrupted + 1,
+    );
+    expect(router.getStatus().needsResumeCapsule).toBe(false);
+
+    // Muting hides the resume capsule even if suspended
+    env.setState("suspended");
+    expect(router.getStatus().needsResumeCapsule).toBe(true);
+    router.applyPreferences({
+      ...defaultDevicePreferences(false),
+      muted: true,
+    });
+    expect(router.getStatus().needsResumeCapsule).toBe(false);
+
+    unbind();
+    expect(gestureTarget.listenerCount("pointerdown")).toBe(0);
+    expect(gestureTarget.listenerCount("touchend")).toBe(0);
+    expect(gestureTarget.listenerCount("click")).toBe(0);
+    expect(gestureTarget.listenerCount("keydown")).toBe(0);
+
+    router.dispose();
+  });
+});
