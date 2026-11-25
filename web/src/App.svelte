@@ -81,7 +81,7 @@
   }
 </script>
 
-<main class="app-shell">
+<main class="app-shell" class:app-shell-match={snapshot?.phase === "InMatch"}>
   {#if sessionState.replacedByNewTab}
     <div class="banner banner-danger" role="alert">
       <div>
@@ -305,6 +305,13 @@
 </main>
 
 <style>
+  .app-shell-match {
+    max-width: 1380px;
+    padding-top: max(10px, env(safe-area-inset-top));
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
+    gap: 10px;
+  }
+
   .placeholder-card {
     display: flex;
     flex-direction: column;
@@ -331,7 +338,7 @@
   .match-shell {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 8px;
   }
 
   .match-topbar {
@@ -339,12 +346,13 @@
     flex-wrap: wrap;
     justify-content: space-between;
     align-items: center;
-    gap: 10px;
-    padding: 10px 14px;
-    border-radius: var(--radius);
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    box-shadow: var(--shadow);
+    gap: 8px;
+    padding: 6px 12px;
+    border-radius: 12px;
+    background: #102026;
+    color: #f5eedf;
+    border: 1px solid rgba(212, 168, 87, 0.45);
+    box-shadow: 0 6px 18px rgba(10, 18, 24, 0.2);
   }
 
   .topbar-info {
@@ -355,23 +363,25 @@
   }
 
   .topbar-round {
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 700;
-  }
-
-  .tag-mode {
-    background: #14282e;
     color: #f5eedf;
   }
 
+  .tag-mode {
+    background: rgba(212, 168, 87, 0.2);
+    border: 1px solid rgba(212, 168, 87, 0.55);
+    color: #f5be58;
+  }
+
   .tag-turn {
-    background: #fce6c2;
-    color: #93450d;
+    background: #f5be58;
+    color: #181a20;
   }
 
   .tag-pending {
-    background: #fdf0df;
-    color: #a65414;
+    background: #f09d38;
+    color: #181a20;
   }
 
   .topbar-controls {
@@ -383,29 +393,35 @@
 
   .pace-switch {
     display: inline-flex;
-    border: 1px solid var(--border);
-    border-radius: 10px;
+    border: 1px solid rgba(212, 168, 87, 0.4);
+    border-radius: 9px;
     overflow: hidden;
-    background: var(--bg-muted);
+    background: #0b161b;
   }
 
   .pace-btn {
     border: none;
     background: transparent;
-    padding: 6px 10px;
+    padding: 4px 10px;
     font-size: 12px;
     font-weight: 600;
-    color: var(--ink-muted);
+    color: #a9c0c4;
   }
 
   .pace-active {
-    background: #14282e;
-    color: #f5eedf;
+    background: #d4a857;
+    color: #181a20;
   }
 
   .disband-btn {
-    padding: 6px 12px;
-    font-size: 13px;
+    padding: 4px 10px;
+    font-size: 12px;
+    color: #f5eedf;
+    border-color: rgba(245, 238, 223, 0.28);
+  }
+
+  .disband-btn:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.1);
   }
 
   .table-stage {
@@ -416,7 +432,7 @@
     position: absolute;
     left: 50%;
     transform: translateX(-50%);
-    bottom: clamp(62px, 16%, 104px);
+    bottom: clamp(68px, 15%, 124px);
     z-index: 20;
     max-width: calc(100% - 16px);
     pointer-events: none;

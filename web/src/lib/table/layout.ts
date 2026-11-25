@@ -10,20 +10,11 @@ export interface Point {
   y: number;
 }
 
-export interface HubLayout {
-  inner: Rect;
+export interface CenterSealLayout {
   windFontSize: number;
-  roundFontSize: number;
   wallFontSize: number;
-  showRoundLine: boolean;
-  roundY: number;
+  windY: number;
   wallY: number;
-  winds: {
-    top: Point;
-    bottom: Point;
-    left: Point;
-    right: Point;
-  };
 }
 
 export interface TableLayout {
@@ -39,13 +30,23 @@ export interface TableLayout {
   handGap: number;
   drawnGap: number;
   bottomHandY: number;
+  viewerHandRect: Rect;
   oppHandTileW: number;
   oppHandTileH: number;
+  oppSideTileW: number;
+  oppSideTileH: number;
+  oppHands: {
+    top: Rect;
+    left: Rect;
+    right: Rect;
+  };
   riverTileW: number;
   riverTileH: number;
   riverGap: number;
   meldTileW: number;
   meldTileH: number;
+  centerSeal: Rect;
+  /** Alias of `centerSeal` for backward compatibility. */
   hub: Rect;
   rivers: {
     bottom: Rect;
@@ -54,16 +55,16 @@ export interface TableLayout {
     right: Rect;
   };
   badges: {
-    bottom: { x: number; y: number };
-    right: { x: number; y: number };
-    top: { x: number; y: number };
-    left: { x: number; y: number };
+    bottom: Rect;
+    right: Rect;
+    top: Rect;
+    left: Rect;
   };
   melds: {
-    bottom: { x: number; y: number };
-    right: { x: number; y: number };
-    top: { x: number; y: number };
-    left: { x: number; y: number };
+    bottom: Point;
+    right: Point;
+    top: Point;
+    left: Point;
   };
 }
 
@@ -72,7 +73,8 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 /**
- * Computes responsive, non-overlapping 2D table coordinates for desktop Mac and iPhone viewports.
+ * Computes responsive Scheme C four-corner minimal layout coordinates for Mac wide and iPhone viewports.
+ * Guarantees zero overlap across center seal, 4 corner badges, 4 rivers, opponent hands, and 13+1 hand.
  */
 export function computeTableLayout(
   rawWidth: number,
@@ -83,102 +85,208 @@ export function computeTableLayout(
 
   const isWide = width >= 640;
   const handGap = isWide ? 3 : 1;
-  const drawnGap = isWide ? 14 : 7;
+  const drawnGap = isWide ? 16 : 8;
   const margin = isWide ? 20 : 10;
+  const topMargin = height >= 500 ? 12 : 8;
+  const bottomPad = height >= 500 ? 14 : 8;
 
+  // Maximized 13+1 viewer hand
   const maxHandWByWidth = Math.floor(
     (width - margin * 2 - 12 * handGap - drawnGap) / 14,
   );
   const handTileW = clamp(
-    Math.min(maxHandWByWidth, Math.round(height * 0.1)),
-    21,
-    50,
+    Math.min(maxHandWByWidth, Math.round(height * 0.105)),
+    23,
+    62,
   );
-  const handTileH = Math.round(handTileW * 1.38);
-  const bottomPad = height >= 500 ? 14 : 8;
+  const handTileH = Math.round(handTileW * 1.36);
   const bottomHandY = height - handTileH - bottomPad;
+  const fullHandW = 13 * handTileW + 12 * handGap + drawnGap + handTileW;
+  const viewerHandRect: Rect = {
+    x: Math.round(width / 2 - fullHandW / 2),
+    y: bottomHandY,
+    width: fullHandW,
+    height: handTileH,
+  };
 
-  const oppHandTileW = clamp(Math.round(handTileW * 0.54), 14, 25);
-  const oppHandTileH = Math.round(oppHandTileW * 1.38);
+  // Compact four-corner seat/score badges (TL=top, TR=right, BL=left, BR=bottom)
+  const badgePad = isWide ? 18 : 8;
+  const badgeW = isWide
+    ? clamp(Math.round(width * 0.14), 124, 156)
+    : clamp(Math.round(width * 0.27), 94, 114);
+  const badgeH = height >= 500 ? 28 : 22;
 
-  const meldTileW = clamp(Math.round(handTileW * 0.58), 15, 28);
-  const meldTileH = Math.round(meldTileW * 1.38);
+  const tlBadge: Rect = {
+    x: badgePad,
+    y: topMargin,
+    width: badgeW,
+    height: badgeH,
+  };
+  const trBadge: Rect = {
+    x: width - badgePad - badgeW,
+    y: topMargin,
+    width: badgeW,
+    height: badgeH,
+  };
 
-  const topMargin = height >= 500 ? 14 : 8;
-  const topOccupiedH = topMargin + oppHandTileH + 14;
-  const playTop = topOccupiedH;
-  const playBottom = bottomHandY - 8;
-  const playH = Math.max(120, playBottom - playTop);
+  const hasBottomCornerRoom =
+    viewerHandRect.x >= badgePad + badgeW + 8 &&
+    width - (viewerHandRect.x + viewerHandRect.width) >= badgePad + badgeW + 8;
+  const bottomBadgeY = hasBottomCornerRoom
+    ? height - bottomPad - badgeH
+    : bottomHandY - badgeH - 6;
 
-  const hubW = clamp(Math.round(Math.min(width, playH) * 0.28), 74, 124);
-  const hubH = clamp(Math.round(hubW * 0.7), 52, 88);
+  const blBadge: Rect = {
+    x: badgePad,
+    y: bottomBadgeY,
+    width: badgeW,
+    height: badgeH,
+  };
+  const brBadge: Rect = {
+    x: width - badgePad - badgeW,
+    y: bottomBadgeY,
+    width: badgeW,
+    height: badgeH,
+  };
+
+  // Opponent hand sizing & placement
+  const oppGap = 1;
+  const oppHandTileW = clamp(Math.round(handTileW * 0.44), 14, 24);
+  const oppHandTileH = Math.round(oppHandTileW * 1.36);
+  const maxTopOppW = 14 * oppHandTileW + 13 * oppGap;
+  const topOppLeft = Math.round(width / 2 - maxTopOppW / 2);
+  const topClearsCornerBadges =
+    topOppLeft >= tlBadge.x + tlBadge.width + 8 &&
+    topOppLeft + maxTopOppW <= trBadge.x - 8;
+  const topOppY = topClearsCornerBadges ? topMargin : topMargin + badgeH + 6;
+  const topOppRect: Rect = {
+    x: topOppLeft,
+    y: topOppY,
+    width: maxTopOppW,
+    height: oppHandTileH,
+  };
+
+  const meldTileW = clamp(Math.round(handTileW * 0.56), 15, 28);
+  const meldTileH = Math.round(meldTileW * 1.36);
+
+  const playTop = topOppY + oppHandTileH + (height >= 500 ? 10 : 6);
+  const reservePortraitMeldBand = !hasBottomCornerRoom && !isWide;
+  const playBottom = hasBottomCornerRoom
+    ? bottomHandY - 10
+    : reservePortraitMeldBand
+      ? bottomBadgeY - meldTileH - 8
+      : bottomBadgeY - 6;
+  const playH = Math.max(110, playBottom - playTop);
+
+  // Side opponent hands strictly fit within [playTop, playBottom]
+  const maxSideTileWByHeight = Math.floor((playH - 10 - 13 * oppGap) / 14);
+  const oppSideTileW = clamp(
+    Math.min(Math.round(oppHandTileW * 0.86), maxSideTileWByHeight),
+    11,
+    22,
+  );
+  const oppSideTileH = Math.round(oppSideTileW * 1.36);
+  const maxSideOppSpan = 14 * oppSideTileW + 13 * oppGap;
 
   const cx = Math.round(width / 2);
   const cy = Math.round(playTop + playH / 2);
-  const hub: Rect = {
-    x: Math.round(cx - hubW / 2),
-    y: Math.round(cy - hubH / 2),
-    width: hubW,
-    height: hubH,
+
+  const leftOppRect: Rect = {
+    x: margin,
+    y: Math.round(cy - maxSideOppSpan / 2),
+    width: oppSideTileH,
+    height: maxSideOppSpan,
+  };
+  const rightOppRect: Rect = {
+    x: width - margin - oppSideTileH,
+    y: Math.round(cy - maxSideOppSpan / 2),
+    width: oppSideTileH,
+    height: maxSideOppSpan,
   };
 
+  // Compact circular center wind + wall seal
+  const sealSize = clamp(Math.round(Math.min(width, playH) * 0.14), 44, 68);
+  const centerSeal: Rect = {
+    x: Math.round(cx - sealSize / 2),
+    y: Math.round(cy - sealSize / 2),
+    width: sealSize,
+    height: sealSize,
+  };
+
+  // 6-per-row rivers arranged cleanly around centerSeal with zero corner overlap
   const riverGap = isWide ? 2 : 1;
-  const riverHubGap = height >= 500 ? 10 : 6;
-  const maxRiverAreaV = Math.max(
-    40,
-    Math.floor((playH - hubH) / 2 - riverHubGap - 4),
+  const riverSealGap = height >= 500 ? 12 : 6;
+  const halfSeal = Math.ceil(sealSize / 2);
+  const centerHalfY = halfSeal + riverSealGap;
+
+  const maxRiverAreaV = Math.max(36, Math.floor(playH / 2 - centerHalfY - 4));
+  const horizPlayHalf = Math.floor(
+    (rightOppRect.x - (leftOppRect.x + leftOppRect.width) - 16) / 2,
   );
-  const maxRiverAreaH = Math.max(
-    40,
-    Math.floor((width - hubW) / 2 - oppHandTileH - margin * 2 - riverHubGap - 8),
-  );
-  const riverDepthBudget = Math.min(maxRiverAreaV, maxRiverAreaH);
-  const maxRiverTileHFromDepth = Math.floor((riverDepthBudget - riverGap * 2) / 3);
+
+  const maxRiverTileHFromV = Math.floor((maxRiverAreaV - riverGap * 2) / 3);
   const maxRiverTileWFromSpan = Math.floor(
-    (Math.min(width * 0.44, playH * 0.46) - riverGap * 5) / 6,
+    (Math.min(width * 0.44, playH * 0.54) - riverGap * 5) / 6,
   );
+  // Horizontal constraint: centerHalfX (at least riverSpan/2 + 4) + 3 rows of riverTileH <= horizPlayHalf
+  // Solve roughly: 3 * W + 2.5 * gap + 3 * 1.36 * W <= horizPlayHalf - 4 => 7.08 * W <= horizPlayHalf - 10
+  const maxRiverTileWFromH = Math.floor((horizPlayHalf - 10 - riverGap * 5) / 7.15);
+
   const riverTileW = clamp(
-    Math.min(Math.floor(maxRiverTileHFromDepth / 1.36), maxRiverTileWFromSpan),
-    14,
-    28,
+    Math.min(
+      Math.floor(maxRiverTileHFromV / 1.36),
+      maxRiverTileWFromSpan,
+      maxRiverTileWFromH,
+    ),
+    15,
+    34,
   );
   const riverTileH = Math.round(riverTileW * 1.36);
 
   const riverSpan = 6 * riverTileW + 5 * riverGap;
   const riverThreeRows = 3 * riverTileH + 2 * riverGap;
+  const centerHalfX = Math.max(centerHalfY, Math.ceil(riverSpan / 2) + 4);
 
   const bottomRiver: Rect = {
     x: Math.round(cx - riverSpan / 2),
-    y: hub.y + hub.height + riverHubGap,
+    y: cy + centerHalfY,
     width: riverSpan,
-    height: Math.min(riverThreeRows, Math.max(riverTileH, bottomHandY - (hub.y + hub.height + riverHubGap) - 4)),
+    height: Math.min(riverThreeRows, Math.max(riverTileH, playBottom - (cy + centerHalfY))),
   };
 
-  const topRiverHeight = Math.min(riverThreeRows, Math.max(riverTileH, hub.y - riverHubGap - playTop));
+  const topRiverHeight = Math.min(
+    riverThreeRows,
+    Math.max(riverTileH, cy - centerHalfY - playTop),
+  );
   const topRiver: Rect = {
     x: Math.round(cx - riverSpan / 2),
-    y: hub.y - riverHubGap - topRiverHeight,
+    y: cy - centerHalfY - topRiverHeight,
     width: riverSpan,
     height: topRiverHeight,
   };
 
-  const leftRiverWidth = Math.min(riverThreeRows, Math.max(riverTileH, hub.x - riverHubGap - margin - oppHandTileH - 8));
+  const leftRiverWidth = Math.min(
+    riverThreeRows,
+    Math.max(riverTileH, cx - centerHalfX - (leftOppRect.x + leftOppRect.width + 6)),
+  );
   const leftRiver: Rect = {
-    x: hub.x - riverHubGap - leftRiverWidth,
+    x: cx - centerHalfX - leftRiverWidth,
     y: Math.round(cy - riverSpan / 2),
     width: leftRiverWidth,
     height: riverSpan,
   };
 
-  const rightRiverWidth = Math.min(riverThreeRows, Math.max(riverTileH, width - margin - oppHandTileH - 8 - (hub.x + hub.width + riverHubGap)));
+  const rightRiverWidth = Math.min(
+    riverThreeRows,
+    Math.max(riverTileH, rightOppRect.x - 6 - (cx + centerHalfX)),
+  );
   const rightRiver: Rect = {
-    x: hub.x + hub.width + riverHubGap,
+    x: cx + centerHalfX,
     y: Math.round(cy - riverSpan / 2),
     width: rightRiverWidth,
     height: riverSpan,
   };
 
-  const badgePad = isWide ? 16 : 8;
   return {
     width,
     height,
@@ -192,14 +300,23 @@ export function computeTableLayout(
     handGap,
     drawnGap,
     bottomHandY,
+    viewerHandRect,
     oppHandTileW,
     oppHandTileH,
+    oppSideTileW,
+    oppSideTileH,
+    oppHands: {
+      top: topOppRect,
+      left: leftOppRect,
+      right: rightOppRect,
+    },
     riverTileW,
     riverTileH,
     riverGap,
     meldTileW,
     meldTileH,
-    hub,
+    centerSeal,
+    hub: centerSeal,
     rivers: {
       bottom: bottomRiver,
       top: topRiver,
@@ -207,57 +324,64 @@ export function computeTableLayout(
       right: rightRiver,
     },
     badges: {
-      bottom: { x: badgePad, y: bottomHandY - 34 },
-      right: { x: width - badgePad, y: topMargin + 4 },
-      top: { x: badgePad, y: topMargin + 2 },
-      left: { x: badgePad, y: bottomHandY - 76 },
+      bottom: brBadge,
+      right: trBadge,
+      top: tlBadge,
+      left: blBadge,
     },
     melds: {
-      bottom: { x: width - badgePad, y: bottomHandY - meldTileH - 8 },
-      right: { x: width - margin - oppHandTileH - 8, y: cy + riverSpan / 2 + 10 },
-      top: { x: width - badgePad, y: topMargin + oppHandTileH + 6 },
-      left: { x: margin + oppHandTileH + 8, y: topMargin + oppHandTileH + 6 },
+      bottom: {
+        x: hasBottomCornerRoom || !isWide ? width - badgePad : brBadge.x - 10,
+        y: hasBottomCornerRoom
+          ? brBadge.y - meldTileH - 8
+          : !isWide
+            ? bottomBadgeY - meldTileH - 4
+            : bottomHandY - meldTileH - 6,
+      },
+      right: {
+        x: rightOppRect.x - 8,
+        y: cy + riverSpan / 2 + 8,
+      },
+      top: {
+        x: topClearsCornerBadges ? trBadge.x - 8 : width - badgePad,
+        y: topOppY + oppHandTileH + 6,
+      },
+      left: {
+        x: leftOppRect.x + leftOppRect.width + 8,
+        y: playTop,
+      },
     },
   };
 }
 
 /**
- * Computes strictly bounded inner content and edge wind coordinates for the center compass hub.
+ * Computes strictly bounded inner wind and wall-remaining coordinates for the compact center seal.
  */
-export function computeHubLayout(hub: Rect): HubLayout {
-  const windFontSize = hub.height >= 72 ? 11 : 9;
-  const edgeInsetX = Math.max(10, Math.round(hub.width * 0.11));
-  const edgeInsetY = Math.max(9, Math.round(hub.height * 0.14));
-  const cx = hub.x + hub.width / 2;
-  const cy = hub.y + hub.height / 2;
-
-  const innerPadX = edgeInsetX + Math.ceil(windFontSize * 0.65) + 4;
-  const innerPadY = edgeInsetY + Math.ceil(windFontSize * 0.65) + 3;
-  const inner: Rect = {
-    x: hub.x + innerPadX,
-    y: hub.y + innerPadY,
-    width: Math.max(16, hub.width - innerPadX * 2),
-    height: Math.max(12, hub.height - innerPadY * 2),
-  };
-
-  const showRoundLine = inner.height >= 28;
-  const roundFontSize = inner.height >= 38 ? 11 : 10;
-  const wallFontSize =
-    inner.height >= 38 ? 14 : inner.height >= 28 ? 12 : 11;
-
+export function computeCenterSealLayout(seal: Rect): CenterSealLayout {
+  const windFontSize = seal.height >= 58 ? 20 : 16;
+  const wallFontSize = seal.height >= 58 ? 11 : 10;
   return {
-    inner,
     windFontSize,
-    roundFontSize,
     wallFontSize,
-    showRoundLine,
-    roundY: inner.y + inner.height * 0.28,
-    wallY: showRoundLine ? inner.y + inner.height * 0.72 : cy,
-    winds: {
-      top: { x: cx, y: hub.y + edgeInsetY },
-      bottom: { x: cx, y: hub.y + hub.height - edgeInsetY },
-      left: { x: hub.x + edgeInsetX, y: cy },
-      right: { x: hub.x + hub.width - edgeInsetX, y: cy },
-    },
+    windY: Math.round(seal.y + seal.height * 0.37),
+    wallY: Math.round(seal.y + seal.height * 0.74),
+  };
+}
+
+/**
+ * Computes the center point `(x, y)` of the `visibleIndex`-th slot in the bottom player's 6-per-row river.
+ * Shared between `tableRenderer.ts` and Ticket #42 discard ghost preview.
+ */
+export function computeBottomRiverSlotPoint(
+  layout: TableLayout,
+  visibleIndex: number,
+): Point {
+  const safeIndex = Math.max(0, Math.floor(visibleIndex));
+  const col = safeIndex % 6;
+  const row = Math.floor(safeIndex / 6);
+  const { riverTileW: tw, riverTileH: th, riverGap: gap } = layout;
+  return {
+    x: layout.rivers.bottom.x + col * (tw + gap) + tw / 2,
+    y: layout.rivers.bottom.y + row * (th + gap) + th / 2,
   };
 }

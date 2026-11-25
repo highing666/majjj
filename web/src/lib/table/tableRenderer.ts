@@ -1,31 +1,50 @@
-import { Container, Graphics, Rectangle, Sprite, Text } from "pixi.js";
+import {
+  Container,
+  Graphics,
+  Rectangle,
+  Sprite,
+  Text,
+  TilingSprite,
+} from "pixi.js";
 import type { PublicSeatView } from "../protocol/generated/PublicSeatView";
 import type { Seat } from "../protocol/generated/Seat";
 import type { SeatInfo } from "../protocol/generated/SeatInfo";
 import type { TableSnapshot } from "../protocol/generated/TableSnapshot";
 import type { Tile } from "../protocol/generated/Tile";
 import type { PendingAddedKong } from "../session/reducer";
-import { computeHubLayout, computeTableLayout, type TableLayout } from "./layout";
+import {
+  computeBottomRiverSlotPoint,
+  computeCenterSealLayout,
+  computeTableLayout,
+  type Rect,
+  type TableLayout,
+} from "./layout";
 import type { TileAtlas } from "./tileAtlas";
-import { formatCompactRoundTitle, seatShortWind } from "./tiles";
+import { seatShortWind } from "./tiles";
 import {
   buildMeldRenderItems,
+  buildSeatBadgeModel,
   buildVisibleRiverRows,
   findLegalDiscardAction,
-  formatScoreDelta,
   getRelativeSeats,
-  seatRelativeRole,
 } from "./viewModel";
 
 const FELT_BG = 0x14282e;
-const FELT_INNER = 0x18333b;
-const FELT_RIM = 0x2f5a64;
+const SPOTLIGHT_AMBER = 0xffce80;
+const VIGNETTE_INDIGO = 0x080c1a;
 const BRASS = 0xd4a857;
-const HUB_BG = 0x0f2026;
+const SEAL_BG = 0x0d1b20;
 const TEXT_LIGHT = 0xf5eedf;
-const TEXT_MUTED = 0xa9c0c4;
+const TEXT_MUTED = 0xcfdad9;
 const ACTIVE_GLOW = 0xf5be58;
 const PENDING_AMBER = 0xf09d38;
+const DEALER_CORAL = 0xd8513c;
+const INK_DARK = 0x181a20;
+
+const UI_FONT =
+  '-apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", sans-serif';
+const SERIF_FONT =
+  '"Songti SC", "STSong", "Noto Serif CJK SC", "PingFang SC", serif';
 
 export interface TableRenderParams {
   snapshot: TableSnapshot;
@@ -35,6 +54,8 @@ export interface TableRenderParams {
 
 export interface TableRendererCallbacks {
   onDiscard: (tile: Tile, fromDrawn: boolean) => void;
+  onTileHover?: (tile: Tile, fromDrawn: boolean) => void;
+  onTileUnhover?: () => void;
 }
 
 function disposeChildren(container: Container): void {
@@ -43,7 +64,7 @@ function disposeChildren(container: Container): void {
     if (child instanceof Container && child.children.length > 0) {
       disposeChildren(child);
     }
-    if (child instanceof Sprite) {
+    if (child instanceof Sprite || child instanceof TilingSprite) {
       child.destroy({ texture: false });
     } else if (child instanceof Text) {
       child.destroy();
@@ -53,19 +74,34 @@ function disposeChildren(container: Container): void {
   }
 }
 
-function createTileSprite(
+function addShadowedTileSprite(
+  layer: Container,
   atlas: TileAtlas,
   tile: Tile | null,
+  x: number,
+  y: number,
   width: number,
   height: number,
   rotation = 0,
+  shadowOffsetY = 2,
 ): Sprite {
+  const shadow = new Sprite(atlas.shadowTexture);
+  shadow.anchor.set(0.5);
+  shadow.width = width;
+  shadow.height = height;
+  shadow.rotation = rotation;
+  shadow.position.set(x, y + shadowOffsetY);
+  shadow.alpha = 0.65;
+  layer.addChild(shadow);
+
   const texture = tile === null ? atlas.backTexture : atlas.getTileTexture(tile);
   const sprite = new Sprite(texture);
   sprite.anchor.set(0.5);
   sprite.width = width;
   sprite.height = height;
   sprite.rotation = rotation;
+  sprite.position.set(x, y);
+  layer.addChild(sprite);
   return sprite;
 }
 
@@ -87,24 +123,56 @@ function fitTextToWidth(label: Text, maxWidth: number): void {
   }
 }
 
+function drawArtDecoCorner(
+  g: Graphics,
+  x: number,
+  y: number,
+  sx: number,
+  sy: number,
+  arm: number,
+): void {
+  g.moveTo(x, y + sy * arm)
+    .lineTo(x, y)
+    .lineTo(x + sx * arm, y)
+    .stroke({ width: 2, color: BRASS, alpha: 0.56 });
+
+  const inset = 6;
+  const innerArm = Math.round(arm * 0.52);
+  g.moveTo(x + sx * inset, y + sy * (inset + innerArm))
+    .lineTo(x + sx * inset, y + sy * inset)
+    .lineTo(x + sx * (inset + innerArm), y + sy * inset)
+    .stroke({ width: 1.2, color: BRASS, alpha: 0.36 });
+
+  const px = x + sx * (inset + 4);
+  const py = y + sy * (inset + 4);
+  g.poly([px, py - 3, px + 3, py, px, py + 3, px - 3, py]).fill({
+    color: BRASS,
+    alpha: 0.5,
+  });
+}
+
 /**
- * Manages the PixiJS v8 scene layers for the 2D skeleton mahjong table.
+ * Manages the PixiJS v8 scene layers for the Piltover Stage (Scheme A) + Four-Corner Minimal (Scheme C) table.
+ * Reserves dedicated `ghostLayer` (#42) and `effectsLayer` (#43) containers.
  */
 export class TableSceneRenderer {
   private readonly root: Container;
   private readonly feltLayer = new Container();
-  private readonly hubLayer = new Container();
+  private readonly centerSealLayer = new Container();
   private readonly riverLayer = new Container();
+  readonly ghostLayer = new Container();
   private readonly meldLayer = new Container();
   private readonly opponentHandLayer = new Container();
   private readonly badgeLayer = new Container();
   private readonly viewerHandLayer = new Container();
+  readonly effectsLayer = new Container();
   private readonly atlas: TileAtlas;
   private readonly callbacks: TableRendererCallbacks;
 
   private width = 800;
   private height = 600;
   private lastParams: TableRenderParams | null = null;
+  private lastLayout: TableLayout | null = null;
 
   constructor(
     stage: Container,
@@ -117,13 +185,19 @@ export class TableSceneRenderer {
 
     this.root.addChild(
       this.feltLayer,
-      this.hubLayer,
+      this.centerSealLayer,
       this.riverLayer,
+      this.ghostLayer,
       this.meldLayer,
       this.opponentHandLayer,
       this.badgeLayer,
       this.viewerHandLayer,
+      this.effectsLayer,
     );
+  }
+
+  getLayout(): TableLayout | null {
+    return this.lastLayout;
   }
 
   resize(width: number, height: number): void {
@@ -138,11 +212,12 @@ export class TableSceneRenderer {
     this.lastParams = params;
     const view = params.snapshot.player_view;
     if (!view) {
-      this.clearAll();
+      this.clearAll(true);
       return;
     }
 
     const layout = computeTableLayout(this.width, this.height);
+    this.lastLayout = layout;
     const relative = getRelativeSeats(view.viewer);
     const seatByName = new Map<Seat, PublicSeatView>();
     for (const s of view.seats) {
@@ -154,11 +229,11 @@ export class TableSceneRenderer {
     }
 
     this.drawFelt(layout);
-    this.drawHub(layout, view.turn, view.wall_remaining, relative);
+    this.drawCenterSeal(layout, view.turn, view.wall_remaining);
     this.drawRivers(layout, relative, seatByName, findLatestRiverSeq(view.seats));
     this.drawMelds(layout, relative, seatByName, params.pendingAddedKong);
     this.drawOpponentHands(layout, relative, seatByName);
-    this.drawSeatBadges(
+    this.drawCornerBadges(
       layout,
       relative,
       seatByName,
@@ -171,117 +246,153 @@ export class TableSceneRenderer {
   }
 
   destroy(): void {
-    this.clearAll();
+    this.clearAll(true);
     this.root.removeChildren();
   }
 
-  private clearAll(): void {
+  private clearAll(includeAuxiliaryLayers: boolean): void {
     disposeChildren(this.feltLayer);
-    disposeChildren(this.hubLayer);
+    disposeChildren(this.centerSealLayer);
     disposeChildren(this.riverLayer);
     disposeChildren(this.meldLayer);
     disposeChildren(this.opponentHandLayer);
     disposeChildren(this.badgeLayer);
     disposeChildren(this.viewerHandLayer);
+    if (includeAuxiliaryLayers) {
+      disposeChildren(this.ghostLayer);
+      disposeChildren(this.effectsLayer);
+    }
   }
 
   private drawFelt(layout: TableLayout): void {
     disposeChildren(this.feltLayer);
-    const bg = new Graphics();
-    bg.rect(0, 0, layout.width, layout.height).fill({ color: FELT_BG });
 
-    const pad = 8;
-    bg.roundRect(pad, pad, layout.width - pad * 2, layout.height - pad * 2, 18)
-      .fill({ color: FELT_INNER })
-      .stroke({ width: 1.5, color: FELT_RIM });
+    const baseBg = new Graphics();
+    baseBg.rect(0, 0, layout.width, layout.height).fill({ color: FELT_BG });
+    this.feltLayer.addChild(baseBg);
 
-    // Subtle warm central mat highlight
-    const matW = Math.min(layout.width - 40, layout.hub.width + layout.riverTileW * 16);
-    const matH = Math.min(layout.height - 40, layout.hub.height + layout.riverTileH * 8);
-    bg.roundRect(
-      layout.cx - matW / 2,
-      layout.cy - matH / 2,
-      matW,
-      matH,
-      20,
-    ).stroke({ width: 1, color: 0x264b54, alpha: 0.7 });
+    const impastoTile = new TilingSprite({
+      texture: this.atlas.feltImpastoTexture,
+      width: layout.width,
+      height: layout.height,
+      tileScale: { x: 0.75, y: 0.75 },
+    });
+    this.feltLayer.addChild(impastoTile);
 
-    this.feltLayer.addChild(bg);
+    const brushOverlay = new TilingSprite({
+      texture: this.atlas.feltBrushTexture,
+      width: layout.width,
+      height: layout.height,
+      tileScale: { x: 0.85, y: 0.85 },
+      alpha: 0.52,
+    });
+    this.feltLayer.addChild(brushOverlay);
+
+    // Warm amber central spotlight + cool indigo corner vignette + vintage brass Art Deco corners
+    const overlay = new Graphics();
+    const rx = Math.max(140, layout.width * 0.42);
+    const ry = Math.max(110, layout.height * 0.4);
+    const spotSteps = [1.0, 0.72, 0.46];
+    for (const scale of spotSteps) {
+      overlay
+        .ellipse(layout.cx, layout.cy, rx * scale, ry * scale)
+        .fill({ color: SPOTLIGHT_AMBER, alpha: 0.042 });
+    }
+
+    // Cool indigo edge vignette framing
+    const vigSteps = [
+      { inset: 0, width: 22, alpha: 0.36 },
+      { inset: 12, width: 28, alpha: 0.22 },
+      { inset: 28, width: 34, alpha: 0.1 },
+    ];
+    for (const v of vigSteps) {
+      overlay
+        .rect(
+          v.inset,
+          v.inset,
+          Math.max(1, layout.width - v.inset * 2),
+          Math.max(1, layout.height - v.inset * 2),
+        )
+        .stroke({ width: v.width, color: VIGNETTE_INDIGO, alpha: v.alpha });
+    }
+
+    // Subtle table rail + vintage brass Art Deco corner accents
+    const pad = layout.isWide ? 10 : 6;
+    const arm = layout.isWide ? 36 : 22;
+    overlay
+      .roundRect(
+        pad - 2,
+        pad - 2,
+        layout.width - (pad - 2) * 2,
+        layout.height - (pad - 2) * 2,
+        12,
+      )
+      .stroke({ width: 1, color: BRASS, alpha: 0.16 });
+
+    drawArtDecoCorner(overlay, pad, pad, 1, 1, arm);
+    drawArtDecoCorner(overlay, layout.width - pad, pad, -1, 1, arm);
+    drawArtDecoCorner(overlay, pad, layout.height - pad, 1, -1, arm);
+    drawArtDecoCorner(
+      overlay,
+      layout.width - pad,
+      layout.height - pad,
+      -1,
+      -1,
+      arm,
+    );
+
+    this.feltLayer.addChild(overlay);
   }
 
-  private drawHub(
+  private drawCenterSeal(
     layout: TableLayout,
     turn: NonNullable<TableSnapshot["player_view"]>["turn"],
     wallRemaining: number,
-    relative: ReturnType<typeof getRelativeSeats>,
   ): void {
-    disposeChildren(this.hubLayer);
-    const { hub } = layout;
-    const hubLayout = computeHubLayout(hub);
-    const centerX = hub.x + hub.width / 2;
+    disposeChildren(this.centerSealLayer);
+    const { centerSeal } = layout;
+    const sealLayout = computeCenterSealLayout(centerSeal);
+    const cx = centerSeal.x + centerSeal.width / 2;
+    const cy = centerSeal.y + centerSeal.height / 2;
+    const radius = centerSeal.width / 2;
 
-    const card = new Graphics();
-    card
-      .roundRect(hub.x, hub.y, hub.width, hub.height, 12)
-      .fill({ color: HUB_BG })
-      .stroke({ width: 1.5, color: BRASS, alpha: 0.85 });
-    this.hubLayer.addChild(card);
+    const ring = new Graphics();
+    ring
+      .circle(cx, cy, radius)
+      .fill({ color: SEAL_BG, alpha: 0.88 })
+      .stroke({ width: 2, color: BRASS, alpha: 0.78 });
+    ring
+      .circle(cx, cy, Math.max(4, radius - 4))
+      .stroke({ width: 1, color: BRASS, alpha: 0.28 });
+    this.centerSealLayer.addChild(ring);
 
-    if (hubLayout.showRoundLine) {
-      const roundText = new Text({
-        text: formatCompactRoundTitle(turn),
-        style: {
-          fontFamily:
-            '-apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans CJK SC", sans-serif',
-          fontSize: hubLayout.roundFontSize,
-          fontWeight: "700",
-          fill: BRASS,
-        },
-      });
-      roundText.anchor.set(0.5);
-      roundText.position.set(centerX, hubLayout.roundY);
-      fitTextToWidth(roundText, hubLayout.inner.width);
-      this.hubLayer.addChild(roundText);
-    }
+    const activeSeat = turn.active_seat ?? turn.dealer;
+    const windText = new Text({
+      text: seatShortWind(activeSeat),
+      style: {
+        fontFamily: SERIF_FONT,
+        fontSize: sealLayout.windFontSize,
+        fontWeight: "900",
+        fill: ACTIVE_GLOW,
+      },
+    });
+    windText.anchor.set(0.5);
+    windText.position.set(cx, sealLayout.windY);
+    this.centerSealLayer.addChild(windText);
 
     const wallText = new Text({
       text: `余 ${wallRemaining}`,
       style: {
-        fontFamily:
-          '-apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans CJK SC", sans-serif',
-        fontSize: hubLayout.wallFontSize,
+        fontFamily: UI_FONT,
+        fontSize: sealLayout.wallFontSize,
         fontWeight: "700",
-        fill: TEXT_LIGHT,
+        fill: TEXT_MUTED,
       },
     });
     wallText.anchor.set(0.5);
-    wallText.position.set(centerX, hubLayout.wallY);
-    fitTextToWidth(wallText, hubLayout.inner.width);
-    this.hubLayer.addChild(wallText);
-
-    // Directional wind ticks around hub edges
-    const edgeDirs: Array<{ seat: Seat; x: number; y: number }> = [
-      { seat: relative.bottom, ...hubLayout.winds.bottom },
-      { seat: relative.top, ...hubLayout.winds.top },
-      { seat: relative.left, ...hubLayout.winds.left },
-      { seat: relative.right, ...hubLayout.winds.right },
-    ];
-    for (const dir of edgeDirs) {
-      const isActive = turn.active_seat === dir.seat;
-      const label = new Text({
-        text: seatShortWind(dir.seat),
-        style: {
-          fontFamily:
-            '-apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans CJK SC", sans-serif',
-          fontSize: hubLayout.windFontSize,
-          fontWeight: isActive ? "800" : "600",
-          fill: isActive ? ACTIVE_GLOW : TEXT_MUTED,
-        },
-      });
-      label.anchor.set(0.5);
-      label.position.set(dir.x, dir.y);
-      this.hubLayer.addChild(label);
-    }
+    wallText.position.set(cx, sealLayout.wallY);
+    fitTextToWidth(wallText, centerSeal.width - 10);
+    this.centerSealLayer.addChild(wallText);
   }
 
   private drawRivers(
@@ -293,7 +404,7 @@ export class TableSceneRenderer {
     disposeChildren(this.riverLayer);
     const { riverTileW: tw, riverTileH: th, riverGap: gap } = layout;
 
-    const placeTile = (
+    const placeRiverTile = (
       tile: Tile,
       x: number,
       y: number,
@@ -301,37 +412,53 @@ export class TableSceneRenderer {
       isTsumogiri: boolean,
       isLatest: boolean,
     ) => {
-      const sprite = createTileSprite(this.atlas, tile, tw, th, rotation);
-      sprite.position.set(x, y);
-      // Subtly dim 摸切 (`is_tsumogiri: true`) vs 手切 (`is_tsumogiri: false`)
-      sprite.alpha = isTsumogiri ? 0.72 : 1;
-      sprite.tint = isTsumogiri ? 0xd8e2e2 : 0xffffff;
-      this.riverLayer.addChild(sprite);
+      const sprite = addShadowedTileSprite(
+        this.riverLayer,
+        this.atlas,
+        tile,
+        x,
+        y,
+        tw,
+        th,
+        rotation,
+        1.5,
+      );
+      if (isTsumogiri) {
+        sprite.alpha = 0.84;
+        sprite.tint = 0xd2dada;
+
+        const rw = rotation === 0 || Math.abs(rotation - Math.PI) < 0.01 ? tw : th;
+        const rh = rotation === 0 || Math.abs(rotation - Math.PI) < 0.01 ? th : tw;
+        const dot = new Graphics();
+        dot
+          .circle(x + rw * 0.28, y - rh * 0.28, Math.max(1.5, tw * 0.08))
+          .fill({ color: INK_DARK, alpha: 0.42 });
+        this.riverLayer.addChild(dot);
+      }
 
       if (isLatest) {
         const ring = new Graphics();
         const rw = rotation === 0 || Math.abs(rotation - Math.PI) < 0.01 ? tw : th;
         const rh = rotation === 0 || Math.abs(rotation - Math.PI) < 0.01 ? th : tw;
         ring
-          .roundRect(x - rw / 2 - 1, y - rh / 2 - 1, rw + 2, rh + 2, 3)
+          .roundRect(x - rw / 2 - 1.5, y - rh / 2 - 1.5, rw + 3, rh + 3, 4)
           .stroke({ width: 2, color: ACTIVE_GLOW });
         this.riverLayer.addChild(ring);
       }
     };
 
-    // Bottom river: row 0 closest to hub, growing downward, left-to-right
+    // Bottom river: uses shared `computeBottomRiverSlotPoint` (row 0 closest to center seal)
     const bottomRows = buildVisibleRiverRows(
       seatByName.get(relative.bottom)?.river ?? [],
       6,
     );
     bottomRows.forEach((row, rIdx) => {
       row.forEach((entry, cIdx) => {
-        const x = layout.rivers.bottom.x + cIdx * (tw + gap) + tw / 2;
-        const y = layout.rivers.bottom.y + rIdx * (th + gap) + th / 2;
-        placeTile(
+        const pt = computeBottomRiverSlotPoint(layout, rIdx * 6 + cIdx);
+        placeRiverTile(
           entry.tile,
-          x,
-          y,
+          pt.x,
+          pt.y,
           0,
           entry.is_tsumogiri,
           entry.seq === latestSeq,
@@ -339,7 +466,7 @@ export class TableSceneRenderer {
       });
     });
 
-    // Top river: row 0 closest to hub (bottom of top river rect), growing upward
+    // Top river: row 0 closest to center seal, growing upward
     const topRows = buildVisibleRiverRows(
       seatByName.get(relative.top)?.river ?? [],
       6,
@@ -356,7 +483,7 @@ export class TableSceneRenderer {
           layout.rivers.top.height -
           rIdx * (th + gap) -
           th / 2;
-        placeTile(
+        placeRiverTile(
           entry.tile,
           x,
           y,
@@ -367,7 +494,7 @@ export class TableSceneRenderer {
       });
     });
 
-    // Left river: row 0 closest to hub (right side of left river rect), growing leftward
+    // Left river: row 0 closest to center seal, growing leftward
     const leftRows = buildVisibleRiverRows(
       seatByName.get(relative.left)?.river ?? [],
       6,
@@ -380,7 +507,7 @@ export class TableSceneRenderer {
           rIdx * (th + gap) -
           th / 2;
         const y = layout.rivers.left.y + cIdx * (tw + gap) + tw / 2;
-        placeTile(
+        placeRiverTile(
           entry.tile,
           x,
           y,
@@ -391,7 +518,7 @@ export class TableSceneRenderer {
       });
     });
 
-    // Right river: row 0 closest to hub (left side of right river rect), growing rightward
+    // Right river: row 0 closest to center seal, growing rightward
     const rightRows = buildVisibleRiverRows(
       seatByName.get(relative.right)?.river ?? [],
       6,
@@ -404,7 +531,7 @@ export class TableSceneRenderer {
           layout.rivers.right.height -
           cIdx * (tw + gap) -
           tw / 2;
-        placeTile(
+        placeRiverTile(
           entry.tile,
           x,
           y,
@@ -465,15 +592,17 @@ export class TableSceneRenderer {
           const along = start + idx * (mw + tileGap) + mw / 2;
           const cx = axis === "horizontal" ? along : fixedCoord;
           const cy = axis === "horizontal" ? fixedCoord + mh / 2 : along;
-          const sprite = createTileSprite(
+          addShadowedTileSprite(
+            this.meldLayer,
             this.atlas,
             slot.faceUp ? slot.tile : null,
+            cx,
+            cy,
             mw,
             mh,
             rotation,
+            1.5,
           );
-          sprite.position.set(cx, cy);
-          this.meldLayer.addChild(sprite);
         });
 
         if (item.pendingAddedKong && pendingAddedKong !== null) {
@@ -484,15 +613,17 @@ export class TableSceneRenderer {
               : fixedCoord + (rotation > 0 ? mh * 0.32 : -mh * 0.32);
           const hoverY =
             axis === "horizontal" ? fixedCoord - mh * 0.28 : secondAlong;
-          const pendingSprite = createTileSprite(
+          addShadowedTileSprite(
+            this.meldLayer,
             this.atlas,
             pendingAddedKong.tile,
+            hoverX,
+            hoverY,
             mw,
             mh,
             rotation,
+            1.5,
           );
-          pendingSprite.position.set(hoverX, hoverY);
-          this.meldLayer.addChild(pendingSprite);
 
           const boxW = axis === "horizontal" ? mw : mh;
           const boxH = axis === "horizontal" ? mh : mw;
@@ -517,7 +648,6 @@ export class TableSceneRenderer {
     };
 
     const placements: MeldGroupPlacement[] = [
-      // Bottom viewer melds: anchored bottom-right above hand, growing leftward
       {
         seat: relative.bottom,
         axis: "horizontal",
@@ -526,7 +656,6 @@ export class TableSceneRenderer {
         growLeft: true,
         rotation: 0,
       },
-      // Top opponent melds: anchored top-right below top hand, growing leftward
       {
         seat: relative.top,
         axis: "horizontal",
@@ -535,7 +664,6 @@ export class TableSceneRenderer {
         growLeft: true,
         rotation: Math.PI,
       },
-      // Left opponent melds: growing downward
       {
         seat: relative.left,
         axis: "vertical",
@@ -543,7 +671,6 @@ export class TableSceneRenderer {
         fixedCoord: layout.melds.left.x + mh / 2,
         rotation: Math.PI / 2,
       },
-      // Right opponent melds: growing downward
       {
         seat: relative.right,
         axis: "vertical",
@@ -563,57 +690,67 @@ export class TableSceneRenderer {
     seatByName: Map<Seat, PublicSeatView>,
   ): void {
     disposeChildren(this.opponentHandLayer);
-    const { oppHandTileW: ow, oppHandTileH: oh } = layout;
+    const {
+      oppHandTileW: ow,
+      oppHandTileH: oh,
+      oppSideTileW: sw,
+      oppSideTileH: sh,
+    } = layout;
     const gap = 1;
 
     // Top opponent
     const topCount = seatByName.get(relative.top)?.hand_count ?? 0;
     const topSpan = topCount * ow + Math.max(0, topCount - 1) * gap;
     const topStartX = layout.cx - topSpan / 2;
-    const topY = layout.topMargin + oh / 2;
+    const topY = layout.oppHands.top.y + oh / 2;
     for (let i = 0; i < topCount; i += 1) {
-      const sprite = createTileSprite(this.atlas, null, ow, oh, Math.PI);
-      sprite.position.set(topStartX + i * (ow + gap) + ow / 2, topY);
-      this.opponentHandLayer.addChild(sprite);
+      addShadowedTileSprite(
+        this.opponentHandLayer,
+        this.atlas,
+        null,
+        topStartX + i * (ow + gap) + ow / 2,
+        topY,
+        ow,
+        oh,
+        Math.PI,
+        1.5,
+      );
     }
 
     // Left and right opponents
-    const sideTileW = Math.max(12, Math.round(ow * 0.86));
-    const sideTileH = Math.round(sideTileW * 1.38);
     const sideHands = [
       {
         seat: relative.left,
-        x: layout.margin + sideTileH / 2,
+        x: layout.oppHands.left.x + sh / 2,
         rotation: Math.PI / 2,
       },
       {
         seat: relative.right,
-        x: layout.width - layout.margin - sideTileH / 2,
+        x: layout.oppHands.right.x + sh / 2,
         rotation: -Math.PI / 2,
       },
     ];
     for (const side of sideHands) {
       const count = seatByName.get(side.seat)?.hand_count ?? 0;
-      const span = count * sideTileW + Math.max(0, count - 1) * gap;
+      const span = count * sw + Math.max(0, count - 1) * gap;
       const startY = layout.cy - span / 2;
       for (let i = 0; i < count; i += 1) {
-        const sprite = createTileSprite(
+        addShadowedTileSprite(
+          this.opponentHandLayer,
           this.atlas,
           null,
-          sideTileW,
-          sideTileH,
-          side.rotation,
-        );
-        sprite.position.set(
           side.x,
-          startY + i * (sideTileW + gap) + sideTileW / 2,
+          startY + i * (sw + gap) + sw / 2,
+          sw,
+          sh,
+          side.rotation,
+          1.5,
         );
-        this.opponentHandLayer.addChild(sprite);
       }
     }
   }
 
-  private drawSeatBadges(
+  private drawCornerBadges(
     layout: TableLayout,
     relative: ReturnType<typeof getRelativeSeats>,
     seatByName: Map<Seat, PublicSeatView>,
@@ -624,62 +761,106 @@ export class TableSceneRenderer {
   ): void {
     disposeChildren(this.badgeLayer);
 
-    const drawBadge = (
-      seat: Seat,
-      x: number,
-      y: number,
-      alignRight: boolean,
-    ) => {
+    const drawBadge = (seat: Seat, rect: Rect) => {
       const seatView = seatByName.get(seat);
       const seatInfo = infoByName.get(seat);
       if (!seatView || !seatInfo) {
         return;
       }
 
-      const isActive = activeSeat === seat;
-      const isDealer = dealer === seat;
-      const wind = seatShortWind(seat);
-      const role = seatRelativeRole(viewer, seat);
-      const rawName = seatInfo.nickname || (seatInfo.kind === "Ai" ? "AI" : role);
-      const shortName = rawName.length > 7 ? `${rawName.slice(0, 6)}…` : rawName;
-      const offlineTag =
-        seatInfo.kind === "Human" && !seatInfo.connected ? "·离线" : "";
-      const dealerTag = isDealer ? "庄" : "";
-
-      const line = `${dealerTag ? `[${dealerTag}] ` : ""}${wind}·${shortName}${offlineTag}  ${formatScoreDelta(seatView.score)}`;
-      const badgeW = layout.isWide ? 156 : 122;
-      const badgeH = 26;
-      const bx = alignRight ? x - badgeW : x;
-
+      const model = buildSeatBadgeModel(
+        seat,
+        seatView,
+        seatInfo,
+        viewer,
+        dealer,
+        activeSeat,
+      );
+      const padX = layout.isWide ? 7 : 5;
       const box = new Graphics();
       box
-        .roundRect(bx, y, badgeW, badgeH, 8)
-        .fill({ color: isActive ? 0x224852 : 0x102127, alpha: 0.92 })
+        .roundRect(rect.x, rect.y, rect.width, rect.height, 8)
+        .fill({
+          color: model.isActive ? 0x1b3b44 : SEAL_BG,
+          alpha: 0.9,
+        })
         .stroke({
-          width: isActive ? 2 : 1,
-          color: isActive ? ACTIVE_GLOW : 0x35626c,
+          width: model.isActive ? 2 : 1.25,
+          color: model.isActive ? ACTIVE_GLOW : 0x8a6d3b,
+          alpha: model.isActive ? 1 : 0.82,
         });
       this.badgeLayer.addChild(box);
 
-      const text = new Text({
-        text: line,
+      const pillSize = rect.height - 8;
+      const pill = new Graphics();
+      pill
+        .roundRect(rect.x + padX, rect.y + 4, pillSize, pillSize, 5)
+        .fill({ color: model.isDealer ? DEALER_CORAL : 0x264852 });
+      this.badgeLayer.addChild(pill);
+
+      const windLabel = new Text({
+        text: model.isDealer ? `${model.wind}庄` : model.wind,
         style: {
-          fontFamily:
-            '-apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans CJK SC", sans-serif',
-          fontSize: layout.isWide ? 12 : 10,
-          fontWeight: isActive ? "700" : "600",
-          fill: isActive ? ACTIVE_GLOW : TEXT_LIGHT,
+          fontFamily: UI_FONT,
+          fontSize: model.isDealer
+            ? layout.isWide
+              ? 10
+              : 8
+            : layout.isWide
+              ? 11
+              : 9,
+          fontWeight: "800",
+          fill: TEXT_LIGHT,
         },
       });
-      text.anchor.set(0.5);
-      text.position.set(bx + badgeW / 2, y + badgeH / 2);
-      this.badgeLayer.addChild(text);
+      windLabel.anchor.set(0.5);
+      windLabel.position.set(
+        rect.x + padX + pillSize / 2,
+        rect.y + rect.height / 2,
+      );
+      fitTextToWidth(windLabel, pillSize - 2);
+      this.badgeLayer.addChild(windLabel);
+
+      const scoreText = new Text({
+        text: model.scoreText,
+        style: {
+          fontFamily: UI_FONT,
+          fontSize: layout.isWide ? 12 : 10,
+          fontWeight: "800",
+          fill: model.isActive ? ACTIVE_GLOW : BRASS,
+        },
+      });
+      scoreText.anchor.set(1, 0.5);
+      scoreText.position.set(
+        rect.x + rect.width - padX,
+        rect.y + rect.height / 2,
+      );
+      this.badgeLayer.addChild(scoreText);
+
+      const nameStart = rect.x + padX + pillSize + 6;
+      const nameMaxW = Math.max(
+        20,
+        rect.x + rect.width - padX - scoreText.width - 6 - nameStart,
+      );
+      const nameLabel = new Text({
+        text: model.isOffline ? `${model.name}·离线` : model.name,
+        style: {
+          fontFamily: UI_FONT,
+          fontSize: layout.isWide ? 12 : 10,
+          fontWeight: model.isActive ? "700" : "600",
+          fill: model.isOffline ? PENDING_AMBER : TEXT_LIGHT,
+        },
+      });
+      nameLabel.anchor.set(0, 0.5);
+      nameLabel.position.set(nameStart, rect.y + rect.height / 2);
+      fitTextToWidth(nameLabel, nameMaxW);
+      this.badgeLayer.addChild(nameLabel);
     };
 
-    drawBadge(relative.bottom, layout.badges.bottom.x, layout.badges.bottom.y, false);
-    drawBadge(relative.top, layout.badges.top.x, layout.badges.top.y, false);
-    drawBadge(relative.left, layout.badges.left.x, layout.badges.left.y, false);
-    drawBadge(relative.right, layout.badges.right.x, layout.badges.right.y, true);
+    drawBadge(relative.top, layout.badges.top);
+    drawBadge(relative.right, layout.badges.right);
+    drawBadge(relative.left, layout.badges.left);
+    drawBadge(relative.bottom, layout.badges.bottom);
   }
 
   private drawViewerHand(layout: TableLayout, params: TableRenderParams): void {
@@ -719,8 +900,17 @@ export class TableSceneRenderer {
         !params.inputLocked &&
         findLegalDiscardAction(view.legal_actions, tile, fromDrawn) !== null;
 
-      const sprite = createTileSprite(this.atlas, tile, tw, th, 0);
-      sprite.position.set(x + tw / 2, y + th / 2);
+      const sprite = addShadowedTileSprite(
+        this.viewerHandLayer,
+        this.atlas,
+        tile,
+        x + tw / 2,
+        y + th / 2,
+        tw,
+        th,
+        0,
+        3,
+      );
 
       if (legal) {
         sprite.eventMode = "static";
@@ -734,12 +924,14 @@ export class TableSceneRenderer {
 
         const restY = y + th / 2;
         sprite.on("pointerover", () => {
-          sprite.y = restY - 8;
+          sprite.y = restY - 10;
           sprite.tint = 0xfff3d4;
+          this.callbacks.onTileHover?.(tile, fromDrawn);
         });
         sprite.on("pointerout", () => {
           sprite.y = restY;
           sprite.tint = 0xffffff;
+          this.callbacks.onTileUnhover?.();
         });
         sprite.on("pointertap", () => {
           this.callbacks.onDiscard(tile, fromDrawn);
@@ -747,11 +939,9 @@ export class TableSceneRenderer {
       } else {
         sprite.eventMode = "none";
         if (params.inputLocked) {
-          sprite.alpha = 0.85;
+          sprite.alpha = 0.86;
         }
       }
-
-      this.viewerHandLayer.addChild(sprite);
     };
 
     closed_tiles.forEach((tile, idx) => {
@@ -761,11 +951,10 @@ export class TableSceneRenderer {
 
     if (drawn_tile !== null) {
       const drawnX = startX + closedW + drawnGap;
-      // Subtle highlight frame behind newly drawn tile
       const marker = new Graphics();
       marker
         .roundRect(drawnX - 2, baseY - 2, tw + 4, th + 4, 6)
-        .stroke({ width: 1.5, color: BRASS, alpha: 0.7 });
+        .stroke({ width: 1.5, color: BRASS, alpha: 0.72 });
       this.viewerHandLayer.addChild(marker);
 
       addInteractiveHandTile(drawn_tile, true, drawnX, baseY);

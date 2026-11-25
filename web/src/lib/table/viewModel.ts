@@ -3,12 +3,13 @@ import type { MatchSummary } from "../protocol/generated/MatchSummary";
 import type { MeldView } from "../protocol/generated/MeldView";
 import type { PlayerAction } from "../protocol/generated/PlayerAction";
 import type { PlayerView } from "../protocol/generated/PlayerView";
+import type { PublicSeatView } from "../protocol/generated/PublicSeatView";
 import type { RevealedMeld } from "../protocol/generated/RevealedMeld";
 import type { Seat } from "../protocol/generated/Seat";
 import type { SeatInfo } from "../protocol/generated/SeatInfo";
 import type { Tile } from "../protocol/generated/Tile";
 import { parseMeld, type MeldKind } from "../protocol/melds";
-import { ALL_SEATS, seatIndex, seatLabel } from "../protocol/seats";
+import { ALL_SEATS, seatIndex, seatLabel, seatShortWind } from "../protocol/seats";
 import type { PendingAddedKong } from "../session/reducer";
 import { getTileLabel } from "./tiles";
 
@@ -46,6 +47,21 @@ export interface ActionBarItem {
 export interface CanvasSize {
   width: number;
   height: number;
+}
+
+export interface SeatBadgeModel {
+  wind: string;
+  isDealer: boolean;
+  isActive: boolean;
+  isOffline: boolean;
+  name: string;
+  scoreText: string;
+}
+
+export interface ShortcutContext {
+  disabled: boolean;
+  hasModalOpen: boolean;
+  isInputFocused: boolean;
 }
 
 export interface MatchStandingRow {
@@ -437,4 +453,45 @@ export function extractContentBoxSize(entry: {
     };
   }
   return { width: 1, height: 1 };
+}
+
+/**
+ * Resolves a keyboard shortcut (`H`/`G`/`P`/`Esc`) to an unambiguous `PlayerAction`,
+ * suppressing shortcuts when disabled, a modal is open, or an input element has focus.
+ */
+export function resolveActionBarShortcut(
+  items: readonly ActionBarItem[],
+  rawKey: string,
+  ctx: ShortcutContext,
+): PlayerAction | null {
+  if (ctx.disabled || ctx.hasModalOpen || ctx.isInputFocused || items.length === 0) {
+    return null;
+  }
+  const key = rawKey.toLowerCase();
+  const candidates = items.filter((item) => item.shortcutKey === key);
+  return candidates.length === 1 ? candidates[0].action : null;
+}
+
+/**
+ * Builds the compact Scheme C corner seat badge view model.
+ */
+export function buildSeatBadgeModel(
+  seat: Seat,
+  seatView: PublicSeatView,
+  seatInfo: SeatInfo,
+  viewer: Seat,
+  dealer: Seat,
+  activeSeat: Seat | null,
+): SeatBadgeModel {
+  const role = seatRelativeRole(viewer, seat);
+  const rawName = seatInfo.nickname || (seatInfo.kind === "Ai" ? "AI" : role);
+  const name = rawName.length > 7 ? `${rawName.slice(0, 6)}…` : rawName;
+  return {
+    wind: seatShortWind(seat),
+    isDealer: dealer === seat,
+    isActive: activeSeat === seat,
+    isOffline: seatInfo.kind === "Human" && !seatInfo.connected,
+    name,
+    scoreText: formatScoreDelta(seatView.score),
+  };
 }

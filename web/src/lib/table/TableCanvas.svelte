@@ -4,7 +4,7 @@
   import type { Tile } from "../protocol/generated/Tile";
   import type { PendingAddedKong } from "../session/reducer";
   import { TableSceneRenderer, type TableRenderParams } from "./tableRenderer";
-  import { createTileAtlas, type TileAtlas } from "./tileAtlas";
+  import { loadTileAtlas, type TileAtlas } from "./tileAtlas";
   import { computeCanvasResolution, extractContentBoxSize } from "./viewModel";
 
   interface Props {
@@ -85,7 +85,15 @@
           return;
         }
 
+        const loadedAtlas = await loadTileAtlas();
+        if (disposed) {
+          loadedAtlas.destroy();
+          nextApp.destroy(true);
+          return;
+        }
+
         app = nextApp;
+        atlas = loadedAtlas;
         canvasEl = nextApp.canvas;
         canvasEl.style.width = "100%";
         canvasEl.style.height = "100%";
@@ -93,8 +101,7 @@
         canvasEl.style.touchAction = "manipulation";
         container.replaceChildren(canvasEl);
 
-        atlas = createTileAtlas();
-        renderer = new TableSceneRenderer(nextApp.stage, atlas, {
+        renderer = new TableSceneRenderer(nextApp.stage, loadedAtlas, {
           onDiscard: (tile, fromDrawn) => {
             onDiscard(tile, fromDrawn);
           },
@@ -186,15 +193,23 @@
   .table-canvas-host {
     position: relative;
     width: 100%;
-    height: clamp(340px, 68dvh, 720px);
-    min-height: 320px;
+    height: clamp(320px, 76dvh, 840px);
+    min-height: 280px;
     border-radius: 16px;
     overflow: hidden;
     background: #14282e;
-    border: 1px solid #2b545e;
-    box-shadow: 0 10px 28px rgba(15, 32, 38, 0.24);
+    border: 1.5px solid rgba(212, 168, 87, 0.48);
+    box-shadow:
+      0 14px 36px rgba(8, 12, 22, 0.42),
+      inset 0 0 24px rgba(8, 12, 26, 0.55);
     user-select: none;
     -webkit-user-select: none;
+  }
+
+  @media (max-height: 460px) {
+    .table-canvas-host {
+      height: clamp(280px, 78dvh, 380px);
+    }
   }
 
   .canvas-fallback {
