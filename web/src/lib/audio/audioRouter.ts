@@ -5,7 +5,9 @@ import {
 import type {
   RelativeRole,
   SemanticGameEvent,
+  SemanticGameEventType,
 } from "../presentation/semanticEvents";
+import type { MeldKind } from "../protocol/melds";
 import type {
   AudioContextLike,
   AudioContextStateLike,
@@ -97,15 +99,36 @@ function defaultVisibilityState(): DocumentVisibilityState {
   return typeof document !== "undefined" ? document.visibilityState : "visible";
 }
 
+const ROLE_PAN: Partial<Record<RelativeRole, number>> = {
+  上家: PAN_LEFT,
+  下家: PAN_RIGHT,
+};
+
+const STATIC_UI_SFX: Partial<Record<SemanticGameEventType, SfxSlotId>> = {
+  UiTileHover: "hover",
+  UiTileSelect: "select",
+  UiPassClicked: "pass",
+  UiConfirmNextHand: "confirm",
+  MatchStarted: "confirm",
+};
+
+const MELD_SFX_SLOT: Partial<Record<MeldKind, SfxSlotId>> = {
+  Pon: "meld_pon",
+  ExposedKong: "meld_kong",
+  AddedKong: "meld_kong",
+  ConcealedKong: "meld_kong",
+};
+
+const MELD_VO_CATEGORY: Record<MeldKind, VoActionCategory> = {
+  Pon: "Pon",
+  Chi: "Chi",
+  ExposedKong: "Kong",
+  AddedKong: "Kong",
+  ConcealedKong: "Kong",
+};
+
 function resolvePan(role: RelativeRole | null): number {
-  switch (role) {
-    case "上家":
-      return PAN_LEFT;
-    case "下家":
-      return PAN_RIGHT;
-    default:
-      return 0;
-  }
+  return role !== null ? (ROLE_PAN[role] ?? 0) : 0;
 }
 
 function resolveWinTierSlot(totalFan: number | null): SfxSlotId {
@@ -122,23 +145,17 @@ function resolveWinTierSlot(totalFan: number | null): SfxSlotId {
 function resolveSfxMapping(
   event: SemanticGameEvent,
 ): { slot: SfxSlotId; pan: number } | null {
-  const pan = resolvePan(event.relativeRole);
+  const staticSlot = STATIC_UI_SFX[event.type];
+  if (staticSlot) {
+    return { slot: staticSlot, pan: 0 };
+  }
 
+  const pan = resolvePan(event.relativeRole);
   switch (event.type) {
-    case "UiTileHover":
-      return { slot: "hover", pan: 0 };
-    case "UiTileSelect":
-      return { slot: "select", pan: 0 };
     case "UiActionPrompted":
-      if (event.relativeRole !== "自家" || event.actions.length === 0) {
-        return null;
-      }
-      return { slot: "action_prompt", pan: 0 };
-    case "UiPassClicked":
-      return { slot: "pass", pan: 0 };
-    case "UiConfirmNextHand":
-    case "MatchStarted":
-      return { slot: "confirm", pan: 0 };
+      return event.relativeRole === "自家" && event.actions.length > 0
+        ? { slot: "action_prompt", pan: 0 }
+        : null;
     case "TileDrawn":
       return { slot: "draw", pan };
     case "TileDiscarded": {
@@ -147,29 +164,18 @@ function resolveSfxMapping(
     }
     case "AddedKongAttempted":
       return { slot: "added_kong_suspense", pan };
-    case "MeldDeclared":
-      if (event.meldKind === "Pon") {
-        return { slot: "meld_pon", pan };
-      }
-      if (
-        event.meldKind === "ExposedKong" ||
-        event.meldKind === "AddedKong" ||
-        event.meldKind === "ConcealedKong"
-      ) {
-        return { slot: "meld_kong", pan };
-      }
-      return null;
+    case "MeldDeclared": {
+      const slot = event.meldKind ? MELD_SFX_SLOT[event.meldKind] : undefined;
+      return slot ? { slot, pan } : null;
+    }
     case "HandSettled":
-      if (event.isDrawGame) {
-        return { slot: "draw_game", pan: 0 };
-      }
-      return {
-        slot: resolveWinTierSlot(event.totalFan),
-        pan: event.isMultiRon ? 0 : pan,
-      };
-    case "HandStarted":
-    case "NextHandConfirmed":
-    case "MatchFinished":
+      return event.isDrawGame
+        ? { slot: "draw_game", pan: 0 }
+        : {
+            slot: resolveWinTierSlot(event.totalFan),
+            pan: event.isMultiRon ? 0 : pan,
+          };
+    default:
       return null;
   }
 }
@@ -179,25 +185,13 @@ function resolveVoCategory(event: SemanticGameEvent): VoActionCategory | null {
     case "TileDiscarded":
       return "Discard";
     case "MeldDeclared":
-      if (event.meldKind === "Pon") {
-        return "Pon";
-      }
-      if (event.meldKind === "Chi") {
-        return "Chi";
-      }
-      if (
-        event.meldKind === "ExposedKong" ||
-        event.meldKind === "AddedKong" ||
-        event.meldKind === "ConcealedKong"
-      ) {
-        return "Kong";
-      }
-      return null;
+      return event.meldKind ? MELD_VO_CATEGORY[event.meldKind] : null;
     case "HandSettled":
-      if (event.isDrawGame) {
-        return null;
-      }
-      return event.winKind === "RobKongHu" ? "RobKong" : "Hu";
+      return event.isDrawGame
+        ? null
+        : event.winKind === "RobKongHu"
+          ? "RobKong"
+          : "Hu";
     default:
       return null;
   }

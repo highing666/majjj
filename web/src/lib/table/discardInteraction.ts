@@ -75,6 +75,40 @@ interface ActivePointer {
   upwardVelocity: number;
 }
 
+function computeUpwardVelocityPxPerMs(
+  startY: number,
+  currentY: number,
+  startAtMs: number,
+  currentAtMs: number,
+): number {
+  const dt = Math.max(1, currentAtMs - startAtMs);
+  return (startY - currentY) / dt;
+}
+
+function samplePointerUpwardVelocity(
+  ptr: Pick<ActivePointer, "startY" | "lastY" | "startTimeMs" | "lastTimeMs">,
+  currentY: number,
+  currentAtMs: number,
+): number {
+  const instantUpVelocity = computeUpwardVelocityPxPerMs(
+    ptr.lastY,
+    currentY,
+    ptr.lastTimeMs,
+    currentAtMs,
+  );
+  const totalDt = Math.max(1, currentAtMs - ptr.startTimeMs);
+  const overallUpVelocity =
+    totalDt <= 250
+      ? computeUpwardVelocityPxPerMs(
+          ptr.startY,
+          currentY,
+          ptr.startTimeMs,
+          currentAtMs,
+        )
+      : 0;
+  return Math.max(instantUpVelocity, overallUpVelocity);
+}
+
 function isSwipeDiscardReady(dy: number, upwardVelocity: number): boolean {
   const upwardLift = -dy;
   if (upwardLift >= SWIPE_DISCARD_DISTANCE_PX) {
@@ -297,13 +331,10 @@ export function createDiscardInteractionController(
       }
       const dx = x - activePointer.startX;
       const dy = y - activePointer.startY;
-      const dt = Math.max(1, nowMs - activePointer.lastTimeMs);
-      const instantUpVelocity = (activePointer.lastY - y) / dt;
-      const totalDt = Math.max(1, nowMs - activePointer.startTimeMs);
-      const overallUpVelocity = totalDt <= 250 ? -dy / totalDt : 0;
-      activePointer.upwardVelocity = Math.max(
-        instantUpVelocity,
-        overallUpVelocity,
+      activePointer.upwardVelocity = samplePointerUpwardVelocity(
+        activePointer,
+        y,
+        nowMs,
       );
       activePointer.lastY = y;
       activePointer.lastTimeMs = nowMs;
@@ -350,14 +381,9 @@ export function createDiscardInteractionController(
       }
 
       const dy = y - ptr.startY;
-      const dt = Math.max(1, nowMs - ptr.lastTimeMs);
-      const releaseUpVelocity = (ptr.lastY - y) / dt;
-      const totalDt = Math.max(1, nowMs - ptr.startTimeMs);
-      const overallUpVelocity = totalDt <= 250 ? -dy / totalDt : 0;
       const upwardVelocity = Math.max(
         ptr.upwardVelocity,
-        releaseUpVelocity,
-        overallUpVelocity,
+        samplePointerUpwardVelocity(ptr, y, nowMs),
       );
 
       if (ptr.dragging) {

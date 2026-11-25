@@ -31,8 +31,10 @@ import {
   extractContentBoxSize,
   findLegalDiscardAction,
   formatScoreDelta,
+  formatSeatDisplayName,
   getRelativeSeats,
   resolveActionBarShortcut,
+  seatRelativeSlot,
 } from "./viewModel";
 
 function makePlayerView(overrides: Partial<PlayerView> = {}): PlayerView {
@@ -191,6 +193,58 @@ describe("table viewModel helpers", () => {
       top: "East",
       left: "South",
     });
+    expect(seatRelativeSlot("West", "West")).toBe("bottom");
+    expect(seatRelativeSlot("West", "North")).toBe("right");
+    expect(seatRelativeSlot("West", "East")).toBe("top");
+    expect(seatRelativeSlot("West", "South")).toBe("left");
+
+    const sampleSeats = [
+      {
+        seat: "East",
+        kind: "Human",
+        nickname: "房主",
+        connected: true,
+        ai_assisted: false,
+        ai_difficulty: null,
+        ai_style: null,
+        voice_pack_id: null,
+      },
+      {
+        seat: "South",
+        kind: "Ai",
+        nickname: "",
+        connected: true,
+        ai_assisted: false,
+        ai_difficulty: "Strong",
+        ai_style: "Balanced",
+        voice_pack_id: null,
+      },
+      {
+        seat: "West",
+        kind: "Human",
+        nickname: "",
+        connected: true,
+        ai_assisted: false,
+        ai_difficulty: null,
+        ai_style: null,
+        voice_pack_id: null,
+      },
+      {
+        seat: "North",
+        kind: "Ai",
+        nickname: "AI北",
+        connected: true,
+        ai_assisted: false,
+        ai_difficulty: "Strong",
+        ai_style: "Balanced",
+        voice_pack_id: null,
+      },
+    ] as const;
+    expect(formatSeatDisplayName("East", sampleSeats)).toBe("东座 · 房主");
+    expect(formatSeatDisplayName("South", sampleSeats)).toBe("南座 · AI 2");
+    expect(formatSeatDisplayName("West", sampleSeats)).toBe("西座");
+    expect(formatSeatDisplayName("North", sampleSeats)).toBe("北座 · AI北");
+    expect(formatSeatDisplayName("East", null)).toBe("东座");
   });
 
   it("omits claimed discards and chunks rivers strictly into 6-tile rows", () => {

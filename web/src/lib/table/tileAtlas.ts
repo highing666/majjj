@@ -53,8 +53,6 @@ export interface TileAtlas {
   readonly height: number;
   readonly backTexture: Texture;
   readonly shadowTexture: Texture;
-  readonly laidBaseTexture: Texture;
-  readonly standingBaseTexture: Texture;
   readonly feltImpastoTexture: Texture;
   readonly feltBrushTexture: Texture;
   getTileTexture(tile: Tile): Texture;
@@ -137,14 +135,7 @@ export async function loadTileAtlas(): Promise<TileAtlas> {
 
     const backTexture = sheet.textures.body_back;
     const shadowTexture = sheet.textures.body_shadow;
-    const laidBaseTexture = sheet.textures.body_laid;
-    const standingBaseTexture = sheet.textures.body_standing;
-    if (
-      !backTexture ||
-      !shadowTexture ||
-      !laidBaseTexture ||
-      !standingBaseTexture
-    ) {
+    if (!backTexture || !shadowTexture) {
       throw new Error("Missing required impasto body frame in tiles@2x.json");
     }
 
@@ -155,8 +146,6 @@ export async function loadTileAtlas(): Promise<TileAtlas> {
       height: metaSize.h,
       backTexture,
       shadowTexture,
-      laidBaseTexture,
-      standingBaseTexture,
       feltImpastoTexture,
       feltBrushTexture,
       getTileTexture(tile: Tile): Texture {
@@ -679,11 +668,8 @@ export function createTileAtlas(): TileAtlas {
     faceTextures.push(frameAt(t));
   }
 
-  const standingBaseTexture = frameAt(34);
-  const laidBaseTexture = frameAt(35);
   const backTexture = frameAt(36);
   const shadowTexture = frameAt(37);
-  const laidBackTexture = frameAt(38);
 
   const impasto = createFallbackFeltTexture(
     512,
@@ -701,8 +687,6 @@ export function createTileAtlas(): TileAtlas {
     height: ATLAS_H,
     backTexture,
     shadowTexture,
-    laidBaseTexture,
-    standingBaseTexture,
     feltImpastoTexture: impasto.texture,
     feltBrushTexture: brush.texture,
     getTileTexture(tile: Tile): Texture {
@@ -712,11 +696,8 @@ export function createTileAtlas(): TileAtlas {
       for (const tex of faceTextures) {
         tex.destroy(false);
       }
-      standingBaseTexture.destroy(false);
-      laidBaseTexture.destroy(false);
       backTexture.destroy(false);
       shadowTexture.destroy(false);
-      laidBackTexture.destroy(false);
       source.destroy();
       impasto.texture.destroy(false);
       impasto.source.destroy();

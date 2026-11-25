@@ -1,8 +1,11 @@
 <script lang="ts">
   import type { Seat } from "../protocol/generated/Seat";
   import type { SeatInfo } from "../protocol/generated/SeatInfo";
-  import { seatIndex, seatLabel } from "../protocol/seats";
-  import { getRelativeSeats } from "../table/viewModel";
+  import {
+    formatSeatDisplayName,
+    seatRelativeSlot,
+    type RelativeSlot,
+  } from "../table/viewModel";
   import type { PiltoverImpactFrame } from "./effectsBus";
 
   interface Props {
@@ -36,27 +39,10 @@
     };
   });
 
-  type RelativeSlot = "bottom" | "right" | "top" | "left";
-
   interface SeatHighlightItem {
     seat: Seat;
     slot: RelativeSlot;
     title: string;
-  }
-
-  function resolveSlot(viewer: Seat, target: Seat): RelativeSlot {
-    const rel = getRelativeSeats(viewer);
-    if (rel.bottom === target) return "bottom";
-    if (rel.right === target) return "right";
-    if (rel.top === target) return "top";
-    return "left";
-  }
-
-  function resolveSeatTitle(seat: Seat): string {
-    const idx = seatIndex(seat);
-    const info = seats?.[idx];
-    const name = info?.nickname || (info?.kind === "Ai" ? `AI ${idx + 1}` : "");
-    return name ? `${seatLabel(seat)} · ${name}` : seatLabel(seat);
   }
 
   const winnerHighlights = $derived.by<SeatHighlightItem[]>(() => {
@@ -66,8 +52,8 @@
     const baseSeat = viewerSeat ?? "East";
     return impact.seats.map((seat) => ({
       seat,
-      slot: resolveSlot(baseSeat, seat),
-      title: resolveSeatTitle(seat),
+      slot: seatRelativeSlot(baseSeat, seat),
+      title: formatSeatDisplayName(seat, seats),
     }));
   });
 
@@ -132,7 +118,6 @@
     {#if impact.skippable}
       <div
         class="comic-impact-layer is-skippable impact-kind-{impact.kind}"
-        class:is-shaking={impact.dampedShake}
         style:--impact-accent={impact.accentColor}
         style:--impact-skew={`${impact.skewDeg}deg`}
         role="button"
@@ -147,7 +132,6 @@
     {:else}
       <div
         class="comic-impact-layer impact-kind-{impact.kind}"
-        class:is-shaking={impact.dampedShake}
         style:--impact-accent={impact.accentColor}
         style:--impact-skew={`${impact.skewDeg}deg`}
         aria-live="polite"
@@ -174,10 +158,6 @@
   .comic-impact-layer.is-skippable {
     pointer-events: auto;
     cursor: pointer;
-  }
-
-  .comic-impact-layer.is-shaking {
-    animation: piltoverShake 220ms steps(2, end);
   }
 
   .impact-flash-warm {
@@ -321,24 +301,6 @@
     100% {
       transform: scale(1) rotate(var(--impact-skew, -7deg));
       opacity: 1;
-    }
-  }
-
-  @keyframes piltoverShake {
-    0% {
-      transform: translate(0, 0);
-    }
-    25% {
-      transform: translate(-5px, 3px);
-    }
-    50% {
-      transform: translate(5px, -4px);
-    }
-    75% {
-      transform: translate(-3px, -2px);
-    }
-    100% {
-      transform: translate(0, 0);
     }
   }
 

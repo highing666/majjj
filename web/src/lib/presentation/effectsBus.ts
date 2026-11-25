@@ -1,4 +1,6 @@
 import type { Seat } from "../protocol/generated/Seat";
+import type { WinKind } from "../protocol/generated/WinKind";
+import type { MeldKind } from "../protocol/melds";
 import { seatIndex, seatLabel } from "../protocol/seats";
 import { getTileLabel } from "../table/tiles";
 import type { SemanticGameEvent } from "./semanticEvents";
@@ -59,10 +61,52 @@ export interface PiltoverImpactCallbacks {
   onReducedEffectsChange?: (reduced: boolean) => void;
 }
 
-const DEFAULT_MELD_DURATION_MS = 700;
-const DEFAULT_WIN_DURATION_MS = 1100;
-const DEFAULT_DRAW_GAME_DURATION_MS = 600;
+export const IMPACT_DURATION_MS = {
+  MeldDeclared: 700,
+  HandSettledWin: 1100,
+  HandSettledDraw: 600,
+} as const;
+
 const PILTOVER_SKEW_DEG = -7;
+
+interface MeldImpactSpec {
+  kind: PiltoverImpactKind;
+  label: string;
+  accentColor: string;
+  isKong?: boolean;
+}
+
+const MELD_IMPACT_SPEC: Record<MeldKind, MeldImpactSpec> = {
+  Pon: { kind: "pon", label: "碰！", accentColor: "#E25343" },
+  Chi: { kind: "pon", label: "吃！", accentColor: "#E25343" },
+  ExposedKong: {
+    kind: "kong",
+    label: "明杠！",
+    accentColor: "#58D1C9",
+    isKong: true,
+  },
+  AddedKong: {
+    kind: "kong",
+    label: "补杠！",
+    accentColor: "#58D1C9",
+    isKong: true,
+  },
+  ConcealedKong: {
+    kind: "kong",
+    label: "暗杠！",
+    accentColor: "#58D1C9",
+    isKong: true,
+  },
+};
+
+const WIN_KIND_SPEC: Record<
+  WinKind,
+  { kind: PiltoverImpactKind; label: string }
+> = {
+  RobKongHu: { kind: "rob_kong", label: "抢杠胡！" },
+  Tsumo: { kind: "hu", label: "自摸！" },
+  Ron: { kind: "hu", label: "胡！" },
+};
 
 function formatActorSublabel(
   event: SemanticGameEvent,
@@ -97,71 +141,28 @@ export function buildPiltoverImpactFrame(
   const { id, reducedEffects } = options;
 
   if (event.type === "MeldDeclared" && event.meldKind !== null) {
-    const durationMs = options.durationMs ?? DEFAULT_MELD_DURATION_MS;
-    const skippable = options.skippable ?? false;
+    const spec = MELD_IMPACT_SPEC[event.meldKind];
     const actorSeats = event.seat !== null ? [event.seat] : [];
     const actorDelta =
-      event.seat !== null && event.kongScoreDeltas !== null
+      spec.isKong && event.seat !== null && event.kongScoreDeltas !== null
         ? event.kongScoreDeltas[seatIndex(event.seat)]
         : 0;
     const kongExtra = actorDelta > 0 ? `+${actorDelta} 杠分` : undefined;
 
-    switch (event.meldKind) {
-      case "Pon":
-        return {
-          id,
-          kind: "pon",
-          label: "碰！",
-          sublabel: formatActorSublabel(event),
-          accentColor: "#E25343",
-          speedlines: true,
-          skewDeg: PILTOVER_SKEW_DEG,
-          dampedShake: !reducedEffects,
-          warmFlash: !reducedEffects,
-          seats: actorSeats,
-          durationMs,
-          skippable,
-        };
-      case "ExposedKong":
-      case "AddedKong":
-      case "ConcealedKong": {
-        const label =
-          event.meldKind === "ExposedKong"
-            ? "明杠！"
-            : event.meldKind === "AddedKong"
-              ? "补杠！"
-              : "暗杠！";
-        return {
-          id,
-          kind: "kong",
-          label,
-          sublabel: formatActorSublabel(event, kongExtra),
-          accentColor: "#58D1C9",
-          speedlines: true,
-          skewDeg: PILTOVER_SKEW_DEG,
-          dampedShake: !reducedEffects,
-          warmFlash: !reducedEffects,
-          seats: actorSeats,
-          durationMs,
-          skippable,
-        };
-      }
-      case "Chi":
-        return {
-          id,
-          kind: "pon",
-          label: "吃！",
-          sublabel: formatActorSublabel(event),
-          accentColor: "#E25343",
-          speedlines: true,
-          skewDeg: PILTOVER_SKEW_DEG,
-          dampedShake: !reducedEffects,
-          warmFlash: !reducedEffects,
-          seats: actorSeats,
-          durationMs,
-          skippable,
-        };
-    }
+    return {
+      id,
+      kind: spec.kind,
+      label: spec.label,
+      sublabel: formatActorSublabel(event, kongExtra),
+      accentColor: spec.accentColor,
+      speedlines: true,
+      skewDeg: PILTOVER_SKEW_DEG,
+      dampedShake: !reducedEffects,
+      warmFlash: !reducedEffects,
+      seats: actorSeats,
+      durationMs: options.durationMs ?? IMPACT_DURATION_MS.MeldDeclared,
+      skippable: options.skippable ?? false,
+    };
   }
 
   if (event.type === "HandSettled") {
@@ -178,12 +179,12 @@ export function buildPiltoverImpactFrame(
         dampedShake: false,
         warmFlash: false,
         seats: [],
-        durationMs: options.durationMs ?? DEFAULT_DRAW_GAME_DURATION_MS,
+        durationMs: options.durationMs ?? IMPACT_DURATION_MS.HandSettledDraw,
         skippable,
       };
     }
 
-    const durationMs = options.durationMs ?? DEFAULT_WIN_DURATION_MS;
+    const durationMs = options.durationMs ?? IMPACT_DURATION_MS.HandSettledWin;
     const winnerSeats = event.winners.map((w) => w.seat);
 
     if (event.isMultiRon) {
@@ -213,9 +214,9 @@ export function buildPiltoverImpactFrame(
     }
 
     const primary = event.winners[0];
-    const isRobKong = primary?.winKind === "RobKongHu";
-    const isTsumo = primary?.winKind === "Tsumo";
-    const label = isRobKong ? "抢杠胡！" : isTsumo ? "自摸！" : "胡！";
+    const winSpec = primary
+      ? WIN_KIND_SPEC[primary.winKind]
+      : WIN_KIND_SPEC.Ron;
     const subParts: string[] = [];
     if (primary) {
       subParts.push(seatLabel(primary.seat));
@@ -227,8 +228,8 @@ export function buildPiltoverImpactFrame(
 
     return {
       id,
-      kind: isRobKong ? "rob_kong" : "hu",
-      label,
+      kind: winSpec.kind,
+      label: winSpec.label,
       sublabel: subParts.join(" · "),
       accentColor: "#F3A93B",
       speedlines: true,
@@ -305,9 +306,9 @@ export function createPresentationEffectsBus(
       const defaultDuration =
         event.type === "HandSettled"
           ? event.isDrawGame
-            ? DEFAULT_DRAW_GAME_DURATION_MS
-            : DEFAULT_WIN_DURATION_MS
-          : DEFAULT_MELD_DURATION_MS;
+            ? IMPACT_DURATION_MS.HandSettledDraw
+            : IMPACT_DURATION_MS.HandSettledWin
+          : IMPACT_DURATION_MS.MeldDeclared;
       publish({
         type: "semantic_event",
         event,
