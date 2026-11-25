@@ -56,11 +56,13 @@ export interface TableClientOptions {
 }
 
 export type SessionListener = (state: SessionState) => void;
+export type ServerMessageListener = (message: ServerMessage) => void;
 
 export interface TableClient {
   getState(): SessionState;
   getIdentity(): PersistedIdentity;
   subscribe(listener: SessionListener): () => void;
+  onServerMessage(listener: ServerMessageListener): () => void;
   connect(): void;
   dispose(): void;
   handlePageHide(): void;
@@ -132,10 +134,17 @@ export function createTableClient(
   let pausedForPageHide = false;
 
   const listeners = new Set<SessionListener>();
+  const serverMessageListeners = new Set<ServerMessageListener>();
 
   function emitState(): void {
     for (const listener of listeners) {
       listener(state);
+    }
+  }
+
+  function emitServerMessage(message: ServerMessage): void {
+    for (const listener of serverMessageListeners) {
+      listener(message);
     }
   }
 
@@ -244,11 +253,13 @@ export function createTableClient(
         connectionStatus: "disconnected",
       };
       setState(nextState);
+      emitServerMessage(parsed);
       closeActiveSocket();
       return;
     }
 
     setState(nextState);
+    emitServerMessage(parsed);
   }
 
   function connect(): void {
@@ -362,6 +373,13 @@ export function createTableClient(
       };
     },
 
+    onServerMessage(listener: ServerMessageListener): () => void {
+      serverMessageListeners.add(listener);
+      return () => {
+        serverMessageListeners.delete(listener);
+      };
+    },
+
     connect,
 
     dispose(): void {
@@ -376,6 +394,7 @@ export function createTableClient(
       }
       closeActiveSocket();
       listeners.clear();
+      serverMessageListeners.clear();
     },
 
     handlePageHide,

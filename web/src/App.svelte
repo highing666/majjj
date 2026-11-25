@@ -1,6 +1,12 @@
 <script lang="ts">
   import { matchModeLabel } from "./lib/lobby/lobbyConfig";
   import LobbyView from "./lib/lobby/LobbyView.svelte";
+  import ComicImpactOverlay from "./lib/presentation/ComicImpactOverlay.svelte";
+  import { createPresentationEffectsBus } from "./lib/presentation/effectsBus";
+  import {
+    createPresentationQueue,
+    type PresentationState,
+  } from "./lib/presentation/presentationQueue";
   import type { PlayerAction } from "./lib/protocol/generated/PlayerAction";
   import type { TablePace } from "./lib/protocol/generated/TablePace";
   import type { Tile } from "./lib/protocol/generated/Tile";
@@ -15,22 +21,43 @@
   import { findLegalDiscardAction } from "./lib/table/viewModel";
 
   const client = createTableClient();
+  const effectsBus = createPresentationEffectsBus();
+  const presentationQueue = createPresentationQueue({ effectsBus });
   let sessionState = $state<SessionState>(client.getState());
+  let presentationState = $state<PresentationState>(
+    presentationQueue.getState(),
+  );
   const initialNickname = client.getIdentity().nickname;
 
   $effect(() => {
-    const unsubscribe = client.subscribe((next) => {
+    const unsubscribeState = client.subscribe((next) => {
       sessionState = next;
+    });
+    const unsubscribePresentation = presentationQueue.subscribe((next) => {
+      presentationState = next;
+    });
+    const unsubscribeMessages = client.onServerMessage((message) => {
+      presentationQueue.enqueueServerMessage(message);
     });
     client.connect();
     return () => {
-      unsubscribe();
+      unsubscribeMessages();
+      unsubscribePresentation();
+      unsubscribeState();
+      presentationQueue.dispose();
+      effectsBus.dispose();
       client.dispose();
     };
   });
 
   const snapshot = $derived(sessionState.snapshot);
   const playerView = $derived(snapshot?.player_view ?? null);
+  const presentedSnapshot = $derived(
+    presentationState.snapshot ?? sessionState.snapshot,
+  );
+  const presentedPlayerView = $derived(
+    presentedSnapshot?.player_view ?? null,
+  );
   const actionsDisabled = $derived(
     sessionState.replacedByNewTab ||
       sessionState.connectionStatus !== "connected",
@@ -38,12 +65,16 @@
   const inputLocked = $derived(
     actionsDisabled || sessionState.pendingActionId !== null,
   );
+  const settlementVisible = $derived(
+    snapshot !== null &&
+      snapshot.phase === "InMatch" &&
+      presentationState.settlementVisible &&
+      presentedPlayerView?.phase === "BetweenHands" &&
+      presentedPlayerView.last_settlement !== null,
+  );
   const hasModalOpen = $derived(
     snapshot !== null &&
-      (snapshot.pending_destructive_op !== null ||
-        (snapshot.phase === "InMatch" &&
-          playerView?.phase === "BetweenHands" &&
-          playerView.last_settlement !== null)),
+      (snapshot.pending_destructive_op !== null || settlementVisible),
   );
 
   function reloadPage(): void {
@@ -68,7 +99,18 @@
     if (inputLocked) {
       return;
     }
+    if (action === "Pass") {
+      presentationQueue.emitLocalUiAction({ type: "UiPassClicked" });
+    }
     client.submitAction(action);
+  }
+
+  function handleConfirmNextHand(): void {
+    if (inputLocked) {
+      return;
+    }
+    presentationQueue.emitLocalUiAction({ type: "UiConfirmNextHand" });
+    client.submitAction("ConfirmNextHand");
   }
 
   function handleSetPace(pace: TablePace): void {
@@ -137,16 +179,16 @@
           <span class="tag tag-mode">
             {matchModeLabel(snapshot.config.mode)}
           </span>
-          {#if playerView}
+          {#if presentedPlayerView}
             <span class="topbar-round">
-              {formatRoundTitle(playerView.turn)} · 牌墙余 {playerView.wall_remaining} 张
+              {formatRoundTitle(presentedPlayerView.turn)} · 牌墙余 {presentedPlayerView.wall_remaining} 张
             </span>
-            {#if sessionState.pendingAddedKong !== null}
+            {#if presentationState.pendingAddedKong !== null}
               <span class="tag tag-pending">补杠待确认…</span>
-            {:else if playerView.phase === "Playing" && playerView.turn.active_seat === snapshot.your_seat}
+            {:else if presentedPlayerView.phase === "Playing" && presentedPlayerView.turn.active_seat === snapshot.your_seat}
               <span class="tag tag-turn">轮到你行动</span>
-            {:else if playerView.phase === "Playing" && playerView.turn.active_seat !== null}
-              <span class="tag">等待{seatLabel(playerView.turn.active_seat)}</span>
+            {:else if presentedPlayerView.phase === "Playing" && presentedPlayerView.turn.active_seat !== null}
+              <span class="tag">等待{seatLabel(presentedPlayerView.turn.active_seat)}</span>
             {/if}
           {/if}
         </div>
@@ -186,19 +228,30 @@
         </div>
       </header>
 
-      {#if playerView}
-        <div class="table-stage">
+      {#if presentedSnapshot && presentedPlayerView}
+        <div
+          class="table-stage"
+          class:stage-shaking={presentationState.activeImpact?.dampedShake ??
+            false}
+        >
           <TableCanvas
-            {snapshot}
-            pendingAddedKong={sessionState.pendingAddedKong}
+            snapshot={presentedSnapshot}
+            pendingAddedKong={presentationState.pendingAddedKong}
             {inputLocked}
             onDiscard={handleCanvasDiscard}
           />
 
-          {#if playerView.phase === "Playing"}
+          <ComicImpactOverlay
+            impact={presentationState.activeImpact}
+            viewerSeat={presentedSnapshot.your_seat}
+            seats={presentedSnapshot.seats}
+            onSkip={() => presentationQueue.skipActiveImpact()}
+          />
+
+          {#if presentedPlayerView.phase === "Playing"}
             <div class="action-bar-slot">
               <ActionBar
-                {playerView}
+                playerView={presentedPlayerView}
                 disabled={inputLocked}
                 {hasModalOpen}
                 onAction={handleActionBar}
@@ -207,20 +260,20 @@
           {/if}
         </div>
 
-        {#if playerView.phase === "BetweenHands" && playerView.last_settlement !== null}
+        {#if settlementVisible && presentedPlayerView.last_settlement !== null}
           <SettlementModal
-            settlement={playerView.last_settlement}
-            seats={snapshot.seats}
-            mode={playerView.mode}
-            fanCap={playerView.rule_profile.fan_cap}
-            yourSeat={snapshot.your_seat}
-            readySeats={playerView.ready_seats}
-            canConfirmNextHand={playerView.legal_actions.includes(
+            settlement={presentedPlayerView.last_settlement}
+            seats={presentedSnapshot.seats}
+            mode={presentedPlayerView.mode}
+            fanCap={presentedPlayerView.rule_profile.fan_cap}
+            yourSeat={presentedSnapshot.your_seat}
+            readySeats={presentedPlayerView.ready_seats}
+            canConfirmNextHand={(playerView?.legal_actions ?? []).includes(
               "ConfirmNextHand",
             )}
             disabled={inputLocked}
             destructivePending={snapshot.pending_destructive_op !== null}
-            onConfirmNextHand={() => client.submitAction("ConfirmNextHand")}
+            onConfirmNextHand={handleConfirmNextHand}
             onRequestEndFreeTable={() => client.requestEndFreeTable()}
           />
         {/if}
@@ -426,6 +479,28 @@
 
   .table-stage {
     position: relative;
+  }
+
+  .table-stage.stage-shaking {
+    animation: stagePiltoverShake 220ms steps(2, end);
+  }
+
+  @keyframes stagePiltoverShake {
+    0% {
+      transform: translate(0, 0);
+    }
+    25% {
+      transform: translate(-5px, 3px);
+    }
+    50% {
+      transform: translate(5px, -4px);
+    }
+    75% {
+      transform: translate(-3px, -2px);
+    }
+    100% {
+      transform: translate(0, 0);
+    }
   }
 
   .action-bar-slot {
