@@ -14,7 +14,7 @@ use hyper_util::rt::TokioIo;
 use mahjong_core::Tile;
 use mahjong_server::protocol::{ClientMessage, HealthResponse, ServerMessage, TableSnapshot};
 use mahjong_server::session::{TableOptions, WallProviderFactory};
-use mahjong_server::{ServerConfig, ServerHandle};
+use mahjong_server::{PacingMode, ServerConfig, ServerHandle};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
@@ -73,7 +73,7 @@ pub async fn spawn_seeded_server(seed: u64, static_dir: Option<PathBuf>) -> Serv
         static_dir,
         ..ServerConfig::default()
     }
-    .spawn_with_options(TableOptions::seeded(seed))
+    .spawn_with_options(TableOptions::seeded(seed).with_pacing(PacingMode::Immediate))
     .await
     .expect("spawn seeded server")
 }
@@ -86,7 +86,9 @@ pub async fn spawn_with_wall_factory(seed: u64, factory: WallProviderFactory) ->
         static_dir: None,
         ..ServerConfig::default()
     }
-    .spawn_with_options(TableOptions::with_wall_factory(seed, factory))
+    .spawn_with_options(
+        TableOptions::with_wall_factory(seed, factory).with_pacing(PacingMode::Immediate),
+    )
     .await
     .expect("spawn server with wall factory")
 }

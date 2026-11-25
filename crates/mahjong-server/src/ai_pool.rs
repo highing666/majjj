@@ -8,6 +8,7 @@ use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
 use tokio::sync::Mutex;
 
+use crate::pacing::{overlapped_wait, AiTurnTrigger};
 use crate::server::ServerError;
 use crate::session::TableSession;
 
@@ -43,14 +44,57 @@ pub(crate) struct PendingAiJob {
     pub view: PlayerView,
     pub ctx: DecisionContext,
     pub step_seed: u64,
+    pub started_at: tokio::time::Instant,
+    pub trigger: AiTurnTrigger,
 }
 
-pub(crate) fn spawn_ai_jobs(
+pub(crate) struct PendingReleaseTask {
+    pub match_id: u64,
+    pub public_seq: u64,
+    pub release_generation: u64,
+    pub release_at: tokio::time::Instant,
+}
+
+#[derive(Default)]
+pub(crate) struct ScheduledWork {
+    pub ai_jobs: Vec<PendingAiJob>,
+    pub pending_release: Option<PendingReleaseTask>,
+}
+
+impl ScheduledWork {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.ai_jobs.is_empty() && self.pending_release.is_none()
+    }
+}
+
+pub(crate) fn spawn_scheduled_work(
     runtime: Arc<Mutex<TableSession>>,
     ai_pool: Arc<rayon::ThreadPool>,
-    jobs: Vec<PendingAiJob>,
+    work: ScheduledWork,
 ) {
-    for job in jobs {
+    if let Some(release) = work.pending_release {
+        let runtime = Arc::clone(&runtime);
+        let ai_pool = Arc::clone(&ai_pool);
+        tokio::spawn(async move {
+            let now = tokio::time::Instant::now();
+            if release.release_at > now {
+                tokio::time::sleep_until(release.release_at).await;
+            }
+            let next_work = {
+                let mut session = runtime.lock().await;
+                session.complete_pending_release(
+                    release.match_id,
+                    release.public_seq,
+                    release.release_generation,
+                )
+            };
+            if !next_work.is_empty() {
+                spawn_scheduled_work(runtime, ai_pool, next_work);
+            }
+        });
+    }
+
+    for job in work.ai_jobs {
         let runtime = Arc::clone(&runtime);
         let ai_pool_for_next = Arc::clone(&ai_pool);
         let ai_pool_for_job = Arc::clone(&ai_pool);
@@ -62,6 +106,8 @@ pub(crate) fn spawn_ai_jobs(
                 view,
                 ctx,
                 step_seed,
+                started_at,
+                trigger,
             } = job;
             let (tx, rx) = tokio::sync::oneshot::channel();
             ai_pool_for_job.spawn(move || {
@@ -76,12 +122,25 @@ pub(crate) fn spawn_ai_jobs(
                 return;
             };
 
-            let next_jobs = {
+            let planned_delay = {
+                let mut session = runtime.lock().await;
+                session.plan_ai_action_delay(match_id, seq, seat, action, trigger, step_seed)
+            };
+            let Some(target_delay) = planned_delay else {
+                return;
+            };
+
+            let wait = overlapped_wait(started_at, tokio::time::Instant::now(), target_delay);
+            if !wait.is_zero() {
+                tokio::time::sleep_until(started_at + target_delay).await;
+            }
+
+            let next_work = {
                 let mut session = runtime.lock().await;
                 session.complete_ai_job(match_id, seq, seat, action)
             };
-            if !next_jobs.is_empty() {
-                spawn_ai_jobs(runtime, ai_pool_for_next, next_jobs);
+            if !next_work.is_empty() {
+                spawn_scheduled_work(runtime, ai_pool_for_next, next_work);
             }
         });
     }

@@ -19,7 +19,7 @@ use mahjong_server::protocol::{
     TableSnapshot,
 };
 use mahjong_server::session::{BoxedWallProvider, TableOptions, TableRuntime, WallProviderFactory};
-use mahjong_server::{ServerConfig, ServerError};
+use mahjong_server::{PacingMode, ServerConfig, ServerError};
 use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
 
@@ -1618,8 +1618,9 @@ async fn zero_ai_threads_returns_invalid_ai_threads_error() {
 #[tokio::test]
 async fn bounded_rayon_pool_drives_one_player_matches_with_deterministic_budget_and_responsive_health(
 ) {
-    let options =
-        TableOptions::seeded(999).with_ai_budget(DecisionBudget::Deterministic { max_samples: 16 });
+    let options = TableOptions::seeded(999)
+        .with_ai_budget(DecisionBudget::Deterministic { max_samples: 16 })
+        .with_pacing(PacingMode::Immediate);
     let server = ServerConfig {
         bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
         port: 0,
@@ -1859,7 +1860,8 @@ async fn bounded_rayon_pool_drives_one_player_matches_with_deterministic_budget_
 #[tokio::test]
 async fn bounded_rayon_pool_drives_two_player_east_only_and_free_table_with_deterministic_budget() {
     let options = TableOptions::seeded(2026)
-        .with_ai_budget(DecisionBudget::Deterministic { max_samples: 16 });
+        .with_ai_budget(DecisionBudget::Deterministic { max_samples: 16 })
+        .with_pacing(PacingMode::Immediate);
     let server = ServerConfig {
         bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
         port: 0,
@@ -2155,7 +2157,9 @@ async fn bounded_rayon_pool_one_thread_handles_concurrent_multi_ai_reaction_wind
         static_dir: None,
         ai_threads: 1,
     }
-    .spawn_with_options(TableOptions::with_wall_factory(88, factory))
+    .spawn_with_options(
+        TableOptions::with_wall_factory(88, factory).with_pacing(PacingMode::Immediate),
+    )
     .await
     .expect("spawn server with 1 AI thread and Realtime budget");
     let addr = server.addr();
@@ -2305,7 +2309,7 @@ async fn realtime_budget_drives_strong_ai_east_only_and_intermediate_ai_free_tab
         static_dir: None,
         ..default_cfg
     }
-    .spawn_with_options(TableOptions::seeded(777))
+    .spawn_with_options(TableOptions::seeded(777).with_pacing(PacingMode::Immediate))
     .await
     .expect("spawn server with default bounded AI threads and Realtime budget");
     let addr = server.addr();

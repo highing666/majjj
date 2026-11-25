@@ -25,6 +25,7 @@ uuid = { version = "1", features = ["v4"] }
 http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
+tokio = { version = "1", features = ["test-util"] }
 tokio-tungstenite = "0.26"
 
 [lints]

@@ -3,19 +3,27 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use mahjong_ai::{AiStyle, DecisionBudget, DecisionContext};
 use mahjong_core::{
-    AnyRuleset, Match, MatchMode, PlayerAction, PlayerEvent, PublicPhase, RecordedEvent, Seat,
-    SeededWallProvider, TuidaohuRuleset, WallProvider,
+    AnyRuleset, HandOutcome, HandSettlement, Match, MatchMode, PlayerAction, PlayerEvent,
+    PlayerEventKind, PlayerView, PublicPhase, RecordedEvent, Seat, SeededWallProvider,
+    TuidaohuRuleset, WallProvider,
 };
 use rand_chacha::ChaCha8Rng;
 use rand_core::{RngCore, SeedableRng};
 use tokio::sync::{mpsc, Mutex};
 use uuid::Uuid;
 
-use crate::ai_pool::{build_ai_pool, default_ai_threads, spawn_ai_jobs, PendingAiJob};
+use crate::ai_pool::{
+    build_ai_pool, default_ai_threads, spawn_scheduled_work, PendingAiJob, PendingReleaseTask,
+    ScheduledWork,
+};
 use crate::lan::{discover_lan_urls, read_local_hostname, read_system_interfaces};
+use crate::pacing::{
+    apply_discard_to_view, discard_release_delay, target_ai_delay, AiTurnTrigger, PacingMode,
+};
 use crate::protocol::{
     ClientMessage, DestructiveOpKind, LanUrlInfo, LobbyConfig, PendingDestructiveOp, SeatInfo,
     SeatKind, SeatingRule, ServerMessage, TablePhase, TableSnapshot,
@@ -38,12 +46,13 @@ impl WallProvider for BoxedWallProvider {
 /// Factory returning a fresh [`BoxedWallProvider`] whenever a new match starts.
 pub type WallProviderFactory = Arc<dyn Fn() -> BoxedWallProvider + Send + Sync>;
 
-/// Injectable configuration hooks for deterministic testing of walls, seating, and AI RNG.
+/// Injectable configuration hooks for deterministic testing of walls, seating, pacing, and AI RNG.
 #[derive(Clone)]
 pub struct TableOptions {
     wall_factory: WallProviderFactory,
     rng_seed: Option<u64>,
     ai_budget: Option<DecisionBudget>,
+    pacing: PacingMode,
 }
 
 impl std::fmt::Debug for TableOptions {
@@ -51,6 +60,7 @@ impl std::fmt::Debug for TableOptions {
         f.debug_struct("TableOptions")
             .field("rng_seed", &self.rng_seed)
             .field("ai_budget", &self.ai_budget)
+            .field("pacing", &self.pacing)
             .finish_non_exhaustive()
     }
 }
@@ -63,6 +73,7 @@ impl Default for TableOptions {
             }),
             rng_seed: None,
             ai_budget: None,
+            pacing: PacingMode::Humanized,
         }
     }
 }
@@ -80,6 +91,7 @@ impl TableOptions {
             wall_factory,
             rng_seed: Some(seed),
             ai_budget: None,
+            pacing: PacingMode::Humanized,
         }
     }
 
@@ -90,6 +102,7 @@ impl TableOptions {
             wall_factory,
             rng_seed: Some(seed),
             ai_budget: None,
+            pacing: PacingMode::Humanized,
         }
     }
 
@@ -98,6 +111,19 @@ impl TableOptions {
     pub fn with_ai_budget(mut self, budget: DecisionBudget) -> Self {
         self.ai_budget = Some(budget);
         self
+    }
+
+    /// Overrides the server pacing mode (defaults to [`PacingMode::Humanized`]).
+    #[must_use]
+    pub fn with_pacing(mut self, pacing: PacingMode) -> Self {
+        self.pacing = pacing;
+        self
+    }
+
+    /// Returns the configured [`PacingMode`].
+    #[must_use]
+    pub fn pacing(&self) -> PacingMode {
+        self.pacing
     }
 }
 
@@ -185,10 +211,43 @@ struct ClientConnection {
     tx: mpsc::UnboundedSender<OutboundSignal>,
 }
 
+struct PendingRelease {
+    release_generation: u64,
+    public_seq: u64,
+    public_views: [PlayerView; 4],
+    deferred_events: Vec<RecordedEvent>,
+    release_at: tokio::time::Instant,
+    scheduled: bool,
+}
+
+struct ActiveDiscardWindow {
+    discard_seq: u64,
+    emitted_at: tokio::time::Instant,
+    had_human_reactor: bool,
+}
+
 struct ActiveMatchState {
     match_id: u64,
     game: ActiveMatch,
     accepted_action_ids: HashSet<(Seat, String)>,
+    pending_release: Option<PendingRelease>,
+    active_discard_window: Option<ActiveDiscardWindow>,
+    ai_turn_trigger: AiTurnTrigger,
+}
+
+impl ActiveMatchState {
+    fn public_seq(&self) -> u64 {
+        self.pending_release
+            .as_ref()
+            .map_or_else(|| self.game.seq(), |pending| pending.public_seq)
+    }
+
+    fn public_view(&self, seat: Seat) -> PlayerView {
+        match &self.pending_release {
+            Some(pending) => pending.public_views[seat.index()].clone(),
+            None => self.game.project_view(seat),
+        }
+    }
 }
 
 /// Active single-table session state.
@@ -201,6 +260,7 @@ pub struct TableSession {
     pending_destructive_op: Option<PendingDestructiveOp>,
     active_match: Option<ActiveMatchState>,
     next_match_id: u64,
+    next_release_generation: u64,
     in_flight_ai: HashSet<(u64, u64, Seat)>,
     options: TableOptions,
     rng: ChaCha8Rng,
@@ -233,6 +293,7 @@ impl TableSession {
             pending_destructive_op: None,
             active_match: None,
             next_match_id: 1,
+            next_release_generation: 1,
             in_flight_ai: HashSet::new(),
             options,
             rng: ChaCha8Rng::seed_from_u64(base_seed),
@@ -244,6 +305,12 @@ impl TableSession {
             port,
             local_hostname,
         }
+    }
+
+    fn bump_release_generation(&mut self) -> u64 {
+        let gen = self.next_release_generation;
+        self.next_release_generation += 1;
+        gen
     }
 
     /// Returns the current lifecycle phase.
@@ -284,7 +351,7 @@ impl TableSession {
     fn build_snapshot(&self, conn: &ClientConnection) -> TableSnapshot {
         let player_view = match (self.phase, conn.seat, &self.active_match) {
             (TablePhase::InMatch | TablePhase::Finished, Some(seat), Some(active)) => {
-                Some(active.game.project_view(seat))
+                Some(active.public_view(seat))
             }
             _ => None,
         };
@@ -678,6 +745,7 @@ impl TableSession {
         self.seats = new_seats;
         let match_id = self.next_match_id;
         self.next_match_id += 1;
+        let _ = self.bump_release_generation();
         self.seq = game.seq();
         self.phase = TablePhase::InMatch;
         self.pending_destructive_op = None;
@@ -686,6 +754,9 @@ impl TableSession {
             match_id,
             game,
             accepted_action_ids: HashSet::new(),
+            pending_release: None,
+            active_discard_window: None,
+            ai_turn_trigger: AiTurnTrigger::AfterHandStarted,
         });
 
         self.broadcast_all_snapshots();
@@ -703,6 +774,25 @@ impl TableSession {
                 current_seq,
             },
         );
+    }
+
+    fn broadcast_discard_only_batch(&self, game: &ActiveMatch, discard_event: &RecordedEvent) {
+        let seq = discard_event.seq();
+        for conn in self.connections.values() {
+            let Some(viewer_seat) = conn.seat else {
+                continue;
+            };
+            let event = game.project_event(discard_event, viewer_seat);
+            Self::send_to(
+                &conn.tx,
+                ServerMessage::EventBatch {
+                    from_seq: seq,
+                    to_seq: seq,
+                    events: vec![event],
+                    updated_legal_actions: Vec::new(),
+                },
+            );
+        }
     }
 
     fn broadcast_event_batch(&self, game: &ActiveMatch, emitted: &[RecordedEvent]) {
@@ -757,7 +847,7 @@ impl TableSession {
             let current_seq = self
                 .active_match
                 .as_ref()
-                .map_or(self.seq, |m| m.game.seq());
+                .map_or(self.seq, ActiveMatchState::public_seq);
             Self::send_action_rejected(&tx, "client_action_id must not be empty", current_seq);
             return;
         }
@@ -773,7 +863,11 @@ impl TableSession {
             return;
         }
 
-        let current_seq = active.game.seq();
+        let current_seq = active.public_seq();
+        if active.pending_release.is_some() {
+            Self::send_action_rejected(&tx, "discard release is still pending", current_seq);
+            return;
+        }
         if expected_seq != current_seq {
             Self::send_action_rejected(
                 &tx,
@@ -801,10 +895,22 @@ impl TableSession {
         action: PlayerAction,
         caller: Option<(mpsc::UnboundedSender<OutboundSignal>, String)>,
     ) {
+        let humanized = self.options.pacing == PacingMode::Humanized;
+        let pace = self.config.pace;
         let Some(active) = self.active_match.as_mut() else {
             return;
         };
         let prev_seq = active.game.seq();
+        let capture_pre_views = humanized
+            && (matches!(action, PlayerAction::Discard { .. })
+                || (action == PlayerAction::Pass
+                    && active
+                        .active_discard_window
+                        .as_ref()
+                        .is_some_and(|w| !w.had_human_reactor)));
+        let mut pre_views =
+            capture_pre_views.then(|| Seat::ALL.map(|s| active.game.project_view(s)));
+
         let mut emitted = match active.game.apply_action(seat, action) {
             Ok(events) => events,
             Err(err) => {
@@ -833,6 +939,105 @@ impl TableSession {
             return;
         }
 
+        if !humanized {
+            active.active_discard_window = None;
+            self.finalize_emitted_events(emitted);
+            return;
+        }
+
+        let release_delay = discard_release_delay(self.options.pacing, pace);
+
+        if let PlayerAction::Discard { tile, from_drawn } = action {
+            if emitted.len() >= 2 && !release_delay.is_zero() {
+                let discard_event = emitted.remove(0);
+                let discard_seq = discard_event.seq();
+                let mut public_views = pre_views.take().expect("captured for discard");
+                for view in &mut public_views {
+                    apply_discard_to_view(view, seat, tile, from_drawn, discard_seq);
+                }
+                let release_at = tokio::time::Instant::now() + release_delay;
+                let release_generation = self.bump_release_generation();
+                let active_mut = self.active_match.as_mut().expect("active match exists");
+                active_mut.active_discard_window = None;
+                active_mut.ai_turn_trigger = AiTurnTrigger::Normal;
+                active_mut.pending_release = Some(PendingRelease {
+                    release_generation,
+                    public_seq: discard_seq,
+                    public_views,
+                    deferred_events: emitted,
+                    release_at,
+                    scheduled: false,
+                });
+                self.seq = discard_seq;
+                self.in_flight_ai.clear();
+                let active_ref = self.active_match.as_ref().expect("active match exists");
+                self.broadcast_discard_only_batch(&active_ref.game, &discard_event);
+                return;
+            }
+
+            if emitted.len() == 1 {
+                let discard_seq = emitted[0].seq();
+                let had_human_reactor = Seat::ALL.into_iter().any(|s| {
+                    self.seats[s.index()].info.kind == SeatKind::Human
+                        && !active.game.project_view(s).legal_actions.is_empty()
+                });
+                active.active_discard_window = Some(ActiveDiscardWindow {
+                    discard_seq,
+                    emitted_at: tokio::time::Instant::now(),
+                    had_human_reactor,
+                });
+                self.finalize_emitted_events(emitted);
+                return;
+            }
+        }
+
+        let active_window = active.active_discard_window.take();
+        if action == PlayerAction::Pass {
+            if let Some(window) = active_window {
+                let is_draw_or_draw_game = matches!(
+                    active.game.project_event(&emitted[0], Seat::East).kind,
+                    PlayerEventKind::TileDrawn { .. }
+                        | PlayerEventKind::HandSettled {
+                            settlement: HandSettlement {
+                                outcome: HandOutcome::DrawGame,
+                                ..
+                            }
+                        }
+                );
+                if !window.had_human_reactor && is_draw_or_draw_game {
+                    let release_at = window.emitted_at + release_delay;
+                    let now = tokio::time::Instant::now();
+                    if now < release_at {
+                        let mut public_views = pre_views.take().expect("captured for ai pass");
+                        for view in &mut public_views {
+                            view.legal_actions.clear();
+                        }
+                        let release_generation = self.bump_release_generation();
+                        let active_mut = self.active_match.as_mut().expect("active match exists");
+                        active_mut.ai_turn_trigger = AiTurnTrigger::Normal;
+                        active_mut.pending_release = Some(PendingRelease {
+                            release_generation,
+                            public_seq: window.discard_seq,
+                            public_views,
+                            deferred_events: emitted,
+                            release_at,
+                            scheduled: false,
+                        });
+                        self.seq = window.discard_seq;
+                        self.in_flight_ai.clear();
+                        return;
+                    }
+                }
+            }
+        }
+
+        self.finalize_emitted_events(emitted);
+    }
+
+    fn finalize_emitted_events(&mut self, mut emitted: Vec<RecordedEvent>) {
+        let Some(active) = self.active_match.as_ref() else {
+            return;
+        };
         let match_id = active.match_id;
         let mut public_phase = active.game.project_view(Seat::East).phase;
         if public_phase == PublicPhase::BetweenHands {
@@ -842,14 +1047,17 @@ impl TableSession {
             }
         }
 
-        let Some(active_ref) = self.active_match.as_ref() else {
+        let Some(active_mut) = self.active_match.as_mut() else {
             return;
         };
-        let new_seq = active_ref.game.seq();
+        let next_trigger = compute_ai_turn_trigger(&active_mut.game, &emitted);
+        active_mut.ai_turn_trigger = next_trigger;
+        let new_seq = active_mut.game.seq();
         self.seq = new_seq;
         self.in_flight_ai
             .retain(|&(m_id, seq, _)| m_id == match_id && seq == new_seq);
 
+        let active_ref = self.active_match.as_ref().expect("active match exists");
         self.broadcast_event_batch(&active_ref.game, &emitted);
 
         match public_phase {
@@ -917,6 +1125,24 @@ impl TableSession {
         }
     }
 
+    fn take_unscheduled_pending_release(&mut self) -> Option<PendingReleaseTask> {
+        if self.phase != TablePhase::InMatch {
+            return None;
+        }
+        let active = self.active_match.as_mut()?;
+        let pending = active.pending_release.as_mut()?;
+        if pending.scheduled {
+            return None;
+        }
+        pending.scheduled = true;
+        Some(PendingReleaseTask {
+            match_id: active.match_id,
+            public_seq: pending.public_seq,
+            release_generation: pending.release_generation,
+            release_at: pending.release_at,
+        })
+    }
+
     fn collect_pending_ai_jobs(&mut self) -> Vec<PendingAiJob> {
         if self.phase != TablePhase::InMatch {
             return Vec::new();
@@ -924,12 +1150,17 @@ impl TableSession {
         let Some(active) = self.active_match.as_ref() else {
             return Vec::new();
         };
+        if active.pending_release.is_some() {
+            return Vec::new();
+        }
         let match_id = active.match_id;
         let seq = active.game.seq();
         if active.game.project_view(Seat::East).phase != PublicPhase::Playing {
             return Vec::new();
         }
 
+        let started_at = tokio::time::Instant::now();
+        let trigger = active.ai_turn_trigger;
         let mut jobs = Vec::new();
         for seat in Seat::ALL {
             if self.seats[seat.index()].info.kind != SeatKind::Ai {
@@ -949,13 +1180,80 @@ impl TableSession {
                 view,
                 ctx: self.ai_decision_context(seat),
                 step_seed: derive_ai_step_seed(self.ai_base_seed, match_id, seq, seat),
+                started_at,
+                trigger,
             });
         }
         jobs
     }
 
+    fn collect_scheduled_work(&mut self) -> ScheduledWork {
+        let pending_release = self.take_unscheduled_pending_release();
+        let ai_jobs = self.collect_pending_ai_jobs();
+        ScheduledWork {
+            ai_jobs,
+            pending_release,
+        }
+    }
+
     pub(crate) fn cancel_ai_job(&mut self, match_id: u64, expected_seq: u64, seat: Seat) {
         self.in_flight_ai.remove(&(match_id, expected_seq, seat));
+    }
+
+    pub(crate) fn plan_ai_action_delay(
+        &mut self,
+        match_id: u64,
+        expected_seq: u64,
+        seat: Seat,
+        action: PlayerAction,
+        trigger: AiTurnTrigger,
+        step_seed: u64,
+    ) -> Option<Duration> {
+        let is_valid = self.phase == TablePhase::InMatch
+            && self.seats[seat.index()].info.kind == SeatKind::Ai
+            && self.active_match.as_ref().is_some_and(|active| {
+                active.match_id == match_id
+                    && active.pending_release.is_none()
+                    && active.game.seq() == expected_seq
+                    && self.in_flight_ai.contains(&(match_id, expected_seq, seat))
+            });
+        if !is_valid {
+            self.in_flight_ai.remove(&(match_id, expected_seq, seat));
+            return None;
+        }
+        Some(target_ai_delay(
+            self.options.pacing,
+            self.config.pace,
+            action,
+            trigger,
+            step_seed,
+        ))
+    }
+
+    pub(crate) fn complete_pending_release(
+        &mut self,
+        match_id: u64,
+        public_seq: u64,
+        release_generation: u64,
+    ) -> ScheduledWork {
+        if self.phase != TablePhase::InMatch {
+            return ScheduledWork::default();
+        }
+        let Some(active) = self.active_match.as_mut() else {
+            return ScheduledWork::default();
+        };
+        if active.match_id != match_id {
+            return ScheduledWork::default();
+        }
+        let matches_pending = active.pending_release.as_ref().is_some_and(|pending| {
+            pending.public_seq == public_seq && pending.release_generation == release_generation
+        });
+        if !matches_pending {
+            return ScheduledWork::default();
+        }
+        let pending = active.pending_release.take().expect("verified above");
+        self.finalize_emitted_events(pending.deferred_events);
+        self.collect_scheduled_work()
     }
 
     pub(crate) fn complete_ai_job(
@@ -964,24 +1262,25 @@ impl TableSession {
         expected_seq: u64,
         seat: Seat,
         action: PlayerAction,
-    ) -> Vec<PendingAiJob> {
+    ) -> ScheduledWork {
         self.in_flight_ai.remove(&(match_id, expected_seq, seat));
         if self.phase != TablePhase::InMatch {
-            return Vec::new();
+            return ScheduledWork::default();
         }
         if self.seats[seat.index()].info.kind != SeatKind::Ai {
-            return Vec::new();
+            return ScheduledWork::default();
         }
-        let matches_state = self
-            .active_match
-            .as_ref()
-            .is_some_and(|active| active.match_id == match_id && active.game.seq() == expected_seq);
+        let matches_state = self.active_match.as_ref().is_some_and(|active| {
+            active.match_id == match_id
+                && active.pending_release.is_none()
+                && active.game.seq() == expected_seq
+        });
         if !matches_state {
-            return Vec::new();
+            return ScheduledWork::default();
         }
 
         self.apply_match_step(seat, action, None);
-        self.collect_pending_ai_jobs()
+        self.collect_scheduled_work()
     }
 
     fn online_human_seats(&self) -> Vec<Seat> {
@@ -995,6 +1294,7 @@ impl TableSession {
     }
 
     fn reset_match_to_lobby(&mut self) {
+        let _ = self.bump_release_generation();
         self.phase = TablePhase::Lobby;
         self.active_match = None;
         self.in_flight_ai.clear();
@@ -1022,10 +1322,10 @@ impl TableSession {
     fn is_end_free_table_allowed(&self) -> bool {
         self.phase == TablePhase::InMatch
             && self.config.mode == MatchMode::FreeTable
-            && self
-                .active_match
-                .as_ref()
-                .is_some_and(|a| a.game.project_view(Seat::East).phase == PublicPhase::BetweenHands)
+            && self.active_match.as_ref().is_some_and(|a| {
+                a.pending_release.is_none()
+                    && a.game.project_view(Seat::East).phase == PublicPhase::BetweenHands
+            })
     }
 
     fn execute_destructive_op(&mut self, kind: DestructiveOpKind, actor_seat: Seat) {
@@ -1263,7 +1563,7 @@ impl TableRuntime {
             return HandleOutcome::default();
         }
 
-        let (outcome, ai_jobs) = {
+        let (outcome, scheduled_work) = {
             let mut session = self.inner.lock().await;
             let mut outcome = HandleOutcome::default();
             match msg {
@@ -1377,12 +1677,16 @@ impl TableRuntime {
                     }
                 }
             }
-            let jobs = session.collect_pending_ai_jobs();
-            (outcome, jobs)
+            let work = session.collect_scheduled_work();
+            (outcome, work)
         };
 
-        if !ai_jobs.is_empty() {
-            spawn_ai_jobs(Arc::clone(&self.inner), Arc::clone(&self.ai_pool), ai_jobs);
+        if !scheduled_work.is_empty() {
+            spawn_scheduled_work(
+                Arc::clone(&self.inner),
+                Arc::clone(&self.ai_pool),
+                scheduled_work,
+            );
         }
 
         outcome
@@ -1393,4 +1697,20 @@ impl TableRuntime {
         let mut session = self.inner.lock().await;
         session.on_disconnect(conn_id);
     }
+}
+
+fn compute_ai_turn_trigger(game: &ActiveMatch, emitted: &[RecordedEvent]) -> AiTurnTrigger {
+    let mut trigger = AiTurnTrigger::Normal;
+    for event in emitted {
+        match game.project_event(event, Seat::East).kind {
+            PlayerEventKind::HandStarted { .. } => {
+                trigger = AiTurnTrigger::AfterHandStarted;
+            }
+            PlayerEventKind::MeldDeclared { .. } if trigger != AiTurnTrigger::AfterHandStarted => {
+                trigger = AiTurnTrigger::AfterMeldDeclared;
+            }
+            _ => {}
+        }
+    }
+    trigger
 }
