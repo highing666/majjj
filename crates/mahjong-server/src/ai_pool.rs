@@ -8,7 +8,13 @@ use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
 use tokio::sync::Mutex;
 
+use crate::banter::{
+    BanterChainContext, BanterGuard, PendingBanterJob, SlowThinkTicket, ASYNC_BANTER_TIMEOUT,
+    HIGHLIGHT_SYNC_CAP,
+};
+use crate::llm::{LlmClient, LlmError};
 use crate::pacing::{overlapped_wait, AiTurnTrigger, ReleaseTicket};
+use crate::persona_memory::MemoryNoteJob;
 use crate::server::ServerError;
 use crate::session::TableSession;
 
@@ -59,22 +65,100 @@ pub(crate) struct PendingAiJob {
 pub(crate) struct ScheduledWork {
     pub ai_jobs: Vec<PendingAiJob>,
     pub pending_release: Option<ReleaseTicket>,
+    pub sync_banter: Vec<PendingBanterJob>,
+    pub async_banter: Vec<PendingBanterJob>,
+    pub slow_think_nudge: Option<SlowThinkTicket>,
+    pub memory_notes: Vec<MemoryNoteJob>,
 }
 
 impl ScheduledWork {
     pub(crate) fn is_empty(&self) -> bool {
-        self.ai_jobs.is_empty() && self.pending_release.is_none()
+        self.ai_jobs.is_empty()
+            && self.pending_release.is_none()
+            && self.sync_banter.is_empty()
+            && self.async_banter.is_empty()
+            && self.slow_think_nudge.is_none()
+            && self.memory_notes.is_empty()
     }
 }
 
-pub(crate) fn spawn_scheduled_work(
+async fn run_banter_job_with_timeout(
+    llm: &Arc<dyn LlmClient>,
+    job: PendingBanterJob,
+    timeout: std::time::Duration,
+) -> (
+    BanterGuard,
+    Option<BanterChainContext>,
+    Result<crate::llm::BanterOutput, LlmError>,
+) {
+    let endpoint = llm.endpoint().to_string();
+    let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
+    let res = match tokio::time::timeout(timeout, llm.generate_banter(job.request)).await {
+        Ok(inner) => inner,
+        Err(_) => Err(LlmError::Timeout {
+            endpoint,
+            timeout_ms,
+        }),
+    };
+    (job.guard, job.chain, res)
+}
+
+fn spawn_banter_task_with_done(
+    runtime: Arc<Mutex<TableSession>>,
+    llm: Arc<dyn LlmClient>,
+    job: PendingBanterJob,
+    done_tx: Option<tokio::sync::oneshot::Sender<()>>,
+) {
+    tokio::spawn(async move {
+        if let Some(delay) = job.dispatch_delay {
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+            let can_dispatch = {
+                let mut session = runtime.lock().await;
+                session.can_dispatch_delayed_banter(&job.guard)
+            };
+            if !can_dispatch {
+                if let Some(tx) = done_tx {
+                    let _ = tx.send(());
+                }
+                return;
+            }
+        }
+        let (guard, chain, result) =
+            run_banter_job_with_timeout(&llm, job, ASYNC_BANTER_TIMEOUT).await;
+        let followup = {
+            let mut session = runtime.lock().await;
+            session.commit_banter_result(guard, chain, result)
+        };
+        if let Some(tx) = done_tx {
+            let _ = tx.send(());
+        }
+        if let Some(next_job) = followup {
+            spawn_async_banter_task(runtime, llm, next_job);
+        }
+    });
+}
+
+fn spawn_async_banter_task(
+    runtime: Arc<Mutex<TableSession>>,
+    llm: Arc<dyn LlmClient>,
+    job: PendingBanterJob,
+) {
+    spawn_banter_task_with_done(runtime, llm, job, None);
+}
+
+fn spawn_gameplay_work(
     runtime: Arc<Mutex<TableSession>>,
     ai_pool: Arc<rayon::ThreadPool>,
-    work: ScheduledWork,
+    llm_client: Option<Arc<dyn LlmClient>>,
+    pending_release: Option<ReleaseTicket>,
+    ai_jobs: Vec<PendingAiJob>,
 ) {
-    if let Some(ticket) = work.pending_release {
+    if let Some(ticket) = pending_release {
         let runtime = Arc::clone(&runtime);
         let ai_pool = Arc::clone(&ai_pool);
+        let llm_client = llm_client.clone();
         tokio::spawn(async move {
             let now = tokio::time::Instant::now();
             if ticket.release_at > now {
@@ -85,15 +169,16 @@ pub(crate) fn spawn_scheduled_work(
                 session.complete_pending_release(ticket)
             };
             if !next_work.is_empty() {
-                spawn_scheduled_work(runtime, ai_pool, next_work);
+                spawn_scheduled_work(runtime, ai_pool, llm_client, next_work);
             }
         });
     }
 
-    for job in work.ai_jobs {
+    for job in ai_jobs {
         let runtime = Arc::clone(&runtime);
         let ai_pool_for_next = Arc::clone(&ai_pool);
         let ai_pool_for_job = Arc::clone(&ai_pool);
+        let llm_client = llm_client.clone();
         tokio::spawn(async move {
             let PendingAiJob {
                 key,
@@ -134,8 +219,123 @@ pub(crate) fn spawn_scheduled_work(
                 session.complete_ai_job(key, action)
             };
             if !next_work.is_empty() {
-                spawn_scheduled_work(runtime, ai_pool_for_next, next_work);
+                spawn_scheduled_work(runtime, ai_pool_for_next, llm_client, next_work);
             }
         });
     }
+}
+
+pub(crate) fn spawn_scheduled_work(
+    runtime: Arc<Mutex<TableSession>>,
+    ai_pool: Arc<rayon::ThreadPool>,
+    llm_client: Option<Arc<dyn LlmClient>>,
+    work: ScheduledWork,
+) {
+    let ScheduledWork {
+        ai_jobs,
+        pending_release,
+        sync_banter,
+        async_banter,
+        slow_think_nudge,
+        memory_notes,
+    } = work;
+
+    if let (Some(ticket), Some(llm)) = (slow_think_nudge, llm_client.as_ref()) {
+        let runtime = Arc::clone(&runtime);
+        let llm = Arc::clone(llm);
+        tokio::spawn(async move {
+            let now = tokio::time::Instant::now();
+            if ticket.fire_at > now {
+                tokio::time::sleep_until(ticket.fire_at).await;
+            }
+            let job = {
+                let mut session = runtime.lock().await;
+                session.fire_slow_think_nudge(ticket)
+            };
+            if let Some(job) = job {
+                let (guard, chain, result) =
+                    run_banter_job_with_timeout(&llm, job, ASYNC_BANTER_TIMEOUT).await;
+                let followup = {
+                    let mut session = runtime.lock().await;
+                    session.commit_banter_result(guard, chain, result)
+                };
+                if let Some(next_job) = followup {
+                    spawn_async_banter_task(runtime, llm, next_job);
+                }
+            }
+        });
+    }
+
+    if let Some(llm) = llm_client.as_ref() {
+        for job in async_banter {
+            spawn_async_banter_task(Arc::clone(&runtime), Arc::clone(llm), job);
+        }
+        for job in memory_notes {
+            let runtime = Arc::clone(&runtime);
+            let llm = Arc::clone(llm);
+            tokio::spawn(async move {
+                let endpoint = llm.endpoint().to_string();
+                let timeout_ms =
+                    u64::try_from(ASYNC_BANTER_TIMEOUT.as_millis()).unwrap_or(u64::MAX);
+                let result = match tokio::time::timeout(
+                    ASYNC_BANTER_TIMEOUT,
+                    llm.generate_memory_note(job.request),
+                )
+                .await
+                {
+                    Ok(inner) => inner,
+                    Err(_) => Err(LlmError::Timeout {
+                        endpoint,
+                        timeout_ms,
+                    }),
+                };
+                let mut session = runtime.lock().await;
+                session.commit_memory_note_result(
+                    job.persona_id,
+                    &job.player_nickname,
+                    job.trigger,
+                    result,
+                );
+            });
+        }
+    }
+
+    if !sync_banter.is_empty() {
+        if let Some(llm) = llm_client.clone() {
+            let max_cap = sync_banter
+                .iter()
+                .map(|j| j.sync_cap.unwrap_or(HIGHLIGHT_SYNC_CAP))
+                .max()
+                .unwrap_or(HIGHLIGHT_SYNC_CAP);
+            let mut done_rxs = Vec::with_capacity(sync_banter.len());
+            for job in sync_banter {
+                let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+                done_rxs.push(done_rx);
+                spawn_banter_task_with_done(
+                    Arc::clone(&runtime),
+                    Arc::clone(&llm),
+                    job,
+                    Some(done_tx),
+                );
+            }
+            tokio::spawn(async move {
+                // Bound gameplay wait by `HIGHLIGHT_SYNC_CAP` (~1.5s) while allowing slower
+                // LLM requests to finish asynchronously up to `ASYNC_BANTER_TIMEOUT` (6s)
+                // without dropping lines or flashing false outage banners.
+                let _ = tokio::time::timeout(max_cap, async move {
+                    for rx in done_rxs {
+                        let _ = rx.await;
+                    }
+                })
+                .await;
+
+                if pending_release.is_some() || !ai_jobs.is_empty() {
+                    spawn_gameplay_work(runtime, ai_pool, Some(llm), pending_release, ai_jobs);
+                }
+            });
+            return;
+        }
+    }
+
+    spawn_gameplay_work(runtime, ai_pool, llm_client, pending_release, ai_jobs);
 }

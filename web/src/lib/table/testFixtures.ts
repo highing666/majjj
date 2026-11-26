@@ -33,6 +33,8 @@ export function makeSeatInfo(
     ai_assisted: false,
     ai_difficulty: null,
     ai_style: null,
+    persona_id: null,
+    mood: null,
     voice_pack_id: null,
     ...overrides,
   };
@@ -106,6 +108,7 @@ export function makeTableSnapshot(
     phase: "InMatch",
     config: makeLobbyConfig(),
     pace: "Standard",
+    slow_think_nudge_enabled: true,
     seats: [
       makeSeatInfo("East", "阿东"),
       makeSeatInfo("South", "小南"),

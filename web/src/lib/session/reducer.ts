@@ -17,6 +17,11 @@ export interface PendingAddedKong {
   tile: Tile;
 }
 
+export interface LlmStatusNoticeState {
+  available: boolean;
+  message: string;
+}
+
 export interface SessionState {
   connectionStatus: ConnectionStatus;
   snapshot: TableSnapshot | null;
@@ -25,6 +30,7 @@ export interface SessionState {
   replacedByNewTab: boolean;
   lastRejectedReason: string | null;
   lastErrorNotice: string | null;
+  llmStatusNotice: LlmStatusNoticeState | null;
   lastPongTsMs: number | null;
 }
 
@@ -49,6 +55,7 @@ export function createInitialSessionState(): SessionState {
     replacedByNewTab: false,
     lastRejectedReason: null,
     lastErrorNotice: null,
+    llmStatusNotice: null,
     lastPongTsMs: null,
   };
 }
@@ -511,12 +518,14 @@ export function reduceServerMessage(
         effects: [{ type: "send", message: "RequestSnapshot" }],
       };
     }
-    const { phase, config, seats } = message.LobbyUpdated;
+    const { phase, config, seats, slow_think_nudge_enabled } =
+      message.LobbyUpdated;
     const nextSnapshot: TableSnapshot = {
       ...state.snapshot,
       phase,
       config,
       pace: config.pace,
+      slow_think_nudge_enabled,
       seats,
       player_view: phase === "Lobby" ? null : state.snapshot.player_view,
       pending_destructive_op:
@@ -555,6 +564,65 @@ export function reduceServerMessage(
         ...state,
         pendingActionId: null,
         lastErrorNotice: message.ErrorNotice.message,
+      },
+      effects: [],
+    };
+  }
+
+  if ("TableBanter" in message) {
+    if (state.snapshot === null) {
+      return { state, effects: [] };
+    }
+    const { seat, persona_id, mood } = message.TableBanter;
+    const idx = seatIndex(seat);
+    const currentSeat = state.snapshot.seats[idx];
+    if (
+      currentSeat.kind !== "Ai" ||
+      (currentSeat.persona_id !== null && currentSeat.persona_id !== persona_id)
+    ) {
+      return { state, effects: [] };
+    }
+    const nextSeats = state.snapshot.seats.map((entry, i) =>
+      i === idx ? { ...entry, persona_id, mood } : entry,
+    ) as TableSnapshot["seats"];
+    return {
+      state: {
+        ...state,
+        snapshot: {
+          ...state.snapshot,
+          seats: nextSeats,
+        },
+      },
+      effects: [],
+    };
+  }
+
+  if ("QuickEmoteBroadcast" in message) {
+    if (
+      state.snapshot !== null &&
+      message.QuickEmoteBroadcast.seat === state.snapshot.your_seat &&
+      state.lastRejectedReason !== null
+    ) {
+      return {
+        state: {
+          ...state,
+          lastRejectedReason: null,
+        },
+        effects: [],
+      };
+    }
+    return { state, effects: [] };
+  }
+
+  if ("LlmStatusNotice" in message) {
+    const { available, message: noticeText } = message.LlmStatusNotice;
+    return {
+      state: {
+        ...state,
+        llmStatusNotice: {
+          available,
+          message: noticeText,
+        },
       },
       effects: [],
     };

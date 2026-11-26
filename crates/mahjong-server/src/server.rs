@@ -28,12 +28,14 @@ use crate::lan::read_local_hostname;
 use crate::lifecycle::{
     is_loopback_peer, spawn_idle_shutdown_monitor, IdleTimeouts, WsConnectionTracker,
 };
+use crate::llm::{resolve_llm_base_url, LlmClient, OpenAiLlmClient};
+use crate::persona_memory::ClearPersonaMemoryRequest;
 use crate::protocol::{HealthResponse, ServerMessage};
 use crate::session::{OutboundSignal, TableOptions, TableRuntime};
 use crate::static_assets::{
     DiskStaticAssets, EmbeddedStaticAssets, StaticAssetError, StaticAssetSource,
 };
-use crate::storage::current_unix_ms;
+use crate::storage::{current_unix_ms, load_preferences_for_dir};
 
 const DEFAULT_PING_INTERVAL: Duration = Duration::from_secs(10);
 const DEFAULT_ACTIVITY_TIMEOUT: Duration = Duration::from_secs(25);
@@ -79,6 +81,10 @@ pub struct ServerConfig {
     pub headless: bool,
     /// Split idle auto-exit thresholds for desktop mode (`!headless`).
     pub idle_timeouts: IdleTimeouts,
+    /// Optional explicit LAN `llama-server` base URL override (`--llm-url` / `MAJJJ_LLM_URL`).
+    pub llm_url: Option<String>,
+    /// Optional injected [`LlmClient`] for automated tests (bypasses constructing `OpenAiLlmClient`).
+    pub llm_client: Option<Arc<dyn LlmClient>>,
 }
 
 impl Default for ServerConfig {
@@ -93,6 +99,8 @@ impl Default for ServerConfig {
             no_open: false,
             headless: false,
             idle_timeouts: IdleTimeouts::default(),
+            llm_url: None,
+            llm_client: None,
         }
     }
 }
@@ -127,6 +135,11 @@ pub enum ServerError {
     /// Dedicated Rayon AI thread pool could not be constructed.
     #[error("failed to initialize AI thread pool: {0}")]
     AiPool(String),
+    /// Mandatory LAN LLM inference server failed startup reachability or model readiness probe.
+    #[error(
+        "无法连接局域网推理服务（{endpoint}）：{reason}。请确认 Windows 主机上的 llama-server 已启动且局域网可达，或通过 --llm-url / MAJJJ_LLM_URL 指定正确地址"
+    )]
+    LlmUnavailable { endpoint: String, reason: String },
 }
 
 /// Running server handle returned by [`ServerConfig::spawn`].
@@ -255,13 +268,28 @@ impl ServerConfig {
         self
     }
 
+    /// Overrides the LAN `llama-server` base URL (`--llm-url` / `MAJJJ_LLM_URL`).
+    #[must_use]
+    pub fn with_llm_url(mut self, llm_url: impl Into<Option<String>>) -> Self {
+        self.llm_url = llm_url.into();
+        self
+    }
+
+    /// Injects a custom [`LlmClient`] implementation (primarily for offline automated tests).
+    #[must_use]
+    pub fn with_llm_client(mut self, llm_client: Arc<dyn LlmClient>) -> Self {
+        self.llm_client = Some(llm_client);
+        self
+    }
+
     /// Binds the TCP socket immediately (failing on port conflicts without fallback) and
     /// spawns the Axum HTTP/WebSocket server on the current Tokio runtime.
     ///
     /// # Errors
     ///
-    /// Returns [`ServerError::StaticDir`] if `static_dir` cannot be opened, or
-    /// [`ServerError::Bind`] if binding `bind:port` fails.
+    /// Returns [`ServerError::StaticDir`] if `static_dir` cannot be opened,
+    /// [`ServerError::Bind`] if binding `bind:port` fails, or
+    /// [`ServerError::LlmUnavailable`] if the mandatory LAN LLM health probe fails.
     pub async fn spawn(self) -> Result<ServerHandle, ServerError> {
         self.spawn_with_options(TableOptions::default()).await
     }
@@ -273,8 +301,9 @@ impl ServerConfig {
     ///
     /// Returns [`ServerError::InvalidAiThreads`] if `ai_threads == 0`,
     /// [`ServerError::AiPool`] if the AI thread pool cannot be constructed,
-    /// [`ServerError::StaticDir`] if `static_dir` cannot be opened, or
-    /// [`ServerError::Bind`] if binding `bind:port` fails.
+    /// [`ServerError::StaticDir`] if `static_dir` cannot be opened,
+    /// [`ServerError::Bind`] if binding `bind:port` fails, or
+    /// [`ServerError::LlmUnavailable`] if the mandatory LAN LLM health probe fails.
     pub async fn spawn_with_options(
         self,
         mut options: TableOptions,
@@ -311,10 +340,50 @@ impl ServerConfig {
             source,
         })?;
 
+        let persisted_llm_url = match options.data_dir() {
+            Some(dir) => {
+                load_preferences_for_dir(dir)
+                    .map_err(|source| ServerError::DataDir {
+                        path: dir.to_path_buf(),
+                        source,
+                    })?
+                    .llm_base_url
+            }
+            None => None,
+        };
+
+        let llm_client: Arc<dyn LlmClient> = match self.llm_client {
+            Some(injected) => injected,
+            None => {
+                let effective_url =
+                    resolve_llm_base_url(self.llm_url.as_deref(), persisted_llm_url.as_deref());
+                let client = OpenAiLlmClient::new(&effective_url).map_err(|err| {
+                    ServerError::LlmUnavailable {
+                        endpoint: effective_url.clone(),
+                        reason: err.to_string(),
+                    }
+                })?;
+                Arc::new(client)
+            }
+        };
+
+        // Mandatory startup gate: fail fast without offline fallback if LLM is unreachable.
+        llm_client
+            .health_check()
+            .await
+            .map_err(|err| ServerError::LlmUnavailable {
+                endpoint: llm_client.endpoint().to_string(),
+                reason: err.to_string(),
+            })?;
+
         let local_hostname = tokio::task::spawn_blocking(read_local_hostname)
             .await
             .ok()
             .flatten();
+
+        if options.llm_client().is_none() {
+            options = options.with_llm_client(Arc::clone(&llm_client));
+        }
 
         let session = TableRuntime::try_with_options_and_threads(
             local_addr.port(),
@@ -377,6 +446,11 @@ fn build_router(state: AppState) -> Router {
         .route("/api/preferences", get(preferences_handler))
         .route("/api/history/export", get(history_export_handler))
         .route("/api/history/clear", post(history_clear_handler))
+        .route("/api/persona-memory", get(persona_memory_handler))
+        .route(
+            "/api/persona-memory/clear",
+            post(persona_memory_clear_handler),
+        )
         .route("/api/shutdown", post(shutdown_handler))
         .route("/api/{*rest}", any(api_not_found))
         .route("/api", any(api_not_found))
@@ -470,6 +544,33 @@ async fn history_clear_handler(State(state): State<AppState>, body: Bytes) -> Re
         Err(err) => json_with_no_store(
             StatusCode::INTERNAL_SERVER_ERROR,
             &serde_json::json!({ "error": format!("failed to clear history: {err}") }),
+        ),
+    }
+}
+
+async fn persona_memory_handler(State(state): State<AppState>) -> Response {
+    let payload = state.session.persona_memory_snapshot().await;
+    json_with_no_store(StatusCode::OK, &payload)
+}
+
+async fn persona_memory_clear_handler(State(state): State<AppState>, body: Bytes) -> Response {
+    let Ok(req) = serde_json::from_slice::<ClearPersonaMemoryRequest>(&body) else {
+        return json_with_no_store(
+            StatusCode::BAD_REQUEST,
+            &serde_json::json!({ "error": "expected JSON body { \"confirm\": true }" }),
+        );
+    };
+    if !req.confirm {
+        return json_with_no_store(
+            StatusCode::BAD_REQUEST,
+            &serde_json::json!({ "error": "confirm must be true" }),
+        );
+    }
+    match state.session.persona_memory_clear().await {
+        Ok(resp) => json_with_no_store(StatusCode::OK, &resp),
+        Err(err) => json_with_no_store(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &serde_json::json!({ "error": format!("failed to clear persona memory: {err}") }),
         ),
     }
 }

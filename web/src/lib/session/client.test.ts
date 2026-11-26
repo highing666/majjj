@@ -174,6 +174,8 @@ function makeSeats(): [SeatInfo, SeatInfo, SeatInfo, SeatInfo] {
     ai_assisted: false,
     ai_difficulty: null,
     ai_style: null,
+    persona_id: null,
+    mood: null,
     voice_pack_id: null,
   })) as [SeatInfo, SeatInfo, SeatInfo, SeatInfo];
 }
@@ -254,6 +256,7 @@ function makeSnapshot(overrides: Partial<TableSnapshot> = {}): TableSnapshot {
     phase: "Lobby",
     config: makeLobbyConfig(),
     pace: "Standard",
+    slow_think_nudge_enabled: true,
     seats: makeSeats(),
     your_seat: null,
     seat_token: "tok-1",
@@ -824,6 +827,7 @@ describe("TableClient", () => {
         phase: snap.phase,
         config: snap.config,
         seats: snap.seats,
+        slow_think_nudge_enabled: snap.slow_think_nudge_enabled,
       },
     });
     vi.advanceTimersByTime(5000);
@@ -914,6 +918,8 @@ describe("TableClient", () => {
 
     expect(client.toggleAiAssist("South", true)).toBe(false);
     expect(client.takeOverSeat("West", true)).toBe(false);
+    expect(client.sendQuickEmote("IsThatIt")).toBe(false);
+    expect(client.setSlowThinkNudge(false)).toBe(false);
 
     client.connect();
     sockets[0].emitOpen();
@@ -921,11 +927,21 @@ describe("TableClient", () => {
     expect(client.toggleAiAssist("South", true)).toBe(true);
     expect(client.toggleAiAssist("South", false)).toBe(true);
     expect(client.takeOverSeat("West", true)).toBe(true);
+    expect(client.setSeatPersona("South", "QuickHothead")).toBe(true);
+    expect(client.setSeatPersona("South", null)).toBe(true);
+    expect(client.sendQuickEmote("DealerRigged")).toBe(true);
+    expect(client.setSlowThinkNudge(false)).toBe(true);
+    expect(client.setSlowThinkNudge(true)).toBe(true);
 
     expect(sockets[0].parsedSent().slice(1)).toEqual([
       { ToggleAiAssist: { seat: "South", enabled: true } },
       { ToggleAiAssist: { seat: "South", enabled: false } },
       { TakeOverSeat: { seat: "West", confirm: true } },
+      { SetSeatPersona: { seat: "South", persona_id: "QuickHothead" } },
+      { SetSeatPersona: { seat: "South", persona_id: null } },
+      { SendQuickEmote: { emote: "DealerRigged" } },
+      { SetSlowThinkNudge: { enabled: false } },
+      { SetSlowThinkNudge: { enabled: true } },
     ]);
 
     client.dispose();

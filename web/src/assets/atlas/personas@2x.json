@@ -1,0 +1,615 @@
+{
+  "frames": {
+    "persona_QuickHothead_Smug": {
+      "frame": {
+        "x": 4,
+        "y": 4,
+        "w": 248,
+        "h": 248
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 248,
+        "h": 248
+      },
+      "sourceSize": {
+        "w": 248,
+        "h": 248
+      }
+    },
+    "persona_QuickHothead_Mocking": {
+      "frame": {
+        "x": 260,
+        "y": 4,
+        "w": 248,
+        "h": 248
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 248,
+        "h": 248
+      },
+      "sourceSize": {
+        "w": 248,
+        "h": 248
+      }
+    },
+    "persona_QuickHothead_Tilted": {
+      "frame": {
+        "x": 516,
+        "y": 4,
+        "w": 248,
+        "h": 248
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 248,
+        "h": 248
+      },
+      "sourceSize": {
+        "w": 248,
+        "h": 248
+      }
+    },
+    "persona_QuickHothead_Nervous": {
+      "frame": {
+        "x": 772,
+        "y": 4,
+        "w": 248,
+        "h": 248
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 248,
+        "h": 248
+      },
+      "sourceSize": {
+        "w": 248,
+        "h": 248
+      }
+    },
+    "persona_QuickHothead_Plotting": {
+      "frame": {
+        "x": 1028,
+        "y": 4,
+        "w": 248,
+        "h": 248
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 248,
+        "h": 248
+      },
+      "sourceSize": {
+        "w": 248,
+        "h": 248
+      }
+    },
+    "persona_QuickHothead_Deadpan": {
+      "frame": {
+        "x": 1284,
+        "y": 4,
+        "w": 248,
+        "h": 248
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 248,
+        "h": 248
+      },
+      "sourceSize": {
+        "w": 248,
+        "h": 248
+      }
+    },
+    "persona_TeaSarcasm_Smug": {
+      "frame": {
+        "x": 4,
+        "y": 260,
+        "w": 248,
+        "h": 248
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 248,
+        "h": 248
+      },
+      "sourceSize": {
+        "w": 248,
+        "h": 248
+      }
+    },
+    "persona_TeaSarcasm_Mocking": {
+      "frame": {
+        "x": 260,
+        "y": 260,
+        "w": 248,
+        "h": 248
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 248,
+        "h": 248
+      },
+      "sourceSize": {
+        "w": 248,
+        "h": 248
+      }
+    },
+    "persona_TeaSarcasm_Tilted": {
+      "frame": {
+        "x": 516,
+        "y": 260,
+        "w": 248,
+        "h": 248
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 248,
+        "h": 248
+      },
+      "sourceSize": {
+        "w": 248,
+        "h": 248
+      }
+    },
+    "persona_TeaSarcasm_Nervous": {
+      "frame": {
+        "x": 772,
+        "y": 260,
+        "w": 248,
+        "h": 248
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 248,
+        "h": 248
+      },
+      "sourceSize": {
+        "w": 248,
+        "h": 248
+      }
+    },
+    "persona_TeaSarcasm_Plotting": {
+      "frame": {
+        "x": 1028,
+        "y": 260,
+        "w": 248,
+        "h": 248
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 248,
+        "h": 248
+      },
+      "sourceSize": {
+        "w": 248,
+        "h": 248
+      }
+    },
+    "persona_TeaSarcasm_Deadpan": {
+      "frame": {
+        "x": 1284,
+        "y": 260,
+        "w": 248,
+        "h": 248
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 248,
+        "h": 248
+      },
+      "sourceSize": {
+        "w": 248,
+        "h": 248
+      }
+    },
+    "persona_StubbornBlamer_Smug": {
+      "frame": {
+        "x": 4,
+        "y": 516,
+        "w": 248,
+        "h": 248
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 248,
+        "h": 248
+      },
+      "sourceSize": {
+        "w": 248,
+        "h": 248
+      }
+    },
+    "persona_StubbornBlamer_Mocking": {
+      "frame": {
+        "x": 260,
+        "y": 516,
+        "w": 248,
+        "h": 248
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 248,
+        "h": 248
+      },
+      "sourceSize": {
+        "w": 248,
+        "h": 248
+      }
+    },
+    "persona_StubbornBlamer_Tilted": {
+      "frame": {
+        "x": 516,
+        "y": 516,
+        "w": 248,
+        "h": 248
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 248,
+        "h": 248
+      },
+      "sourceSize": {
+        "w": 248,
+        "h": 248
+      }
+    },
+    "persona_StubbornBlamer_Nervous": {
+      "frame": {
+        "x": 772,
+        "y": 516,
+        "w": 248,
+        "h": 248
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 248,
+        "h": 248
+      },
+      "sourceSize": {
+        "w": 248,
+        "h": 248
+      }
+    },
+    "persona_StubbornBlamer_Plotting": {
+      "frame": {
+        "x": 1028,
+        "y": 516,
+        "w": 248,
+        "h": 248
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 248,
+        "h": 248
+      },
+      "sourceSize": {
+        "w": 248,
+        "h": 248
+      }
+    },
+    "persona_StubbornBlamer_Deadpan": {
+      "frame": {
+        "x": 1284,
+        "y": 516,
+        "w": 248,
+        "h": 248
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 248,
+        "h": 248
+      },
+      "sourceSize": {
+        "w": 248,
+        "h": 248
+      }
+    },
+    "persona_ChaosInstigator_Smug": {
+      "frame": {
+        "x": 4,
+        "y": 772,
+        "w": 248,
+        "h": 248
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 248,
+        "h": 248
+      },
+      "sourceSize": {
+        "w": 248,
+        "h": 248
+      }
+    },
+    "persona_ChaosInstigator_Mocking": {
+      "frame": {
+        "x": 260,
+        "y": 772,
+        "w": 248,
+        "h": 248
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 248,
+        "h": 248
+      },
+      "sourceSize": {
+        "w": 248,
+        "h": 248
+      }
+    },
+    "persona_ChaosInstigator_Tilted": {
+      "frame": {
+        "x": 516,
+        "y": 772,
+        "w": 248,
+        "h": 248
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 248,
+        "h": 248
+      },
+      "sourceSize": {
+        "w": 248,
+        "h": 248
+      }
+    },
+    "persona_ChaosInstigator_Nervous": {
+      "frame": {
+        "x": 772,
+        "y": 772,
+        "w": 248,
+        "h": 248
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 248,
+        "h": 248
+      },
+      "sourceSize": {
+        "w": 248,
+        "h": 248
+      }
+    },
+    "persona_ChaosInstigator_Plotting": {
+      "frame": {
+        "x": 1028,
+        "y": 772,
+        "w": 248,
+        "h": 248
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 248,
+        "h": 248
+      },
+      "sourceSize": {
+        "w": 248,
+        "h": 248
+      }
+    },
+    "persona_ChaosInstigator_Deadpan": {
+      "frame": {
+        "x": 1284,
+        "y": 772,
+        "w": 248,
+        "h": 248
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 248,
+        "h": 248
+      },
+      "sourceSize": {
+        "w": 248,
+        "h": 248
+      }
+    },
+    "persona_TiltedMaster_Smug": {
+      "frame": {
+        "x": 4,
+        "y": 1028,
+        "w": 248,
+        "h": 248
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 248,
+        "h": 248
+      },
+      "sourceSize": {
+        "w": 248,
+        "h": 248
+      }
+    },
+    "persona_TiltedMaster_Mocking": {
+      "frame": {
+        "x": 260,
+        "y": 1028,
+        "w": 248,
+        "h": 248
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 248,
+        "h": 248
+      },
+      "sourceSize": {
+        "w": 248,
+        "h": 248
+      }
+    },
+    "persona_TiltedMaster_Tilted": {
+      "frame": {
+        "x": 516,
+        "y": 1028,
+        "w": 248,
+        "h": 248
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 248,
+        "h": 248
+      },
+      "sourceSize": {
+        "w": 248,
+        "h": 248
+      }
+    },
+    "persona_TiltedMaster_Nervous": {
+      "frame": {
+        "x": 772,
+        "y": 1028,
+        "w": 248,
+        "h": 248
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 248,
+        "h": 248
+      },
+      "sourceSize": {
+        "w": 248,
+        "h": 248
+      }
+    },
+    "persona_TiltedMaster_Plotting": {
+      "frame": {
+        "x": 1028,
+        "y": 1028,
+        "w": 248,
+        "h": 248
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 248,
+        "h": 248
+      },
+      "sourceSize": {
+        "w": 248,
+        "h": 248
+      }
+    },
+    "persona_TiltedMaster_Deadpan": {
+      "frame": {
+        "x": 1284,
+        "y": 1028,
+        "w": 248,
+        "h": 248
+      },
+      "rotated": false,
+      "trimmed": false,
+      "spriteSourceSize": {
+        "x": 0,
+        "y": 0,
+        "w": 248,
+        "h": 248
+      },
+      "sourceSize": {
+        "w": 248,
+        "h": 248
+      }
+    }
+  },
+  "meta": {
+    "app": "majjj-persona-atlas-builder",
+    "version": "1.0",
+    "image": "personas@2x.png",
+    "format": "RGBA8888",
+    "size": {
+      "w": 1536,
+      "h": 1280
+    },
+    "scale": "2"
+  }
+}

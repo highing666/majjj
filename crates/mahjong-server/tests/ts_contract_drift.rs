@@ -10,10 +10,15 @@ use mahjong_core::{MatchError, MatchMode, PlayerAction, Seat, Suit, Tile, TurnSo
 use mahjong_server::history_dto::{
     ClearHistoryRequest, ClearHistoryResponse, HistoryExportResponse, StatsResponse,
 };
+use mahjong_server::persona::{PersonaId, PersonaMood};
+use mahjong_server::persona_memory::{
+    ClearPersonaMemoryRequest, ClearPersonaMemoryResponse, PersonaGrudgeNote, PersonaMemoryEntry,
+    PersonaMemoryNoteTrigger, PersonaMemoryResponse, PersonaPlayerLedger, PersonaPlayerMemory,
+};
 use mahjong_server::protocol::{
     ClientMessage, DestructiveOpKind, HealthResponse, LanUrlInfo, LobbyConfig,
-    PendingDestructiveOp, SeatInfo, SeatKind, SeatingRule, ServerMessage, TablePace, TablePhase,
-    TableSnapshot,
+    PendingDestructiveOp, QuickEmote, SeatInfo, SeatKind, SeatingRule, ServerMessage, TablePace,
+    TablePhase, TableSnapshot,
 };
 use ts_rs::TS;
 
@@ -34,6 +39,11 @@ fn export_all_contract_types(out_dir: &Path) {
     HistoryExportResponse::export_all_to(out_dir).expect("export HistoryExportResponse bindings");
     ClearHistoryRequest::export_all_to(out_dir).expect("export ClearHistoryRequest bindings");
     ClearHistoryResponse::export_all_to(out_dir).expect("export ClearHistoryResponse bindings");
+    PersonaMemoryResponse::export_all_to(out_dir).expect("export PersonaMemoryResponse bindings");
+    ClearPersonaMemoryRequest::export_all_to(out_dir)
+        .expect("export ClearPersonaMemoryRequest bindings");
+    ClearPersonaMemoryResponse::export_all_to(out_dir)
+        .expect("export ClearPersonaMemoryResponse bindings");
     TurnSource::export_all_to(out_dir).expect("export TurnSource binding");
     Suit::export_all_to(out_dir).expect("export Suit binding");
     MatchError::export_all_to(out_dir).expect("export MatchError binding");
@@ -94,6 +104,8 @@ fn server_and_core_ts_bindings_match_committed_files_with_zero_drift() {
             "AiStyle.ts",
             "ClearHistoryRequest.ts",
             "ClearHistoryResponse.ts",
+            "ClearPersonaMemoryRequest.ts",
+            "ClearPersonaMemoryResponse.ts",
             "ClientMessage.ts",
             "DestructiveOpKind.ts",
             "DiscardEntry.ts",
@@ -114,6 +126,14 @@ fn server_and_core_ts_bindings_match_committed_files_with_zero_drift() {
             "MatchSummary.ts",
             "MeldView.ts",
             "PendingDestructiveOp.ts",
+            "PersonaGrudgeNote.ts",
+            "PersonaId.ts",
+            "PersonaMemoryEntry.ts",
+            "PersonaMemoryNoteTrigger.ts",
+            "PersonaMemoryResponse.ts",
+            "PersonaMood.ts",
+            "PersonaPlayerLedger.ts",
+            "PersonaPlayerMemory.ts",
             "PlayerAction.ts",
             "PlayerEvent.ts",
             "PlayerEventKind.ts",
@@ -123,6 +143,7 @@ fn server_and_core_ts_bindings_match_committed_files_with_zero_drift() {
             "PreferencesData.ts",
             "PublicPhase.ts",
             "PublicSeatView.ts",
+            "QuickEmote.ts",
             "RevealedHand.ts",
             "RevealedMeld.ts",
             "RuleProfile.ts",
@@ -144,7 +165,7 @@ fn server_and_core_ts_bindings_match_committed_files_with_zero_drift() {
             "Wind.ts",
             "WinnerSettlement.ts",
         ],
-        "exact set of 53 exported server, history, AI, and core TypeScript files"
+        "exact set of 64 exported server, history, persona memory, AI, persona, and core TypeScript files"
     );
 
     for (name, contents) in &expected_files {
@@ -200,16 +221,20 @@ fn frozen_server_protocol_types_roundtrip_serde_json_without_loss() {
             ai_assisted: false,
             ai_difficulty: None,
             ai_style: None,
+            persona_id: None,
+            mood: None,
             voice_pack_id: Some("default".to_string()),
         },
         SeatInfo {
             seat: Seat::South,
             kind: SeatKind::Ai,
-            nickname: "AI 1".to_string(),
+            nickname: "急眼快攻哥".to_string(),
             connected: true,
             ai_assisted: false,
             ai_difficulty: Some(AiDifficulty::Strong),
-            ai_style: Some(AiStyle::Balanced),
+            ai_style: Some(AiStyle::AggressiveFast),
+            persona_id: Some(PersonaId::QuickHothead),
+            mood: Some(PersonaMood::Smug),
             voice_pack_id: None,
         },
         SeatInfo {
@@ -220,6 +245,8 @@ fn frozen_server_protocol_types_roundtrip_serde_json_without_loss() {
             ai_assisted: false,
             ai_difficulty: None,
             ai_style: None,
+            persona_id: Some(PersonaId::TeaSarcasm),
+            mood: None,
             voice_pack_id: None,
         },
         SeatInfo {
@@ -230,6 +257,8 @@ fn frozen_server_protocol_types_roundtrip_serde_json_without_loss() {
             ai_assisted: true,
             ai_difficulty: Some(AiDifficulty::Intermediate),
             ai_style: Some(AiStyle::DefensiveBigHand),
+            persona_id: None,
+            mood: None,
             voice_pack_id: None,
         },
     ];
@@ -267,6 +296,14 @@ fn frozen_server_protocol_types_roundtrip_serde_json_without_loss() {
             ai_difficulty: AiDifficulty::Strong,
             pace: TablePace::Standard,
         },
+        ClientMessage::SetSeatPersona {
+            seat: Seat::South,
+            persona_id: Some(PersonaId::TeaSarcasm),
+        },
+        ClientMessage::SetSeatPersona {
+            seat: Seat::South,
+            persona_id: None,
+        },
         ClientMessage::StartMatch,
         ClientMessage::ReturnToLobby,
         ClientMessage::SubmitAction {
@@ -280,6 +317,13 @@ fn frozen_server_protocol_types_roundtrip_serde_json_without_loss() {
         ClientMessage::SetPace {
             pace: TablePace::Fast,
         },
+        ClientMessage::SendQuickEmote {
+            emote: QuickEmote::IsThatIt,
+        },
+        ClientMessage::SendQuickEmote {
+            emote: QuickEmote::GoingBig,
+        },
+        ClientMessage::SetSlowThinkNudge { enabled: false },
         ClientMessage::ToggleAiAssist {
             seat: Seat::East,
             enabled: true,
@@ -311,6 +355,7 @@ fn frozen_server_protocol_types_roundtrip_serde_json_without_loss() {
         phase: TablePhase::Lobby,
         config,
         pace: TablePace::Fast,
+        slow_think_nudge_enabled: true,
         seats: seats.clone(),
         your_seat: Some(Seat::East),
         seat_token: Some("token-1".to_string()),
@@ -334,6 +379,7 @@ fn frozen_server_protocol_types_roundtrip_serde_json_without_loss() {
             phase: TablePhase::Lobby,
             config,
             seats,
+            slow_think_nudge_enabled: false,
         },
         ServerMessage::ActionRejected {
             reason: "stale seq".to_string(),
@@ -344,6 +390,23 @@ fn frozen_server_protocol_types_roundtrip_serde_json_without_loss() {
         ServerMessage::SessionReplaced,
         ServerMessage::ErrorNotice {
             message: "not enabled".to_string(),
+        },
+        ServerMessage::TableBanter {
+            seat: Seat::South,
+            persona_id: PersonaId::QuickHothead,
+            mood: PersonaMood::Smug,
+            text: "五巡就胡，你们太慢了！".to_string(),
+            event_seq: 18,
+            reply_to_seat: Some(Seat::East),
+        },
+        ServerMessage::QuickEmoteBroadcast {
+            seat: Seat::East,
+            emote: QuickEmote::DealerRigged,
+            text: QuickEmote::DealerRigged.label().to_string(),
+        },
+        ServerMessage::LlmStatusNotice {
+            available: false,
+            message: "局域网推理服务异常：请求超时".to_string(),
         },
     ];
     for msg in &server_messages {
@@ -362,4 +425,50 @@ fn frozen_server_protocol_types_roundtrip_serde_json_without_loss() {
     let health_back: HealthResponse =
         serde_json::from_str(&serde_json::to_string(&health).unwrap()).unwrap();
     assert_eq!(health_back, health);
+
+    let memory_resp = PersonaMemoryResponse {
+        schema_version: 1,
+        total_pairs: 1,
+        total_notes: 1,
+        personas: vec![PersonaMemoryEntry {
+            persona_id: PersonaId::TeaSarcasm,
+            players: vec![PersonaPlayerMemory {
+                player_nickname: "小王".to_string(),
+                ledger: PersonaPlayerLedger {
+                    hands_played: 3,
+                    persona_wins_against_player: 1,
+                    player_wins_against_persona: 2,
+                    persona_dealt_into_player: 1,
+                    player_dealt_into_persona: 1,
+                    highest_fan_seen: 4,
+                    net_score_delta: -12,
+                    player_pon_count: 2,
+                    player_kong_count: 1,
+                },
+                grudge_notes: vec![PersonaGrudgeNote {
+                    summary: "小王上次抢杠胡让我记住他了".to_string(),
+                    created_at_ms: 1_700_000_000_000,
+                    trigger: PersonaMemoryNoteTrigger::RobKongHu,
+                }],
+                updated_at_ms: 1_700_000_000_000,
+            }],
+        }],
+    };
+    let memory_back: PersonaMemoryResponse =
+        serde_json::from_str(&serde_json::to_string(&memory_resp).unwrap()).unwrap();
+    assert_eq!(memory_back, memory_resp);
+
+    let clear_req = ClearPersonaMemoryRequest { confirm: true };
+    let clear_req_back: ClearPersonaMemoryRequest =
+        serde_json::from_str(&serde_json::to_string(&clear_req).unwrap()).unwrap();
+    assert_eq!(clear_req_back, clear_req);
+
+    let clear_resp = ClearPersonaMemoryResponse {
+        cleared: true,
+        cleared_pairs: 1,
+        cleared_notes: 1,
+    };
+    let clear_resp_back: ClearPersonaMemoryResponse =
+        serde_json::from_str(&serde_json::to_string(&clear_resp).unwrap()).unwrap();
+    assert_eq!(clear_resp_back, clear_resp);
 }

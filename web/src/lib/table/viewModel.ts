@@ -1,19 +1,24 @@
 import type { DiscardEntry } from "../protocol/generated/DiscardEntry";
 import type { MatchSummary } from "../protocol/generated/MatchSummary";
 import type { MeldView } from "../protocol/generated/MeldView";
+import type { PersonaId } from "../protocol/generated/PersonaId";
+import type { PersonaMood } from "../protocol/generated/PersonaMood";
 import type { PlayerAction } from "../protocol/generated/PlayerAction";
 import type { PlayerView } from "../protocol/generated/PlayerView";
 import type { PublicSeatView } from "../protocol/generated/PublicSeatView";
 import type { RevealedMeld } from "../protocol/generated/RevealedMeld";
 import type { Seat } from "../protocol/generated/Seat";
 import type { SeatInfo } from "../protocol/generated/SeatInfo";
+import type { TableSnapshot } from "../protocol/generated/TableSnapshot";
 import type { Tile } from "../protocol/generated/Tile";
 import { parseMeld, type MeldKind } from "../protocol/melds";
+import { getPersonaMeta, getPersonaMoodMeta } from "../protocol/personas";
 import {
   ALL_SEATS,
   formatSeatlessDisplay,
   getRelativeSeats,
   resolveSeatNickname,
+  seatIndex,
   seatNumberLabel,
   seatRelativeRole,
   seatRelativeSlot,
@@ -66,7 +71,31 @@ export interface SeatBadgeModel {
   isAiAssisted: boolean;
   name: string;
   scoreText: string;
+  personaId: PersonaId | null;
+  mood: PersonaMood | null;
 }
+
+export type OpponentPocketSlot = "top" | "left" | "right";
+
+export interface TablePersonaPocketModel {
+  slot: OpponentPocketSlot;
+  seat: Seat;
+  personaId: PersonaId;
+  mood: PersonaMood;
+  name: string;
+  styleLabel: string;
+  moodLabel: string;
+  moodShortLabel: string;
+  accentHex: string;
+  badgeBg: string;
+  badgeFg: string;
+  isActive: boolean;
+}
+
+export type TablePersonaPocketMap = Record<
+  OpponentPocketSlot,
+  TablePersonaPocketModel | null
+>;
 
 export interface ShortcutContext {
   disabled: boolean;
@@ -508,6 +537,53 @@ export function buildSeatBadgeModel(
     isAiAssisted: seatInfo.kind === "Human" && seatInfo.ai_assisted,
     name,
     scoreText: formatScoreDelta(seatView.score),
+    personaId: seatInfo.kind === "Ai" ? seatInfo.persona_id : null,
+    mood: seatInfo.kind === "Ai" ? seatInfo.mood : null,
+  };
+}
+
+/**
+ * Projects AI seats occupying the `top`, `left`, and `right` opponent slots into
+ * `TablePersonaPocketModel` entries anchored inside `TableLayout.personaPockets`.
+ */
+export function buildTablePersonaPocketModels(
+  snapshot: TableSnapshot,
+  playerView: PlayerView,
+): TablePersonaPocketMap {
+  const relative = getRelativeSeats(playerView.viewer);
+  const activeSeat = playerView.turn.active_seat;
+
+  const projectSlot = (
+    slot: OpponentPocketSlot,
+  ): TablePersonaPocketModel | null => {
+    const seat = relative[slot];
+    const seatInfo = snapshot.seats[seatIndex(seat)];
+    if (seatInfo.kind !== "Ai" || seatInfo.persona_id === null) {
+      return null;
+    }
+    const personaMeta = getPersonaMeta(seatInfo.persona_id);
+    const mood = seatInfo.mood ?? personaMeta.initialMood;
+    const moodMeta = getPersonaMoodMeta(mood);
+    return {
+      slot,
+      seat,
+      personaId: seatInfo.persona_id,
+      mood,
+      name: seatInfo.nickname.trim() || personaMeta.name,
+      styleLabel: personaMeta.styleLabel,
+      moodLabel: moodMeta.label,
+      moodShortLabel: moodMeta.shortLabel,
+      accentHex: personaMeta.accentHex,
+      badgeBg: moodMeta.badgeBg,
+      badgeFg: moodMeta.badgeFg,
+      isActive: activeSeat === seat,
+    };
+  };
+
+  return {
+    top: projectSlot("top"),
+    left: projectSlot("left"),
+    right: projectSlot("right"),
   };
 }
 

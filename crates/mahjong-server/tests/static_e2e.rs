@@ -239,6 +239,7 @@ async fn production_static_hosting_serves_built_dist_health_and_same_origin_ws_m
                     .player_view
                     .map_or_else(Vec::new, |pv| pv.legal_actions);
             }
+            ServerMessage::TableBanter { .. } => {}
             other => panic!("unexpected WS message while waiting for turn: {other:?}"),
         }
     }
@@ -257,12 +258,16 @@ async fn production_static_hosting_serves_built_dist_health_and_same_origin_ws_m
     )
     .await;
 
-    match recv_msg(&mut ws).await {
-        ServerMessage::EventBatch { to_seq, .. } => {
-            assert!(to_seq >= current_seq);
-            current_seq = to_seq;
+    loop {
+        match recv_msg(&mut ws).await {
+            ServerMessage::EventBatch { to_seq, .. } => {
+                assert!(to_seq >= current_seq);
+                current_seq = to_seq;
+                break;
+            }
+            ServerMessage::TableBanter { .. } => {}
+            other => panic!("expected EventBatch after SubmitAction, got {other:?}"),
         }
-        other => panic!("expected EventBatch after SubmitAction, got {other:?}"),
     }
 
     // If the human was initial dealer, wait for at least one AI-driven EventBatch afterward.
@@ -280,7 +285,7 @@ async fn production_static_hosting_serves_built_dist_health_and_same_origin_ws_m
                     break;
                 }
             }
-            ServerMessage::TableSnapshot(_) => {}
+            ServerMessage::TableSnapshot(_) | ServerMessage::TableBanter { .. } => {}
             other => panic!("unexpected WS message during AI progression: {other:?}"),
         }
     }

@@ -13,6 +13,7 @@
   import ShutdownControl from "./lib/lifecycle/ShutdownControl.svelte";
   import { patchLobbyConfig } from "./lib/lobby/lobbyConfig";
   import LobbyView from "./lib/lobby/LobbyView.svelte";
+  import PersonaAvatar from "./lib/personas/PersonaAvatar.svelte";
   import {
     getBrowserDevicePreferencesStore,
     type DevicePreferences,
@@ -353,6 +354,12 @@
     </div>
   {/if}
 
+  {#if sessionState.llmStatusNotice && !sessionState.llmStatusNotice.available}
+    <div class="banner banner-warn" class:banner-floating={compact} role="alert">
+      <span>{sessionState.llmStatusNotice.message}</span>
+    </div>
+  {/if}
+
   {#if sessionState.lastErrorNotice}
     <div class="banner banner-warn" class:banner-floating={compact} role="status">
       <span>提示：{sessionState.lastErrorNotice}</span>
@@ -397,6 +404,7 @@
       onJoinSeat={(seat) => client.joinSeat(seat)}
       onLeaveSeat={() => client.leaveSeat()}
       onUpdateConfig={(config) => client.updateLobbyConfig(config)}
+      onSetSeatPersona={(seat, personaId) => client.setSeatPersona(seat, personaId)}
       onStartMatch={() => client.startMatch()}
       onOpenSettings={() => (settingsOpen = true)}
       onOpenHistory={() => void historyController.open()}
@@ -442,6 +450,8 @@
             {presentedSnapshot}
             playerView={presentedPlayerView}
             {tableLayout}
+            activeBubbles={presentationState.activeBubbles}
+            reducedEffects={renderQualityState.reducedEffects}
             {turnCue}
             {viewportState}
             {currentPace}
@@ -454,6 +464,10 @@
               snapshot !== null &&
               snapshot.your_seat !== null &&
               snapshot.pending_destructive_op === null}
+            canSendQuickEmote={!actionsDisabled &&
+              snapshot !== null &&
+              snapshot.your_seat !== null &&
+              snapshot.phase === "InMatch"}
             shouldSuppressEscape={() =>
               viewportDisplay.shouldSuppressActionBarEscape()}
             onToggleFullscreen={() => void viewportDisplay.toggleFullscreen()}
@@ -463,6 +477,7 @@
             onDisband={() => client.requestDisbandMatch()}
             onToggleAiAssist={(seat, enabled) => client.toggleAiAssist(seat, enabled)}
             onAction={handleActionBar}
+            onSendQuickEmote={(emote) => client.sendQuickEmote(emote)}
           >
             {#snippet floatingBanners()}
               {@render statusBanners(true)}
@@ -494,6 +509,8 @@
             canConfirmNextHand={(playerView?.legal_actions ?? []).includes(
               "ConfirmNextHand",
             )}
+            activeBubbles={presentationState.activeBubbles}
+            reducedEffects={renderQualityState.reducedEffects}
             disabled={inputLocked}
             destructivePending={snapshot !== null &&
               snapshot.pending_destructive_op !== null}
@@ -519,7 +536,16 @@
             {#each takeOverItems as item (item.seatInfo.seat)}
               <article class="observer-seat-card">
                 <div class="observer-seat-head">
-                  <strong>{item.displayName}</strong>
+                  <div class="observer-seat-identity">
+                    {#if item.seatInfo.kind === "Ai" && item.seatInfo.persona_id !== null}
+                      <PersonaAvatar
+                        personaId={item.seatInfo.persona_id}
+                        mood={item.seatInfo.mood}
+                        size={32}
+                      />
+                    {/if}
+                    <strong>{item.displayName}</strong>
+                  </div>
                   <span
                     class="tag"
                     class:tag-offline={item.takeOverKind === "offline_human"}
@@ -569,6 +595,8 @@
       seats={activeSnap.seats}
       yourSeat={activeSnap.your_seat}
       lastSettlement={presentedPlayerView.last_settlement}
+      activeBubbles={presentationState.activeBubbles}
+      reducedEffects={renderQualityState.reducedEffects}
       disabled={actionsDisabled}
       onUpdateConfig={(config) => client.updateLobbyConfig(config)}
       onStartMatch={() => client.startMatch()}
@@ -632,6 +660,10 @@
     canEditPace={snapshot !== null &&
       !actionsDisabled &&
       snapshot.your_seat !== null}
+    slowThinkNudgeEnabled={snapshot?.slow_think_nudge_enabled ??
+      presentedSnapshot?.slow_think_nudge_enabled ??
+      true}
+    onChangeSlowThinkNudge={(enabled) => client.setSlowThinkNudge(enabled)}
     serverVersion={snapshot?.server_version ?? null}
     tableId={snapshot?.table_id ?? null}
     {connectionStatusText}
@@ -653,6 +685,10 @@
     onRequestClear={() => historyController.requestClear()}
     onCancelClear={() => historyController.cancelClear()}
     onConfirmClear={() => void historyController.confirmClear()}
+    onRefreshPersonaMemory={() => void historyController.refreshPersonaMemory()}
+    onRequestClearMemory={() => historyController.requestClearMemory()}
+    onCancelClearMemory={() => historyController.cancelClearMemory()}
+    onConfirmClearMemory={() => void historyController.confirmClearMemory()}
   />
 
   <AudioResumeCapsule
@@ -753,6 +789,13 @@
     align-items: center;
     justify-content: space-between;
     gap: 8px;
+  }
+
+  .observer-seat-identity {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
   }
 
   .match-shell {

@@ -2,14 +2,19 @@
   import type { Snippet } from "svelte";
   import { matchModeLabel } from "../lobby/lobbyConfig";
   import type { ViewportDisplayState } from "../platform/viewportDisplay";
+  import type { ActiveBanterMap } from "../presentation/presentationQueue";
   import type { PlayerAction } from "../protocol/generated/PlayerAction";
   import type { PlayerView } from "../protocol/generated/PlayerView";
+  import type { QuickEmote } from "../protocol/generated/QuickEmote";
   import type { Seat } from "../protocol/generated/Seat";
   import type { TablePace } from "../protocol/generated/TablePace";
   import type { TableSnapshot } from "../protocol/generated/TableSnapshot";
   import ActionBar from "./ActionBar.svelte";
+  import BanterBubbles from "./BanterBubbles.svelte";
   import type { TableLayout } from "./layout";
+  import QuickEmoteBar from "./QuickEmoteBar.svelte";
   import SeatControlBar from "./SeatControlBar.svelte";
+  import TablePersonaPockets from "./TablePersonaPockets.svelte";
   import { formatRoundTitle } from "./tiles";
   import type { TurnCueState } from "./viewModel";
 
@@ -18,6 +23,8 @@
     presentedSnapshot: TableSnapshot;
     playerView: PlayerView;
     tableLayout: TableLayout | null;
+    activeBubbles: ActiveBanterMap;
+    reducedEffects: boolean;
     turnCue: TurnCueState;
     viewportState: ViewportDisplayState;
     currentPace: TablePace;
@@ -26,6 +33,7 @@
     hasModalOpen: boolean;
     canTogglePace: boolean;
     canDisband: boolean;
+    canSendQuickEmote: boolean;
     shouldSuppressEscape: () => boolean;
     onToggleFullscreen: () => void;
     onTogglePace: () => void;
@@ -33,6 +41,7 @@
     onDisband: () => void;
     onToggleAiAssist: (seat: Seat, enabled: boolean) => void;
     onAction: (action: PlayerAction) => void;
+    onSendQuickEmote: (emote: QuickEmote) => boolean;
     floatingBanners?: Snippet;
   }
 
@@ -41,6 +50,8 @@
     presentedSnapshot,
     playerView,
     tableLayout,
+    activeBubbles,
+    reducedEffects,
     turnCue,
     viewportState,
     currentPace,
@@ -49,6 +60,7 @@
     hasModalOpen,
     canTogglePace,
     canDisband,
+    canSendQuickEmote,
     shouldSuppressEscape,
     onToggleFullscreen,
     onTogglePace,
@@ -56,6 +68,7 @@
     onDisband,
     onToggleAiAssist,
     onAction,
+    onSendQuickEmote,
     floatingBanners,
   }: Props = $props();
 
@@ -71,6 +84,20 @@
     return `left: ${leftPct.toFixed(3)}%; bottom: ${bottomPct.toFixed(3)}%; max-width: min(calc(100% - 16px), ${turnBarRect.width}px);`;
   });
 </script>
+
+<TablePersonaPockets
+  snapshot={presentedSnapshot}
+  {playerView}
+  {tableLayout}
+/>
+
+<BanterBubbles
+  snapshot={presentedSnapshot}
+  {playerView}
+  {tableLayout}
+  {activeBubbles}
+  {reducedEffects}
+/>
 
 <div class="glass-top-left">
   <span class="glass-pill">
@@ -160,6 +187,12 @@
       </div>
     {/if}
   </div>
+
+  <QuickEmoteBar
+    {tableLayout}
+    disabled={!canSendQuickEmote}
+    {onSendQuickEmote}
+  />
 {/if}
 
 <style>

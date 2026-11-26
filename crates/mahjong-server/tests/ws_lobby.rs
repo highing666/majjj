@@ -1,11 +1,16 @@
 mod common;
 
+use std::collections::HashSet;
 use std::time::Duration;
 
-use common::{connect_ws, fetch_health, recv_msg, recv_snapshot, send_msg, spawn_server, WsClient};
+use common::{
+    connect_ws, fetch_health, recv_msg, recv_snapshot, send_msg, spawn_seeded_server, spawn_server,
+    WsClient,
+};
 use futures_util::{SinkExt, StreamExt};
-use mahjong_ai::AiDifficulty;
+use mahjong_ai::{AiDifficulty, AiStyle};
 use mahjong_core::{MatchMode, PlayerAction, Seat};
+use mahjong_server::persona::{PersonaId, PersonaMood};
 use mahjong_server::protocol::{
     ClientMessage, SeatKind, SeatingRule, ServerMessage, TablePace, TablePhase,
 };
@@ -537,4 +542,321 @@ async fn seat_capacity_move_seat_unseated_replacement_and_cross_client_token_iso
     }
     let _ = ws_extra_tab2.close(None).await;
     server.shutdown().await;
+}
+
+#[tokio::test]
+async fn lobby_persona_selection_enforces_uniqueness_broadcasts_and_binds_at_match_start() {
+    let server = spawn_seeded_server(6401, None).await;
+    let addr = server.addr();
+
+    let mut ws1 = connect_ws(addr).await;
+    let mut ws2 = connect_ws(addr).await;
+
+    for (ws, cid, nick) in [(&mut ws1, "p1", "Alice"), (&mut ws2, "p2", "Bob")] {
+        send_msg(
+            ws,
+            &ClientMessage::Hello {
+                client_id: cid.to_string(),
+                nickname: nick.to_string(),
+                table_id: None,
+                seat_token: None,
+            },
+        )
+        .await;
+        let _ = recv_snapshot(ws).await;
+    }
+
+    // Unseated client cannot assign a persona.
+    send_msg(
+        &mut ws1,
+        &ClientMessage::SetSeatPersona {
+            seat: Seat::South,
+            persona_id: Some(PersonaId::QuickHothead),
+        },
+    )
+    .await;
+    assert!(matches!(
+        recv_msg(&mut ws1).await,
+        ServerMessage::ErrorNotice { .. }
+    ));
+
+    // Client 1 sits at East.
+    send_msg(
+        &mut ws1,
+        &ClientMessage::JoinSeat {
+            seat: Some(Seat::East),
+        },
+    )
+    .await;
+    let _ = recv_snapshot(&mut ws1).await;
+    let _ = recv_lobby_updated(&mut ws2).await;
+
+    // Cannot assign persona to a human-occupied seat.
+    send_msg(
+        &mut ws1,
+        &ClientMessage::SetSeatPersona {
+            seat: Seat::East,
+            persona_id: Some(PersonaId::QuickHothead),
+        },
+    )
+    .await;
+    assert!(matches!(
+        recv_msg(&mut ws1).await,
+        ServerMessage::ErrorNotice { .. }
+    ));
+
+    // Assign QuickHothead to South -> both clients receive LobbyUpdated with persona_id synced.
+    send_msg(
+        &mut ws1,
+        &ClientMessage::SetSeatPersona {
+            seat: Seat::South,
+            persona_id: Some(PersonaId::QuickHothead),
+        },
+    )
+    .await;
+    for ws in [&mut ws1, &mut ws2] {
+        match recv_lobby_updated(ws).await {
+            ServerMessage::LobbyUpdated { seats, .. } => {
+                assert_eq!(
+                    seats[Seat::South.index()].persona_id,
+                    Some(PersonaId::QuickHothead)
+                );
+                assert_eq!(seats[Seat::South.index()].mood, None);
+            }
+            other => panic!("expected LobbyUpdated, got {other:?}"),
+        }
+    }
+
+    // Duplicate assignment of QuickHothead to West is rejected.
+    send_msg(
+        &mut ws1,
+        &ClientMessage::SetSeatPersona {
+            seat: Seat::West,
+            persona_id: Some(PersonaId::QuickHothead),
+        },
+    )
+    .await;
+    assert!(matches!(
+        recv_msg(&mut ws1).await,
+        ServerMessage::ErrorNotice { .. }
+    ));
+
+    // Resetting South to random (None) frees QuickHothead so North can pick it.
+    send_msg(
+        &mut ws1,
+        &ClientMessage::SetSeatPersona {
+            seat: Seat::South,
+            persona_id: None,
+        },
+    )
+    .await;
+    for ws in [&mut ws1, &mut ws2] {
+        match recv_lobby_updated(ws).await {
+            ServerMessage::LobbyUpdated { seats, .. } => {
+                assert_eq!(seats[Seat::South.index()].persona_id, None);
+            }
+            other => panic!("expected LobbyUpdated, got {other:?}"),
+        }
+    }
+
+    send_msg(
+        &mut ws1,
+        &ClientMessage::SetSeatPersona {
+            seat: Seat::North,
+            persona_id: Some(PersonaId::QuickHothead),
+        },
+    )
+    .await;
+    let _ = recv_lobby_updated(&mut ws1).await;
+    let _ = recv_lobby_updated(&mut ws2).await;
+
+    // Human Bob joins North -> clears North's pre-assigned persona_id.
+    send_msg(
+        &mut ws2,
+        &ClientMessage::JoinSeat {
+            seat: Some(Seat::North),
+        },
+    )
+    .await;
+    let snap2 = recv_snapshot(&mut ws2).await;
+    assert_eq!(snap2.seats[Seat::North.index()].kind, SeatKind::Human);
+    assert_eq!(snap2.seats[Seat::North.index()].persona_id, None);
+    assert_eq!(snap2.seats[Seat::North.index()].mood, None);
+    let _ = recv_lobby_updated(&mut ws1).await;
+
+    // Assign TeaSarcasm to South, leave West random (None), then start match (KeepLobbySeats).
+    send_msg(
+        &mut ws1,
+        &ClientMessage::SetSeatPersona {
+            seat: Seat::South,
+            persona_id: Some(PersonaId::TeaSarcasm),
+        },
+    )
+    .await;
+    let _ = recv_lobby_updated(&mut ws1).await;
+    let _ = recv_lobby_updated(&mut ws2).await;
+
+    send_msg(&mut ws1, &ClientMessage::StartMatch).await;
+    let match_snap = recv_snapshot(&mut ws1).await;
+    assert_eq!(match_snap.phase, TablePhase::InMatch);
+
+    // Human seats have no persona_id / mood.
+    for seat in [Seat::East, Seat::North] {
+        let info = &match_snap.seats[seat.index()];
+        assert_eq!(info.kind, SeatKind::Human);
+        assert_eq!(info.persona_id, None);
+        assert_eq!(info.mood, None);
+    }
+
+    // South preserves manual pick TeaSarcasm with bound nickname, style, and initial mood.
+    let south = &match_snap.seats[Seat::South.index()];
+    assert_eq!(south.kind, SeatKind::Ai);
+    assert_eq!(south.persona_id, Some(PersonaId::TeaSarcasm));
+    assert_eq!(south.nickname, "阴阳茶艺师");
+    assert_eq!(south.ai_style, Some(AiStyle::DefensiveBigHand));
+    assert_eq!(south.mood, Some(PersonaMood::Mocking));
+
+    // West was random -> backfilled with a distinct persona != TeaSarcasm, properly bound.
+    let west = &match_snap.seats[Seat::West.index()];
+    assert_eq!(west.kind, SeatKind::Ai);
+    let west_persona = west.persona_id.expect("backfilled AI must have persona_id");
+    assert_ne!(west_persona, PersonaId::TeaSarcasm);
+    assert_eq!(west.nickname, west_persona.display_name());
+    assert_eq!(west.ai_style, Some(west_persona.default_style()));
+    assert_eq!(west.mood, Some(west_persona.initial_mood()));
+
+    let _ = ws1.close(None).await;
+    let _ = ws2.close(None).await;
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn start_match_random_backfill_is_duplicate_free_and_remapped_seating_preserves_picks() {
+    // 1) Solo human with zero manual picks -> 3 distinct personas bound with nicknames/styles/moods.
+    let server_solo = spawn_seeded_server(6402, None).await;
+    let mut ws = connect_ws(server_solo.addr()).await;
+    send_msg(
+        &mut ws,
+        &ClientMessage::Hello {
+            client_id: "solo".to_string(),
+            nickname: "Solo".to_string(),
+            table_id: None,
+            seat_token: None,
+        },
+    )
+    .await;
+    let _ = recv_snapshot(&mut ws).await;
+    send_msg(
+        &mut ws,
+        &ClientMessage::JoinSeat {
+            seat: Some(Seat::East),
+        },
+    )
+    .await;
+    let _ = recv_snapshot(&mut ws).await;
+    send_msg(&mut ws, &ClientMessage::StartMatch).await;
+    let snap = recv_snapshot(&mut ws).await;
+
+    let mut seen = HashSet::new();
+    for seat in [Seat::South, Seat::West, Seat::North] {
+        let info = &snap.seats[seat.index()];
+        assert_eq!(info.kind, SeatKind::Ai);
+        let pid = info.persona_id.expect("AI seat must receive a PersonaId");
+        assert!(seen.insert(pid), "backfilled personas must be unique");
+        assert_eq!(info.nickname, pid.display_name());
+        assert_eq!(info.ai_style, Some(pid.default_style()));
+        assert_eq!(info.mood, Some(pid.initial_mood()));
+    }
+    assert_eq!(seen.len(), 3);
+    let _ = ws.close(None).await;
+    server_solo.shutdown().await;
+
+    // 2) Two humans pick two specific personas, then start with FixedOpposite (which remaps seats).
+    let server_remap = spawn_seeded_server(6403, None).await;
+    let mut c1 = connect_ws(server_remap.addr()).await;
+    let mut c2 = connect_ws(server_remap.addr()).await;
+    for (ws, cid, nick) in [(&mut c1, "r1", "P1"), (&mut c2, "r2", "P2")] {
+        send_msg(
+            ws,
+            &ClientMessage::Hello {
+                client_id: cid.to_string(),
+                nickname: nick.to_string(),
+                table_id: None,
+                seat_token: None,
+            },
+        )
+        .await;
+        let _ = recv_snapshot(ws).await;
+    }
+    send_msg(
+        &mut c1,
+        &ClientMessage::JoinSeat {
+            seat: Some(Seat::East),
+        },
+    )
+    .await;
+    let _ = recv_snapshot(&mut c1).await;
+    let _ = recv_lobby_updated(&mut c2).await;
+
+    send_msg(
+        &mut c2,
+        &ClientMessage::JoinSeat {
+            seat: Some(Seat::South),
+        },
+    )
+    .await;
+    let _ = recv_snapshot(&mut c2).await;
+    let _ = recv_lobby_updated(&mut c1).await;
+
+    send_msg(
+        &mut c1,
+        &ClientMessage::SetSeatPersona {
+            seat: Seat::West,
+            persona_id: Some(PersonaId::StubbornBlamer),
+        },
+    )
+    .await;
+    let _ = recv_lobby_updated(&mut c1).await;
+    let _ = recv_lobby_updated(&mut c2).await;
+
+    send_msg(
+        &mut c1,
+        &ClientMessage::SetSeatPersona {
+            seat: Seat::North,
+            persona_id: Some(PersonaId::ChaosInstigator),
+        },
+    )
+    .await;
+    let _ = recv_lobby_updated(&mut c1).await;
+    let _ = recv_lobby_updated(&mut c2).await;
+
+    send_msg(
+        &mut c1,
+        &ClientMessage::UpdateLobbyConfig {
+            mode: MatchMode::EastOnly,
+            seating: SeatingRule::FixedOpposite,
+            ai_difficulty: AiDifficulty::Strong,
+            pace: TablePace::Standard,
+        },
+    )
+    .await;
+    let _ = recv_lobby_updated(&mut c1).await;
+    let _ = recv_lobby_updated(&mut c2).await;
+
+    send_msg(&mut c1, &ClientMessage::StartMatch).await;
+    let snap_remap = recv_snapshot(&mut c1).await;
+    let ai_personas: HashSet<PersonaId> = snap_remap
+        .seats
+        .iter()
+        .filter(|s| s.kind == SeatKind::Ai)
+        .filter_map(|s| s.persona_id)
+        .collect();
+    assert_eq!(
+        ai_personas,
+        HashSet::from([PersonaId::StubbornBlamer, PersonaId::ChaosInstigator])
+    );
+
+    let _ = c1.close(None).await;
+    let _ = c2.close(None).await;
+    server_remap.shutdown().await;
 }

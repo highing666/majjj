@@ -89,7 +89,26 @@ pub fn normalize_nickname(raw: &str) -> String {
     raw.trim().to_string()
 }
 
-fn atomic_write_bytes(target: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
+/// Collapses control whitespace (`\r`, `\n`, `\t`) into single spaces and trims outer whitespace.
+#[must_use]
+pub(crate) fn normalize_single_line_text(raw: &str) -> String {
+    let mut normalized = String::with_capacity(raw.len());
+    let mut prev_space = false;
+    for ch in raw.trim().chars() {
+        if matches!(ch, '\r' | '\n' | '\t') {
+            if !prev_space && !normalized.is_empty() {
+                normalized.push(' ');
+                prev_space = true;
+            }
+        } else {
+            normalized.push(ch);
+            prev_space = ch == ' ';
+        }
+    }
+    normalized.trim().to_string()
+}
+
+pub(crate) fn atomic_write_bytes(target: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
     let parent = target.parent().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -211,6 +230,15 @@ fn write_jsonl_atomic<T: Serialize>(path: &Path, records: &[T]) -> Result<(), st
         buf.push(b'\n');
     }
     atomic_write_bytes(path, &buf)
+}
+
+/// Loads `preferences.json` from `data_dir` with default fallback on missing or corrupt files.
+///
+/// # Errors
+///
+/// Returns an I/O error if `preferences.json` exists but cannot be read.
+pub(crate) fn load_preferences_for_dir(data_dir: &Path) -> Result<PreferencesData, std::io::Error> {
+    load_preferences(&data_dir.join(PREFERENCES_FILE))
 }
 
 fn load_preferences(path: &Path) -> Result<PreferencesData, std::io::Error> {
@@ -541,6 +569,15 @@ impl HistoryStore {
         self.save_preferences();
     }
 
+    /// Updates the slow-think nudge toggle and persists `preferences.json` atomically if changed.
+    pub fn record_slow_think_nudge(&mut self, enabled: bool) {
+        if self.preferences.slow_think_nudge_enabled == enabled {
+            return;
+        }
+        self.preferences.slow_think_nudge_enabled = enabled;
+        self.save_preferences();
+    }
+
     /// Records a normalized non-empty nickname at the front of `recent_nicknames` and persists if changed.
     pub fn record_nickname(&mut self, raw_nickname: &str) {
         let normalized = normalize_nickname(raw_nickname);
@@ -670,6 +707,8 @@ mod tests {
         store.record_nickname("  Alice  ");
         store.record_nickname("Bob");
         store.record_nickname("Alice");
+        assert!(store.preferences().slow_think_nudge_enabled);
+        store.record_slow_think_nudge(false);
 
         let reopened = HistoryStore::open(&nested).expect("reopen persisted preferences");
         assert_eq!(reopened.preferences().default_mode, MatchMode::FreeTable);
@@ -682,15 +721,26 @@ mod tests {
             AiDifficulty::Intermediate
         );
         assert_eq!(reopened.preferences().default_pace, TablePace::Fast);
+        assert!(!reopened.preferences().slow_think_nudge_enabled);
         assert_eq!(
             reopened.preferences().recent_nicknames,
             vec!["Alice".to_string(), "Bob".to_string()]
         );
 
+        // Legacy preferences.json lacking slow_think_nudge_enabled defaults cleanly to true.
+        fs::write(
+            nested.join("preferences.json"),
+            r#"{"schema_version":1,"recent_nicknames":[],"default_mode":"EastOnly","default_seating":"KeepLobbySeats","default_ai_difficulty":"Strong","default_pace":"Standard"}"#,
+        )
+        .expect("write legacy prefs");
+        let legacy = HistoryStore::open(&nested).expect("legacy prefs should default nudge true");
+        assert!(legacy.preferences().slow_think_nudge_enabled);
+
         // Corrupt preferences.json falls back cleanly without failing startup.
         fs::write(nested.join("preferences.json"), "{corrupt").expect("write corrupt prefs");
         let recovered = HistoryStore::open(&nested).expect("corrupt prefs should not fail open");
         assert_eq!(recovered.preferences().default_mode, MatchMode::EastOnly);
+        assert!(recovered.preferences().slow_think_nudge_enabled);
         assert!(recovered.preferences().recent_nicknames.is_empty());
     }
 

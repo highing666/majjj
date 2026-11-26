@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ClearHistoryResponse } from "../protocol/generated/ClearHistoryResponse";
+import type { ClearPersonaMemoryResponse } from "../protocol/generated/ClearPersonaMemoryResponse";
 import type { HistoryExportResponse } from "../protocol/generated/HistoryExportResponse";
+import type { PersonaMemoryResponse } from "../protocol/generated/PersonaMemoryResponse";
 import type { PreferencesData } from "../protocol/generated/PreferencesData";
 import type { StatsResponse } from "../protocol/generated/StatsResponse";
 import {
@@ -60,9 +62,53 @@ function sampleExport(): HistoryExportResponse {
       default_seating: "Random",
       default_ai_difficulty: "Strong",
       default_pace: "Standard",
+      llm_base_url: null,
+      slow_think_nudge_enabled: true,
     },
     matches: [],
     hands: [],
+  };
+}
+
+function samplePersonaMemory(): PersonaMemoryResponse {
+  return {
+    schema_version: 1,
+    total_pairs: 1,
+    total_notes: 2,
+    personas: [
+      {
+        persona_id: "TeaSarcasm",
+        players: [
+          {
+            player_nickname: "小王",
+            ledger: {
+              hands_played: 4,
+              persona_wins_against_player: 1,
+              player_wins_against_persona: 2,
+              persona_dealt_into_player: 1,
+              player_dealt_into_persona: 1,
+              highest_fan_seen: 4,
+              net_score_delta: -12,
+              player_pon_count: 3,
+              player_kong_count: 1,
+            },
+            grudge_notes: [
+              {
+                summary: "小王抢杠胡气死我了",
+                created_at_ms: Date.UTC(2026, 10, 26, 4, 0, 0),
+                trigger: "RobKongHu",
+              },
+              {
+                summary: "这笔债下次开桌慢慢算",
+                created_at_ms: Date.UTC(2026, 10, 26, 4, 15, 0),
+                trigger: "MatchFinished",
+              },
+            ],
+            updated_at_ms: Date.UTC(2026, 10, 26, 4, 15, 0),
+          },
+        ],
+      },
+    ],
   };
 }
 
@@ -92,6 +138,8 @@ describe("historyClient", () => {
       default_seating: "Random",
       default_ai_difficulty: "Strong",
       default_pace: "Standard",
+      llm_base_url: null,
+      slow_think_nudge_enabled: true,
     };
     const fetchFn = vi
       .fn<HistoryFetch>()
@@ -183,6 +231,41 @@ describe("historyClient", () => {
       expect(clientErr.status).toBeNull();
       expect(clientErr.message).toContain("无法连接");
     }
+  });
+
+  it("fetches persona memory and sends explicit { confirm: true } to POST /api/persona-memory/clear", async () => {
+    const memory = samplePersonaMemory();
+    const clearResp: ClearPersonaMemoryResponse = {
+      cleared: true,
+      cleared_pairs: 1,
+      cleared_notes: 2,
+    };
+    const fetchFn = vi
+      .fn<HistoryFetch>()
+      .mockResolvedValueOnce(jsonResponse(200, memory))
+      .mockResolvedValueOnce(jsonResponse(200, clearResp));
+    const client = createHistoryClient(fetchFn);
+
+    const fetched = await client.fetchPersonaMemory();
+    expect(fetched).toEqual(memory);
+    expect(fetchFn).toHaveBeenNthCalledWith(1, "/api/persona-memory", {
+      method: "GET",
+      cache: "no-store",
+    });
+
+    await expect(client.clearPersonaMemory(false)).rejects.toBeInstanceOf(
+      HistoryClientError,
+    );
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+
+    const cleared = await client.clearPersonaMemory(true);
+    expect(cleared).toEqual(clearResp);
+    expect(fetchFn).toHaveBeenNthCalledWith(2, "/api/persona-memory/clear", {
+      method: "POST",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: true }),
+    });
   });
 });
 
@@ -300,5 +383,53 @@ describe("historyController", () => {
     controller.close();
     expect(controller.getState().open).toBe(false);
     expect(controller.getState().clearPhase).toBe("idle");
+  });
+
+  it("loads persona memory and enforces two-step clear confirmation with automatic re-fetch", async () => {
+    const initialMemory = samplePersonaMemory();
+    const emptyMemory: PersonaMemoryResponse = {
+      schema_version: 1,
+      total_pairs: 0,
+      total_notes: 0,
+      personas: [{ persona_id: "TeaSarcasm", players: [] }],
+    };
+    const fetchFn = vi
+      .fn<HistoryFetch>()
+      .mockResolvedValueOnce(jsonResponse(200, initialMemory))
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          cleared: true,
+          cleared_pairs: 1,
+          cleared_notes: 2,
+        } satisfies ClearPersonaMemoryResponse),
+      )
+      .mockResolvedValueOnce(jsonResponse(200, emptyMemory));
+
+    const controller = createHistoryController({ fetchFn });
+    await controller.refreshPersonaMemory();
+    expect(controller.getState().personaMemory).toEqual(initialMemory);
+    expect(controller.getState().personaMemoryErrorMessage).toBeNull();
+
+    // First click enters confirming state without posting.
+    controller.requestClearMemory();
+    expect(controller.getState().clearMemoryPhase).toBe("confirming");
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+
+    // Cancel returns to idle.
+    controller.cancelClearMemory();
+    expect(controller.getState().clearMemoryPhase).toBe("idle");
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+
+    // Confirm posts clear and immediately re-fetches /api/persona-memory.
+    controller.requestClearMemory();
+    const ok = await controller.confirmClearMemory();
+    expect(ok).toBe(true);
+    expect(fetchFn).toHaveBeenCalledTimes(3);
+    expect(fetchFn.mock.calls[1][0]).toBe("/api/persona-memory/clear");
+    expect(fetchFn.mock.calls[2][0]).toBe("/api/persona-memory");
+    expect(controller.getState().clearMemoryPhase).toBe("idle");
+    expect(controller.getState().personaMemory).toEqual(emptyMemory);
+    expect(controller.getState().clearMemoryNotice).toContain("1 组牌友记忆");
+    expect(controller.getState().clearMemoryNotice).toContain("2 条恩怨小本本");
   });
 });

@@ -121,7 +121,13 @@ if [ "$run_rust" -eq 1 ]; then
 
   if [ "$sandbox_mode" -eq 1 ]; then
     cargo test -p mahjong-core
-    cargo test -p mahjong-server --lib --bin mahjong-server --test lan_discovery --test pacing_virtual_clock --test ts_contract_drift
+    sandbox_server_tests=(--lib --bin mahjong-server --test lan_discovery --test ts_contract_drift)
+    for test_file in crates/mahjong-server/tests/*_virtual_clock.rs crates/mahjong-server/tests/*_offline.rs; do
+      if [ -f "$test_file" ]; then
+        sandbox_server_tests+=(--test "$(basename "$test_file" .rs)")
+      fi
+    done
+    cargo test -p mahjong-server "${sandbox_server_tests[@]}"
     if [ "$run_ai_heavy" -eq 1 ]; then
       cargo test -p mahjong-ai
     fi

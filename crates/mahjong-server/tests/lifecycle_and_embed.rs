@@ -93,6 +93,7 @@ async fn headless_mode_disables_post_shutdown_and_idle_auto_exit() {
         .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
         .with_port(0)
         .with_headless(true)
+        .with_llm_client(common::stub_llm_client())
         .with_idle_timeouts(IdleTimeouts {
             lobby_or_finished: Duration::from_millis(60),
             in_match: Duration::from_millis(60),
@@ -126,6 +127,7 @@ async fn desktop_lobby_idle_auto_exit_fires_when_no_ws_connects() {
         .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
         .with_port(0)
         .with_no_open(true)
+        .with_llm_client(common::stub_llm_client())
         .with_idle_timeouts(IdleTimeouts {
             lobby_or_finished: Duration::from_millis(100),
             in_match: Duration::from_secs(10),
@@ -146,6 +148,7 @@ async fn desktop_idle_exit_keeps_unseated_observer_alive_and_uses_longer_in_matc
         .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
         .with_port(0)
         .with_no_open(true)
+        .with_llm_client(common::stub_llm_client())
         .with_idle_timeouts(IdleTimeouts {
             lobby_or_finished: Duration::from_millis(120),
             in_match: Duration::from_millis(550),
@@ -222,6 +225,7 @@ fn cli_binary_port_conflict_probes_majjj_and_rejects_non_majjj() {
             .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
             .with_port(0)
             .with_no_open(true)
+            .with_llm_client(common::stub_llm_client())
             .spawn()
             .await
             .expect("spawn existing majjj");

@@ -24,6 +24,8 @@ function makeSeats(): [SeatInfo, SeatInfo, SeatInfo, SeatInfo] {
     ai_assisted: false,
     ai_difficulty: idx === 0 ? null : "Strong",
     ai_style: idx === 0 ? null : "Balanced",
+    persona_id: null,
+    mood: null,
     voice_pack_id: idx === 2 ? "arcane-hero-2" : null,
   })) as [SeatInfo, SeatInfo, SeatInfo, SeatInfo];
 }

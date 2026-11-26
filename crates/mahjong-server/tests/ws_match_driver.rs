@@ -117,15 +117,21 @@ async fn start_match_validates_human_seat_applies_seating_rules_fills_distinct_a
     assert_eq!(health.phase, TablePhase::InMatch);
     assert_eq!(health.online_humans, 2);
 
-    // Remaining seats (South, North) must be Ai with distinct AiStyles and Intermediate difficulty.
-    let mut ai_styles = HashSet::new();
+    // Remaining seats (South, North) must be Ai with distinct personas, bound AiStyle, and Intermediate difficulty.
+    let mut ai_personas = HashSet::new();
     for seat in [Seat::South, Seat::North] {
         let info = &snap_p1.seats[seat.index()];
         assert_eq!(info.kind, SeatKind::Ai);
         assert!(info.connected);
         assert_eq!(info.ai_difficulty, Some(AiDifficulty::Intermediate));
-        let style = info.ai_style.expect("AI seat must have AiStyle");
-        assert!(ai_styles.insert(style), "AI styles should be distinct");
+        let persona = info.persona_id.expect("AI seat must have PersonaId");
+        assert!(
+            ai_personas.insert(persona),
+            "AI personas should be distinct"
+        );
+        assert_eq!(info.nickname, persona.display_name());
+        assert_eq!(info.ai_style, Some(persona.default_style()));
+        assert_eq!(info.mood, Some(persona.initial_mood()));
     }
 
     let view1 = snap_p1.player_view.expect("seated player gets PlayerView");
@@ -206,16 +212,19 @@ async fn start_match_validates_human_seat_applies_seating_rules_fills_distinct_a
     send_msg(&mut r1, &ClientMessage::StartMatch).await;
     let snap_r1 = recv_snapshot(&mut r1).await;
     let solo_seat = snap_r1.your_seat.expect("solo human must be seated");
-    let mut solo_ai_styles = HashSet::new();
+    let mut solo_ai_personas = HashSet::new();
     for seat in Seat::ALL {
         if seat == solo_seat {
             assert_eq!(snap_r1.seats[seat.index()].kind, SeatKind::Human);
         } else {
-            assert_eq!(snap_r1.seats[seat.index()].kind, SeatKind::Ai);
-            solo_ai_styles.insert(snap_r1.seats[seat.index()].ai_style.unwrap());
+            let info = &snap_r1.seats[seat.index()];
+            assert_eq!(info.kind, SeatKind::Ai);
+            let persona = info.persona_id.expect("AI seat must have PersonaId");
+            assert_eq!(info.ai_style, Some(persona.default_style()));
+            solo_ai_personas.insert(persona);
         }
     }
-    assert_eq!(solo_ai_styles.len(), 3);
+    assert_eq!(solo_ai_personas.len(), 3);
     let _ = r1.close(None).await;
     server_rand.shutdown().await;
 }
@@ -1647,6 +1656,7 @@ async fn bounded_rayon_pool_drives_one_player_matches_with_deterministic_budget_
         .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
         .with_port(0)
         .with_ai_threads(1)
+        .with_llm_client(common::stub_llm_client())
         .spawn_with_options(options)
         .await
         .expect("spawn server with 1 bounded AI thread");
@@ -1918,6 +1928,7 @@ async fn bounded_rayon_pool_drives_two_player_east_only_and_free_table_with_dete
         .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
         .with_port(0)
         .with_ai_threads(2)
+        .with_llm_client(common::stub_llm_client())
         .spawn_with_options(options)
         .await
         .expect("spawn server with 2 bounded AI threads");
@@ -2205,6 +2216,7 @@ async fn bounded_rayon_pool_one_thread_handles_concurrent_multi_ai_reaction_wind
         .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
         .with_port(0)
         .with_ai_threads(1)
+        .with_llm_client(common::stub_llm_client())
         .spawn_with_options(
             TableOptions::with_wall_factory(88, factory).with_pacing(PacingMode::Immediate),
         )
@@ -2354,6 +2366,7 @@ async fn realtime_budget_drives_strong_ai_east_only_and_intermediate_ai_free_tab
     let server = default_cfg
         .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
         .with_port(0)
+        .with_llm_client(common::stub_llm_client())
         .spawn_with_options(TableOptions::seeded(777).with_pacing(PacingMode::Immediate))
         .await
         .expect("spawn server with default bounded AI threads and Realtime budget");
@@ -2663,17 +2676,17 @@ async fn keep_lobby_seats_preserves_arbitrary_human_seats_fills_ai_and_rematches
         match_snap_1p.player_view.as_ref().unwrap().turn.dealer,
         Seat::West
     );
-    let mut styles_1p = HashSet::new();
-    for (idx, seat) in [Seat::East, Seat::South, Seat::West]
-        .into_iter()
-        .enumerate()
-    {
+    let mut personas_1p = HashSet::new();
+    for seat in [Seat::East, Seat::South, Seat::West] {
         let info = &match_snap_1p.seats[seat.index()];
         assert_eq!(info.kind, SeatKind::Ai);
-        assert_eq!(info.nickname, format!("AI {}", idx + 1));
-        assert!(styles_1p.insert(info.ai_style.expect("AI style")));
+        let persona = info.persona_id.expect("AI persona");
+        assert_eq!(info.nickname, persona.display_name());
+        assert_eq!(info.ai_style, Some(persona.default_style()));
+        assert_eq!(info.mood, Some(persona.initial_mood()));
+        assert!(personas_1p.insert(persona));
     }
-    assert_eq!(styles_1p.len(), 3);
+    assert_eq!(personas_1p.len(), 3);
     assert_eq!(
         match_snap_1p.seats[Seat::North.index()].kind,
         SeatKind::Human
@@ -2745,14 +2758,17 @@ async fn keep_lobby_seats_preserves_arbitrary_human_seats_fills_ai_and_rematches
     };
     assert_eq!(snap_west_1.your_seat, Some(Seat::West));
     assert_eq!(snap_south_1.your_seat, Some(Seat::South));
-    assert_eq!(snap_west_1.seats[Seat::East.index()].kind, SeatKind::Ai);
-    assert_eq!(snap_west_1.seats[Seat::East.index()].nickname, "AI 1");
-    assert_eq!(snap_west_1.seats[Seat::North.index()].kind, SeatKind::Ai);
-    assert_eq!(snap_west_1.seats[Seat::North.index()].nickname, "AI 2");
-    assert_ne!(
-        snap_west_1.seats[Seat::East.index()].ai_style,
-        snap_west_1.seats[Seat::North.index()].ai_style
-    );
+    let east_ai = &snap_west_1.seats[Seat::East.index()];
+    let north_ai = &snap_west_1.seats[Seat::North.index()];
+    assert_eq!(east_ai.kind, SeatKind::Ai);
+    assert_eq!(north_ai.kind, SeatKind::Ai);
+    let east_persona = east_ai.persona_id.expect("East AI persona");
+    let north_persona = north_ai.persona_id.expect("North AI persona");
+    assert_ne!(east_persona, north_persona);
+    assert_eq!(east_ai.nickname, east_persona.display_name());
+    assert_eq!(north_ai.nickname, north_persona.display_name());
+    assert_eq!(east_ai.ai_style, Some(east_persona.default_style()));
+    assert_eq!(north_ai.ai_style, Some(north_persona.default_style()));
 
     // West wins Hand 1 by Tsumo -> BetweenHands -> EndFreeTable -> Finished -> rematch via StartMatch.
     send_msg(
@@ -2850,8 +2866,10 @@ async fn keep_lobby_seats_preserves_arbitrary_human_seats_fills_ai_and_rematches
             }
         };
         assert_eq!(snap.your_seat, Some(expected_seat));
-        assert_eq!(snap.seats[Seat::East.index()].kind, SeatKind::Ai);
-        assert_eq!(snap.seats[Seat::East.index()].nickname, "AI 1");
+        let east_info = &snap.seats[Seat::East.index()];
+        assert_eq!(east_info.kind, SeatKind::Ai);
+        let east_persona = east_info.persona_id.expect("East AI persona");
+        assert_eq!(east_info.nickname, east_persona.display_name());
     }
     let _ = c_s.close(None).await;
     let _ = c_w.close(None).await;

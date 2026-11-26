@@ -24,6 +24,8 @@ function makeSeat(
     ai_assisted: false,
     ai_difficulty: "Strong",
     ai_style: "Balanced",
+    persona_id: null,
+    mood: null,
     voice_pack_id: null,
     ...overrides,
   };
@@ -40,6 +42,7 @@ function makeSnapshot(overrides: Partial<TableSnapshot> = {}): TableSnapshot {
       pace: "Standard",
     },
     pace: "Standard",
+    slow_think_nudge_enabled: true,
     seats: [
       makeSeat("East", {
         kind: "Human",

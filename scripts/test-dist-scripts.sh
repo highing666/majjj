@@ -183,6 +183,10 @@ test_install_and_launcher() {
   cat > "$root/stub-majjj" <<EOF
 #!/usr/bin/env bash
 printf 'server_started %s\n' "\$*" >> "$root/logs/calls.log"
+if [ "\${STUB_SERVER_FAIL_LLM:-0}" = "1" ]; then
+  printf 'error: 无法连接局域网推理服务（http://192.168.5.50:8080）："连接超时"\n' >&2
+  exit 1
+fi
 echo "stub server listening"
 touch "$root/logs/server_ready"
 if [ "\${STUB_SERVER_HANG:-0}" = "1" ]; then
@@ -277,6 +281,20 @@ EOF
   fi
   assert_file_contains "$root/logs/calls.log" "osascript" "startup timeout must trigger osascript alert"
   assert_file_contains "$root/logs/calls.log" "server.log" "startup timeout alert must mention server.log"
+
+  # 3g. Early exit on mandatory LLM startup gate -> osascript alert includes Chinese reason & escapes quotes
+  : > "$root/logs/calls.log"
+  rm -f "$root/logs/server_ready"
+  if HOME="$root/home" PATH="$root/bin:$PATH" \
+    STUB_CURL_MODE="down" STUB_LSOF_BUSY="0" STUB_SERVER_FAIL_LLM="1" \
+    MAJJJ_WAIT_TICKS=10 MAJJJ_WAIT_INTERVAL=0.02 \
+    "$launcher"; then
+    fail "LLM unavailable startup failure must exit non-zero"
+  fi
+  assert_file_contains "$root/logs/calls.log" "osascript" "LLM startup failure must trigger osascript alert"
+  assert_file_contains "$root/logs/calls.log" "无法连接局域网推理服务" "LLM startup alert must surface Chinese server error"
+  assert_file_contains "$root/logs/calls.log" '\"连接超时\"' "LLM startup alert must escape double quotes for osascript"
+  assert_file_contains "$root/logs/calls.log" "server.log" "LLM startup alert must include log path"
 }
 
 test_install_and_launcher
@@ -511,5 +529,8 @@ EOF
 }
 
 test_deploy_partner
+
+# 6. Windows llama-server deployment scripts offline contract tests
+node --test "$repo_root/scripts/windows-llm/test-scripts.mjs"
 
 echo "test-dist-scripts: OK"

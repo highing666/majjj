@@ -18,6 +18,8 @@ function makeSeats(
     ai_assisted: false,
     ai_difficulty: null,
     ai_style: null,
+    persona_id: null,
+    mood: null,
     voice_pack_id: null,
     ...overrides[seat],
   })) as [SeatInfo, SeatInfo, SeatInfo, SeatInfo];
@@ -38,6 +40,7 @@ function makeLobbySnapshot(
       ...configOverrides,
     },
     pace: "Standard",
+    slow_think_nudge_enabled: true,
     seats: makeSeats(),
     your_seat: null,
     seat_token: "token-1",
@@ -175,5 +178,78 @@ describe("lobbyTable", () => {
     for (const option of SEATING_RULE_OPTIONS) {
       expect(option.label).not.toMatch(/[东南西北]/);
     }
+  });
+
+  it("projects assigned persona metadata and marks personas taken by other seats as unavailable", () => {
+    const seats = makeSeats({
+      East: { kind: "Human", nickname: "小红", connected: true },
+      South: { kind: "Empty", persona_id: "QuickHothead" },
+      West: { kind: "Empty", persona_id: "TeaSarcasm" },
+      North: { kind: "Empty", persona_id: null },
+    });
+
+    const vm = buildLobbyTableViewModel(
+      makeLobbySnapshot({ your_seat: "East", seats }),
+    );
+
+    expect(vm.slots.bottom.personaMeta).toBeNull();
+    expect(vm.slots.bottom.personaOptions).toEqual([]);
+
+    expect(vm.slots.right.personaMeta).toMatchObject({
+      id: "QuickHothead",
+      name: "急眼快攻哥",
+      styleLabel: "快攻",
+    });
+    expect(
+      vm.slots.right.personaOptions.find((o) => o.id === "QuickHothead")
+        ?.takenByOther,
+    ).toBe(false);
+    expect(
+      vm.slots.right.personaOptions.find((o) => o.id === "TeaSarcasm")
+        ?.takenByOther,
+    ).toBe(true);
+
+    expect(vm.slots.left.personaMeta).toBeNull();
+    expect(
+      vm.slots.left.personaOptions
+        .filter((o) => o.takenByOther)
+        .map((o) => o.id),
+    ).toEqual(["QuickHothead", "TeaSarcasm"]);
+
+    // Full 5-persona visual roster is always exposed for preview before selection.
+    expect(vm.personaRoster).toHaveLength(5);
+    expect(vm.personaRoster.map((p) => p.meta.name)).toEqual([
+      "急眼快攻哥",
+      "阴阳茶艺师",
+      "嘴硬死磕王",
+      "拱火乐子人",
+      "红温老雀神",
+    ]);
+    for (const item of vm.personaRoster) {
+      expect(item.meta.tagline.length).toBeGreaterThan(0);
+      expect(item.meta.styleLabel.length).toBeGreaterThan(0);
+      expect(item.moodMeta.label.length).toBeGreaterThan(0);
+    }
+    expect(
+      vm.personaRoster.find((p) => p.meta.id === "QuickHothead"),
+    ).toMatchObject({
+      assignedSeat: "South",
+      assignedSlotLabel: "下家",
+    });
+    expect(
+      vm.personaRoster.find((p) => p.meta.id === "TeaSarcasm"),
+    ).toMatchObject({
+      assignedSeat: "West",
+      assignedSlotLabel: "对门",
+    });
+    expect(
+      vm.personaRoster.find((p) => p.meta.id === "ChaosInstigator")
+        ?.assignedSeat,
+    ).toBeNull();
+    expect(vm.assignableSeats.map((s) => s.seat)).toEqual([
+      "South",
+      "West",
+      "North",
+    ]);
   });
 });

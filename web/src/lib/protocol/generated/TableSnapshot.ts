@@ -29,6 +29,10 @@ config: LobbyConfig,
  */
 pace: TablePace, 
 /**
+ * Whether AI personas gently nudge slow-thinking humans after 15–20 seconds.
+ */
+slow_think_nudge_enabled: boolean, 
+/**
  * Public status for all four seats in `[East, South, West, North]` order.
  */
 seats: [SeatInfo, SeatInfo, SeatInfo, SeatInfo], 

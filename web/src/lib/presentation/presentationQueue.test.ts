@@ -33,6 +33,8 @@ function makeSeats(): [SeatInfo, SeatInfo, SeatInfo, SeatInfo] {
     ai_assisted: false,
     ai_difficulty: idx === 0 ? null : "Strong",
     ai_style: idx === 0 ? null : "Balanced",
+    persona_id: null,
+    mood: null,
     voice_pack_id: idx === 1 ? "vo-south" : null,
   })) as [SeatInfo, SeatInfo, SeatInfo, SeatInfo];
 }
@@ -99,6 +101,7 @@ function makeSnapshot(
     phase: "InMatch",
     config: makeLobbyConfig(pace),
     pace,
+    slow_think_nudge_enabled: true,
     your_seat: "East",
     seat_token: "tok-east",
     seats: makeSeats(),
@@ -215,6 +218,7 @@ describe("PresentationQueue", () => {
         phase: "InMatch",
         config: makeLobbyConfig("Fast"),
         seats: makeSeats(),
+        slow_think_nudge_enabled: true,
       },
     });
     expect(queue.getState().pace).toBe("Fast");
@@ -760,6 +764,358 @@ describe("PresentationQueue", () => {
     expect(
       semanticEvents.filter((ev) => ev.type === "UiActionPrompted"),
     ).toHaveLength(1);
+
+    queue.dispose();
+  });
+
+  it("displays TableBanter bubbles, updates live seat mood, overwrites same seat, auto-fades, and clears on takeover/Lobby", () => {
+    const scheduled = new Map<number, { cb: () => void; delayMs: number }>();
+    let nextTimerId = 1;
+    const clearedIds: number[] = [];
+
+    const queue = createPresentationQueue({
+      banterDurationMs: 4000,
+      scheduler: {
+        setTimeout(cb, delayMs) {
+          const id = nextTimerId++;
+          scheduled.set(id, { cb, delayMs });
+          return id;
+        },
+        clearTimeout(handle) {
+          const id = handle as number;
+          clearedIds.push(id);
+          scheduled.delete(id);
+        },
+      },
+    });
+
+    const snap = makeSnapshot(3, "Standard");
+    snap.seats[1] = {
+      ...snap.seats[1],
+      kind: "Ai",
+      persona_id: "QuickHothead",
+      mood: "Smug",
+      nickname: "急眼快攻哥",
+    };
+    snap.seats[2] = {
+      ...snap.seats[2],
+      kind: "Ai",
+      persona_id: "TeaSarcasm",
+      mood: "Mocking",
+      nickname: "阴阳茶艺师",
+    };
+    queue.enqueueServerMessage({ TableSnapshot: snap });
+
+    // 1. First banter on South sets bubble and updates live seat mood to Tilted
+    queue.enqueueServerMessage({
+      TableBanter: {
+        seat: "South",
+        persona_id: "QuickHothead",
+        mood: "Tilted",
+        text: "这手怎么又没摸到！",
+        event_seq: 4,
+        reply_to_seat: null,
+      },
+    });
+    expect(queue.getState().activeBubbles.South?.text).toBe("这手怎么又没摸到！");
+    expect(queue.getState().activeBubbles.South?.mood).toBe("Tilted");
+    expect(queue.getState().snapshot?.seats[1].mood).toBe("Tilted");
+    expect(scheduled.size).toBe(1);
+    const firstSouthTimer = [...scheduled.keys()][0]!;
+    expect(scheduled.get(firstSouthTimer)?.delayMs).toBe(4000);
+
+    // 2. Second banter on South overwrites first bubble and cancels its timer
+    queue.enqueueServerMessage({
+      TableBanter: {
+        seat: "South",
+        persona_id: "QuickHothead",
+        mood: "Smug",
+        text: "碰！这回轮到我收菜！",
+        event_seq: 5,
+        reply_to_seat: "East",
+      },
+    });
+    expect(clearedIds).toContain(firstSouthTimer);
+    expect(queue.getState().activeBubbles.South?.text).toBe("碰！这回轮到我收菜！");
+    expect(queue.getState().activeBubbles.South?.replyToSeat).toBe("East");
+    expect(queue.getState().snapshot?.seats[1].mood).toBe("Smug");
+
+    // 3. West speaks concurrently without disturbing South's bubble
+    queue.enqueueServerMessage({
+      TableBanter: {
+        seat: "West",
+        persona_id: "TeaSarcasm",
+        mood: "Mocking",
+        text: "哟，急眼哥又急了呢。",
+        event_seq: 6,
+        reply_to_seat: "South",
+      },
+    });
+    expect(queue.getState().activeBubbles.South).not.toBeNull();
+    expect(queue.getState().activeBubbles.West?.text).toBe("哟，急眼哥又急了呢。");
+
+    // 4. Firing South's fade timer clears only South
+    const [southTimerId] = [...scheduled.keys()];
+    scheduled.get(southTimerId!)?.cb();
+    scheduled.delete(southTimerId!);
+    expect(queue.getState().activeBubbles.South).toBeNull();
+    expect(queue.getState().activeBubbles.West).not.toBeNull();
+
+    // 5. Human takes over West -> LobbyUpdated prunes West's AI bubble immediately
+    const takeoverSeats = snap.seats.map((entry) =>
+      entry.seat === "West"
+        ? {
+            ...entry,
+            kind: "Human" as const,
+            nickname: "客串玩家",
+            persona_id: null,
+            mood: null,
+          }
+        : entry,
+    ) as TableSnapshot["seats"];
+    queue.enqueueServerMessage({
+      LobbyUpdated: {
+        phase: "InMatch",
+        config: snap.config,
+        seats: takeoverSeats,
+        slow_think_nudge_enabled: true,
+      },
+    });
+    expect(queue.getState().activeBubbles.West).toBeNull();
+
+    // 6. Returning to Lobby clears all active bubbles
+    queue.enqueueServerMessage({
+      TableBanter: {
+        seat: "South",
+        persona_id: "QuickHothead",
+        mood: "Plotting",
+        text: "再来一局！",
+        event_seq: 7,
+        reply_to_seat: null,
+      },
+    });
+    expect(queue.getState().activeBubbles.South).not.toBeNull();
+    queue.enqueueServerMessage({
+      TableSnapshot: {
+        ...snap,
+        phase: "Lobby",
+        player_view: null,
+        seq: 0,
+      },
+    });
+    expect(queue.getState().activeBubbles.South).toBeNull();
+    expect(scheduled.size).toBe(0);
+
+    queue.dispose();
+  });
+
+  it("displays QuickEmoteBroadcast human bubbles, overwrites same seat, survives LobbyUpdated while Human, and auto-fades", () => {
+    const scheduled = new Map<number, { cb: () => void; delayMs: number }>();
+    let nextTimerId = 1;
+    const clearedIds: number[] = [];
+
+    const queue = createPresentationQueue({
+      banterDurationMs: 4000,
+      scheduler: {
+        setTimeout(cb, delayMs) {
+          const id = nextTimerId++;
+          scheduled.set(id, { cb, delayMs });
+          return id;
+        },
+        clearTimeout(handle) {
+          const id = handle as number;
+          clearedIds.push(id);
+          scheduled.delete(id);
+        },
+      },
+    });
+
+    const snap = makeSnapshot(3, "Standard");
+    queue.enqueueServerMessage({ TableSnapshot: snap });
+
+    // Human East sends QuickEmote -> displays quick_emote bubble on East.
+    queue.enqueueServerMessage({
+      QuickEmoteBroadcast: {
+        seat: "East",
+        emote: "IsThatIt",
+        text: "就这？",
+      },
+    });
+    const firstBubble = queue.getState().activeBubbles.East;
+    expect(firstBubble).toMatchObject({
+      kind: "quick_emote",
+      seat: "East",
+      emote: "IsThatIt",
+      text: "就这？",
+    });
+    const firstTimerId = [...scheduled.keys()][0]!;
+
+    // LobbyUpdated (e.g., toggling slow_think_nudge_enabled) preserves East's active human bubble!
+    queue.enqueueServerMessage({
+      LobbyUpdated: {
+        phase: "InMatch",
+        config: snap.config,
+        seats: snap.seats,
+        slow_think_nudge_enabled: false,
+      },
+    });
+    expect(queue.getState().snapshot?.slow_think_nudge_enabled).toBe(false);
+    expect(queue.getState().activeBubbles.East?.text).toBe("就这？");
+
+    // Second QuickEmote on East overwrites first and cancels old timer.
+    queue.enqueueServerMessage({
+      QuickEmoteBroadcast: {
+        seat: "East",
+        emote: "GoingBig",
+        text: "这把我要胡大的",
+      },
+    });
+    expect(clearedIds).toContain(firstTimerId);
+    expect(queue.getState().activeBubbles.East).toMatchObject({
+      kind: "quick_emote",
+      emote: "GoingBig",
+      text: "这把我要胡大的",
+    });
+
+    // Firing fade timer clears East's bubble cleanly.
+    const [secondTimerId] = [...scheduled.keys()];
+    scheduled.get(secondTimerId!)?.cb();
+    scheduled.delete(secondTimerId!);
+    expect(queue.getState().activeBubbles.East).toBeNull();
+
+    queue.dispose();
+  });
+
+  it("preserves settlement banter across BetweenHands and Finished transitions, accepts post-Finished chain replies, and clears on HandStarted", () => {
+    const queue = createPresentationQueue({ banterDurationMs: 5000 });
+    const snap = makeSnapshot(5, "Standard");
+    snap.seats[1] = {
+      ...snap.seats[1],
+      kind: "Ai",
+      persona_id: "QuickHothead",
+      mood: "Smug",
+      nickname: "急眼快攻哥",
+    };
+    snap.seats[2] = {
+      ...snap.seats[2],
+      kind: "Ai",
+      persona_id: "TeaSarcasm",
+      mood: "Mocking",
+      nickname: "阴阳茶艺师",
+    };
+    queue.enqueueServerMessage({ TableSnapshot: snap });
+
+    // 1. HandSettled transitions into BetweenHands; settlement banter arrives and stays visible once modal opens.
+    queue.enqueueServerMessage({
+      EventBatch: {
+        from_seq: 6,
+        to_seq: 6,
+        events: [
+          {
+            seq: 6,
+            kind: { HandSettled: { settlement: makeSettlement("DrawGame") } },
+          },
+        ],
+        updated_legal_actions: ["ConfirmNextHand"],
+      },
+    });
+    queue.enqueueServerMessage({
+      TableBanter: {
+        seat: "South",
+        persona_id: "QuickHothead",
+        mood: "Tilted",
+        text: "这也能荒庄？气死我了！",
+        event_seq: 6,
+        reply_to_seat: null,
+      },
+    });
+    expect(queue.skipActiveImpact()).toBe(true);
+    expect(queue.getState().settlementVisible).toBe(true);
+    expect(queue.getState().activeBubbles.South?.text).toBe("这也能荒庄？气死我了！");
+
+    // 2. Follow-up reply arrives while SettlementModal is open.
+    queue.enqueueServerMessage({
+      TableBanter: {
+        seat: "West",
+        persona_id: "TeaSarcasm",
+        mood: "Mocking",
+        text: "急眼哥别破防嘛。",
+        event_seq: 6,
+        reply_to_seat: "South",
+      },
+    });
+    expect(queue.getState().activeBubbles.South?.text).toBe("这也能荒庄？气死我了！");
+    expect(queue.getState().activeBubbles.West?.replyToSeat).toBe("South");
+
+    // 3. Starting the next hand clears stale settlement bubbles cleanly.
+    queue.enqueueServerMessage({
+      EventBatch: {
+        from_seq: 7,
+        to_seq: 7,
+        events: [
+          {
+            seq: 7,
+            kind: {
+              HandStarted: {
+                wind_round: "East",
+                hand_number: 2,
+                dealer: "South",
+                dealer_streak: 0,
+                wall_remaining: 83,
+                hand: {
+                  closed_tiles: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+                  drawn_tile: null,
+                },
+                scores: [0, 0, 0, 0],
+              },
+            },
+          },
+        ],
+        updated_legal_actions: [],
+      },
+    });
+    expect(queue.getState().activeBubbles.South).toBeNull();
+    expect(queue.getState().activeBubbles.West).toBeNull();
+
+    // 4. Final-hand MatchFinished + TableSnapshot(Finished) preserves existing bubbles AND accepts post-Finished banter!
+    queue.enqueueServerMessage({
+      TableBanter: {
+        seat: "South",
+        persona_id: "QuickHothead",
+        mood: "Tilted",
+        text: "终局居然被你绝杀！",
+        event_seq: 8,
+        reply_to_seat: null,
+      },
+    });
+    const finishedSnap = makeSnapshot(9, "Standard");
+    finishedSnap.phase = "Finished";
+    finishedSnap.seats = snap.seats;
+    finishedSnap.player_view!.phase = "MatchFinished";
+    finishedSnap.player_view!.match_summary = {
+      mode: "EastOnly",
+      hands_played: 4,
+      initial_scores: [0, 0, 0, 0],
+      final_scores: [24, -8, -8, -8],
+      net_deltas: [24, -8, -8, -8],
+    };
+    queue.enqueueServerMessage({ TableSnapshot: finishedSnap });
+    expect(queue.getState().snapshot?.phase).toBe("Finished");
+    expect(queue.getState().activeBubbles.South?.text).toBe("终局居然被你绝杀！");
+
+    // Post-Finished follow-up reply arrives for MatchSummaryView.
+    queue.enqueueServerMessage({
+      TableBanter: {
+        seat: "West",
+        persona_id: "TeaSarcasm",
+        mood: "Smug",
+        text: "哈哈这回账算清了吧！",
+        event_seq: 8,
+        reply_to_seat: "South",
+      },
+    });
+    expect(queue.getState().activeBubbles.West?.text).toBe("哈哈这回账算清了吧！");
+    expect(queue.getState().snapshot?.seats[2].mood).toBe("Smug");
 
     queue.dispose();
   });
