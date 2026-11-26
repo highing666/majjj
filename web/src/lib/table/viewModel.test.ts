@@ -17,8 +17,6 @@ import {
   getTileRank,
   getTileSuit,
   getTileTone,
-  seatLabel,
-  seatShortWind,
 } from "./tiles";
 import {
   buildActionBarItems,
@@ -137,9 +135,7 @@ describe("tile metadata helpers", () => {
     ]);
   });
 
-  it("formats seat labels and round titles with GLOSSARY terms", () => {
-    expect(seatLabel("East")).toBe("东座");
-    expect(seatShortWind("West")).toBe("西");
+  it("formats round titles with GLOSSARY terms", () => {
     expect(
       formatRoundTitle({
         wind_round: "East",
@@ -240,11 +236,23 @@ describe("table viewModel helpers", () => {
         voice_pack_id: null,
       },
     ] as const;
-    expect(formatSeatDisplayName("East", sampleSeats)).toBe("东座 · 房主");
-    expect(formatSeatDisplayName("South", sampleSeats)).toBe("南座 · AI 2");
-    expect(formatSeatDisplayName("West", sampleSeats)).toBe("西座");
-    expect(formatSeatDisplayName("North", sampleSeats)).toBe("北座 · AI北");
-    expect(formatSeatDisplayName("East", null)).toBe("东座");
+    expect(formatSeatDisplayName("East", sampleSeats)).toBe("房主");
+    expect(formatSeatDisplayName("South", sampleSeats)).toBe("AI 2");
+    expect(formatSeatDisplayName("West", sampleSeats)).toBe("3号位");
+    expect(formatSeatDisplayName("North", sampleSeats)).toBe("AI北");
+    expect(formatSeatDisplayName("East", null)).toBe("1号位");
+
+    expect(formatSeatDisplayName("East", sampleSeats, "South")).toBe(
+      "上家 · 房主",
+    );
+    expect(formatSeatDisplayName("South", sampleSeats, "South")).toBe(
+      "自家 · AI 2",
+    );
+    expect(formatSeatDisplayName("West", sampleSeats, "South")).toBe("下家");
+    expect(formatSeatDisplayName("North", sampleSeats, "South")).toBe(
+      "对门 · AI北",
+    );
+    expect(formatSeatDisplayName("East", null, "South")).toBe("上家");
   });
 
   it("omits claimed discards and chunks rivers strictly into 6-tile rows", () => {
@@ -495,10 +503,44 @@ describe("table viewModel helpers", () => {
     ]);
     expect(standings[0]).toMatchObject({
       rank: 1,
+      seatName: "",
       nickname: "AI 1",
       finalScore: 12,
       netDelta: 12,
     });
+    expect(standings[2]).toMatchObject({
+      rank: 3,
+      seatName: "",
+      nickname: "小明",
+    });
+
+    const seatedStandings = buildMatchStandings(
+      {
+        mode: "EastOnly",
+        hands_played: 4,
+        initial_scores: [0, 0, 0, 0],
+        final_scores: [-4, 12, 0, -8],
+        net_deltas: [-4, 12, 0, -8],
+      },
+      seats,
+      "East",
+    );
+    expect(seatedStandings[0]).toMatchObject({
+      rank: 1,
+      seat: "South",
+      seatName: "下家",
+      nickname: "AI 1",
+    });
+    expect(seatedStandings[2]).toMatchObject({
+      rank: 3,
+      seat: "East",
+      seatName: "自家",
+      nickname: "小明",
+    });
+    for (const row of [...standings, ...seatedStandings]) {
+      expect(row.seatName).not.toMatch(/东座|南座|西座|北座/);
+      expect(row.nickname).not.toMatch(/东座|南座|西座|北座/);
+    }
   });
 
   it("resolves H/G/P/Esc ActionBar shortcuts only when unobstructed and unambiguous", () => {

@@ -77,8 +77,13 @@ function makeSnapshot(overrides: Partial<TableSnapshot> = {}): TableSnapshot {
 describe("seatControl view-model helpers", () => {
   it("builds offline pause banner only when at least one human seat is disconnected InMatch", () => {
     const pausedSnap = makeSnapshot();
-    expect(buildOfflinePauseBanner(pausedSnap)).toContain("南座（南家）");
+    expect(buildOfflinePauseBanner(pausedSnap)).toContain("下家（南家）");
     expect(buildOfflinePauseBanner(pausedSnap)).toContain("暂停");
+    expect(buildOfflinePauseBanner(pausedSnap)).not.toMatch(/东座|南座|西座|北座/);
+
+    const viewerlessPaused = makeSnapshot({ your_seat: null });
+    expect(buildOfflinePauseBanner(viewerlessPaused)).toContain("南家");
+    expect(buildOfflinePauseBanner(viewerlessPaused)).not.toMatch(/东座|南座|西座|北座/);
 
     const aiAssistedSnap = makeSnapshot({
       seats: [
@@ -142,7 +147,7 @@ describe("seatControl view-model helpers", () => {
     expect(items).toEqual([
       {
         seat: "East",
-        displayName: "东座 · 东家",
+        displayName: "自家 · 东家",
         isSelf: true,
         isOffline: false,
         aiAssisted: false,
@@ -151,7 +156,7 @@ describe("seatControl view-model helpers", () => {
       },
       {
         seat: "South",
-        displayName: "南座 · 南家",
+        displayName: "下家 · 南家",
         isSelf: false,
         isOffline: true,
         aiAssisted: false,
@@ -166,20 +171,35 @@ describe("seatControl view-model helpers", () => {
     const items = buildTakeOverSeatItems(observerInMatch);
 
     expect(items.find((i) => i.seatInfo.seat === "East")).toMatchObject({
+      displayName: "东家",
       takeOverKind: null,
       statusLabel: "在线人类",
       actionLabel: null,
     });
     expect(items.find((i) => i.seatInfo.seat === "South")).toMatchObject({
+      displayName: "南家",
       takeOverKind: "offline_human",
       statusLabel: "已离线",
       actionLabel: "接管离线座位",
     });
     expect(items.find((i) => i.seatInfo.seat === "West")).toMatchObject({
+      displayName: "AI 3",
       takeOverKind: "ai",
       statusLabel: "AI 对局中",
       actionLabel: "接管入座",
     });
+    const namelessObserverSnap = makeSnapshot({
+      your_seat: null,
+      seats: [
+        makeSeat("East", { kind: "Human", nickname: "", connected: true, ai_difficulty: null, ai_style: null }),
+        makeSeat("South", { kind: "Human", nickname: "南家", connected: false, ai_difficulty: null, ai_style: null }),
+        makeSeat("West"),
+        makeSeat("North"),
+      ],
+    });
+    expect(
+      buildTakeOverSeatItems(namelessObserverSnap).find((i) => i.seatInfo.seat === "East")?.displayName,
+    ).toBe("1号位");
 
     const observerLobby = makeSnapshot({ phase: "Lobby", your_seat: null });
     const lobbyItems = buildTakeOverSeatItems(observerLobby);
@@ -209,7 +229,9 @@ describe("seatControl view-model helpers", () => {
   it("produces glossary-compliant confirmation copy for AI and offline human takeovers", () => {
     const aiCopy = getTakeOverModalCopy(makeSeat("West"), "ai");
     expect(aiCopy.title).toBe("确认接管 AI 座位？");
+    expect(aiCopy.description).toContain("AI 3");
     expect(aiCopy.description).toContain("小局");
+    expect(aiCopy.description).not.toMatch(/东座|南座|西座|北座/);
     expect(aiCopy.confirmLabel).toBe("确认接管入座");
 
     const offlineCopy = getTakeOverModalCopy(
@@ -223,7 +245,21 @@ describe("seatControl view-model helpers", () => {
       "offline_human",
     );
     expect(offlineCopy.title).toBe("确认接管离线座位？");
+    expect(offlineCopy.description).toContain("南家");
     expect(offlineCopy.description).toContain("旧设备");
+    expect(offlineCopy.description).not.toMatch(/东座|南座|西座|北座/);
     expect(offlineCopy.confirmLabel).toBe("确认接管该座");
+
+    const namelessOfflineCopy = getTakeOverModalCopy(
+      makeSeat("West", {
+        kind: "Human",
+        nickname: "",
+        connected: false,
+        ai_difficulty: null,
+        ai_style: null,
+      }),
+      "offline_human",
+    );
+    expect(namelessOfflineCopy.description).toContain("3号位");
   });
 });

@@ -6,9 +6,10 @@
   import type { MatchSummary } from "../protocol/generated/MatchSummary";
   import type { Seat } from "../protocol/generated/Seat";
   import type { SeatInfo } from "../protocol/generated/SeatInfo";
+  import { formatRelativeSeatDisplay } from "../protocol/seats";
   import { getOfflineHumanTakeOverSeats } from "./seatControl";
   import TileBadge from "./TileBadge.svelte";
-  import { formatRoundTitle, getTileLabel, seatLabel } from "./tiles";
+  import { formatRoundTitle, getTileLabel } from "./tiles";
   import {
     buildMatchStandings,
     buildRevealedMeldItems,
@@ -43,7 +44,7 @@
     onTakeOverSeat,
   }: Props = $props();
 
-  const standings = $derived(buildMatchStandings(summary, seats));
+  const standings = $derived(buildMatchStandings(summary, seats, yourSeat));
   const modeLabel = $derived(matchModeLabel(summary.mode));
   const canOperate = $derived(yourSeat !== null && !disabled);
   const offlineTakeOverSeats = $derived(
@@ -114,8 +115,12 @@
             <td class="rank-cell">#{row.rank}</td>
             <td>
               <div class="player-cell">
-                <strong>{row.seatName}</strong>
-                <span>{row.nickname}</span>
+                {#if row.seatName}
+                  <strong>{row.seatName}</strong>
+                {/if}
+                {#if row.nickname}
+                  <span>{row.nickname}</span>
+                {/if}
                 {#if yourSeat === row.seat}
                   <span class="tag tag-self">本机</span>
                 {:else if row.isAi}
@@ -156,7 +161,7 @@
           {@const melds = buildRevealedMeldItems(hand.melds)}
           <div class="last-hand-row">
             <div class="last-hand-seat">
-              <strong>{seatLabel(hand.seat)}</strong>
+              <strong>{formatRelativeSeatDisplay(hand.seat, yourSeat, seats)}</strong>
               <span>{formatScoreDelta(lastSettlement.score_deltas[idx])}</span>
             </div>
             <div class="last-hand-tiles">

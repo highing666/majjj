@@ -93,6 +93,7 @@ describe("PresentationEffectsBus", () => {
     expect(piltoverFrames[0]).toMatchObject({
       kind: "kong",
       label: "补杠！",
+      sublabel: "对门 · 玩家 3 · 东 · +3 杠分",
       speedlines: true,
       skewDeg: -7,
       dampedShake: true,
@@ -147,6 +148,7 @@ describe("PresentationEffectsBus", () => {
     expect(piltoverFrames[1]).toMatchObject({
       kind: "hu",
       label: "自摸！",
+      sublabel: "对门 · 玩家 3 · 4 番 · 中",
       seats: ["West"],
       skippable: true,
     });
@@ -199,6 +201,7 @@ describe("PresentationEffectsBus", () => {
     expect(frames[0]).toMatchObject({
       kind: "pon",
       label: "碰！",
+      sublabel: "下家 · 玩家 2 · 四条",
       speedlines: true,
       dampedShake: false,
       warmFlash: false,
@@ -308,8 +311,56 @@ describe("PresentationEffectsBus", () => {
     expect(robFrame).toMatchObject({
       kind: "rob_kong",
       label: "抢杠胡！",
+      sublabel: "自家 · 玩家 1 · 2 番 · 东",
       seats: ["East"],
     });
+
+    const viewerlessWin = mapPlayerEventToSemanticEvent(
+      {
+        seq: 33,
+        kind: {
+          HandSettled: {
+            settlement: {
+              wind_round: "East",
+              hand_number: 1,
+              dealer_streak: 0,
+              dealer: "East",
+              outcome: {
+                Win: {
+                  discarder: "West",
+                  winning_tile: 27,
+                  winners: [
+                    {
+                      seat: "East",
+                      win_kind: "Ron",
+                      total_fan: 2,
+                      base_points: 4,
+                      items: [{ code: "DuiDuiHu", label: "对对胡", fan: 2 }],
+                    },
+                  ],
+                },
+              },
+              kong_transfers: [],
+              score_deltas: [12, 0, -12, 0],
+              new_scores: [12, 0, -12, 0],
+              revealed_hands: [
+                { seat: "East", closed_tiles: [0], drawn_tile: null, melds: [] },
+                { seat: "South", closed_tiles: [1], drawn_tile: null, melds: [] },
+                { seat: "West", closed_tiles: [2], drawn_tile: null, melds: [] },
+                { seat: "North", closed_tiles: [3], drawn_tile: null, melds: [] },
+              ],
+            },
+          },
+        },
+      },
+      { viewer: null, seats: null, wallRemaining: 30 },
+    );
+    const viewerlessFrame = buildPiltoverImpactFrame(viewerlessWin, {
+      id: 4,
+      reducedEffects: false,
+    });
+    expect(viewerlessFrame?.sublabel).toBe("1号位 · 2 番 · 东");
+    expect(viewerlessFrame?.sublabel).not.toMatch(/东座|南座|西座|北座/);
 
     const drawGame = toSemantic({
       seq: 32,
