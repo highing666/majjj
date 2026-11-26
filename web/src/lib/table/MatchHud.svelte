@@ -10,6 +10,7 @@
   import ActionBar from "./ActionBar.svelte";
   import type { TableLayout } from "./layout";
   import SeatControlBar from "./SeatControlBar.svelte";
+  import TablePersonaPockets from "./TablePersonaPockets.svelte";
   import { formatRoundTitle } from "./tiles";
   import type { TurnCueState } from "./viewModel";
 
@@ -71,6 +72,12 @@
     return `left: ${leftPct.toFixed(3)}%; bottom: ${bottomPct.toFixed(3)}%; max-width: min(calc(100% - 16px), ${turnBarRect.width}px);`;
   });
 </script>
+
+<TablePersonaPockets
+  snapshot={presentedSnapshot}
+  {playerView}
+  {tableLayout}
+/>
 
 <div class="glass-top-left">
   <span class="glass-pill">

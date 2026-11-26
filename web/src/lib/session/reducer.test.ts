@@ -31,6 +31,8 @@ function makeLobbySeats(): [SeatInfo, SeatInfo, SeatInfo, SeatInfo] {
     ai_assisted: false,
     ai_difficulty: null,
     ai_style: null,
+    persona_id: null,
+    mood: null,
     voice_pack_id: null,
   })) as [SeatInfo, SeatInfo, SeatInfo, SeatInfo];
 }
@@ -176,7 +178,14 @@ describe("session reducer — snapshot, lobby sync, and session lifecycle", () =
       ai_assisted: false,
       ai_difficulty: null,
       ai_style: null,
+      persona_id: null,
+      mood: null,
       voice_pack_id: null,
+    };
+    updatedSeats[2] = {
+      ...updatedSeats[2],
+      persona_id: "TeaSarcasm",
+      mood: null,
     };
     const nextConfig = makeLobbyConfig({
       mode: "FreeTable",
@@ -196,6 +205,7 @@ describe("session reducer — snapshot, lobby sync, and session lifecycle", () =
     expect(result.state.snapshot?.config).toEqual(nextConfig);
     expect(result.state.snapshot?.pace).toBe("Fast");
     expect(result.state.snapshot?.seats[1].nickname).toBe("小明");
+    expect(result.state.snapshot?.seats[2].persona_id).toBe("TeaSarcasm");
     expect(result.state.snapshot?.your_seat).toBe("South");
     expect(result.state.snapshot?.lan_urls.preferred_ipv4_url).toBe(
       "http://192.168.1.20:8789",

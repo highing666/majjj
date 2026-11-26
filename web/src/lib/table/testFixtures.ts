@@ -33,6 +33,8 @@ export function makeSeatInfo(
     ai_assisted: false,
     ai_difficulty: null,
     ai_style: null,
+    persona_id: null,
+    mood: null,
     voice_pack_id: null,
     ...overrides,
   };

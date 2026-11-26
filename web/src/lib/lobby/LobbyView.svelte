@@ -1,7 +1,9 @@
 <script lang="ts">
   import QRCode from "qrcode";
   import { createHistoryClient } from "../history/historyClient";
+  import PersonaAvatar from "../personas/PersonaAvatar.svelte";
   import type { LobbyConfig } from "../protocol/generated/LobbyConfig";
+  import type { PersonaId } from "../protocol/generated/PersonaId";
   import type { Seat } from "../protocol/generated/Seat";
   import type { SeatInfo } from "../protocol/generated/SeatInfo";
   import type { TableSnapshot } from "../protocol/generated/TableSnapshot";
@@ -16,6 +18,7 @@
     onJoinSeat: (seat: Seat | null) => void;
     onLeaveSeat: () => void;
     onUpdateConfig: (config: LobbyConfig) => void;
+    onSetSeatPersona?: (seat: Seat, personaId: PersonaId | null) => void;
     onStartMatch: () => void;
     onOpenSettings?: () => void;
     onOpenHistory?: () => void;
@@ -30,6 +33,7 @@
     onJoinSeat,
     onLeaveSeat,
     onUpdateConfig,
+    onSetSeatPersona,
     onStartMatch,
     onOpenSettings,
     onOpenHistory,
@@ -198,9 +202,17 @@
       return seatInfo.nickname || "未命名玩家";
     }
     if (seatInfo.kind === "Ai") {
-      return "AI 玩家";
+      return seatInfo.nickname || "牌友角色";
     }
     return "空位 · 开局补 AI";
+  }
+
+  function handlePersonaSelect(seat: Seat, event: Event): void {
+    if (!onSetSeatPersona) {
+      return;
+    }
+    const raw = (event.currentTarget as HTMLSelectElement).value;
+    onSetSeatPersona(seat, raw === "" ? null : (raw as PersonaId));
   }
 </script>
 
@@ -224,15 +236,57 @@
           >
             {seatInfo.connected ? "在线" : "离线"}
           </span>
-        {:else if seatInfo.kind === "Empty"}
-          <span class="tag">AI 补位</span>
+        {:else if slot.personaMeta !== null}
+          <span class="tag tag-persona-style">{slot.personaMeta.styleLabel}</span>
         {:else}
-          <span class="tag">AI</span>
+          <span class="tag">随机牌友</span>
         {/if}
       </div>
     </div>
 
-    <p class="seat-occupant">{describeSeatStatus(seatInfo)}</p>
+    {#if seatInfo.kind === "Human"}
+      <p class="seat-occupant">{describeSeatStatus(seatInfo)}</p>
+    {:else}
+      <div class="persona-preview">
+        {#if slot.personaMeta !== null}
+          <PersonaAvatar
+            personaId={slot.personaMeta.id}
+            mood={seatInfo.mood}
+            size={42}
+          />
+          <div class="persona-copy">
+            <strong class="persona-title">{slot.personaMeta.name}</strong>
+            <span class="persona-tagline">{slot.personaMeta.tagline}</span>
+          </div>
+        {:else}
+          <span class="persona-random-badge" aria-hidden="true">?</span>
+          <div class="persona-copy">
+            <strong class="persona-title">随机牌友</strong>
+            <span class="persona-tagline">开局随机不重复补位</span>
+          </div>
+        {/if}
+      </div>
+
+      {#if onSetSeatPersona}
+        <label class="persona-picker">
+          <span class="sr-only">{slot.label}牌友角色</span>
+          <select
+            class="select-input persona-select"
+            aria-label="{slot.label}牌友角色"
+            value={seatInfo.persona_id ?? ""}
+            disabled={!canConfigure}
+            onchange={(event) => handlePersonaSelect(slot.seat, event)}
+          >
+            <option value="">随机牌友（不重复）</option>
+            {#each slot.personaOptions as option (option.id)}
+              <option value={option.id} disabled={option.takenByOther}>
+                {option.name} · {option.styleLabel}{option.takenByOther ? "（已选）" : ""}
+              </option>
+            {/each}
+          </select>
+        </label>
+      {/if}
+    {/if}
 
     <div class="seat-actions">
       {#if slot.isMine}
@@ -701,6 +755,83 @@
     font-size: 14px;
     color: var(--ink);
     min-height: 20px;
+  }
+
+  .tag-persona-style {
+    background: #fff3de;
+    border-color: #e4b668;
+    color: #82490c;
+  }
+
+  .persona-preview {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .persona-random-badge {
+    width: 42px;
+    height: 42px;
+    flex: 0 0 auto;
+    border-radius: 10px;
+    border: 1.5px dashed var(--border);
+    background: #f5ede0;
+    color: var(--ink-muted);
+    font-size: 18px;
+    font-weight: 800;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .persona-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .persona-title {
+    font-size: 13px;
+    line-height: 1.25;
+    color: var(--ink);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .persona-tagline {
+    font-size: 11px;
+    line-height: 1.3;
+    color: var(--ink-muted);
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+
+  .persona-picker {
+    display: block;
+  }
+
+  .persona-select {
+    padding: 5px 8px;
+    font-size: 12px;
+    border-radius: 8px;
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
 
   .seat-actions {

@@ -18,6 +18,8 @@ function makeSeats(
     ai_assisted: false,
     ai_difficulty: null,
     ai_style: null,
+    persona_id: null,
+    mood: null,
     voice_pack_id: null,
     ...overrides[seat],
   })) as [SeatInfo, SeatInfo, SeatInfo, SeatInfo];
@@ -175,5 +177,42 @@ describe("lobbyTable", () => {
     for (const option of SEATING_RULE_OPTIONS) {
       expect(option.label).not.toMatch(/[东南西北]/);
     }
+  });
+
+  it("projects assigned persona metadata and marks personas taken by other seats as unavailable", () => {
+    const seats = makeSeats({
+      East: { kind: "Human", nickname: "小红", connected: true },
+      South: { kind: "Empty", persona_id: "QuickHothead" },
+      West: { kind: "Empty", persona_id: "TeaSarcasm" },
+      North: { kind: "Empty", persona_id: null },
+    });
+
+    const vm = buildLobbyTableViewModel(
+      makeLobbySnapshot({ your_seat: "East", seats }),
+    );
+
+    expect(vm.slots.bottom.personaMeta).toBeNull();
+    expect(vm.slots.bottom.personaOptions).toEqual([]);
+
+    expect(vm.slots.right.personaMeta).toMatchObject({
+      id: "QuickHothead",
+      name: "急眼快攻哥",
+      styleLabel: "快攻",
+    });
+    expect(
+      vm.slots.right.personaOptions.find((o) => o.id === "QuickHothead")
+        ?.takenByOther,
+    ).toBe(false);
+    expect(
+      vm.slots.right.personaOptions.find((o) => o.id === "TeaSarcasm")
+        ?.takenByOther,
+    ).toBe(true);
+
+    expect(vm.slots.left.personaMeta).toBeNull();
+    expect(
+      vm.slots.left.personaOptions
+        .filter((o) => o.takenByOther)
+        .map((o) => o.id),
+    ).toEqual(["QuickHothead", "TeaSarcasm"]);
   });
 });

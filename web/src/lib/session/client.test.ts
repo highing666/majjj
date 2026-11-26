@@ -174,6 +174,8 @@ function makeSeats(): [SeatInfo, SeatInfo, SeatInfo, SeatInfo] {
     ai_assisted: false,
     ai_difficulty: null,
     ai_style: null,
+    persona_id: null,
+    mood: null,
     voice_pack_id: null,
   })) as [SeatInfo, SeatInfo, SeatInfo, SeatInfo];
 }
@@ -921,11 +923,15 @@ describe("TableClient", () => {
     expect(client.toggleAiAssist("South", true)).toBe(true);
     expect(client.toggleAiAssist("South", false)).toBe(true);
     expect(client.takeOverSeat("West", true)).toBe(true);
+    expect(client.setSeatPersona("South", "QuickHothead")).toBe(true);
+    expect(client.setSeatPersona("South", null)).toBe(true);
 
     expect(sockets[0].parsedSent().slice(1)).toEqual([
       { ToggleAiAssist: { seat: "South", enabled: true } },
       { ToggleAiAssist: { seat: "South", enabled: false } },
       { TakeOverSeat: { seat: "West", confirm: true } },
+      { SetSeatPersona: { seat: "South", persona_id: "QuickHothead" } },
+      { SetSeatPersona: { seat: "South", persona_id: null } },
     ]);
 
     client.dispose();

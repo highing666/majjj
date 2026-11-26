@@ -10,6 +10,7 @@ use mahjong_core::{MatchError, MatchMode, PlayerAction, Seat, Suit, Tile, TurnSo
 use mahjong_server::history_dto::{
     ClearHistoryRequest, ClearHistoryResponse, HistoryExportResponse, StatsResponse,
 };
+use mahjong_server::persona::{PersonaId, PersonaMood};
 use mahjong_server::protocol::{
     ClientMessage, DestructiveOpKind, HealthResponse, LanUrlInfo, LobbyConfig,
     PendingDestructiveOp, SeatInfo, SeatKind, SeatingRule, ServerMessage, TablePace, TablePhase,
@@ -114,6 +115,8 @@ fn server_and_core_ts_bindings_match_committed_files_with_zero_drift() {
             "MatchSummary.ts",
             "MeldView.ts",
             "PendingDestructiveOp.ts",
+            "PersonaId.ts",
+            "PersonaMood.ts",
             "PlayerAction.ts",
             "PlayerEvent.ts",
             "PlayerEventKind.ts",
@@ -144,7 +147,7 @@ fn server_and_core_ts_bindings_match_committed_files_with_zero_drift() {
             "Wind.ts",
             "WinnerSettlement.ts",
         ],
-        "exact set of 53 exported server, history, AI, and core TypeScript files"
+        "exact set of 55 exported server, history, AI, persona, and core TypeScript files"
     );
 
     for (name, contents) in &expected_files {
@@ -200,16 +203,20 @@ fn frozen_server_protocol_types_roundtrip_serde_json_without_loss() {
             ai_assisted: false,
             ai_difficulty: None,
             ai_style: None,
+            persona_id: None,
+            mood: None,
             voice_pack_id: Some("default".to_string()),
         },
         SeatInfo {
             seat: Seat::South,
             kind: SeatKind::Ai,
-            nickname: "AI 1".to_string(),
+            nickname: "急眼快攻哥".to_string(),
             connected: true,
             ai_assisted: false,
             ai_difficulty: Some(AiDifficulty::Strong),
-            ai_style: Some(AiStyle::Balanced),
+            ai_style: Some(AiStyle::AggressiveFast),
+            persona_id: Some(PersonaId::QuickHothead),
+            mood: Some(PersonaMood::Smug),
             voice_pack_id: None,
         },
         SeatInfo {
@@ -220,6 +227,8 @@ fn frozen_server_protocol_types_roundtrip_serde_json_without_loss() {
             ai_assisted: false,
             ai_difficulty: None,
             ai_style: None,
+            persona_id: Some(PersonaId::TeaSarcasm),
+            mood: None,
             voice_pack_id: None,
         },
         SeatInfo {
@@ -230,6 +239,8 @@ fn frozen_server_protocol_types_roundtrip_serde_json_without_loss() {
             ai_assisted: true,
             ai_difficulty: Some(AiDifficulty::Intermediate),
             ai_style: Some(AiStyle::DefensiveBigHand),
+            persona_id: None,
+            mood: None,
             voice_pack_id: None,
         },
     ];
@@ -266,6 +277,14 @@ fn frozen_server_protocol_types_roundtrip_serde_json_without_loss() {
             seating: SeatingRule::FixedAdjacent,
             ai_difficulty: AiDifficulty::Strong,
             pace: TablePace::Standard,
+        },
+        ClientMessage::SetSeatPersona {
+            seat: Seat::South,
+            persona_id: Some(PersonaId::TeaSarcasm),
+        },
+        ClientMessage::SetSeatPersona {
+            seat: Seat::South,
+            persona_id: None,
         },
         ClientMessage::StartMatch,
         ClientMessage::ReturnToLobby,

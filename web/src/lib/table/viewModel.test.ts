@@ -23,6 +23,7 @@ import {
   buildMeldRenderItems,
   buildRevealedMeldItems,
   buildSeatBadgeModel,
+  buildTablePersonaPocketModels,
   buildVisibleRiverRows,
   computeCanvasResolution,
   deriveTurnCueState,
@@ -336,6 +337,8 @@ describe("table viewModel helpers", () => {
         ai_assisted: false,
         ai_difficulty: null,
         ai_style: null,
+        persona_id: null,
+        mood: null,
         voice_pack_id: null,
       }),
     ) as [
@@ -347,6 +350,8 @@ describe("table viewModel helpers", () => {
         ai_assisted: boolean;
         ai_difficulty: null;
         ai_style: null;
+        persona_id: null;
+        mood: null;
         voice_pack_id: null;
       },
       {
@@ -357,6 +362,8 @@ describe("table viewModel helpers", () => {
         ai_assisted: boolean;
         ai_difficulty: null;
         ai_style: null;
+        persona_id: null;
+        mood: null;
         voice_pack_id: null;
       },
       {
@@ -367,6 +374,8 @@ describe("table viewModel helpers", () => {
         ai_assisted: boolean;
         ai_difficulty: null;
         ai_style: null;
+        persona_id: null;
+        mood: null;
         voice_pack_id: null;
       },
       {
@@ -377,6 +386,8 @@ describe("table viewModel helpers", () => {
         ai_assisted: boolean;
         ai_difficulty: null;
         ai_style: null;
+        persona_id: null;
+        mood: null;
         voice_pack_id: null;
       },
     ];
@@ -540,6 +551,8 @@ describe("table viewModel helpers", () => {
         ai_assisted: false,
         ai_difficulty: null,
         ai_style: null,
+        persona_id: null,
+        mood: null,
         voice_pack_id: null,
       },
       "East",
@@ -555,6 +568,8 @@ describe("table viewModel helpers", () => {
       isAiAssisted: false,
       name: "小红",
       scoreText: "+8",
+      personaId: null,
+      mood: null,
     });
     expect("wind" in model).toBe(false);
 
@@ -576,6 +591,8 @@ describe("table viewModel helpers", () => {
         ai_assisted: true,
         ai_difficulty: "Strong",
         ai_style: "Balanced",
+        persona_id: null,
+        mood: null,
         voice_pack_id: null,
       },
       "East",
@@ -604,6 +621,8 @@ describe("table viewModel helpers", () => {
         ai_assisted: false,
         ai_difficulty: null,
         ai_style: null,
+        persona_id: null,
+        mood: null,
         voice_pack_id: null,
       },
       "East",
@@ -631,6 +650,8 @@ describe("table viewModel helpers", () => {
         ai_assisted: false,
         ai_difficulty: null,
         ai_style: null,
+        persona_id: null,
+        mood: null,
         voice_pack_id: null,
       },
       "East",
@@ -658,6 +679,8 @@ describe("table viewModel helpers", () => {
         ai_assisted: false,
         ai_difficulty: "Strong",
         ai_style: "Balanced",
+        persona_id: "QuickHothead",
+        mood: "Tilted",
         voice_pack_id: null,
       },
       "East",
@@ -665,6 +688,8 @@ describe("table viewModel helpers", () => {
       null,
     );
     expect(whitespaceAiModel.name).toBe("AI");
+    expect(whitespaceAiModel.personaId).toBe("QuickHothead");
+    expect(whitespaceAiModel.mood).toBe("Tilted");
   });
 
   it("assigns full 2-char counter-clockwise relative roles with zero wind characters across all 4 viewer perspectives", () => {
@@ -696,6 +721,8 @@ describe("table viewModel helpers", () => {
             ai_assisted: false,
             ai_difficulty: "Strong",
             ai_style: "Balanced",
+            persona_id: null,
+            mood: null,
             voice_pack_id: null,
           },
           viewer,
@@ -714,6 +741,119 @@ describe("table viewModel helpers", () => {
         expect(badge.scoreText).toBe("-4");
       }
     }
+  });
+
+  it("projects AI seats with personas into top/left/right persona pocket models while omitting human seats", () => {
+    const view = makePlayerView({
+      viewer: "South",
+      turn: {
+        wind_round: "East",
+        hand_number: 1,
+        dealer_streak: 0,
+        dealer: "East",
+        active_seat: "West",
+      },
+    });
+    const snapshot = {
+      table_id: "tbl-pockets",
+      phase: "InMatch" as const,
+      config: {
+        mode: "EastOnly" as const,
+        seating: "KeepLobbySeats" as const,
+        ai_difficulty: "Strong" as const,
+        pace: "Standard" as const,
+      },
+      pace: "Standard" as const,
+      seats: [
+        {
+          seat: "East" as const,
+          kind: "Ai" as const,
+          nickname: "红温老雀神",
+          connected: true,
+          ai_assisted: false,
+          ai_difficulty: "Strong" as const,
+          ai_style: "DefensiveBigHand" as const,
+          persona_id: "TiltedMaster" as const,
+          mood: "Tilted" as const,
+          voice_pack_id: null,
+        },
+        {
+          seat: "South" as const,
+          kind: "Human" as const,
+          nickname: "玩家",
+          connected: true,
+          ai_assisted: false,
+          ai_difficulty: null,
+          ai_style: null,
+          persona_id: null,
+          mood: null,
+          voice_pack_id: null,
+        },
+        {
+          seat: "West" as const,
+          kind: "Ai" as const,
+          nickname: "阴阳茶艺师",
+          connected: true,
+          ai_assisted: false,
+          ai_difficulty: "Strong" as const,
+          ai_style: "DefensiveBigHand" as const,
+          persona_id: "TeaSarcasm" as const,
+          mood: "Mocking" as const,
+          voice_pack_id: null,
+        },
+        {
+          seat: "North" as const,
+          kind: "Human" as const,
+          nickname: "队友",
+          connected: true,
+          ai_assisted: false,
+          ai_difficulty: null,
+          ai_style: null,
+          persona_id: null,
+          mood: null,
+          voice_pack_id: null,
+        },
+      ] as [
+        import("../protocol/generated/SeatInfo").SeatInfo,
+        import("../protocol/generated/SeatInfo").SeatInfo,
+        import("../protocol/generated/SeatInfo").SeatInfo,
+        import("../protocol/generated/SeatInfo").SeatInfo,
+      ],
+      your_seat: "South" as const,
+      seat_token: "tok",
+      player_view: view,
+      pending_destructive_op: null,
+      seq: 2,
+      server_version: "0.1.0",
+      lan_urls: {
+        preferred_ipv4_url: null,
+        ipv4_urls: [],
+        local_hostname_url: null,
+      },
+      host_is_loopback: true,
+    };
+
+    const pockets = buildTablePersonaPocketModels(snapshot, view);
+    // Viewer = South -> right = West (TeaSarcasm, active), top = North (Human -> null), left = East (TiltedMaster)
+    expect(pockets.top).toBeNull();
+    expect(pockets.right).toMatchObject({
+      slot: "right",
+      seat: "West",
+      personaId: "TeaSarcasm",
+      mood: "Mocking",
+      name: "阴阳茶艺师",
+      moodShortLabel: "阴阳",
+      isActive: true,
+    });
+    expect(pockets.left).toMatchObject({
+      slot: "left",
+      seat: "East",
+      personaId: "TiltedMaster",
+      mood: "Tilted",
+      name: "红温老雀神",
+      moodShortLabel: "红温",
+      isActive: false,
+    });
   });
 });
 
