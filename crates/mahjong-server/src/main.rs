@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
+use mahjong_server::storage::resolve_data_dir;
 use mahjong_server::{default_ai_threads, ServerConfig};
 
 fn parse_ai_threads(raw: &str) -> Result<usize, String> {
@@ -37,6 +38,10 @@ struct Cli {
     #[arg(long, env = "MAJJJ_STATIC_DIR")]
     static_dir: Option<PathBuf>,
 
+    /// Directory for persistent JSONL match history and preferences.
+    #[arg(long, env = "MAJJJ_DATA_DIR")]
+    data_dir: Option<PathBuf>,
+
     /// Maximum worker threads for the dedicated Rayon AI thinking pool.
     #[arg(
         long,
@@ -53,6 +58,7 @@ impl From<Cli> for ServerConfig {
             bind: cli.bind,
             port: cli.port,
             static_dir: cli.static_dir,
+            data_dir: Some(resolve_data_dir(cli.data_dir)),
             ai_threads: cli.ai_threads,
             ..Self::default()
         }
@@ -180,6 +186,35 @@ mod tests {
         assert!(
             zero_env_msg.contains("at least 1") || zero_env_msg.contains("0"),
             "unexpected error for MAJJJ_AI_THREADS=0: {zero_env_msg}"
+        );
+    }
+
+    #[test]
+    fn cli_data_dir_resolves_default_env_and_flag_override() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var("MAJJJ_DATA_DIR");
+
+        let default_cli = Cli::try_parse_from(["mahjong-server"]).expect("parse default data_dir");
+        let default_cfg = ServerConfig::from(default_cli);
+        assert_eq!(
+            default_cfg.data_dir,
+            Some(mahjong_server::storage::resolve_default_data_dir())
+        );
+
+        std::env::set_var("MAJJJ_DATA_DIR", "/tmp/majjj-env-data");
+        let env_cli = Cli::try_parse_from(["mahjong-server"]).expect("parse MAJJJ_DATA_DIR");
+        std::env::remove_var("MAJJJ_DATA_DIR");
+        assert_eq!(
+            ServerConfig::from(env_cli).data_dir,
+            Some(PathBuf::from("/tmp/majjj-env-data"))
+        );
+
+        let flag_cli =
+            Cli::try_parse_from(["mahjong-server", "--data-dir", "/tmp/majjj-flag-data"])
+                .expect("parse --data-dir");
+        assert_eq!(
+            ServerConfig::from(flag_cli).data_dir,
+            Some(PathBuf::from("/tmp/majjj-flag-data"))
         );
     }
 }

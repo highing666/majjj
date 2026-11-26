@@ -4,6 +4,7 @@ pub use mahjong_ai;
 pub use mahjong_core;
 
 pub mod ai_pool;
+pub mod history_dto;
 pub mod lan;
 pub mod pacing;
 pub mod protocol;
@@ -11,6 +12,7 @@ mod seat_control;
 pub mod server;
 pub mod session;
 pub mod static_assets;
+pub mod storage;
 
 pub use ai_pool::default_ai_threads;
 pub use pacing::PacingMode;

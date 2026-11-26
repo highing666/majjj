@@ -1,6 +1,7 @@
 //! Single active `TableSession` state and full match WebSocket coordination.
 
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,6 +20,10 @@ use uuid::Uuid;
 use crate::ai_pool::{
     build_ai_pool, default_ai_threads, spawn_scheduled_work, PendingAiJob, ScheduledWork,
 };
+use crate::history_dto::{
+    ClearHistoryResponse, HandRecord, HandSeatRecord, HistoryExportResponse, MatchRecord,
+    MatchSeatRecord, StatsResponse, HISTORY_SCHEMA_VERSION,
+};
 use crate::lan::{discover_lan_urls, read_local_hostname, read_system_interfaces};
 use crate::pacing::{
     apply_discard_to_view, compute_ai_turn_trigger, discard_release_delay, target_ai_delay,
@@ -30,6 +35,7 @@ use crate::protocol::{
 };
 use crate::seat_control::HandAttribution;
 use crate::server::ServerError;
+use crate::storage::{current_unix_ms, normalize_nickname, HistoryStore};
 
 /// `Send`-safe wrapper around a boxed [`WallProvider`] for injecting deterministic walls in tests.
 pub struct BoxedWallProvider(pub Box<dyn WallProvider + Send>);
@@ -54,6 +60,7 @@ pub struct TableOptions {
     rng_seed: Option<u64>,
     ai_budget: Option<DecisionBudget>,
     pacing: PacingMode,
+    data_dir: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for TableOptions {
@@ -62,6 +69,7 @@ impl std::fmt::Debug for TableOptions {
             .field("rng_seed", &self.rng_seed)
             .field("ai_budget", &self.ai_budget)
             .field("pacing", &self.pacing)
+            .field("data_dir", &self.data_dir)
             .finish_non_exhaustive()
     }
 }
@@ -75,6 +83,7 @@ impl Default for TableOptions {
             rng_seed: None,
             ai_budget: None,
             pacing: PacingMode::Humanized,
+            data_dir: None,
         }
     }
 }
@@ -93,6 +102,7 @@ impl TableOptions {
             rng_seed: Some(seed),
             ai_budget: None,
             pacing: PacingMode::Humanized,
+            data_dir: None,
         }
     }
 
@@ -104,6 +114,7 @@ impl TableOptions {
             rng_seed: Some(seed),
             ai_budget: None,
             pacing: PacingMode::Humanized,
+            data_dir: None,
         }
     }
 
@@ -121,10 +132,23 @@ impl TableOptions {
         self
     }
 
+    /// Configures a persistent directory for `hands.jsonl`, `matches.jsonl`, and `preferences.json`.
+    #[must_use]
+    pub fn with_data_dir(mut self, data_dir: impl Into<PathBuf>) -> Self {
+        self.data_dir = Some(data_dir.into());
+        self
+    }
+
     /// Returns the configured [`PacingMode`].
     #[must_use]
     pub fn pacing(&self) -> PacingMode {
         self.pacing
+    }
+
+    /// Returns the configured persistent data directory, if any.
+    #[must_use]
+    pub fn data_dir(&self) -> Option<&Path> {
+        self.data_dir.as_deref()
     }
 }
 
@@ -229,12 +253,15 @@ struct ActiveDiscardWindow {
 
 pub(crate) struct ActiveMatchState {
     pub(crate) match_id: u64,
+    pub(crate) match_uuid: String,
     pub(crate) game: ActiveMatch,
     accepted_action_ids: HashSet<(Seat, String)>,
     pub(crate) pending_release: Option<PendingRelease>,
     active_discard_window: Option<ActiveDiscardWindow>,
     ai_turn_trigger: AiTurnTrigger,
     pub(crate) hand_attribution: HandAttribution,
+    pub(crate) hands_settled: u32,
+    pub(crate) any_ai_assisted: [bool; 4],
 }
 
 impl ActiveMatchState {
@@ -274,6 +301,7 @@ pub struct TableSession {
     next_conn_id: u64,
     port: u16,
     local_hostname: Option<String>,
+    pub(crate) history: HistoryStore,
 }
 
 impl TableSession {
@@ -284,13 +312,39 @@ impl TableSession {
     }
 
     /// Creates a new `TableSession` with custom [`TableOptions`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`TableOptions::data_dir`] cannot be opened.
     #[must_use]
     pub fn with_options(port: u16, local_hostname: Option<String>, options: TableOptions) -> Self {
+        Self::try_with_options(port, local_hostname, options)
+            .expect("table session options must be valid")
+    }
+
+    /// Creates a new `TableSession` with custom [`TableOptions`], loading persisted history & preferences.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::DataDir`] if [`TableOptions::data_dir`] cannot be initialized.
+    pub fn try_with_options(
+        port: u16,
+        local_hostname: Option<String>,
+        options: TableOptions,
+    ) -> Result<Self, ServerError> {
+        let history = match options.data_dir() {
+            Some(dir) => HistoryStore::open(dir).map_err(|source| ServerError::DataDir {
+                path: dir.to_path_buf(),
+                source,
+            })?,
+            None => HistoryStore::in_memory(),
+        };
+        let config = LobbyConfig::from(history.preferences());
         let base_seed = options.rng_seed.unwrap_or_else(random_u64);
-        Self {
+        Ok(Self {
             table_id: Uuid::new_v4().to_string(),
             phase: TablePhase::Lobby,
-            config: LobbyConfig::default(),
+            config,
             seats: Seat::ALL.map(SeatRecord::empty),
             seat_generation: [0; 4],
             seq: 0,
@@ -308,7 +362,8 @@ impl TableSession {
             next_conn_id: 1,
             port,
             local_hostname,
-        }
+            history,
+        })
     }
 
     fn bump_release_generation(&mut self) -> u64 {
@@ -471,6 +526,9 @@ impl TableSession {
             return;
         }
         let nickname = params.nickname.trim().to_string();
+        if !nickname.is_empty() {
+            self.history.record_nickname(&nickname);
+        }
 
         // Check if this connection is reusing an existing credential for this table.
         let valid_restore_token = match (params.table_id.as_deref(), params.seat_token.as_deref()) {
@@ -602,6 +660,7 @@ impl TableSession {
         let effective_nickname = if existing_conn.nickname.is_empty() {
             format!("玩家{}", target_seat.index() + 1)
         } else {
+            self.history.record_nickname(&existing_conn.nickname);
             existing_conn.nickname.clone()
         };
 
@@ -670,6 +729,7 @@ impl TableSession {
             return;
         }
         self.config = next_config;
+        self.history.record_lobby_config(next_config);
         self.broadcast_lobby_updated(None);
     }
 
@@ -681,6 +741,7 @@ impl TableSession {
             return;
         }
         self.config.pace = pace;
+        self.history.record_pace(pace);
         self.broadcast_lobby_updated(None);
     }
 
@@ -782,12 +843,15 @@ impl TableSession {
         let hand_attribution = HandAttribution::from_seats(&self.seats);
         self.active_match = Some(ActiveMatchState {
             match_id,
+            match_uuid: Uuid::new_v4().to_string(),
             game,
             accepted_action_ids: HashSet::new(),
             pending_release: None,
             active_discard_window: None,
             ai_turn_trigger: AiTurnTrigger::AfterHandStarted,
             hand_attribution,
+            hands_settled: 0,
+            any_ai_assisted: [false; 4],
         });
 
         self.broadcast_all_snapshots();
@@ -1085,13 +1149,21 @@ impl TableSession {
             return;
         };
         let match_id = active.match_id;
-        let mut public_phase = active.game.project_view(Seat::East).phase;
+        self.persist_settled_hands(&emitted);
+        let mut public_phase = self
+            .active_match
+            .as_ref()
+            .expect("active match exists")
+            .game
+            .project_view(Seat::East)
+            .phase;
         if public_phase == PublicPhase::BetweenHands {
             self.auto_confirm_ai_between_hands(&mut emitted);
             if let Some(active_after) = self.active_match.as_ref() {
                 public_phase = active_after.game.project_view(Seat::East).phase;
             }
         }
+        self.persist_finished_matches(&emitted);
 
         let started_new_hand = self.active_match.as_ref().is_some_and(|active_ref| {
             emitted.iter().any(|event| {
@@ -1138,6 +1210,88 @@ impl TableSession {
                 }
             }
             PublicPhase::BetweenHands => {}
+        }
+    }
+
+    fn persist_settled_hands(&mut self, emitted: &[RecordedEvent]) {
+        let mode = self.config.mode;
+        let timestamp_ms = current_unix_ms();
+        let Some(active) = self.active_match.as_mut() else {
+            return;
+        };
+        for event in emitted {
+            let PlayerEventKind::HandSettled { settlement } =
+                active.game.project_event(event, Seat::East).kind
+            else {
+                continue;
+            };
+            active.hands_settled += 1;
+            for seat in Seat::ALL {
+                if active.hand_attribution.assisted_by_ai[seat.index()] {
+                    active.any_ai_assisted[seat.index()] = true;
+                }
+            }
+            let seats = Seat::ALL.map(|seat| {
+                let idx = seat.index();
+                let slot = &self.seats[idx];
+                HandSeatRecord {
+                    seat,
+                    nickname: normalize_nickname(&slot.info.nickname),
+                    seat_kind: slot.info.kind,
+                    assisted_by_ai: active.hand_attribution.assisted_by_ai[idx],
+                    took_over_ai: active.hand_attribution.took_over_ai_in_hand[idx],
+                }
+            });
+            self.history.append_hand(HandRecord {
+                schema_version: HISTORY_SCHEMA_VERSION,
+                match_id: active.match_uuid.clone(),
+                hand_index: active.hands_settled,
+                timestamp_ms,
+                mode,
+                settlement,
+                seats,
+                aborted: false,
+            });
+        }
+    }
+
+    fn persist_finished_matches(&mut self, emitted: &[RecordedEvent]) {
+        let timestamp_ms = current_unix_ms();
+        let Some(active) = self.active_match.as_ref() else {
+            return;
+        };
+        for event in emitted {
+            let PlayerEventKind::MatchFinished { summary } =
+                active.game.project_event(event, Seat::East).kind
+            else {
+                continue;
+            };
+            if summary.hands_played == 0 {
+                continue;
+            }
+            let seats = Seat::ALL.map(|seat| {
+                let idx = seat.index();
+                let slot = &self.seats[idx];
+                MatchSeatRecord {
+                    seat,
+                    nickname: normalize_nickname(&slot.info.nickname),
+                    seat_kind: slot.info.kind,
+                    assisted_by_ai: active.any_ai_assisted[idx],
+                    final_score: summary.final_scores[idx],
+                    net_delta: summary.net_deltas[idx],
+                }
+            });
+            self.history.append_match(MatchRecord {
+                schema_version: HISTORY_SCHEMA_VERSION,
+                match_id: active.match_uuid.clone(),
+                timestamp_ms,
+                mode: summary.mode,
+                hands_played: summary.hands_played,
+                initial_scores: summary.initial_scores,
+                final_scores: summary.final_scores,
+                net_deltas: summary.net_deltas,
+                seats,
+            });
         }
     }
 
@@ -1365,6 +1519,13 @@ impl TableSession {
     }
 
     fn reset_match_to_lobby(&mut self) {
+        if self.phase == TablePhase::InMatch {
+            if let Some(active) = self.active_match.as_ref() {
+                if active.hands_settled > 0 {
+                    self.history.mark_match_aborted(&active.match_uuid);
+                }
+            }
+        }
         let _ = self.bump_release_generation();
         self.bump_all_seat_generations();
         self.phase = TablePhase::Lobby;
@@ -1583,8 +1744,9 @@ impl TableRuntime {
     ///
     /// # Errors
     ///
-    /// Returns [`ServerError::InvalidAiThreads`] if `ai_threads == 0`, or
-    /// [`ServerError::AiPool`] if the Rayon thread pool cannot be constructed.
+    /// Returns [`ServerError::InvalidAiThreads`] if `ai_threads == 0`,
+    /// [`ServerError::AiPool`] if the Rayon thread pool cannot be constructed, or
+    /// [`ServerError::DataDir`] if `options.data_dir` cannot be opened.
     pub fn try_with_options_and_threads(
         port: u16,
         local_hostname: Option<String>,
@@ -1592,12 +1754,9 @@ impl TableRuntime {
         ai_threads: usize,
     ) -> Result<Self, ServerError> {
         let ai_pool = build_ai_pool(ai_threads)?;
+        let session = TableSession::try_with_options(port, local_hostname, options)?;
         Ok(Self {
-            inner: Arc::new(Mutex::new(TableSession::with_options(
-                port,
-                local_hostname,
-                options,
-            ))),
+            inner: Arc::new(Mutex::new(session)),
             ai_pool,
         })
     }
@@ -1612,6 +1771,28 @@ impl TableRuntime {
     pub async fn health_snapshot(&self) -> (TablePhase, u8) {
         let session = self.inner.lock().await;
         (session.phase(), session.online_humans())
+    }
+
+    /// Computes aggregated player stats and recent match/hand records for `GET /api/stats`.
+    pub async fn history_stats(&self) -> StatsResponse {
+        let session = self.inner.lock().await;
+        session.history.stats()
+    }
+
+    /// Exports full preferences, matches, and hands JSON backup for `GET /api/history/export`.
+    pub async fn history_export(&self) -> HistoryExportResponse {
+        let session = self.inner.lock().await;
+        session.history.export()
+    }
+
+    /// Clears `hands.jsonl` and `matches.jsonl` while preserving `preferences.json`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if clearing persisted JSONL files fails.
+    pub async fn history_clear(&self) -> Result<ClearHistoryResponse, std::io::Error> {
+        let mut session = self.inner.lock().await;
+        session.history.clear_history()
     }
 
     /// Parses and handles one raw JSON text frame from `conn_id`.

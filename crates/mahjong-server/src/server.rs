@@ -5,14 +5,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use axum::body::Bytes;
 use axum::extract::ws::{Message as WsMessage, WebSocket};
 use axum::extract::{ConnectInfo, State, WebSocketUpgrade};
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, HOST};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
+use serde::Serialize;
 use thiserror::Error;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
@@ -20,6 +22,7 @@ use tokio::task::JoinHandle;
 use tokio::time::{Instant, MissedTickBehavior};
 
 use crate::ai_pool::default_ai_threads;
+use crate::history_dto::ClearHistoryRequest;
 use crate::lan::read_local_hostname;
 use crate::protocol::{HealthResponse, ServerMessage};
 use crate::session::{OutboundSignal, TableOptions, TableRuntime};
@@ -58,6 +61,8 @@ pub struct ServerConfig {
     pub port: u16,
     /// Optional built frontend static asset directory.
     pub static_dir: Option<PathBuf>,
+    /// Optional persistent directory for `hands.jsonl`, `matches.jsonl`, and `preferences.json`.
+    pub data_dir: Option<PathBuf>,
     /// Worker thread count for the dedicated Rayon AI thinking pool (defaults to [`default_ai_threads`]).
     pub ai_threads: usize,
     /// WebSocket application-layer ping interval and inbound activity timeout.
@@ -70,6 +75,7 @@ impl Default for ServerConfig {
             bind: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
             port: 8789,
             static_dir: None,
+            data_dir: None,
             ai_threads: default_ai_threads(),
             heartbeat: HeartbeatConfig::default(),
         }
@@ -89,6 +95,13 @@ pub enum ServerError {
     /// Configured static directory failed validation or canonicalization.
     #[error("invalid static directory {path}: {source}")]
     StaticDir {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    /// Configured persistent data directory could not be initialized.
+    #[error("invalid data directory {path}: {source}")]
+    DataDir {
         path: PathBuf,
         #[source]
         source: std::io::Error,
@@ -148,6 +161,13 @@ impl ServerConfig {
         self
     }
 
+    /// Overrides the persistent data directory for history and preferences.
+    #[must_use]
+    pub fn with_data_dir(mut self, data_dir: impl Into<PathBuf>) -> Self {
+        self.data_dir = Some(data_dir.into());
+        self
+    }
+
     /// Binds the TCP socket immediately (failing on port conflicts without fallback) and
     /// spawns the Axum HTTP/WebSocket server on the current Tokio runtime.
     ///
@@ -170,10 +190,15 @@ impl ServerConfig {
     /// [`ServerError::Bind`] if binding `bind:port` fails.
     pub async fn spawn_with_options(
         self,
-        options: TableOptions,
+        mut options: TableOptions,
     ) -> Result<ServerHandle, ServerError> {
         if self.ai_threads == 0 {
             return Err(ServerError::InvalidAiThreads(0));
+        }
+        if options.data_dir().is_none() {
+            if let Some(dir) = &self.data_dir {
+                options = options.with_data_dir(dir.clone());
+            }
         }
 
         let static_assets: Arc<dyn StaticAssetSource> =
@@ -241,11 +266,22 @@ impl ServerConfig {
 fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/api/health", get(health_handler))
-        .route("/api/{*rest}", get(api_not_found))
-        .route("/api", get(api_not_found))
+        .route("/api/stats", get(stats_handler))
+        .route("/api/history/export", get(history_export_handler))
+        .route("/api/history/clear", post(history_clear_handler))
+        .route("/api/{*rest}", any(api_not_found))
+        .route("/api", any(api_not_found))
         .route("/ws", get(ws_handler))
         .fallback(get(static_asset_handler))
         .with_state(state)
+}
+
+fn json_with_no_store<T: Serialize>(status: StatusCode, payload: &T) -> Response {
+    let mut response = (status, Json(payload)).into_response();
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 async fn health_handler(State(state): State<AppState>) -> Response {
@@ -257,12 +293,39 @@ async fn health_handler(State(state): State<AppState>) -> Response {
         online_humans,
         port: state.port,
     };
+    json_with_no_store(StatusCode::OK, &payload)
+}
 
-    let mut response = Json(payload).into_response();
-    response
-        .headers_mut()
-        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    response
+async fn stats_handler(State(state): State<AppState>) -> Response {
+    let payload = state.session.history_stats().await;
+    json_with_no_store(StatusCode::OK, &payload)
+}
+
+async fn history_export_handler(State(state): State<AppState>) -> Response {
+    let payload = state.session.history_export().await;
+    json_with_no_store(StatusCode::OK, &payload)
+}
+
+async fn history_clear_handler(State(state): State<AppState>, body: Bytes) -> Response {
+    let Ok(req) = serde_json::from_slice::<ClearHistoryRequest>(&body) else {
+        return json_with_no_store(
+            StatusCode::BAD_REQUEST,
+            &serde_json::json!({ "error": "expected JSON body { \"confirm\": true }" }),
+        );
+    };
+    if !req.confirm {
+        return json_with_no_store(
+            StatusCode::BAD_REQUEST,
+            &serde_json::json!({ "error": "confirm must be true" }),
+        );
+    }
+    match state.session.history_clear().await {
+        Ok(resp) => json_with_no_store(StatusCode::OK, &resp),
+        Err(err) => json_with_no_store(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &serde_json::json!({ "error": format!("failed to clear history: {err}") }),
+        ),
+    }
 }
 
 async fn api_not_found() -> StatusCode {
