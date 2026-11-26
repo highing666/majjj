@@ -1,4 +1,5 @@
 /target
 .DS_Store
+.deploy.local
 /web/node_modules
 /web/dist
