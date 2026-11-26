@@ -1,4 +1,5 @@
 import type {
+  ActiveBanterVoiceState,
   BanterVoicePriority,
   BanterVoiceRequest,
 } from "../audio/audioTypes";
@@ -77,6 +78,7 @@ export interface PresentationQueueOptions {
   effectsBus?: PresentationEffectsBus;
   scheduler?: PresentationScheduler;
   banterDurationMs?: number;
+  banterVoiceTailMs?: number;
 }
 
 export type PresentationStateListener = (state: PresentationState) => void;
@@ -88,6 +90,7 @@ export interface PresentationQueue {
   subscribe(listener: PresentationStateListener): () => void;
   onSemanticEvent(listener: SemanticEventListener): () => void;
   onBanterVoiceEvent(listener: BanterVoiceEventListener): () => void;
+  setActiveBanterVoice(active: ActiveBanterVoiceState | null): void;
   enqueueServerMessage(message: ServerMessage): void;
   emitLocalUiAction(action: LocalUiAction): void;
   skipActiveImpact(): boolean;
@@ -116,6 +119,7 @@ const PACE_MULTIPLIER: Record<TablePace, number> = {
 const BACKLOG_ACCEL_THRESHOLD = 3;
 const BACKLOG_ACCEL_FACTOR = 1.6;
 const DEFAULT_BANTER_DURATION_MS = 4500;
+const DEFAULT_BANTER_VOICE_TAIL_MS = 500;
 
 function createEmptyBanterMap(): ActiveBanterMap {
   return {
@@ -210,11 +214,15 @@ export function createPresentationQueue(
   const effectsBus = options.effectsBus ?? createPresentationEffectsBus();
   const scheduler = options.scheduler ?? defaultScheduler;
   const banterDurationMs = options.banterDurationMs ?? DEFAULT_BANTER_DURATION_MS;
+  const banterVoiceTailMs =
+    options.banterVoiceTailMs ?? DEFAULT_BANTER_VOICE_TAIL_MS;
 
   let sessionState = createInitialSessionState();
   let activeImpact: PiltoverImpactFrame | null = null;
   let activeBubbles: ActiveBanterMap = createEmptyBanterMap();
   const bubbleTimers: Partial<Record<Seat, unknown>> = {};
+  const deferredDismissBubbleIds: Partial<Record<Seat, number>> = {};
+  let activeBanterVoice: ActiveBanterVoiceState | null = null;
   let nextBubbleId = 1;
   let settlementVisible = false;
   let pace: TablePace = "Standard";
@@ -264,12 +272,24 @@ export function createPresentationQueue(
     };
   }
 
+  function isBubbleSpeaking(bubble: ActiveBanterBubble | null): boolean {
+    return (
+      bubble !== null &&
+      activeBanterVoice !== null &&
+      bubble.kind === "banter" &&
+      bubble.seat === activeBanterVoice.seat &&
+      bubble.banterId !== null &&
+      bubble.banterId === activeBanterVoice.banterId
+    );
+  }
+
   function clearSeatBubble(seat: Seat): void {
     const timer = bubbleTimers[seat];
     if (timer !== undefined) {
       scheduler.clearTimeout(timer);
       delete bubbleTimers[seat];
     }
+    delete deferredDismissBubbleIds[seat];
     if (activeBubbles[seat] !== null) {
       activeBubbles = { ...activeBubbles, [seat]: null };
     }
@@ -558,6 +578,30 @@ export function createPresentationQueue(
     emitState();
   }
 
+  function scheduleSeatBubbleDismissTimer(
+    seat: Seat,
+    bubbleId: number,
+    delayMs: number,
+  ): void {
+    const existing = bubbleTimers[seat];
+    if (existing !== undefined) {
+      scheduler.clearTimeout(existing);
+      delete bubbleTimers[seat];
+    }
+    bubbleTimers[seat] = scheduler.setTimeout(() => {
+      delete bubbleTimers[seat];
+      if (disposed || activeBubbles[seat]?.bubbleId !== bubbleId) {
+        return;
+      }
+      if (isBubbleSpeaking(activeBubbles[seat])) {
+        deferredDismissBubbleIds[seat] = bubbleId;
+        return;
+      }
+      activeBubbles = { ...activeBubbles, [seat]: null };
+      emitState();
+    }, Math.max(1, Math.round(delayMs)));
+  }
+
   function scheduleSeatBubble(bubble: ActiveBanterBubble): void {
     const seat = bubble.seat;
     clearSeatBubble(seat);
@@ -569,14 +613,7 @@ export function createPresentationQueue(
       1,
       Math.round(banterDurationMs * (pace === "Fast" ? 0.78 : 1.0)),
     );
-    const id = bubble.bubbleId;
-    bubbleTimers[seat] = scheduler.setTimeout(() => {
-      delete bubbleTimers[seat];
-      if (!disposed && activeBubbles[seat]?.bubbleId === id) {
-        activeBubbles = { ...activeBubbles, [seat]: null };
-        emitState();
-      }
-    }, effectiveDurationMs);
+    scheduleSeatBubbleDismissTimer(seat, bubble.bubbleId, effectiveDurationMs);
     emitState();
   }
 
@@ -766,6 +803,28 @@ export function createPresentationQueue(
       };
     },
 
+    setActiveBanterVoice(nextActive: ActiveBanterVoiceState | null): void {
+      if (disposed) {
+        return;
+      }
+      activeBanterVoice = nextActive ? { ...nextActive } : null;
+      for (const seat of ALL_SEATS) {
+        const deferredId = deferredDismissBubbleIds[seat];
+        if (deferredId === undefined) {
+          continue;
+        }
+        const bubble = activeBubbles[seat];
+        if (bubble === null || bubble.bubbleId !== deferredId) {
+          delete deferredDismissBubbleIds[seat];
+          continue;
+        }
+        if (!isBubbleSpeaking(bubble)) {
+          delete deferredDismissBubbleIds[seat];
+          scheduleSeatBubbleDismissTimer(seat, deferredId, banterVoiceTailMs);
+        }
+      }
+    },
+
     enqueueServerMessage(message: ServerMessage): void {
       if (disposed || typeof message !== "object" || message === null) {
         return;
@@ -820,6 +879,7 @@ export function createPresentationQueue(
         return;
       }
       disposed = true;
+      activeBanterVoice = null;
       clearQueueAndEffects();
       clearAllBubbles();
       clearBanterTracking();

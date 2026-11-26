@@ -1,6 +1,13 @@
 <script lang="ts">
   import { createAudioEventRouter } from "./lib/audio/audioRouter";
-  import type { AudioStatus } from "./lib/audio/audioTypes";
+  import type {
+    ActiveBanterVoiceState,
+    AudioStatus,
+  } from "./lib/audio/audioTypes";
+  import {
+    isHumanVoicePackId,
+    type HumanVoicePackId,
+  } from "./lib/audio/voicePackSchema";
   import {
     createHistoryController,
     type HistoryState,
@@ -38,6 +45,10 @@
   import { createTableClient } from "./lib/session/client";
   import type { SessionState } from "./lib/session/reducer";
   import DestructiveOpModal from "./lib/table/DestructiveOpModal.svelte";
+  import {
+    resolveHumanVoicePackSyncTarget,
+    shouldHideBanterBubbles,
+  } from "./lib/table/banterVisibility";
   import MatchHud from "./lib/table/MatchHud.svelte";
   import MatchSummaryView from "./lib/table/MatchSummaryView.svelte";
   import {
@@ -103,7 +114,11 @@
   let webglRecoveryState = $state<WebGLRecoveryState | null>(null);
   let tableLayout = $state<TableLayout | null>(null);
   let audioStatus = $state<AudioStatus>(audioRouter.getStatus());
+  let activeBanterVoice = $state<ActiveBanterVoiceState | null>(
+    audioRouter.getActiveBanterVoice(),
+  );
   let settingsOpen = $state(false);
+  let lastSyncedVoicePackKey: string | null = null;
   let takeOverTarget = $state<{
     seatInfo: SeatInfo;
     kind: TakeOverKind;
@@ -138,6 +153,12 @@
     const unsubscribeAudioStatus = audioRouter.subscribe((next) => {
       audioStatus = next;
     });
+    const unsubscribeBanterVoiceState = audioRouter.onBanterVoiceStateChange(
+      (active) => {
+        activeBanterVoice = active;
+        presentationQueue.setActiveBanterVoice(active);
+      },
+    );
     const unsubscribeSemantic = presentationQueue.onSemanticEvent((event) => {
       audioRouter.handleSemanticEvent(event);
     });
@@ -160,6 +181,7 @@
       unbindAudioGestures();
       unsubscribeBanterVoice();
       unsubscribeSemantic();
+      unsubscribeBanterVoiceState();
       unsubscribeAudioStatus();
       unsubscribePresentation();
       unsubscribeViewportDisplay();
@@ -191,10 +213,48 @@
 
   const snapshot = $derived(sessionState.snapshot);
 
+  const activeSeatVoicePackId = $derived.by<HumanVoicePackId | null>(() => {
+    if (!snapshot || snapshot.your_seat === null) {
+      return null;
+    }
+    const raw = snapshot.seats[seatIndex(snapshot.your_seat)].voice_pack_id;
+    return isHumanVoicePackId(raw) ? raw : null;
+  });
+
+  const hideAiBanterText = $derived(
+    shouldHideBanterBubbles({
+      preferences: devicePrefs,
+      audioState: audioStatus.state,
+      ttsStatusNotice: sessionState.ttsStatusNotice,
+    }),
+  );
+
   $effect(() => {
     const seats = snapshot?.seats;
     if (seats) {
       audioRouter.preloadVoicePacks(seats.map((entry) => entry.voice_pack_id));
+    }
+  });
+
+  $effect(() => {
+    const yourSeat = snapshot?.your_seat ?? null;
+    if (!snapshot || yourSeat === null || actionsDisabled) {
+      lastSyncedVoicePackKey = null;
+      return;
+    }
+    const currentSeatVoicePackId =
+      snapshot.seats[seatIndex(yourSeat)].voice_pack_id;
+    const target = resolveHumanVoicePackSyncTarget({
+      preferredPackId: devicePrefs.human_voice_pack_id,
+      currentSeatVoicePackId,
+      isConnected: !actionsDisabled,
+      yourSeat,
+      tableId: snapshot.table_id,
+      lastSyncedKey: lastSyncedVoicePackKey,
+    });
+    if (target !== null) {
+      lastSyncedVoicePackKey = target.syncKey;
+      client.setSeatVoicePack(target.packId);
     }
   });
 
@@ -343,6 +403,14 @@
     }
   }
 
+  function handleSelectHumanVoicePack(voicePackId: HumanVoicePackId): void {
+    preferencesStore.update({ human_voice_pack_id: voicePackId });
+    if (!actionsDisabled && snapshot !== null && snapshot.your_seat !== null) {
+      lastSyncedVoicePackKey = `${snapshot.table_id}:${snapshot.your_seat}:${voicePackId}`;
+      client.setSeatVoicePack(voicePackId);
+    }
+  }
+
   function openTakeOverModal(seatInfo: SeatInfo, kind: TakeOverKind): void {
     takeOverTarget = { seatInfo, kind };
   }
@@ -452,7 +520,7 @@
       onLeaveSeat={() => client.leaveSeat()}
       onUpdateConfig={(config) => client.updateLobbyConfig(config)}
       onSetSeatPersona={(seat, personaId) => client.setSeatPersona(seat, personaId)}
-      onSetSeatVoicePack={(voicePackId) => client.setSeatVoicePack(voicePackId)}
+      onSetSeatVoicePack={handleSelectHumanVoicePack}
       onStartMatch={() => client.startMatch()}
       onOpenSettings={() => (settingsOpen = true)}
       onOpenHistory={() => void historyController.open()}
@@ -499,6 +567,8 @@
             playerView={presentedPlayerView}
             {tableLayout}
             activeBubbles={presentationState.activeBubbles}
+            {activeBanterVoice}
+            {hideAiBanterText}
             reducedEffects={renderQualityState.reducedEffects}
             {turnCue}
             {viewportState}
@@ -558,6 +628,8 @@
               "ConfirmNextHand",
             )}
             activeBubbles={presentationState.activeBubbles}
+            {activeBanterVoice}
+            {hideAiBanterText}
             reducedEffects={renderQualityState.reducedEffects}
             disabled={inputLocked}
             destructivePending={snapshot !== null &&
@@ -644,6 +716,8 @@
       yourSeat={activeSnap.your_seat}
       lastSettlement={presentedPlayerView.last_settlement}
       activeBubbles={presentationState.activeBubbles}
+      {activeBanterVoice}
+      {hideAiBanterText}
       reducedEffects={renderQualityState.reducedEffects}
       disabled={actionsDisabled}
       onUpdateConfig={(config) => client.updateLobbyConfig(config)}
@@ -702,6 +776,8 @@
   <SettingsModal
     open={settingsOpen}
     preferences={devicePrefs}
+    {activeSeatVoicePackId}
+    onSelectHumanVoicePack={handleSelectHumanVoicePack}
     pace={snapshot?.phase === "InMatch"
       ? snapshot.pace
       : (snapshot?.config.pace ?? "Standard")}

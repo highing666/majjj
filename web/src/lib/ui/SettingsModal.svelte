@@ -1,4 +1,8 @@
 <script lang="ts">
+  import {
+    HUMAN_VOICE_PACK_LIST,
+    type HumanVoicePackId,
+  } from "../audio/voicePackSchema";
   import type { ShutdownState } from "../lifecycle/shutdownController";
   import ShutdownControl from "../lifecycle/ShutdownControl.svelte";
   import { TABLE_PACE_OPTIONS } from "../lobby/lobbyConfig";
@@ -13,6 +17,8 @@
     preferences: DevicePreferences;
     pace: TablePace;
     canEditPace?: boolean;
+    activeSeatVoicePackId?: HumanVoicePackId | null;
+    onSelectHumanVoicePack?: (voicePackId: HumanVoicePackId) => void;
     slowThinkNudgeEnabled?: boolean;
     onChangeSlowThinkNudge?: (enabled: boolean) => void;
     serverVersion?: string | null;
@@ -33,6 +39,8 @@
     preferences,
     pace,
     canEditPace = true,
+    activeSeatVoicePackId = null,
+    onSelectHumanVoicePack,
     slowThinkNudgeEnabled = true,
     onChangeSlowThinkNudge,
     serverVersion = null,
@@ -47,6 +55,10 @@
     onChangePace,
     onClose,
   }: Props = $props();
+
+  const displayedVoicePackId = $derived<HumanVoicePackId | null>(
+    preferences.human_voice_pack_id ?? activeSeatVoicePackId,
+  );
 
   function handleKeyDown(event: KeyboardEvent): void {
     if (!open) {
@@ -69,7 +81,7 @@
   }
 
   function handleVolumeInput(
-    field: "master_volume" | "sfx_volume",
+    field: "master_volume" | "sfx_volume" | "voice_volume",
     event: Event,
   ): void {
     const raw = Number((event.currentTarget as HTMLInputElement).value);
@@ -80,6 +92,14 @@
 
   function setAudioSession(mode: IosAudioSessionMode): void {
     onUpdatePreferences({ ios_audio_session: mode });
+  }
+
+  function selectHumanVoicePack(voicePackId: HumanVoicePackId): void {
+    if (onSelectHumanVoicePack) {
+      onSelectHumanVoicePack(voicePackId);
+    } else {
+      onUpdatePreferences({ human_voice_pack_id: voicePackId });
+    }
   }
 </script>
 
@@ -170,6 +190,103 @@
             oninput={(e) => handleVolumeInput("sfx_volume", e)}
           />
         </label>
+
+        <label class="slider-row">
+          <div class="slider-head">
+            <span>语音音量</span>
+            <span class="slider-value">
+              {formatPercent(preferences.voice_volume)}
+            </span>
+          </div>
+          <input
+            class="range-input"
+            type="range"
+            min="0"
+            max="1"
+            step="0.05"
+            value={preferences.voice_volume}
+            oninput={(e) => handleVolumeInput("voice_volume", e)}
+          />
+        </label>
+
+        <label class="toggle-row">
+          <div>
+            <strong>报牌语音</strong>
+            <span class="row-hint">
+              关闭后仅静音四家舍牌报牌，保留鸣牌胡牌喊词与台词语音
+            </span>
+          </div>
+          <input
+            type="checkbox"
+            checked={preferences.tile_call_voice_enabled}
+            onchange={(e) =>
+              onUpdatePreferences({
+                tile_call_voice_enabled: (e.currentTarget as HTMLInputElement)
+                  .checked,
+              })}
+          />
+        </label>
+
+        <label class="toggle-row">
+          <div>
+            <strong>台词语音</strong>
+            <span class="row-hint">
+              关闭后立即停播并跳过牌友角色实时台词语音
+            </span>
+          </div>
+          <input
+            type="checkbox"
+            checked={preferences.banter_voice_enabled}
+            onchange={(e) =>
+              onUpdatePreferences({
+                banter_voice_enabled: (e.currentTarget as HTMLInputElement)
+                  .checked,
+              })}
+          />
+        </label>
+
+        <label class="toggle-row">
+          <div>
+            <strong>有声时隐藏台词气泡</strong>
+            <span class="row-hint">
+              正常有声时隐藏常规牌桌台词文字气泡，仅保留头像表情与说话脉冲；静音、音频未解锁或语音服务降级时自动回显
+            </span>
+          </div>
+          <input
+            type="checkbox"
+            checked={preferences.hide_banter_bubble_with_voice}
+            onchange={(e) =>
+              onUpdatePreferences({
+                hide_banter_bubble_with_voice: (
+                  e.currentTarget as HTMLInputElement
+                ).checked,
+              })}
+          />
+        </label>
+
+        <div class="segmented-group">
+          <div class="group-label">
+            <span>人类角色语音包</span>
+            <span class="row-hint">
+              {preferences.human_voice_pack_id === null
+                ? "未手动指定时由牌桌自动错开分配；选择后同步至本机与当前座次"
+                : "已设为本机首选角色语音包，入座时自动同步至牌桌"}
+            </span>
+          </div>
+          <div class="segmented-buttons" role="group" aria-label="人类角色语音包">
+            {#each HUMAN_VOICE_PACK_LIST as pack (pack.id)}
+              <button
+                class="seg-btn"
+                class:seg-active={displayedVoicePackId === pack.id}
+                type="button"
+                aria-pressed={displayedVoicePackId === pack.id}
+                onclick={() => selectHumanVoicePack(pack.id)}
+              >
+                {pack.label}
+              </button>
+            {/each}
+          </div>
+        </div>
 
         <div class="segmented-group">
           <div class="group-label">

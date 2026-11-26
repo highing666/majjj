@@ -209,6 +209,9 @@ export interface AudioStatus {
   readonly sessionType: IosAudioSessionMode;
   readonly masterVolume: number;
   readonly sfxVolume: number;
+  readonly voiceVolume: number;
+  readonly tileCallVoiceEnabled: boolean;
+  readonly banterVoiceEnabled: boolean;
   readonly backendMode: SfxBackendMode;
   readonly hasAudioSessionApi: boolean;
 }

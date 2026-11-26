@@ -1401,4 +1401,158 @@ describe("PresentationQueue", () => {
 
     queue.dispose();
   });
+
+  it("holds active banter bubble until BanterVoice finishes plus tail buffer, and clears all timers on flush/next-hand/dispose", () => {
+    const scheduled = new Map<number, { cb: () => void; delayMs: number }>();
+    let nextTimerId = 1;
+    const clearedIds: number[] = [];
+
+    const queue = createPresentationQueue({
+      banterDurationMs: 4000,
+      banterVoiceTailMs: 500,
+      scheduler: {
+        setTimeout(cb, delayMs) {
+          const id = nextTimerId++;
+          scheduled.set(id, { cb, delayMs });
+          return id;
+        },
+        clearTimeout(handle) {
+          const id = handle as number;
+          clearedIds.push(id);
+          scheduled.delete(id);
+        },
+      },
+    });
+
+    const snap = makeSnapshot(3, "Standard");
+    snap.seats[1] = {
+      ...snap.seats[1],
+      kind: "Ai",
+      persona_id: "QuickHothead",
+      mood: "Smug",
+      nickname: "急眼快攻哥",
+    };
+    snap.seats[2] = {
+      ...snap.seats[2],
+      kind: "Ai",
+      persona_id: "TeaSarcasm",
+      mood: "Mocking",
+      nickname: "阴阳茶艺师",
+    };
+    queue.enqueueServerMessage({ TableSnapshot: snap });
+
+    // 1. South emits banter b-hold-1; audio starts speaking for b-hold-1
+    queue.enqueueServerMessage({
+      TableBanter: {
+        banter_id: "b-hold-1",
+        seat: "South",
+        persona_id: "QuickHothead",
+        mood: "Tilted",
+        text: "这把怎么老点炮啊！",
+        event_seq: 4,
+        reply_to_seat: null,
+      },
+    });
+    queue.setActiveBanterVoice({ seat: "South", banterId: "b-hold-1" });
+    expect(scheduled.size).toBe(1);
+    const [baseTimerId] = [...scheduled.keys()];
+    expect(scheduled.get(baseTimerId!)?.delayMs).toBe(4000);
+
+    // 2. Base dismiss timer fires while South is STILL speaking b-hold-1 -> bubble MUST remain visible!
+    const baseTimer = scheduled.get(baseTimerId!)!;
+    scheduled.delete(baseTimerId!);
+    baseTimer.cb();
+    expect(queue.getState().activeBubbles.South?.banterId).toBe("b-hold-1");
+    expect(scheduled.size).toBe(0);
+
+    // 3. Speaking ends (or transitions directly to West's b-hold-2) -> schedules 500ms tail timer for South!
+    queue.setActiveBanterVoice({ seat: "West", banterId: "b-hold-2" });
+    expect(queue.getState().activeBubbles.South?.banterId).toBe("b-hold-1");
+    expect(scheduled.size).toBe(1);
+    const [tailTimerId] = [...scheduled.keys()];
+    expect(scheduled.get(tailTimerId!)?.delayMs).toBe(500);
+
+    // 4. Tail timer fires -> South bubble cleanly dismisses
+    const tailTimer = scheduled.get(tailTimerId!)!;
+    scheduled.delete(tailTimerId!);
+    tailTimer.cb();
+    expect(queue.getState().activeBubbles.South).toBeNull();
+    expect(scheduled.size).toBe(0);
+
+    // 5. If voice finishes BEFORE base timer fires, base timer dismisses normally without extra tail timer
+    queue.enqueueServerMessage({
+      TableBanter: {
+        banter_id: "b-short-1",
+        seat: "West",
+        persona_id: "TeaSarcasm",
+        mood: "Mocking",
+        text: "哟，这就急了？",
+        event_seq: 5,
+        reply_to_seat: "South",
+      },
+    });
+    queue.setActiveBanterVoice({ seat: "West", banterId: "b-short-1" });
+    queue.setActiveBanterVoice(null);
+    expect(scheduled.size).toBe(1);
+    const [shortTimerId] = [...scheduled.keys()];
+    expect(scheduled.get(shortTimerId!)?.delayMs).toBe(4000);
+    const shortTimer = scheduled.get(shortTimerId!)!;
+    scheduled.delete(shortTimerId!);
+    shortTimer.cb();
+    expect(queue.getState().activeBubbles.West).toBeNull();
+
+    // 6. Tail timer is cleanly cancelled on HandStarted / Lobby reset / dispose (zero dangling timers)
+    queue.enqueueServerMessage({
+      TableBanter: {
+        banter_id: "b-cleanup-1",
+        seat: "South",
+        persona_id: "QuickHothead",
+        mood: "Smug",
+        text: "下局继续！",
+        event_seq: 6,
+        reply_to_seat: null,
+      },
+    });
+    queue.setActiveBanterVoice({ seat: "South", banterId: "b-cleanup-1" });
+    const [cleanupBaseId] = [...scheduled.keys()];
+    const cleanupBase = scheduled.get(cleanupBaseId!)!;
+    scheduled.delete(cleanupBaseId!);
+    cleanupBase.cb();
+    // Now deferred; stop voice to arm tail timer
+    queue.setActiveBanterVoice(null);
+    expect(scheduled.size).toBe(1);
+    const [cleanupTailId] = [...scheduled.keys()];
+
+    // Lobby reset must cancel the armed tail timer and leave zero scheduled timers
+    queue.enqueueServerMessage({
+      LobbyUpdated: {
+        phase: "Lobby",
+        config: snap.config,
+        seats: snap.seats,
+        slow_think_nudge_enabled: true,
+      },
+    });
+    expect(clearedIds).toContain(cleanupTailId);
+    expect(scheduled.size).toBe(0);
+    expect(queue.getState().activeBubbles.South).toBeNull();
+
+    // And dispose with an active deferred bubble leaves zero timers and ignores subsequent setActiveBanterVoice
+    queue.enqueueServerMessage({ TableSnapshot: snap });
+    queue.enqueueServerMessage({
+      TableBanter: {
+        banter_id: "b-dispose-1",
+        seat: "South",
+        persona_id: "QuickHothead",
+        mood: "Deadpan",
+        text: "撤了撤了。",
+        event_seq: 7,
+        reply_to_seat: null,
+      },
+    });
+    queue.setActiveBanterVoice({ seat: "South", banterId: "b-dispose-1" });
+    queue.dispose();
+    expect(scheduled.size).toBe(0);
+    queue.setActiveBanterVoice(null);
+    expect(scheduled.size).toBe(0);
+  });
 });

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { ActiveBanterVoiceState } from "../audio/audioTypes";
   import LobbyConfigFields from "../lobby/LobbyConfigFields.svelte";
   import { matchModeLabel } from "../lobby/lobbyConfig";
   import type { ActiveBanterMap } from "../presentation/presentationQueue";
@@ -25,6 +26,8 @@
     yourSeat: Seat | null;
     lastSettlement: HandSettlement | null;
     activeBubbles?: ActiveBanterMap | null;
+    activeBanterVoice?: ActiveBanterVoiceState | null;
+    hideAiBanterText?: boolean;
     reducedEffects?: boolean;
     disabled?: boolean;
     onUpdateConfig: (config: LobbyConfig) => void;
@@ -41,6 +44,8 @@
     yourSeat,
     lastSettlement,
     activeBubbles = null,
+    activeBanterVoice = null,
+    hideAiBanterText = false,
     reducedEffects = false,
     disabled = false,
     onUpdateConfig,
@@ -85,6 +90,8 @@
       {seats}
       {yourSeat}
       {activeBubbles}
+      {activeBanterVoice}
+      {hideAiBanterText}
       {reducedEffects}
     />
   {/if}
