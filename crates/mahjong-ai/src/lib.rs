@@ -4,6 +4,7 @@ pub use mahjong_core;
 
 mod calibrate;
 pub mod eval;
+pub mod hand_facts;
 mod l2;
 mod l3;
 mod l3_weights;
@@ -11,6 +12,8 @@ mod l4;
 mod scoring;
 mod shanten;
 mod shared;
+
+pub use hand_facts::{analyze_hand_facts, HandDirection, HandFacts, HandProgression, WaitFact};
 
 #[cfg(test)]
 #[path = "../tests/common/mod.rs"]

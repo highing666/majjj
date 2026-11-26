@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use mahjong_ai::{AiStyle, DecisionBudget, DecisionContext};
+use mahjong_ai::{AiStyle, DecisionBudget, DecisionContext, HandFacts};
 use mahjong_core::{
     AnyRuleset, HandOutcome, HandSettlement, Match, MatchMode, PlayerAction, PlayerEvent,
     PlayerEventKind, PlayerView, PublicPhase, RecordedEvent, Seat, SeededWallProvider,
@@ -21,9 +21,10 @@ use crate::ai_pool::{
     build_ai_pool, default_ai_threads, spawn_scheduled_work, AiJobKey, PendingAiJob, ScheduledWork,
 };
 use crate::banter::{
-    plan_highlight_banter_for_events, plan_initial_hand_banter, plan_quick_emote_replies,
-    plan_slow_think_nudge, BanterGuard, BanterPlanContext, PendingBanterJob, SlowThinkTicket,
-    HIGHLIGHT_SYNC_CAP, QUICK_EMOTE_COOLDOWN, SLOW_THINK_NUDGE_DELAY,
+    initialize_seat_hand_facts, is_seat_off_cooldown, plan_banter_for_events, plan_chain_followup,
+    plan_initial_hand_banter, plan_quick_emote_replies, plan_slow_think_nudge, BanterChainContext,
+    BanterGuard, BanterPlanContext, PendingBanterJob, SlowThinkTicket, BANTER_CHAIN_REPLY_DELAY,
+    HIGHLIGHT_SYNC_CAP, QUICK_EMOTE_COOLDOWN, SEAT_BANTER_COOLDOWN, SLOW_THINK_NUDGE_DELAY,
 };
 use crate::history_dto::{
     ClearHistoryResponse, HandRecord, HandSeatRecord, HistoryExportResponse, MatchRecord,
@@ -367,6 +368,8 @@ pub(crate) struct ActiveMatchState {
     pub(crate) hands_settled: u32,
     pub(crate) hand_generation: u64,
     pub(crate) any_ai_assisted: [bool; 4],
+    pub(crate) seat_hand_facts: [Option<HandFacts>; 4],
+    pub(crate) seat_last_banter_at: [Option<tokio::time::Instant>; 4],
 }
 
 impl ActiveMatchState {
@@ -1010,6 +1013,9 @@ impl TableSession {
                 seats: &seat_infos,
                 seat_generation: &self.seat_generation,
                 sync_cap: self.options.banter_sync_cap,
+                cooldown: SEAT_BANTER_COOLDOWN,
+                now,
+                seat_last_banter_at: &active.seat_last_banter_at,
                 persona_memory: &self.persona_memory,
             };
             let mut reply_jobs = plan_quick_emote_replies(&ctx, seat, emote);
@@ -1143,6 +1149,8 @@ impl TableSession {
         self.active_slow_think_nudge = None;
         self.last_nudged_turn = None;
         let hand_attribution = HandAttribution::from_seats(&self.seats);
+        let initial_seat_infos = self.seat_infos();
+        let initial_hand_facts = initialize_seat_hand_facts(&game, &initial_seat_infos);
         self.active_match = Some(ActiveMatchState {
             match_id,
             match_uuid: Uuid::new_v4().to_string(),
@@ -1155,23 +1163,35 @@ impl TableSession {
             hands_settled: 0,
             hand_generation: 1,
             any_ai_assisted: [false; 4],
+            seat_hand_facts: initial_hand_facts,
+            seat_last_banter_at: [None; 4],
         });
 
         self.broadcast_all_snapshots();
 
         if self.options.llm_client.is_some() {
-            if let Some(active_ref) = self.active_match.as_ref() {
-                let seat_infos = self.seat_infos();
-                let ctx = BanterPlanContext {
-                    match_id: active_ref.match_id,
-                    hand_generation: active_ref.hand_generation,
-                    game: &active_ref.game,
-                    seats: &seat_infos,
-                    seat_generation: &self.seat_generation,
-                    sync_cap: self.options.banter_sync_cap,
-                    persona_memory: &self.persona_memory,
+            let now = tokio::time::Instant::now();
+            let seat_infos = self.seat_infos();
+            let seat_generation = self.seat_generation;
+            let sync_cap = self.options.banter_sync_cap;
+            if let Some(active_mut) = self.active_match.as_mut() {
+                let job = {
+                    let ctx = BanterPlanContext {
+                        match_id: active_mut.match_id,
+                        hand_generation: active_mut.hand_generation,
+                        game: &active_mut.game,
+                        seats: &seat_infos,
+                        seat_generation: &seat_generation,
+                        sync_cap,
+                        cooldown: SEAT_BANTER_COOLDOWN,
+                        now,
+                        seat_last_banter_at: &active_mut.seat_last_banter_at,
+                        persona_memory: &self.persona_memory,
+                    };
+                    plan_initial_hand_banter(&ctx, &active_mut.seat_hand_facts)
                 };
-                if let Some(job) = plan_initial_hand_banter(&ctx) {
+                if let Some(job) = job {
+                    active_mut.seat_last_banter_at[job.guard.seat.index()] = Some(now);
                     self.pending_async_banter.push(job);
                 }
             }
@@ -1515,19 +1535,32 @@ impl TableSession {
         self.broadcast_event_batch(&active_ref.game, &emitted);
 
         if self.options.llm_client.is_some() {
+            let now = tokio::time::Instant::now();
             let seat_infos = self.seat_infos();
-            let ctx = BanterPlanContext {
-                match_id: active_ref.match_id,
-                hand_generation: active_ref.hand_generation,
-                game: &active_ref.game,
-                seats: &seat_infos,
-                seat_generation: &self.seat_generation,
-                sync_cap: self.options.banter_sync_cap,
-                persona_memory: &self.persona_memory,
-            };
-            let (mut sync_jobs, mut async_jobs) = plan_highlight_banter_for_events(&ctx, &emitted);
-            self.pending_sync_banter.append(&mut sync_jobs);
-            self.pending_async_banter.append(&mut async_jobs);
+            let seat_generation = self.seat_generation;
+            let sync_cap = self.options.banter_sync_cap;
+            if let Some(active_mut) = self.active_match.as_mut() {
+                let (mut sync_jobs, mut async_jobs) = {
+                    let ctx = BanterPlanContext {
+                        match_id: active_mut.match_id,
+                        hand_generation: active_mut.hand_generation,
+                        game: &active_mut.game,
+                        seats: &seat_infos,
+                        seat_generation: &seat_generation,
+                        sync_cap,
+                        cooldown: SEAT_BANTER_COOLDOWN,
+                        now,
+                        seat_last_banter_at: &active_mut.seat_last_banter_at,
+                        persona_memory: &self.persona_memory,
+                    };
+                    plan_banter_for_events(&ctx, &emitted, &mut active_mut.seat_hand_facts)
+                };
+                for job in sync_jobs.iter().chain(async_jobs.iter()) {
+                    active_mut.seat_last_banter_at[job.guard.seat.index()] = Some(now);
+                }
+                self.pending_sync_banter.append(&mut sync_jobs);
+                self.pending_async_banter.append(&mut async_jobs);
+            }
         }
 
         match public_phase {
@@ -1890,6 +1923,7 @@ impl TableSession {
             return None;
         }
 
+        let now = tokio::time::Instant::now();
         let ctx = BanterPlanContext {
             match_id: active.match_id,
             hand_generation: active.hand_generation,
@@ -1897,6 +1931,9 @@ impl TableSession {
             seats: &seat_infos,
             seat_generation: &self.seat_generation,
             sync_cap: self.options.banter_sync_cap,
+            cooldown: SEAT_BANTER_COOLDOWN,
+            now,
+            seat_last_banter_at: &active.seat_last_banter_at,
             persona_memory: &self.persona_memory,
         };
         let job = plan_slow_think_nudge(&ctx, ticket.target_seat, random_pick)?;
@@ -1959,11 +1996,54 @@ impl TableSession {
         }
     }
 
+    fn is_banter_guard_fresh(&self, guard: &BanterGuard) -> bool {
+        let phase_ok = self.phase == TablePhase::InMatch
+            || (guard.allow_finished_phase && self.phase == TablePhase::Finished);
+        if !phase_ok || (guard.require_nudge_enabled && !self.slow_think_nudge_enabled) {
+            return false;
+        }
+        let seat_slot = &self.seats[guard.seat.index()];
+        if seat_slot.info.kind != SeatKind::Ai
+            || seat_slot.info.persona_id != Some(guard.persona_id)
+            || self.seat_generation[guard.seat.index()] != guard.seat_generation
+        {
+            return false;
+        }
+        self.active_match.as_ref().is_some_and(|active| {
+            active.match_id == guard.match_id
+                && active.hand_generation == guard.hand_generation
+                && guard.max_seq_drift.is_none_or(|max_drift| {
+                    active.game.seq().saturating_sub(guard.event_seq) <= max_drift
+                })
+        })
+    }
+
+    pub(crate) fn can_dispatch_delayed_banter(&mut self, guard: &BanterGuard) -> bool {
+        if !self.is_banter_guard_fresh(guard) {
+            return false;
+        }
+        let now = tokio::time::Instant::now();
+        let Some(active) = self.active_match.as_mut() else {
+            return false;
+        };
+        if !is_seat_off_cooldown(
+            &active.seat_last_banter_at,
+            guard.seat,
+            now,
+            SEAT_BANTER_COOLDOWN,
+        ) {
+            return false;
+        }
+        active.seat_last_banter_at[guard.seat.index()] = Some(now);
+        true
+    }
+
     pub(crate) fn commit_banter_result(
         &mut self,
         guard: BanterGuard,
+        chain: Option<BanterChainContext>,
         result: Result<BanterOutput, LlmError>,
-    ) {
+    ) -> Option<PendingBanterJob> {
         let phase_ok = self.phase == TablePhase::InMatch
             || (guard.allow_finished_phase && self.phase == TablePhase::Finished);
         let match_ok = self
@@ -1983,6 +2063,7 @@ impl TableSession {
                         message,
                     });
                 }
+                None
             }
             Ok(output) => {
                 if !self.llm_available {
@@ -1994,25 +2075,13 @@ impl TableSession {
                     });
                 }
 
-                if !phase_ok || (guard.require_nudge_enabled && !self.slow_think_nudge_enabled) {
-                    return;
+                if !self.is_banter_guard_fresh(&guard) {
+                    return None;
                 }
-                let seat_slot = &self.seats[guard.seat.index()];
-                if seat_slot.info.kind != SeatKind::Ai
-                    || seat_slot.info.persona_id != Some(guard.persona_id)
-                    || self.seat_generation[guard.seat.index()] != guard.seat_generation
-                {
-                    return;
-                }
-                let state_fresh = self.active_match.as_ref().is_some_and(|active| {
-                    active.match_id == guard.match_id
-                        && active.hand_generation == guard.hand_generation
-                        && guard.max_seq_drift.is_none_or(|max_drift| {
-                            active.game.seq().saturating_sub(guard.event_seq) <= max_drift
-                        })
-                });
-                if !state_fresh {
-                    return;
+
+                let now = tokio::time::Instant::now();
+                if let Some(active) = self.active_match.as_mut() {
+                    active.seat_last_banter_at[guard.seat.index()] = Some(now);
                 }
 
                 self.seats[guard.seat.index()].info.mood = Some(output.mood);
@@ -2020,10 +2089,35 @@ impl TableSession {
                     seat: guard.seat,
                     persona_id: guard.persona_id,
                     mood: output.mood,
-                    text: output.text,
+                    text: output.text.clone(),
                     event_seq: guard.event_seq,
                     reply_to_seat: guard.reply_to_seat,
                 });
+
+                let chain = chain?;
+                let seat_infos = self.seat_infos();
+                let active_ref = self.active_match.as_ref()?;
+                let ctx = BanterPlanContext {
+                    match_id: active_ref.match_id,
+                    hand_generation: active_ref.hand_generation,
+                    game: &active_ref.game,
+                    seats: &seat_infos,
+                    seat_generation: &self.seat_generation,
+                    sync_cap: self.options.banter_sync_cap,
+                    cooldown: SEAT_BANTER_COOLDOWN,
+                    now,
+                    seat_last_banter_at: &active_ref.seat_last_banter_at,
+                    persona_memory: &self.persona_memory,
+                };
+                plan_chain_followup(
+                    &ctx,
+                    guard,
+                    output.mood,
+                    &output.text,
+                    chain,
+                    &active_ref.seat_hand_facts,
+                    BANTER_CHAIN_REPLY_DELAY,
+                )
             }
         }
     }

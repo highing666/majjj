@@ -8,7 +8,10 @@ use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
 use tokio::sync::Mutex;
 
-use crate::banter::{PendingBanterJob, SlowThinkTicket, ASYNC_BANTER_TIMEOUT, HIGHLIGHT_SYNC_CAP};
+use crate::banter::{
+    BanterChainContext, BanterGuard, PendingBanterJob, SlowThinkTicket, ASYNC_BANTER_TIMEOUT,
+    HIGHLIGHT_SYNC_CAP,
+};
 use crate::llm::{LlmClient, LlmError};
 use crate::pacing::{overlapped_wait, AiTurnTrigger, ReleaseTicket};
 use crate::persona_memory::MemoryNoteJob;
@@ -84,7 +87,8 @@ async fn run_banter_job_with_timeout(
     job: PendingBanterJob,
     timeout: std::time::Duration,
 ) -> (
-    crate::banter::BanterGuard,
+    BanterGuard,
+    Option<BanterChainContext>,
     Result<crate::llm::BanterOutput, LlmError>,
 ) {
     let endpoint = llm.endpoint().to_string();
@@ -96,7 +100,37 @@ async fn run_banter_job_with_timeout(
             timeout_ms,
         }),
     };
-    (job.guard, res)
+    (job.guard, job.chain, res)
+}
+
+fn spawn_async_banter_task(
+    runtime: Arc<Mutex<TableSession>>,
+    llm: Arc<dyn LlmClient>,
+    job: PendingBanterJob,
+) {
+    tokio::spawn(async move {
+        if let Some(delay) = job.dispatch_delay {
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+            let can_dispatch = {
+                let mut session = runtime.lock().await;
+                session.can_dispatch_delayed_banter(&job.guard)
+            };
+            if !can_dispatch {
+                return;
+            }
+        }
+        let (guard, chain, result) =
+            run_banter_job_with_timeout(&llm, job, ASYNC_BANTER_TIMEOUT).await;
+        let followup = {
+            let mut session = runtime.lock().await;
+            session.commit_banter_result(guard, chain, result)
+        };
+        if let Some(next_job) = followup {
+            spawn_async_banter_task(runtime, llm, next_job);
+        }
+    });
 }
 
 fn spawn_gameplay_work(
@@ -204,24 +238,22 @@ pub(crate) fn spawn_scheduled_work(
                 session.fire_slow_think_nudge(ticket)
             };
             if let Some(job) = job {
-                let (guard, result) =
+                let (guard, chain, result) =
                     run_banter_job_with_timeout(&llm, job, ASYNC_BANTER_TIMEOUT).await;
-                let mut session = runtime.lock().await;
-                session.commit_banter_result(guard, result);
+                let followup = {
+                    let mut session = runtime.lock().await;
+                    session.commit_banter_result(guard, chain, result)
+                };
+                if let Some(next_job) = followup {
+                    spawn_async_banter_task(runtime, llm, next_job);
+                }
             }
         });
     }
 
     if let Some(llm) = llm_client.as_ref() {
         for job in async_banter {
-            let runtime = Arc::clone(&runtime);
-            let llm = Arc::clone(llm);
-            tokio::spawn(async move {
-                let (guard, result) =
-                    run_banter_job_with_timeout(&llm, job, ASYNC_BANTER_TIMEOUT).await;
-                let mut session = runtime.lock().await;
-                session.commit_banter_result(guard, result);
-            });
+            spawn_async_banter_task(Arc::clone(&runtime), Arc::clone(llm), job);
         }
         for job in memory_notes {
             let runtime = Arc::clone(&runtime);
@@ -266,9 +298,18 @@ pub(crate) fn spawn_scheduled_work(
                 }
 
                 for handle in handles {
-                    if let Ok((guard, result)) = handle.await {
-                        let mut session = runtime.lock().await;
-                        session.commit_banter_result(guard, result);
+                    if let Ok((guard, chain, result)) = handle.await {
+                        let followup = {
+                            let mut session = runtime.lock().await;
+                            session.commit_banter_result(guard, chain, result)
+                        };
+                        if let Some(next_job) = followup {
+                            spawn_async_banter_task(
+                                Arc::clone(&runtime),
+                                Arc::clone(&llm),
+                                next_job,
+                            );
+                        }
                     }
                 }
 
