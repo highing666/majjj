@@ -294,12 +294,19 @@ export function createAudioEventRouter(
       isExternalVoiceActive: () => voManager.isDucking(),
     });
 
+  function clampUnitVolume(value: number, fallback: number): number {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      return fallback;
+    }
+    return Math.min(1, Math.max(0, value));
+  }
+
   let prefs: DevicePreferences = options.initialPreferences
     ? { ...options.initialPreferences }
     : defaultDevicePreferences();
-  let voiceVolume = 1;
-  let tileCallVoiceEnabled = true;
-  let banterVoiceEnabled = true;
+  let voiceVolume = clampUnitVolume(prefs.voice_volume, 1);
+  let tileCallVoiceEnabled = Boolean(prefs.tile_call_voice_enabled);
+  let banterVoiceEnabled = Boolean(prefs.banter_voice_enabled);
   let ctx: AudioContextLike | null = null;
   let masterGain: GainNodeLike | null = null;
   let sfxGain: GainNodeLike | null = null;
@@ -335,6 +342,9 @@ export function createAudioEventRouter(
       sessionType: prefs.ios_audio_session,
       masterVolume: prefs.master_volume,
       sfxVolume: prefs.sfx_volume,
+      voiceVolume,
+      tileCallVoiceEnabled,
+      banterVoiceEnabled,
       backendMode: sfxBackend.getMode(),
       hasAudioSessionApi: getAudioSession() !== null,
     };
@@ -373,15 +383,29 @@ export function createAudioEventRouter(
     documentTarget.addEventListener("visibilitychange", handleVisibilityChange);
   }
 
-  function syncGainValues(): void {
-    banterVoicePlayer.updateSfxBaseVolume(prefs.sfx_volume);
+  function syncGainValues(opts: {
+    syncMaster?: boolean;
+    syncSfx?: boolean;
+    syncVoice?: boolean;
+  } = {}): void {
+    const syncMaster = opts.syncMaster ?? true;
+    const syncSfx = opts.syncSfx ?? true;
+    const syncVoice = opts.syncVoice ?? true;
+
+    if (syncSfx) {
+      banterVoicePlayer.updateSfxBaseVolume(prefs.sfx_volume);
+    }
     if (!ctx || !masterGain || !sfxGain) {
       return;
     }
-    const targetMaster = prefs.muted ? 0 : prefs.master_volume;
-    masterGain.gain.setTargetAtTime(targetMaster, ctx.currentTime, 0.015);
-    voManager.updateSfxBaseVolume(ctx, sfxGain, prefs.sfx_volume);
-    if (voGain) {
+    if (syncMaster) {
+      const targetMaster = prefs.muted ? 0 : prefs.master_volume;
+      masterGain.gain.setTargetAtTime(targetMaster, ctx.currentTime, 0.015);
+    }
+    if (syncSfx) {
+      voManager.updateSfxBaseVolume(ctx, sfxGain, prefs.sfx_volume);
+    }
+    if (syncVoice && voGain) {
       voGain.gain.setTargetAtTime(voiceVolume, ctx.currentTime, 0.015);
     }
   }
@@ -471,13 +495,43 @@ export function createAudioEventRouter(
       if (disposed) {
         return;
       }
+      const prev = prefs;
+      const nextVoiceVolume = clampUnitVolume(
+        nextPreferences.voice_volume,
+        voiceVolume,
+      );
+      const nextTileCallVoice = Boolean(nextPreferences.tile_call_voice_enabled);
+      const nextBanterVoice = Boolean(nextPreferences.banter_voice_enabled);
       const sessionChanged =
-        prefs.ios_audio_session !== nextPreferences.ios_audio_session;
-      prefs = { ...nextPreferences };
+        prev.ios_audio_session !== nextPreferences.ios_audio_session;
+      const masterChanged =
+        prev.muted !== nextPreferences.muted ||
+        prev.master_volume !== nextPreferences.master_volume;
+      const sfxChanged = prev.sfx_volume !== nextPreferences.sfx_volume;
+      const voiceChanged = voiceVolume !== nextVoiceVolume;
+      const banterDisabled = banterVoiceEnabled && !nextBanterVoice;
+
+      prefs = {
+        ...nextPreferences,
+        voice_volume: nextVoiceVolume,
+        tile_call_voice_enabled: nextTileCallVoice,
+        banter_voice_enabled: nextBanterVoice,
+      };
+      voiceVolume = nextVoiceVolume;
+      tileCallVoiceEnabled = nextTileCallVoice;
+      banterVoiceEnabled = nextBanterVoice;
+
       if (sessionChanged) {
         applyAudioSession();
       }
-      syncGainValues();
+      if (banterDisabled) {
+        banterVoicePlayer.flush();
+      }
+      syncGainValues({
+        syncMaster: masterChanged,
+        syncSfx: sfxChanged,
+        syncVoice: voiceChanged,
+      });
       notify();
     },
 
@@ -485,10 +539,12 @@ export function createAudioEventRouter(
       if (disposed || typeof volume !== "number" || !Number.isFinite(volume)) {
         return;
       }
-      voiceVolume = Math.min(1, Math.max(0, volume));
+      voiceVolume = clampUnitVolume(volume, voiceVolume);
+      prefs = { ...prefs, voice_volume: voiceVolume };
       if (ctx && voGain) {
         voGain.gain.setTargetAtTime(voiceVolume, ctx.currentTime, 0.015);
       }
+      notify();
     },
 
     setTileCallVoiceEnabled(enabled: boolean): void {
@@ -496,6 +552,8 @@ export function createAudioEventRouter(
         return;
       }
       tileCallVoiceEnabled = Boolean(enabled);
+      prefs = { ...prefs, tile_call_voice_enabled: tileCallVoiceEnabled };
+      notify();
     },
 
     setBanterVoiceEnabled(enabled: boolean): void {
@@ -503,9 +561,11 @@ export function createAudioEventRouter(
         return;
       }
       banterVoiceEnabled = Boolean(enabled);
+      prefs = { ...prefs, banter_voice_enabled: banterVoiceEnabled };
       if (!banterVoiceEnabled) {
         banterVoicePlayer.flush();
       }
+      notify();
     },
 
     preloadVoicePacks(packIds: readonly (string | null | undefined)[]): void {

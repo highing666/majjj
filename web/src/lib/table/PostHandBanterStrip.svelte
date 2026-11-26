@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { ActiveBanterVoiceState } from "../audio/audioTypes";
   import PersonaAvatar from "../personas/PersonaAvatar.svelte";
   import type {
     ActiveBanterBubble,
@@ -16,16 +17,28 @@
     formatRelativeSeatDisplay,
     seatIndex,
   } from "../protocol/seats";
+  import {
+    isBubbleActivelySpeaking,
+    shouldShowBubbleText,
+  } from "./banterVisibility";
 
   interface Props {
     seats: [SeatInfo, SeatInfo, SeatInfo, SeatInfo];
     yourSeat: Seat | null;
     activeBubbles: ActiveBanterMap;
+    activeBanterVoice?: ActiveBanterVoiceState | null;
+    hideAiBanterText?: boolean;
     reducedEffects?: boolean;
   }
 
-  let { seats, yourSeat, activeBubbles, reducedEffects = false }: Props =
-    $props();
+  let {
+    seats,
+    yourSeat,
+    activeBubbles,
+    activeBanterVoice = null,
+    hideAiBanterText = false,
+    reducedEffects = false,
+  }: Props = $props();
 
   interface StripItem {
     bubble: ActiveBanterBubble;
@@ -35,6 +48,8 @@
     moodShortLabel: string;
     moodBadgeBg: string;
     moodBadgeFg: string;
+    speaking: boolean;
+    hideText: boolean;
   }
 
   const items = $derived.by<StripItem[]>(() => {
@@ -53,6 +68,8 @@
         bubble.replyToSeat !== null
           ? formatRelativeSeatDisplay(bubble.replyToSeat, yourSeat, seats)
           : null;
+      const speaking = isBubbleActivelySpeaking(bubble, activeBanterVoice);
+      const hideText = !shouldShowBubbleText(bubble, hideAiBanterText);
       if (
         bubble.kind === "banter" &&
         bubble.personaId !== null &&
@@ -68,6 +85,8 @@
           moodShortLabel: moodMeta.shortLabel,
           moodBadgeBg: moodMeta.badgeBg,
           moodBadgeFg: moodMeta.badgeFg,
+          speaking,
+          hideText,
         };
       }
       const emoteMeta = bubble.emote ? getQuickEmoteMeta(bubble.emote) : null;
@@ -79,6 +98,8 @@
         moodShortLabel: "快捷互动",
         moodBadgeBg: emoteMeta?.accentHex ?? "#F5BE58",
         moodBadgeFg: "#181A20",
+        speaking: false,
+        hideText: false,
       };
     });
   });
@@ -94,20 +115,33 @@
       <article
         class="banter-card"
         class:banter-card-static={reducedEffects}
+        class:banter-card-compact={item.hideText}
+        class:banter-card-speaking={item.speaking}
+        class:banter-card-speaking-static={item.speaking && reducedEffects}
         style="--banter-accent: {item.accentHex};"
         data-seat={item.bubble.seat}
         data-mood={item.bubble.mood ?? "QuickEmote"}
+        data-speaking={item.speaking ? "true" : undefined}
         role="status"
       >
-        {#if item.bubble.personaId !== null}
-          <PersonaAvatar
-            personaId={item.bubble.personaId}
-            mood={item.bubble.mood}
-            size={36}
-          />
-        {:else}
-          <span class="human-avatar-dot" aria-hidden="true">言</span>
-        {/if}
+        <div class="banter-avatar-wrap">
+          {#if item.bubble.personaId !== null}
+            <PersonaAvatar
+              personaId={item.bubble.personaId}
+              mood={item.bubble.mood}
+              size={36}
+            />
+          {:else}
+            <span class="human-avatar-dot" aria-hidden="true">言</span>
+          {/if}
+          {#if item.speaking}
+            <span
+              class="banter-speaking-dot"
+              class:banter-speaking-dot-static={reducedEffects}
+              aria-label="正在说话"
+            ></span>
+          {/if}
+        </div>
         <div class="banter-card-body">
           <div class="banter-card-head">
             <strong class="banter-speaker">{item.speakerName}</strong>
@@ -121,7 +155,9 @@
               <span class="banter-reply-tag">↩ {item.replyTargetName}</span>
             {/if}
           </div>
-          <p class="banter-line">{item.bubble.text}</p>
+          {#if !item.hideText}
+            <p class="banter-line">{item.bubble.text}</p>
+          {/if}
         </div>
       </article>
     {/each}
@@ -153,6 +189,50 @@
   }
 
   .banter-card-static {
+    animation: none;
+  }
+
+  .banter-card-compact {
+    flex: 0 1 auto;
+    padding: 5px 10px;
+  }
+
+  .banter-card-speaking {
+    box-shadow:
+      2px 3px 0 #181a20,
+      0 0 0 2px var(--banter-accent, #e85d3f),
+      0 4px 14px rgba(245, 190, 88, 0.36);
+    animation:
+      stripPop 180ms cubic-bezier(0.22, 1.28, 0.36, 1),
+      stripSpeakingPulse 1.15s ease-in-out 180ms infinite;
+  }
+
+  .banter-card-speaking-static {
+    animation: none;
+    box-shadow:
+      2px 3px 0 #181a20,
+      0 0 0 2px var(--banter-accent, #e85d3f);
+  }
+
+  .banter-avatar-wrap {
+    position: relative;
+    display: inline-flex;
+    flex: 0 0 auto;
+  }
+
+  .banter-speaking-dot {
+    position: absolute;
+    right: -3px;
+    bottom: -3px;
+    width: 9px;
+    height: 9px;
+    border-radius: 999px;
+    background: var(--banter-accent, #e85d3f);
+    border: 1.5px solid #fff8ea;
+    animation: stripDotBeat 0.85s ease-in-out infinite;
+  }
+
+  .banter-speaking-dot-static {
     animation: none;
   }
 
@@ -226,6 +306,33 @@
     100% {
       opacity: 1;
       transform: translateY(0) scale(1);
+    }
+  }
+
+  @keyframes stripSpeakingPulse {
+    0%,
+    100% {
+      box-shadow:
+        2px 3px 0 #181a20,
+        0 0 0 1.5px var(--banter-accent, #e85d3f);
+    }
+    50% {
+      box-shadow:
+        2px 3px 0 #181a20,
+        0 0 0 2.5px var(--banter-accent, #e85d3f),
+        0 4px 16px rgba(245, 190, 88, 0.48);
+    }
+  }
+
+  @keyframes stripDotBeat {
+    0%,
+    100% {
+      transform: scale(0.88);
+      opacity: 0.78;
+    }
+    50% {
+      transform: scale(1.22);
+      opacity: 1;
     }
   }
 </style>

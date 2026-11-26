@@ -1337,4 +1337,170 @@ describe("AudioEventRouter", () => {
 
     router.dispose();
   });
+
+  it("syncs voice_volume, tile_call_voice_enabled, and banter_voice_enabled via applyPreferences without disturbing sfxGain or Safari interrupted state", async () => {
+    const env = createFakeAudioEnv("running");
+    const sprites: Partial<Record<VoiceSlotId, VoiceSpriteSlice>> = {};
+    ALL_VOICE_SLOTS.forEach((slot, idx) => {
+      sprites[slot] = [idx * 0.75, 0.45];
+    });
+    const fetchFn: FetchLike = vi.fn(async (url: string) => {
+      if (url.endsWith("/manifest.json")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            pack_id: "human_male",
+            version: 1,
+            audio: "sprite.m4a",
+            sample_rate: 24000,
+            duration: ALL_VOICE_SLOTS.length * 0.75,
+            sprites,
+          }),
+          arrayBuffer: async () => new ArrayBuffer(0),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({}),
+        arrayBuffer: async () => new ArrayBuffer(32),
+      };
+    });
+
+    const initialPrefs = {
+      ...defaultDevicePreferences(false),
+      sfx_volume: 0.85,
+      voice_volume: 0.6,
+      tile_call_voice_enabled: true,
+      banter_voice_enabled: true,
+    };
+    const router = createAudioEventRouter({
+      initialPreferences: initialPrefs,
+      createAudioContext: () => env.ctx,
+      getAudioSession: () => env.audioSession,
+      sfxBackend: {
+        getMode: () => "procedural" as const,
+        ensureLoaded: vi.fn(async () => "procedural" as const),
+        play: vi.fn(() => ({
+          backend: "procedural" as const,
+          slot: "discard_light" as const,
+          variantIndex: 0,
+          playbackRate: 1,
+          pan: 0,
+        })),
+        dispose: vi.fn(),
+      },
+      fetchFn,
+      documentTarget: env.docTarget,
+      getVisibilityState: env.getVisibilityState,
+    });
+    router.preloadVoicePacks(["human_male"]);
+    router.unlockFromGesture();
+    await vi.waitFor(() => expect(env.ctx.decodeAudioData).toHaveBeenCalledTimes(1));
+
+    const sfxGainNode = env.gainNodes[1]!.node;
+    const voGainNode = env.gainNodes[2]!.node;
+    expect(voGainNode.gain.value).toBeCloseTo(0.6, 5);
+    expect(sfxGainNode.gain.value).toBeCloseTo(0.85, 5);
+    expect(router.getStatus()).toMatchObject({
+      voiceVolume: 0.6,
+      tileCallVoiceEnabled: true,
+      banterVoiceEnabled: true,
+    });
+
+    // Adjusting voice_volume via applyPreferences smoothly updates voGain ONLY (sfxGain untouched!)
+    const sfxSetTargetBefore = (
+      sfxGainNode.gain.setTargetAtTime as ReturnType<typeof vi.fn>
+    ).mock.calls.length;
+    router.applyPreferences({ ...initialPrefs, voice_volume: 0.35 });
+    expect(voGainNode.gain.value).toBeCloseTo(0.35, 5);
+    expect(sfxGainNode.gain.value).toBeCloseTo(0.85, 5);
+    expect(
+      (sfxGainNode.gain.setTargetAtTime as ReturnType<typeof vi.fn>).mock.calls
+        .length,
+    ).toBe(sfxSetTargetBefore);
+    expect(router.getStatus().voiceVolume).toBeCloseTo(0.35, 5);
+
+    // Turning off tile_call_voice_enabled via applyPreferences skips discard calls while keeping action calls + BanterVoice
+    router.applyPreferences({
+      ...initialPrefs,
+      voice_volume: 0.35,
+      tile_call_voice_enabled: false,
+    });
+    const ctx = makeContext(30, "human_male");
+    router.handleSemanticEvent(
+      mapPlayerEventToSemanticEvent(
+        { seq: 1, kind: { TileDiscarded: { seat: "East", tile: 0, is_tsumogiri: true } } },
+        ctx,
+      ),
+    );
+    await Promise.resolve();
+    expect(env.bufferSources).toHaveLength(0);
+
+    router.enqueueBanterVoice({
+      banterId: "b-pref-1",
+      seat: "South",
+      audioUrl: "/api/banter-audio/b-pref-1",
+      durationMs: 1200,
+      priority: "normal",
+      relativeRole: "下家",
+    });
+    await vi.waitFor(() => expect(env.bufferSources).toHaveLength(1));
+    expect(router.getActiveBanterVoice()).toEqual({
+      seat: "South",
+      banterId: "b-pref-1",
+    });
+
+    // Turning off banter_voice_enabled via applyPreferences immediately stops active BanterVoice & restores sfxGain ducking
+    router.applyPreferences({
+      ...initialPrefs,
+      voice_volume: 0.35,
+      tile_call_voice_enabled: false,
+      banter_voice_enabled: false,
+    });
+    expect(env.bufferSources[0]!.node.stop).toHaveBeenCalledTimes(1);
+    expect(router.getActiveBanterVoice()).toBeNull();
+    expect(sfxGainNode.gain.value).toBeCloseTo(0.85, 5);
+
+    // Re-enable banter voice, enter Safari interrupted state, verify applyPreferences never calls resume()
+    router.applyPreferences({
+      ...initialPrefs,
+      ios_audio_session: "ambient",
+      banter_voice_enabled: true,
+    });
+    expect(env.audioSession.type).toBe("ambient");
+    env.setState("interrupted");
+    const resumeCountBefore = (env.ctx.resume as ReturnType<typeof vi.fn>).mock
+      .calls.length;
+    router.applyPreferences({
+      ...initialPrefs,
+      ios_audio_session: "playback",
+      voice_volume: 0.9,
+      banter_voice_enabled: true,
+    });
+    expect(env.audioSession.type).toBe("playback");
+    expect((env.ctx.resume as ReturnType<typeof vi.fn>).mock.calls.length).toBe(
+      resumeCountBefore,
+    );
+    expect(router.getStatus().needsResumeCapsule).toBe(true);
+
+    // Enqueueing BanterVoice while interrupted does not fetch or play
+    const fetchCountWhileInterrupted = (fetchFn as ReturnType<typeof vi.fn>)
+      .mock.calls.length;
+    router.enqueueBanterVoice({
+      banterId: "b-pref-interrupted",
+      seat: "West",
+      audioUrl: "/api/banter-audio/b-pref-interrupted",
+      durationMs: 1000,
+      priority: "highlight",
+      relativeRole: "对门",
+    });
+    await Promise.resolve();
+    expect((fetchFn as ReturnType<typeof vi.fn>).mock.calls.length).toBe(
+      fetchCountWhileInterrupted,
+    );
+
+    router.dispose();
+  });
 });

@@ -11,10 +11,10 @@
   <button
     class="audio-resume-capsule"
     type="button"
-    aria-label="点按恢复音效"
+    aria-label="点按恢复音效与语音"
     onclick={onResume}
   >
-    🔇 点按恢复音效
+    🔇 点按恢复音效与语音
   </button>
 {/if}
 

@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
+  import type { ActiveBanterVoiceState } from "../audio/audioTypes";
   import { matchModeLabel } from "../lobby/lobbyConfig";
   import type { ViewportDisplayState } from "../platform/viewportDisplay";
   import type { ActiveBanterMap } from "../presentation/presentationQueue";
@@ -24,6 +25,8 @@
     playerView: PlayerView;
     tableLayout: TableLayout | null;
     activeBubbles: ActiveBanterMap;
+    activeBanterVoice?: ActiveBanterVoiceState | null;
+    hideAiBanterText?: boolean;
     reducedEffects: boolean;
     turnCue: TurnCueState;
     viewportState: ViewportDisplayState;
@@ -51,6 +54,8 @@
     playerView,
     tableLayout,
     activeBubbles,
+    activeBanterVoice = null,
+    hideAiBanterText = false,
     reducedEffects,
     turnCue,
     viewportState,
@@ -89,6 +94,8 @@
   snapshot={presentedSnapshot}
   {playerView}
   {tableLayout}
+  {activeBanterVoice}
+  {reducedEffects}
 />
 
 <BanterBubbles
@@ -96,6 +103,8 @@
   {playerView}
   {tableLayout}
   {activeBubbles}
+  {activeBanterVoice}
+  {hideAiBanterText}
   {reducedEffects}
 />
 
