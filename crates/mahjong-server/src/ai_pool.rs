@@ -11,6 +11,7 @@ use tokio::sync::Mutex;
 use crate::banter::{PendingBanterJob, SlowThinkTicket, ASYNC_BANTER_TIMEOUT, HIGHLIGHT_SYNC_CAP};
 use crate::llm::{LlmClient, LlmError};
 use crate::pacing::{overlapped_wait, AiTurnTrigger, ReleaseTicket};
+use crate::persona_memory::MemoryNoteJob;
 use crate::server::ServerError;
 use crate::session::TableSession;
 
@@ -64,6 +65,7 @@ pub(crate) struct ScheduledWork {
     pub sync_banter: Vec<PendingBanterJob>,
     pub async_banter: Vec<PendingBanterJob>,
     pub slow_think_nudge: Option<SlowThinkTicket>,
+    pub memory_notes: Vec<MemoryNoteJob>,
 }
 
 impl ScheduledWork {
@@ -73,6 +75,7 @@ impl ScheduledWork {
             && self.sync_banter.is_empty()
             && self.async_banter.is_empty()
             && self.slow_think_nudge.is_none()
+            && self.memory_notes.is_empty()
     }
 }
 
@@ -185,6 +188,7 @@ pub(crate) fn spawn_scheduled_work(
         sync_banter,
         async_banter,
         slow_think_nudge,
+        memory_notes,
     } = work;
 
     if let (Some(ticket), Some(llm)) = (slow_think_nudge, llm_client.as_ref()) {
@@ -217,6 +221,34 @@ pub(crate) fn spawn_scheduled_work(
                     run_banter_job_with_timeout(&llm, job, ASYNC_BANTER_TIMEOUT).await;
                 let mut session = runtime.lock().await;
                 session.commit_banter_result(guard, result);
+            });
+        }
+        for job in memory_notes {
+            let runtime = Arc::clone(&runtime);
+            let llm = Arc::clone(llm);
+            tokio::spawn(async move {
+                let endpoint = llm.endpoint().to_string();
+                let timeout_ms =
+                    u64::try_from(ASYNC_BANTER_TIMEOUT.as_millis()).unwrap_or(u64::MAX);
+                let result = match tokio::time::timeout(
+                    ASYNC_BANTER_TIMEOUT,
+                    llm.generate_memory_note(job.request),
+                )
+                .await
+                {
+                    Ok(inner) => inner,
+                    Err(_) => Err(LlmError::Timeout {
+                        endpoint,
+                        timeout_ms,
+                    }),
+                };
+                let mut session = runtime.lock().await;
+                session.commit_memory_note_result(
+                    job.persona_id,
+                    &job.player_nickname,
+                    job.trigger,
+                    result,
+                );
             });
         }
     }

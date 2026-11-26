@@ -36,6 +36,10 @@ use crate::pacing::{
     AiTurnTrigger, PacingMode, ReleaseTicket,
 };
 use crate::persona::PersonaId;
+use crate::persona_memory::{
+    plan_match_finished_note_jobs, plan_memorable_hand_note_jobs, ClearPersonaMemoryResponse,
+    MemoryNoteJob, PersonaMemoryNoteTrigger, PersonaMemoryResponse, PersonaMemoryStore,
+};
 use crate::protocol::{
     ClientMessage, DestructiveOpKind, LanUrlInfo, LobbyConfig, PendingDestructiveOp, QuickEmote,
     SeatInfo, SeatKind, SeatingRule, ServerMessage, TablePhase, TableSnapshot,
@@ -403,9 +407,11 @@ pub struct TableSession {
     port: u16,
     local_hostname: Option<String>,
     pub(crate) history: HistoryStore,
+    pub(crate) persona_memory: PersonaMemoryStore,
     phase_tx: watch::Sender<TablePhase>,
     pending_sync_banter: Vec<PendingBanterJob>,
     pending_async_banter: Vec<PendingBanterJob>,
+    pending_memory_notes: Vec<MemoryNoteJob>,
     llm_available: bool,
     last_llm_error: Option<String>,
     slow_think_nudge_enabled: bool,
@@ -450,6 +456,13 @@ impl TableSession {
             })?,
             None => HistoryStore::in_memory(),
         };
+        let persona_memory = match options.data_dir() {
+            Some(dir) => PersonaMemoryStore::open(dir).map_err(|source| ServerError::DataDir {
+                path: dir.to_path_buf(),
+                source,
+            })?,
+            None => PersonaMemoryStore::in_memory(),
+        };
         let config = LobbyConfig::from(history.preferences());
         let slow_think_nudge_enabled = history.preferences().slow_think_nudge_enabled;
         let base_seed = options.rng_seed.unwrap_or_else(random_u64);
@@ -476,9 +489,11 @@ impl TableSession {
             port,
             local_hostname,
             history,
+            persona_memory,
             phase_tx,
             pending_sync_banter: Vec::new(),
             pending_async_banter: Vec::new(),
+            pending_memory_notes: Vec::new(),
             llm_available: true,
             last_llm_error: None,
             slow_think_nudge_enabled,
@@ -995,6 +1010,7 @@ impl TableSession {
                 seats: &seat_infos,
                 seat_generation: &self.seat_generation,
                 sync_cap: self.options.banter_sync_cap,
+                persona_memory: &self.persona_memory,
             };
             let mut reply_jobs = plan_quick_emote_replies(&ctx, seat, emote);
             self.pending_async_banter.append(&mut reply_jobs);
@@ -1153,6 +1169,7 @@ impl TableSession {
                     seats: &seat_infos,
                     seat_generation: &self.seat_generation,
                     sync_cap: self.options.banter_sync_cap,
+                    persona_memory: &self.persona_memory,
                 };
                 if let Some(job) = plan_initial_hand_banter(&ctx) {
                     self.pending_async_banter.push(job);
@@ -1506,6 +1523,7 @@ impl TableSession {
                 seats: &seat_infos,
                 seat_generation: &self.seat_generation,
                 sync_cap: self.options.banter_sync_cap,
+                persona_memory: &self.persona_memory,
             };
             let (mut sync_jobs, mut async_jobs) = plan_highlight_banter_for_events(&ctx, &emitted);
             self.pending_sync_banter.append(&mut sync_jobs);
@@ -1536,6 +1554,8 @@ impl TableSession {
     fn persist_settled_hands(&mut self, emitted: &[RecordedEvent]) {
         let mode = self.config.mode;
         let timestamp_ms = current_unix_ms();
+        let seat_infos = self.seat_infos();
+        let has_llm = self.options.llm_client.is_some();
         let Some(active) = self.active_match.as_mut() else {
             return;
         };
@@ -1550,6 +1570,12 @@ impl TableSession {
                 if active.hand_attribution.assisted_by_ai[seat.index()] {
                     active.any_ai_assisted[seat.index()] = true;
                 }
+            }
+            self.persona_memory
+                .record_hand_settled(&seat_infos, &settlement, timestamp_ms);
+            if has_llm {
+                let mut note_jobs = plan_memorable_hand_note_jobs(&self.seats, &settlement);
+                self.pending_memory_notes.append(&mut note_jobs);
             }
             let seats = Seat::ALL.map(|seat| {
                 let idx = seat.index();
@@ -1577,6 +1603,7 @@ impl TableSession {
 
     fn persist_finished_matches(&mut self, emitted: &[RecordedEvent]) {
         let timestamp_ms = current_unix_ms();
+        let has_llm = self.options.llm_client.is_some();
         let Some(active) = self.active_match.as_ref() else {
             return;
         };
@@ -1588,6 +1615,10 @@ impl TableSession {
             };
             if summary.hands_played == 0 {
                 continue;
+            }
+            if has_llm {
+                let mut note_jobs = plan_match_finished_note_jobs(&self.seats, &summary);
+                self.pending_memory_notes.append(&mut note_jobs);
             }
             let seats = Seat::ALL.map(|seat| {
                 let idx = seat.index();
@@ -1866,6 +1897,7 @@ impl TableSession {
             seats: &seat_infos,
             seat_generation: &self.seat_generation,
             sync_cap: self.options.banter_sync_cap,
+            persona_memory: &self.persona_memory,
         };
         let job = plan_slow_think_nudge(&ctx, ticket.target_seat, random_pick)?;
         self.last_nudged_turn = Some((
@@ -1883,12 +1915,41 @@ impl TableSession {
         let sync_banter = std::mem::take(&mut self.pending_sync_banter);
         let async_banter = std::mem::take(&mut self.pending_async_banter);
         let slow_think_nudge = self.collect_slow_think_nudge();
+        let memory_notes = std::mem::take(&mut self.pending_memory_notes);
         ScheduledWork {
             ai_jobs,
             pending_release,
             sync_banter,
             async_banter,
             slow_think_nudge,
+            memory_notes,
+        }
+    }
+
+    pub(crate) fn commit_memory_note_result(
+        &mut self,
+        persona_id: PersonaId,
+        player_nickname: &str,
+        trigger: PersonaMemoryNoteTrigger,
+        result: Result<String, LlmError>,
+    ) {
+        match result {
+            Ok(note) => {
+                if !note.trim().is_empty() {
+                    self.persona_memory.record_grudge_note(
+                        persona_id,
+                        player_nickname,
+                        &note,
+                        trigger,
+                        current_unix_ms(),
+                    );
+                }
+            }
+            Err(err) => {
+                eprintln!(
+                    "warning: failed to generate persona memory note for {persona_id:?}/{player_nickname}: {err}"
+                );
+            }
         }
     }
 
@@ -2356,6 +2417,22 @@ impl TableRuntime {
     pub async fn history_clear(&self) -> Result<ClearHistoryResponse, std::io::Error> {
         let mut session = self.inner.lock().await;
         session.history.clear_history()
+    }
+
+    /// Returns the persisted `PersonaMemory` snapshot for `GET /api/persona-memory`.
+    pub async fn persona_memory_snapshot(&self) -> PersonaMemoryResponse {
+        let session = self.inner.lock().await;
+        session.persona_memory.snapshot()
+    }
+
+    /// Clears all in-memory and on-disk `PersonaMemory` records atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if clearing `persona_memory.json` fails.
+    pub async fn persona_memory_clear(&self) -> Result<ClearPersonaMemoryResponse, std::io::Error> {
+        let mut session = self.inner.lock().await;
+        session.persona_memory.clear()
     }
 
     /// Parses and handles one raw JSON text frame from `conn_id`.

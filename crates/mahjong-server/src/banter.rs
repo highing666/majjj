@@ -11,6 +11,7 @@ use mahjong_core::{
 
 use crate::llm::BanterGenerationRequest;
 use crate::persona::PersonaId;
+use crate::persona_memory::PersonaMemoryStore;
 use crate::protocol::{QuickEmote, SeatInfo, SeatKind};
 use crate::session::ActiveMatch;
 
@@ -80,6 +81,29 @@ pub(crate) struct BanterPlanContext<'a> {
     pub seats: &'a [SeatInfo; 4],
     pub seat_generation: &'a [u64; 4],
     pub sync_cap: Duration,
+    pub persona_memory: &'a PersonaMemoryStore,
+}
+
+fn seated_human_nicknames(seats: &[SeatInfo; 4]) -> Vec<String> {
+    seats
+        .iter()
+        .filter(|info| info.kind == SeatKind::Human)
+        .map(|info| info.nickname.clone())
+        .collect()
+}
+
+fn append_memory_context(
+    mut prompt: String,
+    memory: &PersonaMemoryStore,
+    persona: PersonaId,
+    seats: &[SeatInfo; 4],
+) -> String {
+    let humans = seated_human_nicknames(seats);
+    if let Some(mem_block) = memory.build_prompt_memory_context(persona, &humans) {
+        prompt.push_str("\n\n");
+        prompt.push_str(&mem_block);
+    }
+    prompt
 }
 
 /// Formats a `Tile` into its canonical Chinese tile name.
@@ -493,10 +517,13 @@ pub(crate) fn plan_initial_hand_banter(ctx: &BanterPlanContext<'_>) -> Option<Pe
     let (seat, persona_id) =
         pick_deterministic_ai(&ai_seats, ctx.match_id.wrapping_mul(31).wrapping_add(seq))?;
     let view = ctx.game.project_view(seat);
-    let request = BanterGenerationRequest::new(
-        build_system_prompt(persona_id),
+    let user_prompt = append_memory_context(
         build_hand_started_prompt(ctx.seats, seat, &view),
+        ctx.persona_memory,
+        persona_id,
+        ctx.seats,
     );
+    let request = BanterGenerationRequest::new(build_system_prompt(persona_id), user_prompt);
     Some(PendingBanterJob {
         guard: BanterGuard {
             match_id: ctx.match_id,
@@ -583,10 +610,13 @@ pub(crate) fn plan_quick_emote_replies(
     for offset in 0..reply_count {
         let (speaker, persona_id) = ai_seats[(start_idx + offset) % ai_seats.len()];
         let view = ctx.game.project_view(speaker);
-        let request = BanterGenerationRequest::new(
-            build_system_prompt(persona_id),
+        let user_prompt = append_memory_context(
             build_quick_emote_reply_prompt(ctx.seats, speaker, sender, emote, &view),
+            ctx.persona_memory,
+            persona_id,
+            ctx.seats,
         );
+        let request = BanterGenerationRequest::new(build_system_prompt(persona_id), user_prompt);
         jobs.push(PendingBanterJob {
             guard: BanterGuard {
                 match_id: ctx.match_id,
@@ -617,10 +647,13 @@ pub(crate) fn plan_slow_think_nudge(
     let (speaker, persona_id) = pick_deterministic_ai(&ai_seats, random_pick)?;
     let seq = ctx.game.seq();
     let view = ctx.game.project_view(speaker);
-    let request = BanterGenerationRequest::new(
-        build_system_prompt(persona_id),
+    let user_prompt = append_memory_context(
         build_slow_think_nudge_prompt(ctx.seats, speaker, target_seat, &view),
+        ctx.persona_memory,
+        persona_id,
+        ctx.seats,
     );
+    let request = BanterGenerationRequest::new(build_system_prompt(persona_id), user_prompt);
     Some(PendingBanterJob {
         guard: BanterGuard {
             match_id: ctx.match_id,
@@ -662,10 +695,14 @@ pub(crate) fn plan_highlight_banter_for_events(
             if let Some((seat, persona_id)) =
                 pick_settlement_speaker(ctx.seats, &ai_seats, &settlement, event.seq())
             {
-                let request = BanterGenerationRequest::new(
-                    build_system_prompt(persona_id),
+                let user_prompt = append_memory_context(
                     build_hand_settled_prompt(ctx.seats, seat, &settlement),
+                    ctx.persona_memory,
+                    persona_id,
+                    ctx.seats,
                 );
+                let request =
+                    BanterGenerationRequest::new(build_system_prompt(persona_id), user_prompt);
                 sync_jobs.push(PendingBanterJob {
                     guard: BanterGuard {
                         match_id: ctx.match_id,
@@ -698,10 +735,14 @@ pub(crate) fn plan_highlight_banter_for_events(
                     .wrapping_add(event.seq()),
             ) {
                 let view = ctx.game.project_view(seat);
-                let request = BanterGenerationRequest::new(
-                    build_system_prompt(persona_id),
+                let user_prompt = append_memory_context(
                     build_hand_started_prompt(ctx.seats, seat, &view),
+                    ctx.persona_memory,
+                    persona_id,
+                    ctx.seats,
                 );
+                let request =
+                    BanterGenerationRequest::new(build_system_prompt(persona_id), user_prompt);
                 async_jobs.push(PendingBanterJob {
                     guard: BanterGuard {
                         match_id: ctx.match_id,
@@ -743,10 +784,14 @@ pub(crate) fn plan_highlight_banter_for_events(
                     _ => meld,
                 };
                 let view = ctx.game.project_view(speaker);
-                let request = BanterGenerationRequest::new(
-                    build_system_prompt(persona_id),
+                let user_prompt = append_memory_context(
                     build_meld_declared_prompt(ctx.seats, speaker, actor, &speaker_meld, &view),
+                    ctx.persona_memory,
+                    persona_id,
+                    ctx.seats,
                 );
+                let request =
+                    BanterGenerationRequest::new(build_system_prompt(persona_id), user_prompt);
                 sync_jobs.push(PendingBanterJob {
                     guard: BanterGuard {
                         match_id: ctx.match_id,
@@ -776,10 +821,14 @@ pub(crate) fn plan_highlight_banter_for_events(
                 pick_added_kong_speaker(ctx.game, ctx.seats, &ai_seats, actor, event.seq())
             {
                 let view = ctx.game.project_view(speaker);
-                let request = BanterGenerationRequest::new(
-                    build_system_prompt(persona_id),
+                let user_prompt = append_memory_context(
                     build_added_kong_attempted_prompt(ctx.seats, speaker, actor, tile, &view),
+                    ctx.persona_memory,
+                    persona_id,
+                    ctx.seats,
                 );
+                let request =
+                    BanterGenerationRequest::new(build_system_prompt(persona_id), user_prompt);
                 async_jobs.push(PendingBanterJob {
                     guard: BanterGuard {
                         match_id: ctx.match_id,

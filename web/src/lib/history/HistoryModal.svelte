@@ -1,12 +1,14 @@
 <script lang="ts">
+  import PersonaAvatar from "../personas/PersonaAvatar.svelte";
   import type { HistoryState } from "./historyClient";
   import {
     buildHandHistoryRows,
     buildMatchHistoryRows,
+    buildPersonaMemoryCards,
     buildPlayerSummaryCards,
   } from "./historyViewModel";
 
-  type HistoryTab = "players" | "matches" | "hands";
+  type HistoryTab = "players" | "matches" | "hands" | "personaMemory";
 
   interface Props {
     state: HistoryState;
@@ -16,6 +18,10 @@
     onRequestClear: () => void;
     onCancelClear: () => void;
     onConfirmClear: () => void;
+    onRefreshPersonaMemory: () => void;
+    onRequestClearMemory: () => void;
+    onCancelClearMemory: () => void;
+    onConfirmClearMemory: () => void;
   }
 
   let {
@@ -26,6 +32,10 @@
     onRequestClear,
     onCancelClear,
     onConfirmClear,
+    onRefreshPersonaMemory,
+    onRequestClearMemory,
+    onCancelClearMemory,
+    onConfirmClearMemory,
   }: Props = $props();
 
   let activeTab = $state<HistoryTab>("players");
@@ -45,6 +55,11 @@
       ? buildHandHistoryRows(historyState.stats.recent_hands)
       : [],
   );
+  const personaMemoryCards = $derived(
+    historyState.personaMemory
+      ? buildPersonaMemoryCards(historyState.personaMemory)
+      : [],
+  );
 
   const clearDialogOpen = $derived(
     historyState.clearPhase === "confirming" ||
@@ -52,15 +67,43 @@
       historyState.clearPhase === "error",
   );
   const isSubmittingClear = $derived(historyState.clearPhase === "submitting");
+  const clearMemoryDialogOpen = $derived(
+    historyState.clearMemoryPhase === "confirming" ||
+      historyState.clearMemoryPhase === "submitting" ||
+      historyState.clearMemoryPhase === "error",
+  );
+  const isSubmittingClearMemory = $derived(
+    historyState.clearMemoryPhase === "submitting",
+  );
+  const isBusySubmitting = $derived(
+    isSubmittingClear || isSubmittingClearMemory,
+  );
   const isExporting = $derived(historyState.exportPhase === "exporting");
+
+  function selectTab(tab: HistoryTab): void {
+    activeTab = tab;
+    if (tab === "personaMemory" && !historyState.personaMemoryLoading) {
+      onRefreshPersonaMemory();
+    }
+  }
+
+  function handleHeaderRefresh(): void {
+    if (activeTab === "personaMemory") {
+      onRefreshPersonaMemory();
+    } else {
+      onRefresh();
+    }
+  }
 
   function handleKeyDown(event: KeyboardEvent): void {
     if (!historyState.open) {
       return;
     }
-    if (event.key === "Escape" && !isSubmittingClear) {
+    if (event.key === "Escape" && !isBusySubmitting) {
       event.preventDefault();
-      if (clearDialogOpen) {
+      if (clearMemoryDialogOpen) {
+        onCancelClearMemory();
+      } else if (clearDialogOpen) {
         onCancelClear();
       } else {
         onClose();
@@ -69,7 +112,7 @@
   }
 
   function handleBackdropClick(event: MouseEvent): void {
-    if (event.target === event.currentTarget && !isSubmittingClear) {
+    if (event.target === event.currentTarget && !isBusySubmitting) {
       onClose();
     }
   }
@@ -100,16 +143,20 @@
           <button
             class="btn btn-subtle compact-btn"
             type="button"
-            disabled={historyState.loading || isSubmittingClear}
-            onclick={onRefresh}
+            disabled={historyState.loading ||
+              historyState.personaMemoryLoading ||
+              isBusySubmitting}
+            onclick={handleHeaderRefresh}
           >
-            {historyState.loading ? "刷新中…" : "刷新"}
+            {historyState.loading || historyState.personaMemoryLoading
+              ? "刷新中…"
+              : "刷新"}
           </button>
           <button
             class="btn btn-subtle compact-btn"
             type="button"
             aria-label="关闭战绩"
-            disabled={isSubmittingClear}
+            disabled={isBusySubmitting}
             onclick={onClose}
           >
             关闭
@@ -218,7 +265,7 @@
             type="button"
             role="tab"
             aria-selected={activeTab === "players"}
-            onclick={() => (activeTab = "players")}
+            onclick={() => selectTab("players")}
           >
             成员总览（{playerCards.length}）
           </button>
@@ -228,7 +275,7 @@
             type="button"
             role="tab"
             aria-selected={activeTab === "matches"}
-            onclick={() => (activeTab = "matches")}
+            onclick={() => selectTab("matches")}
           >
             近期对局（{matchRows.length}）
           </button>
@@ -238,9 +285,21 @@
             type="button"
             role="tab"
             aria-selected={activeTab === "hands"}
-            onclick={() => (activeTab = "hands")}
+            onclick={() => selectTab("hands")}
           >
             近期小局（{handRows.length}）
+          </button>
+          <button
+            class="tab-btn"
+            class:tab-active={activeTab === "personaMemory"}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === "personaMemory"}
+            onclick={() => selectTab("personaMemory")}
+          >
+            牌友记忆{historyState.personaMemory
+              ? `（${historyState.personaMemory.total_notes}）`
+              : ""}
           </button>
         </div>
 
@@ -346,7 +405,7 @@
                 {/each}
               </div>
             {/if}
-          {:else}
+          {:else if activeTab === "hands"}
             {#if handRows.length === 0}
               <div class="empty-box">暂无已结算小局记录。</div>
             {:else}
@@ -429,6 +488,188 @@
                         </div>
                       {/each}
                     </div>
+                  </article>
+                {/each}
+              </div>
+            {/if}
+          {:else}
+            <div class="memory-toolbar">
+              <div class="toolbar-meta">
+                {#if historyState.personaMemory}
+                  <span class="tag">
+                    已记账 {historyState.personaMemory.total_pairs} 组交手关系
+                  </span>
+                  <span class="tag">
+                    恩怨小本本 {historyState.personaMemory.total_notes} 条
+                  </span>
+                {:else}
+                  <span class="tag">跨对局持久化牌友记忆</span>
+                {/if}
+              </div>
+              <button
+                class="btn btn-subtle danger-btn compact-btn"
+                type="button"
+                disabled={historyState.personaMemoryLoading || isBusySubmitting}
+                onclick={onRequestClearMemory}
+              >
+                清空牌友记忆
+              </button>
+            </div>
+
+            {#if historyState.clearMemoryNotice}
+              <div class="banner banner-ok" role="status">
+                <span>{historyState.clearMemoryNotice}</span>
+              </div>
+            {/if}
+
+            {#if clearMemoryDialogOpen}
+              <div
+                class="clear-confirm-box"
+                role="alertdialog"
+                aria-labelledby="clear-memory-confirm-title"
+              >
+                <strong id="clear-memory-confirm-title">确认清空全部牌友记忆？</strong>
+                <p class="clear-confirm-desc">
+                  此操作将永久清除所有牌友角色的交手账本与恩怨小本本（含磁盘文件），下次开桌会重新从零结怨；历史战绩与设置不受影响。
+                </p>
+                {#if historyState.clearMemoryErrorMessage}
+                  <div class="banner banner-warn" role="alert">
+                    <span>{historyState.clearMemoryErrorMessage}</span>
+                  </div>
+                {/if}
+                <div class="clear-confirm-actions">
+                  <button
+                    class="btn btn-subtle compact-btn"
+                    type="button"
+                    disabled={isSubmittingClearMemory}
+                    onclick={onCancelClearMemory}
+                  >
+                    取消
+                  </button>
+                  <button
+                    class="btn btn-danger compact-btn"
+                    type="button"
+                    disabled={isSubmittingClearMemory}
+                    onclick={onConfirmClearMemory}
+                  >
+                    {isSubmittingClearMemory ? "正在清空…" : "确认清空牌友记忆"}
+                  </button>
+                </div>
+              </div>
+            {/if}
+
+            {#if historyState.personaMemoryErrorMessage}
+              <div class="banner banner-warn" role="alert">
+                <span>{historyState.personaMemoryErrorMessage}</span>
+                <button
+                  class="btn btn-subtle compact-btn"
+                  type="button"
+                  onclick={onRefreshPersonaMemory}
+                >
+                  重试
+                </button>
+              </div>
+            {/if}
+
+            {#if historyState.personaMemoryLoading && historyState.personaMemory === null}
+              <div class="empty-box">正在加载牌友记忆…</div>
+            {:else if personaMemoryCards.length === 0}
+              <div class="empty-box">暂无牌友记忆数据。</div>
+            {:else}
+              <div class="records-list">
+                {#each personaMemoryCards as card (card.personaId)}
+                  <article class="record-card persona-memory-card">
+                    <div class="persona-memory-head">
+                      <div class="persona-memory-identity">
+                        <PersonaAvatar
+                          personaId={card.personaId}
+                          mood={card.initialMood}
+                          size={44}
+                        />
+                        <div class="persona-memory-meta">
+                          <div class="persona-memory-title-row">
+                            <strong class="player-name">{card.personaName}</strong>
+                            <span class="tag mini-tag">{card.styleLabel}</span>
+                          </div>
+                          <span class="persona-tagline">{card.tagline}</span>
+                        </div>
+                      </div>
+                      <span class="tag">
+                        {card.players.length} 位牌友 · {card.totalNotes} 条小本本
+                      </span>
+                    </div>
+
+                    {#if card.players.length === 0}
+                      <div class="memory-empty-note">
+                        暂未记下任何玩家的交手账本或恩怨笔记。
+                      </div>
+                    {:else}
+                      <div class="memory-players-list">
+                        {#each card.players as pm (pm.playerNickname)}
+                          <div class="memory-player-block">
+                            <div class="record-head">
+                              <strong>对「{pm.playerNickname}」的账本</strong>
+                              <span
+                                class="score-badge"
+                                class:pos={pm.netTone === "pos"}
+                                class:neg={pm.netTone === "neg"}
+                              >
+                                牌友同桌盈亏 {pm.netScoreDeltaText}
+                              </span>
+                            </div>
+                            <div class="player-metrics">
+                              <div class="metric-cell">
+                                <span class="metric-label">交手小局</span>
+                                <strong>{pm.handsPlayed} 小局</strong>
+                              </div>
+                              <div class="metric-cell">
+                                <span class="metric-label">角色胡 / 玩家胡</span>
+                                <strong>{pm.personaWins} / {pm.playerWins}</strong>
+                              </div>
+                              <div class="metric-cell">
+                                <span class="metric-label">角色点炮 / 玩家点炮</span>
+                                <strong>
+                                  {pm.personaDealtIntoPlayer} / {pm.playerDealtIntoPersona}
+                                </strong>
+                              </div>
+                              <div class="metric-cell">
+                                <span class="metric-label">单小局最高番</span>
+                                <strong>{pm.highestFanSeen} 番</strong>
+                              </div>
+                              <div class="metric-cell">
+                                <span class="metric-label">玩家碰 / 杠习惯</span>
+                                <strong>{pm.meldHabitText}</strong>
+                              </div>
+                              <div class="metric-cell">
+                                <span class="metric-label">最近更新</span>
+                                <strong>{pm.updatedTimeText}</strong>
+                              </div>
+                            </div>
+
+                            <div class="grudge-notes-section">
+                              <span class="detail-label">
+                                恩怨小本本（最近 {pm.grudgeNotes.length} / 8 条）
+                              </span>
+                              {#if pm.grudgeNotes.length === 0}
+                                <p class="memory-empty-note">
+                                  暂未触发名场面或终局复盘笔记。
+                                </p>
+                              {:else}
+                                <ul class="grudge-notes-list">
+                                  {#each pm.grudgeNotes as note, idx (`${pm.playerNickname}:${note.timeText}:${idx}`)}
+                                    <li class="grudge-note-item">
+                                      <span class="fan-pill">{note.triggerLabel}</span>
+                                      <span class="grudge-note-text">{note.summary}</span>
+                                      <span class="record-time">{note.timeText}</span>
+                                    </li>
+                                  {/each}
+                                </ul>
+                              {/if}
+                            </div>
+                          </div>
+                        {/each}
+                      </div>
+                    {/if}
                   </article>
                 {/each}
               </div>
@@ -553,7 +794,7 @@
 
   .history-tabs {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 6px;
   }
 
@@ -779,9 +1020,107 @@
     align-items: center;
   }
 
+  .memory-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border-radius: 10px;
+    background: var(--bg-muted);
+    border: 1px solid var(--border);
+  }
+
+  .persona-memory-head {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .persona-memory-identity {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  .persona-memory-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .persona-memory-title-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .persona-tagline {
+    font-size: 12px;
+    color: var(--ink-muted);
+  }
+
+  .memory-players-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .memory-player-block {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px;
+    border-radius: 10px;
+    background: #faf7f0;
+    border: 1px solid var(--border);
+  }
+
+  .memory-empty-note {
+    margin: 0;
+    font-size: 13px;
+    color: var(--ink-muted);
+  }
+
+  .grudge-notes-section {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-top: 4px;
+    border-top: 1px dashed var(--border);
+  }
+
+  .grudge-notes-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .grudge-note-item {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+  }
+
+  .grudge-note-text {
+    flex: 1 1 180px;
+    color: var(--ink);
+  }
+
   @media (max-width: 560px) {
     .history-tabs {
-      grid-template-columns: 1fr;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
     .seat-deltas-grid {
