@@ -4,7 +4,6 @@ import type { RelativeSlot } from "./viewModel";
 export type BanterTailPosition =
   | "top-left"
   | "top-right"
-  | "top-center"
   | "bottom-left";
 
 export interface BanterBubbleAnchor {
@@ -20,6 +19,37 @@ export interface BanterBubbleAnchor {
 
 const EDGE_PAD = 6;
 const GAP = 5;
+
+/**
+ * Single-sourced compact breakpoint shared by `computeQuickEmoteDockRect` and `QuickEmoteBar.svelte`.
+ */
+export function isCompactQuickEmoteDock(layout: TableLayout): boolean {
+  return (
+    layout.isShortLandscape ||
+    layout.height > layout.width ||
+    layout.width < 700 ||
+    layout.rightWing.width < 190
+  );
+}
+
+/**
+ * Converts a pixel `Rect` inside `layout` into percentage CSS positioning declarations.
+ */
+export function rectToPercentStyle(
+  layout: TableLayout,
+  rect: Rect,
+  includeHeight = true,
+): string {
+  const leftPct = (rect.x / layout.width) * 100;
+  const topPct = (rect.y / layout.height) * 100;
+  const widthPct = (rect.width / layout.width) * 100;
+  const base = `left: ${leftPct.toFixed(3)}%; top: ${topPct.toFixed(3)}%; width: ${widthPct.toFixed(3)}%;`;
+  if (!includeHeight) {
+    return base;
+  }
+  const heightPct = (rect.height / layout.height) * 100;
+  return `${base} height: ${heightPct.toFixed(3)}%;`;
+}
 
 function clamp(value: number, min: number, max: number): number {
   if (max < min) {
@@ -170,7 +200,7 @@ export function computeQuickEmoteDockRect(layout: TableLayout): Rect {
     };
   }
 
-  const compact = layout.isShortLandscape || layout.width < 700;
+  const compact = isCompactQuickEmoteDock(layout);
   const dockH = compact ? 64 : 84;
   const width = clamp(
     layout.rightWing.width,

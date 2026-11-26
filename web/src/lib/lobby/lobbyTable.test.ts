@@ -215,5 +215,41 @@ describe("lobbyTable", () => {
         .filter((o) => o.takenByOther)
         .map((o) => o.id),
     ).toEqual(["QuickHothead", "TeaSarcasm"]);
+
+    // Full 5-persona visual roster is always exposed for preview before selection.
+    expect(vm.personaRoster).toHaveLength(5);
+    expect(vm.personaRoster.map((p) => p.meta.name)).toEqual([
+      "急眼快攻哥",
+      "阴阳茶艺师",
+      "嘴硬死磕王",
+      "拱火乐子人",
+      "红温老雀神",
+    ]);
+    for (const item of vm.personaRoster) {
+      expect(item.meta.tagline.length).toBeGreaterThan(0);
+      expect(item.meta.styleLabel.length).toBeGreaterThan(0);
+      expect(item.moodMeta.label.length).toBeGreaterThan(0);
+    }
+    expect(
+      vm.personaRoster.find((p) => p.meta.id === "QuickHothead"),
+    ).toMatchObject({
+      assignedSeat: "South",
+      assignedSlotLabel: "下家",
+    });
+    expect(
+      vm.personaRoster.find((p) => p.meta.id === "TeaSarcasm"),
+    ).toMatchObject({
+      assignedSeat: "West",
+      assignedSlotLabel: "对门",
+    });
+    expect(
+      vm.personaRoster.find((p) => p.meta.id === "ChaosInstigator")
+        ?.assignedSeat,
+    ).toBeNull();
+    expect(vm.assignableSeats.map((s) => s.seat)).toEqual([
+      "South",
+      "West",
+      "North",
+    ]);
   });
 });

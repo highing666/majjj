@@ -2,6 +2,7 @@
   import PersonaAvatar from "../personas/PersonaAvatar.svelte";
   import type { PlayerView } from "../protocol/generated/PlayerView";
   import type { TableSnapshot } from "../protocol/generated/TableSnapshot";
+  import { rectToPercentStyle } from "./banterLayout";
   import type { Rect, TableLayout } from "./layout";
   import {
     buildTablePersonaPocketModels,
@@ -21,11 +22,7 @@
   );
 
   function rectStyle(layout: TableLayout, rect: Rect): string {
-    const leftPct = (rect.x / layout.width) * 100;
-    const topPct = (rect.y / layout.height) * 100;
-    const widthPct = (rect.width / layout.width) * 100;
-    const heightPct = (rect.height / layout.height) * 100;
-    return `left: ${leftPct.toFixed(3)}%; top: ${topPct.toFixed(3)}%; width: ${widthPct.toFixed(3)}%; height: ${heightPct.toFixed(3)}%;`;
+    return rectToPercentStyle(layout, rect, true);
   }
 
   function avatarSizeFor(rect: Rect): number {

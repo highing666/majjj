@@ -1,156 +1,20 @@
 mod common;
 
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
-use common::{tile, tiles};
+use common::{pump_ai_turn, tile, tiles, yield_tasks, ScriptedLlmClient, VirtualClient};
 use mahjong_ai::AiDifficulty;
 use mahjong_core::{
     build_preset_wall, MatchMode, PlayerAction, PlayerEventKind, PresetWallProvider, Seat,
 };
-use mahjong_server::llm::{
-    BanterGenerationRequest, BanterOutput, LlmClient, LlmError, LlmFuture, LlmHealthStatus,
-};
+use mahjong_server::llm::BanterOutput;
 use mahjong_server::pacing::PacingMode;
 use mahjong_server::persona::{PersonaId, PersonaMood};
 use mahjong_server::protocol::{
     ClientMessage, SeatingRule, ServerMessage, TablePace, TablePhase, TableSnapshot,
 };
-use mahjong_server::session::{
-    BoxedWallProvider, OutboundSignal, TableOptions, TableRuntime, WallProviderFactory,
-};
-use tokio::sync::mpsc;
-
-#[derive(Debug)]
-struct ScriptedLlmClient {
-    replies: Mutex<VecDeque<BanterOutput>>,
-    captured_requests: Mutex<Vec<BanterGenerationRequest>>,
-}
-
-impl ScriptedLlmClient {
-    fn new(replies: Vec<BanterOutput>) -> Arc<Self> {
-        Arc::new(Self {
-            replies: Mutex::new(replies.into()),
-            captured_requests: Mutex::new(Vec::new()),
-        })
-    }
-
-    fn captured(&self) -> Vec<BanterGenerationRequest> {
-        self.captured_requests
-            .lock()
-            .expect("lock captured")
-            .clone()
-    }
-}
-
-impl LlmClient for ScriptedLlmClient {
-    fn endpoint(&self) -> &str {
-        "http://virtual-llm.local:8080"
-    }
-
-    fn health_check(&self) -> LlmFuture<'_, Result<LlmHealthStatus, LlmError>> {
-        Box::pin(async {
-            Ok(LlmHealthStatus {
-                endpoint: "http://virtual-llm.local:8080".to_string(),
-                model_id: "virtual-qwen".to_string(),
-            })
-        })
-    }
-
-    fn generate_banter(
-        &self,
-        request: BanterGenerationRequest,
-    ) -> LlmFuture<'_, Result<BanterOutput, LlmError>> {
-        self.captured_requests
-            .lock()
-            .expect("lock captured")
-            .push(request);
-        let next = self
-            .replies
-            .lock()
-            .expect("lock replies")
-            .pop_front()
-            .unwrap_or_else(|| BanterOutput {
-                mood: PersonaMood::Deadpan,
-                text: "默认补刀台词".to_string(),
-            });
-        Box::pin(async move { Ok(next) })
-    }
-}
-
-struct VirtualClient {
-    conn_id: u64,
-    tx: mpsc::UnboundedSender<OutboundSignal>,
-    rx: mpsc::UnboundedReceiver<OutboundSignal>,
-}
-
-impl VirtualClient {
-    async fn connect(runtime: &TableRuntime, client_id: &str, nickname: &str) -> Self {
-        let conn_id = runtime.allocate_conn_id().await;
-        let (tx, rx) = mpsc::unbounded_channel();
-        let mut client = Self { conn_id, tx, rx };
-        client
-            .send(
-                runtime,
-                &ClientMessage::Hello {
-                    client_id: client_id.to_string(),
-                    nickname: nickname.to_string(),
-                    table_id: None,
-                    seat_token: None,
-                },
-            )
-            .await;
-        let _ = client.recv_snapshot().await;
-        client
-    }
-
-    async fn send(&self, runtime: &TableRuntime, msg: &ClientMessage) {
-        let raw = serde_json::to_string(msg).expect("serialize ClientMessage");
-        let _ = runtime
-            .handle_raw_text(self.conn_id, &raw, true, &self.tx)
-            .await;
-    }
-
-    fn drain_all(&mut self) -> Vec<ServerMessage> {
-        let mut out = Vec::new();
-        while let Ok(sig) = self.rx.try_recv() {
-            match sig {
-                OutboundSignal::Message(m) => out.push(*m),
-                OutboundSignal::ReplaceAndClose => out.push(ServerMessage::SessionReplaced),
-            }
-        }
-        out
-    }
-
-    async fn recv_snapshot(&mut self) -> TableSnapshot {
-        loop {
-            match self.rx.recv().await.expect("outbound msg") {
-                OutboundSignal::Message(msg) => match *msg {
-                    ServerMessage::TableSnapshot(snap) => return snap,
-                    ServerMessage::LobbyUpdated { .. } | ServerMessage::TableBanter { .. } => {
-                        continue
-                    }
-                    other => panic!("expected TableSnapshot, got {other:?}"),
-                },
-                OutboundSignal::ReplaceAndClose => panic!("unexpected SessionReplaced"),
-            }
-        }
-    }
-}
-
-async fn yield_tasks() {
-    for _ in 0..12 {
-        tokio::task::yield_now().await;
-    }
-}
-
-async fn pump_ai_turn() {
-    for _ in 0..40 {
-        tokio::task::yield_now().await;
-        std::thread::sleep(Duration::from_millis(5));
-    }
-}
+use mahjong_server::session::{BoxedWallProvider, TableOptions, TableRuntime, WallProviderFactory};
 
 async fn start_solo_east_table(runtime: &TableRuntime, east: &mut VirtualClient) -> TableSnapshot {
     east.send(
@@ -222,7 +86,7 @@ async fn midhand_tenpai_inflection_injects_exact_hand_facts_without_leaking_oppo
         )))
     });
 
-    let llm = ScriptedLlmClient::new(vec![
+    let llm = ScriptedLlmClient::from_outputs(vec![
         BanterOutput {
             mood: PersonaMood::Smug,
             text: "开局这牌稳了，看我表演！".to_string(),
@@ -331,7 +195,7 @@ async fn stalled_draw_inflection_fires_and_per_seat_cooldown_blocks_until_3500ms
         )))
     });
 
-    let llm = ScriptedLlmClient::new(vec![
+    let llm = ScriptedLlmClient::from_outputs(vec![
         BanterOutput {
             mood: PersonaMood::Smug,
             text: "开局先打个招呼！".to_string(),
@@ -441,7 +305,7 @@ async fn highlight_banter_chains_set_reply_to_seat_and_cap_strictly_at_1_to_2_ro
         )))
     });
 
-    let llm = ScriptedLlmClient::new(vec![
+    let llm = ScriptedLlmClient::from_outputs(vec![
         // Hand 1 opening
         BanterOutput {
             mood: PersonaMood::Smug,
@@ -580,7 +444,7 @@ async fn highlight_banter_chains_set_reply_to_seat_and_cap_strictly_at_1_to_2_ro
         "chain must strictly stop after 2 follow-up replies, got {extra_after_cap:?}"
     );
 
-    // Verify follow-up prompts referenced the previous line verbatim.
+    // Verify follow-up prompts referenced the previous line verbatim and never mislabeled another seat as 自家/自己.
     let captured_h1 = llm.captured();
     assert_eq!(captured_h1.len(), 4); // 1 opening + 1 opener + 2 follow-ups
     assert!(captured_h1[2]
@@ -589,6 +453,18 @@ async fn highlight_banter_chains_set_reply_to_seat_and_cap_strictly_at_1_to_2_ro
     assert!(captured_h1[3]
         .user_prompt
         .contains("哎哟急眼哥别破防呀，手气不好就认命嘛。"));
+    for req in &captured_h1 {
+        assert!(
+            !req.user_prompt.contains("（自己）"),
+            "banter prompt must use glossary 自家 instead of 自己: {}",
+            req.user_prompt
+        );
+        assert!(
+            !req.user_prompt.contains("小王（自家）"),
+            "AI prompt must never label human seat as 自家: {}",
+            req.user_prompt
+        );
+    }
 
     // 2. Confirm Hand 2 -> East discards 1m -> South Pons 1m (Pon chain capped at 1 follow-up, privacy-safe!).
     east.send(
@@ -684,13 +560,19 @@ async fn highlight_banter_chains_set_reply_to_seat_and_cap_strictly_at_1_to_2_ro
     );
 
     // Mid-hand Pon follow-up prompt must reference South's line, include replier's own hand facts,
-    // and NEVER leak East's hidden red dragon (`红中`).
+    // use the replier's own seat perspective, and NEVER leak East's hidden red dragon (`红中`).
     let all_captured = llm.captured();
     let pon_reply_req = all_captured.last().expect("pon reply prompt");
     assert!(pon_reply_req
         .user_prompt
         .contains("碰你这张一万，节奏直接起飞！"));
     assert!(pon_reply_req.user_prompt.contains("预计算手牌事实"));
+    assert!(
+        !pon_reply_req.user_prompt.contains("急眼快攻哥（自家）")
+            && !pon_reply_req.user_prompt.contains("（自己）"),
+        "Pon follow-up prompt must format seats from replier's perspective: {}",
+        pon_reply_req.user_prompt
+    );
     assert!(
         !pon_reply_req.user_prompt.contains("红中"),
         "mid-hand chain reply leaked East's hidden tile: {}",

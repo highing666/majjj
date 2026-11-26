@@ -12,8 +12,8 @@ use mahjong_core::{
 
 use crate::llm::BanterGenerationRequest;
 use crate::persona::{PersonaId, PersonaMood};
-use crate::persona_memory::PersonaMemoryStore;
-use crate::protocol::{QuickEmote, SeatInfo, SeatKind};
+use crate::persona_memory::{MemoryNoteJob, PersonaMemoryStore};
+use crate::protocol::{QuickEmote, SeatInfo, SeatKind, ServerMessage};
 use crate::session::ActiveMatch;
 
 /// Hard synchronization cap for major highlight events (`MeldDeclared`, `HandSettled`)
@@ -84,11 +84,204 @@ pub(crate) struct SlowThinkTicket {
     pub fire_at: tokio::time::Instant,
 }
 
+/// Identifies the specific human turn already nudged so each turn fires at most once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NudgeTurnKey {
+    pub match_id: u64,
+    pub hand_generation: u64,
+    pub event_seq: u64,
+    pub seat: Seat,
+}
+
+/// Cohesive banter, quick-emote, slow-think nudge, and LLM outage state owned by `TableSession`.
+pub(crate) struct BanterSessionState {
+    pub pending_sync: Vec<PendingBanterJob>,
+    pub pending_async: Vec<PendingBanterJob>,
+    pub pending_memory_notes: Vec<MemoryNoteJob>,
+    pub llm_available: bool,
+    pub last_llm_error: Option<String>,
+    pub slow_think_nudge_enabled: bool,
+    quick_emote_last_sent: [Option<tokio::time::Instant>; 4],
+    active_slow_think_nudge: Option<SlowThinkTicket>,
+    last_nudged_turn: Option<NudgeTurnKey>,
+    next_nudge_generation: u64,
+}
+
+impl BanterSessionState {
+    pub(crate) fn new(slow_think_nudge_enabled: bool) -> Self {
+        Self {
+            pending_sync: Vec::new(),
+            pending_async: Vec::new(),
+            pending_memory_notes: Vec::new(),
+            llm_available: true,
+            last_llm_error: None,
+            slow_think_nudge_enabled,
+            quick_emote_last_sent: [None; 4],
+            active_slow_think_nudge: None,
+            last_nudged_turn: None,
+            next_nudge_generation: 1,
+        }
+    }
+
+    pub(crate) fn reset_for_match_transition(&mut self) {
+        self.pending_sync.clear();
+        self.pending_async.clear();
+        self.quick_emote_last_sent = [None; 4];
+        self.active_slow_think_nudge = None;
+        self.last_nudged_turn = None;
+    }
+
+    pub(crate) fn set_slow_think_nudge_enabled(&mut self, enabled: bool) {
+        self.slow_think_nudge_enabled = enabled;
+        if !enabled {
+            self.active_slow_think_nudge = None;
+        }
+    }
+
+    pub(crate) fn clear_active_nudge(&mut self) {
+        self.active_slow_think_nudge = None;
+    }
+
+    pub(crate) fn clear_nudge_for_seat(&mut self, seat: Seat) {
+        if self
+            .active_slow_think_nudge
+            .is_some_and(|ticket| ticket.target_seat == seat)
+        {
+            self.active_slow_think_nudge = None;
+        }
+    }
+
+    pub(crate) fn try_record_quick_emote(&mut self, seat: Seat, now: tokio::time::Instant) -> bool {
+        if self.quick_emote_last_sent[seat.index()]
+            .is_some_and(|last| now.saturating_duration_since(last) < QUICK_EMOTE_COOLDOWN)
+        {
+            return false;
+        }
+        self.quick_emote_last_sent[seat.index()] = Some(now);
+        true
+    }
+
+    pub(crate) fn current_outage_notice(&self) -> Option<ServerMessage> {
+        if self.llm_available {
+            return None;
+        }
+        self.last_llm_error
+            .as_ref()
+            .map(|msg| ServerMessage::LlmStatusNotice {
+                available: false,
+                message: msg.clone(),
+            })
+    }
+
+    pub(crate) fn record_llm_failure(&mut self, err_display: &str) -> Option<ServerMessage> {
+        if !self.llm_available {
+            return None;
+        }
+        let message =
+            format!("局域网推理服务异常：{err_display}（牌局照常进行，暂不生成牌桌台词）");
+        self.llm_available = false;
+        self.last_llm_error = Some(message.clone());
+        Some(ServerMessage::LlmStatusNotice {
+            available: false,
+            message,
+        })
+    }
+
+    pub(crate) fn record_llm_recovery(&mut self) -> Option<ServerMessage> {
+        if self.llm_available {
+            return None;
+        }
+        self.llm_available = true;
+        self.last_llm_error = None;
+        Some(ServerMessage::LlmStatusNotice {
+            available: true,
+            message: "局域网推理服务已恢复连接".to_string(),
+        })
+    }
+
+    pub(crate) fn schedule_slow_think_nudge(
+        &mut self,
+        turn: NudgeTurnKey,
+        target_seat_generation: u64,
+    ) -> Option<SlowThinkTicket> {
+        if self.last_nudged_turn == Some(turn) {
+            self.active_slow_think_nudge = None;
+            return None;
+        }
+        if self.active_slow_think_nudge.is_some_and(|existing| {
+            existing.match_id == turn.match_id
+                && existing.hand_generation == turn.hand_generation
+                && existing.seq == turn.event_seq
+                && existing.target_seat == turn.seat
+                && existing.target_seat_generation == target_seat_generation
+        }) {
+            return None;
+        }
+
+        let timer_generation = self.next_nudge_generation;
+        self.next_nudge_generation += 1;
+        let ticket = SlowThinkTicket {
+            match_id: turn.match_id,
+            hand_generation: turn.hand_generation,
+            seq: turn.event_seq,
+            target_seat: turn.seat,
+            target_seat_generation,
+            timer_generation,
+            fire_at: tokio::time::Instant::now() + SLOW_THINK_NUDGE_DELAY,
+        };
+        self.active_slow_think_nudge = Some(ticket);
+        Some(ticket)
+    }
+
+    pub(crate) fn consume_matching_nudge(&mut self, ticket: SlowThinkTicket) -> bool {
+        if self.active_slow_think_nudge != Some(ticket) {
+            return false;
+        }
+        self.active_slow_think_nudge = None;
+        true
+    }
+
+    pub(crate) fn is_turn_already_nudged(&self, turn: NudgeTurnKey) -> bool {
+        self.last_nudged_turn == Some(turn)
+    }
+
+    pub(crate) fn mark_turn_nudged(&mut self, turn: NudgeTurnKey) {
+        self.last_nudged_turn = Some(turn);
+    }
+
+    pub(crate) fn take_pending(
+        &mut self,
+    ) -> (
+        Vec<PendingBanterJob>,
+        Vec<PendingBanterJob>,
+        Vec<MemoryNoteJob>,
+    ) {
+        (
+            std::mem::take(&mut self.pending_sync),
+            std::mem::take(&mut self.pending_async),
+            std::mem::take(&mut self.pending_memory_notes),
+        )
+    }
+}
+
+/// Structured, speaker-neutral highlight trigger stored in a reply chain so every follow-up AI
+/// formats relative seat labels (`自家`/`上家`/`下家`/`对门`) strictly from its own seat perspective.
+#[derive(Debug, Clone)]
+pub(crate) enum BanterChainTrigger {
+    HandSettled(Box<HandSettlement>),
+    MeldDeclared {
+        actor: Seat,
+        /// Privacy-sanitized meld view (`ConcealedKong.tile` is always `None`).
+        meld: MeldView,
+        wall_remaining: u8,
+    },
+}
+
 /// Active AI-to-AI follow-up chain context attached to a highlight banter job.
 #[derive(Debug, Clone)]
 pub(crate) struct BanterChainContext {
-    /// Privacy-safe factual summary of the triggering highlight event (never includes opponent hidden tiles).
-    pub event_summary: String,
+    /// Structured trigger formatted relative to each follow-up speaker (never leaks hidden tiles).
+    pub trigger: BanterChainTrigger,
     /// True only when all four hands are publicly revealed (`HandSettled`).
     pub hands_revealed: bool,
     /// Number of follow-up replies already emitted in this chain (`0` for the opening highlight line).
@@ -97,6 +290,13 @@ pub(crate) struct BanterChainContext {
     pub max_replies: u8,
     /// Seats that have already spoken in this chain.
     pub spoken_seats: Vec<Seat>,
+}
+
+/// Previous line emitted in an AI banter chain, passed to `plan_chain_followup`.
+pub(crate) struct ChainPrevLine<'a> {
+    pub guard: BanterGuard,
+    pub mood: PersonaMood,
+    pub text: &'a str,
 }
 
 /// Scheduled LLM banter job ready for asynchronous or bounded-sync execution.
@@ -311,7 +511,7 @@ pub fn format_hand_facts_zh(facts: &HandFacts) -> String {
 fn relative_relation_zh(speaker: Seat, target: Seat) -> &'static str {
     let diff = (target.index() + 4 - speaker.index()) % 4;
     match diff {
-        0 => "自己",
+        0 => "自家",
         1 => "下家",
         2 => "对门",
         _ => "上家",
@@ -326,7 +526,7 @@ fn seat_label(seats: &[SeatInfo; 4], speaker: Seat, target: Seat) -> String {
         name.to_string()
     };
     if speaker == target {
-        format!("{display}（自己）")
+        format!("{display}（自家）")
     } else {
         format!("{display}（{}）", relative_relation_zh(speaker, target))
     }
@@ -677,32 +877,60 @@ fn build_mid_hand_inflection_prompt(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+struct OwnHandContext<'a> {
+    view: &'a PlayerView,
+    facts: &'a HandFacts,
+}
+
+fn format_chain_trigger_summary(
+    seats: &[SeatInfo; 4],
+    speaker: Seat,
+    trigger: &BanterChainTrigger,
+) -> String {
+    match trigger {
+        BanterChainTrigger::HandSettled(settlement) => {
+            let (outcome_summary, deltas, revealed) =
+                format_settlement_summary_lines(seats, speaker, settlement);
+            format!("{outcome_summary} 得分：{deltas}。\n摊牌：\n{revealed}")
+        }
+        BanterChainTrigger::MeldDeclared {
+            actor,
+            meld,
+            wall_remaining,
+        } => format!(
+            "{}（牌墙余{wall_remaining}张）",
+            format_public_meld_summary(seats, speaker, *actor, meld, false),
+        ),
+    }
+}
+
 fn build_chain_reply_prompt(
     seats: &[SeatInfo; 4],
     speaker: Seat,
-    prev_seat: Seat,
-    prev_mood: PersonaMood,
-    prev_text: &str,
+    prev: &ChainPrevLine<'_>,
     chain: &BanterChainContext,
-    own_view: Option<&PlayerView>,
-    own_facts: Option<&HandFacts>,
+    own: Option<OwnHandContext<'_>>,
 ) -> String {
-    let prev_label = seat_label(seats, speaker, prev_seat);
+    let prev_label = seat_label(seats, speaker, prev.guard.seat);
+    let summary = format_chain_trigger_summary(seats, speaker, &chain.trigger);
     let mut prompt = format!(
         "【牌友互怼补刀】高光场面：{summary}\n\
 刚才 {prev_label}（情绪：{mood}）刚放话：「{prev_text}」。\n",
-        summary = chain.event_summary,
-        mood = format_mood_zh(prev_mood),
+        mood = format_mood_zh(prev.mood),
+        prev_text = prev.text,
     );
     if !chain.hands_revealed {
-        if let (Some(view), Some(facts)) = (own_view, own_facts) {
+        if let Some(own_ctx) = own {
             let _ = writeln!(
                 prompt,
                 "你的自家手牌：{}（严禁臆测他家暗牌）。",
-                format_own_hand(view)
+                format_own_hand(own_ctx.view)
             );
-            let _ = writeln!(prompt, "预计算手牌事实：{}。", format_hand_facts_zh(facts));
+            let _ = writeln!(
+                prompt,
+                "预计算手牌事实：{}。",
+                format_hand_facts_zh(own_ctx.facts)
+            );
         }
     }
     prompt.push_str(
@@ -1039,10 +1267,6 @@ pub(crate) fn plan_banter_for_events(
             if let Some((seat, persona_id)) =
                 pick_settlement_speaker(ctx.seats, &ai_seats, &settlement, event.seq())
             {
-                let (outcome_summary, deltas, revealed) =
-                    format_settlement_summary_lines(ctx.seats, seat, &settlement);
-                let chain_summary =
-                    format!("{outcome_summary} 得分：{deltas}。\n摊牌：\n{revealed}");
                 let user_prompt = append_memory_context(
                     build_hand_settled_prompt(ctx.seats, seat, &settlement),
                     ctx.persona_memory,
@@ -1068,7 +1292,7 @@ pub(crate) fn plan_banter_for_events(
                     sync_cap: Some(ctx.sync_cap),
                     dispatch_delay: None,
                     chain: Some(BanterChainContext {
-                        event_summary: chain_summary,
+                        trigger: BanterChainTrigger::HandSettled(Box::new(settlement)),
                         hands_revealed: true,
                         replies_emitted: 0,
                         max_replies: MAX_BANTER_CHAIN_REPLIES,
@@ -1174,13 +1398,14 @@ pub(crate) fn plan_banter_for_events(
                 );
                 let request =
                     BanterGenerationRequest::new(build_system_prompt(persona_id), user_prompt);
-                // Privacy-safe public summary for follow-up AI speakers (never exposes ConcealedKong tile!).
-                let public_summary = format!(
-                    "{}（牌墙余{}张）",
-                    format_public_meld_summary(ctx.seats, actor, actor, &speaker_meld, false),
-                    view.wall_remaining
-                );
-                let max_replies = match speaker_meld {
+                // Privacy-sanitized meld for follow-up AI speakers (never exposes ConcealedKong tile!).
+                let public_meld = match speaker_meld {
+                    MeldView::ConcealedKong { seq, .. } => {
+                        MeldView::ConcealedKong { tile: None, seq }
+                    }
+                    other => other,
+                };
+                let max_replies = match public_meld {
                     MeldView::ExposedKong { .. }
                     | MeldView::AddedKong { .. }
                     | MeldView::ConcealedKong { .. } => MAX_BANTER_CHAIN_REPLIES,
@@ -1194,7 +1419,7 @@ pub(crate) fn plan_banter_for_events(
                         persona_id,
                         event_seq: event.seq(),
                         hand_generation: ctx.hand_generation,
-                        max_seq_drift: Some(4),
+                        max_seq_drift: Some(8),
                         allow_finished_phase: false,
                         reply_to_seat: None,
                         require_nudge_enabled: false,
@@ -1203,7 +1428,11 @@ pub(crate) fn plan_banter_for_events(
                     sync_cap: Some(ctx.sync_cap),
                     dispatch_delay: None,
                     chain: Some(BanterChainContext {
-                        event_summary: public_summary,
+                        trigger: BanterChainTrigger::MeldDeclared {
+                            actor,
+                            meld: public_meld,
+                            wall_remaining: view.wall_remaining,
+                        },
                         hands_revealed: false,
                         replies_emitted: 0,
                         max_replies,
@@ -1322,11 +1551,8 @@ fn plan_mid_hand_inflection_banter(
                         ai_seats,
                         seat_hand_facts,
                         event.seq(),
-                        format!(
-                            "{}刚刚舍出 {}",
-                            seat_label(ctx.seats, seat, seat),
-                            format_tile_zh(tile)
-                        ),
+                        seat,
+                        tile,
                         &mut best,
                     );
                 }
@@ -1408,7 +1634,8 @@ fn consider_table_inflection_from_event(
     ai_seats: &[(Seat, PersonaId)],
     seat_hand_facts: &[Option<HandFacts>; 4],
     event_seq: u64,
-    trigger_desc: String,
+    discarder: Seat,
+    discarded_tile: Tile,
     best: &mut Option<InflectionCandidate>,
 ) {
     let eligible: Vec<(Seat, PersonaId)> = ai_seats
@@ -1440,6 +1667,11 @@ fn consider_table_inflection_from_event(
     let facts = seat_hand_facts[speaker.index()]
         .clone()
         .unwrap_or_else(|| analyze_hand_facts(&view, None));
+    let trigger_desc = format!(
+        "{}刚刚舍出 {}",
+        seat_label(ctx.seats, speaker, discarder),
+        format_tile_zh(discarded_tile)
+    );
     *best = Some(InflectionCandidate {
         seat: speaker,
         persona_id,
@@ -1533,12 +1765,9 @@ fn detect_table_only_inflection(
 
 /// Plans the next AI-to-AI follow-up reply in a highlight banter chain, strictly capped at `1..=2`
 /// follow-up replies and respecting per-seat cooldowns and privacy boundaries.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn plan_chain_followup(
     ctx: &BanterPlanContext<'_>,
-    prev_guard: BanterGuard,
-    prev_mood: PersonaMood,
-    prev_text: &str,
+    prev: &ChainPrevLine<'_>,
     chain: BanterChainContext,
     seat_hand_facts: &[Option<HandFacts>; 4],
     reply_delay: Duration,
@@ -1551,7 +1780,7 @@ pub(crate) fn plan_chain_followup(
     let eligible: Vec<(Seat, PersonaId)> = ai_persona_seats(ctx.seats)
         .into_iter()
         .filter(|&(seat, _)| {
-            seat != prev_guard.seat
+            seat != prev.guard.seat
                 && !chain.spoken_seats.contains(&seat)
                 && is_seat_off_cooldown(ctx.seat_last_banter_at, seat, ctx.now, ctx.cooldown)
         })
@@ -1561,7 +1790,7 @@ pub(crate) fn plan_chain_followup(
         &eligible,
         ctx.match_id
             .wrapping_mul(37)
-            .wrapping_add(prev_guard.event_seq)
+            .wrapping_add(prev.guard.event_seq)
             .wrapping_add(u64::from(chain.replies_emitted)),
     )?;
 
@@ -1572,18 +1801,13 @@ pub(crate) fn plan_chain_followup(
         let facts = analyze_hand_facts(&view, seat_hand_facts[next_seat.index()].as_ref());
         (Some(view), Some(facts))
     };
+    let own_ctx = match (own_view.as_ref(), own_facts.as_ref()) {
+        (Some(view), Some(facts)) => Some(OwnHandContext { view, facts }),
+        _ => None,
+    };
 
     let prompt = append_memory_context(
-        build_chain_reply_prompt(
-            ctx.seats,
-            next_seat,
-            prev_guard.seat,
-            prev_mood,
-            prev_text,
-            &chain,
-            own_view.as_ref(),
-            own_facts.as_ref(),
-        ),
+        build_chain_reply_prompt(ctx.seats, next_seat, prev, &chain, own_ctx),
         ctx.persona_memory,
         next_persona,
         ctx.seats,
@@ -1594,22 +1818,22 @@ pub(crate) fn plan_chain_followup(
 
     Some(PendingBanterJob {
         guard: BanterGuard {
-            match_id: prev_guard.match_id,
+            match_id: prev.guard.match_id,
             seat: next_seat,
             seat_generation: ctx.seat_generation[next_seat.index()],
             persona_id: next_persona,
-            event_seq: prev_guard.event_seq,
-            hand_generation: prev_guard.hand_generation,
+            event_seq: prev.guard.event_seq,
+            hand_generation: prev.guard.hand_generation,
             max_seq_drift: if chain.hands_revealed { None } else { Some(6) },
             allow_finished_phase: chain.hands_revealed,
-            reply_to_seat: Some(prev_guard.seat),
+            reply_to_seat: Some(prev.guard.seat),
             require_nudge_enabled: false,
         },
         request: BanterGenerationRequest::new(build_system_prompt(next_persona), prompt),
         sync_cap: None,
         dispatch_delay: Some(reply_delay),
         chain: Some(BanterChainContext {
-            event_summary: chain.event_summary,
+            trigger: chain.trigger,
             hands_revealed: chain.hands_revealed,
             replies_emitted: chain.replies_emitted + 1,
             max_replies: hard_cap,
@@ -1708,7 +1932,8 @@ mod tests {
     use super::{
         build_chain_reply_prompt, build_hand_settled_prompt, build_hand_started_prompt,
         build_meld_declared_prompt, build_mid_hand_inflection_prompt, build_system_prompt,
-        format_hand_facts_zh, format_tile_zh, BanterChainContext, MidHandInflection,
+        format_hand_facts_zh, format_tile_zh, seat_label, BanterChainContext, BanterChainTrigger,
+        BanterGuard, ChainPrevLine, MidHandInflection, OwnHandContext,
     };
     use crate::persona::{PersonaId, PersonaMood};
     use crate::protocol::{SeatInfo, SeatKind};
@@ -1875,28 +2100,135 @@ mod tests {
         assert!(meld_prompt.contains("暗杠了一手（牌面保密未知）"));
         assert!(!meld_prompt.contains("发财"));
 
-        // Mid-hand chain reply includes prior speaker text + own facts without opponent hidden tiles.
+        // Mid-hand chain reply includes prior speaker text + own facts without opponent hidden tiles
+        // AND formats all seat labels strictly from the follow-up speaker's perspective (West).
         let chain = BanterChainContext {
-            event_summary: "急眼快攻哥 碰了 小王 的 一万".to_string(),
+            trigger: BanterChainTrigger::MeldDeclared {
+                actor: Seat::South,
+                meld: MeldView::Pon {
+                    tile: Tile::new(0).unwrap(),
+                    from_seat: Seat::East,
+                    seq: 8,
+                },
+                wall_remaining: 54,
+            },
             hands_revealed: false,
             replies_emitted: 0,
             max_replies: 1,
             spoken_seats: vec![Seat::South],
         };
+        let prev = ChainPrevLine {
+            guard: BanterGuard {
+                match_id: 1,
+                seat: Seat::South,
+                seat_generation: 1,
+                persona_id: PersonaId::QuickHothead,
+                event_seq: 8,
+                hand_generation: 1,
+                max_seq_drift: Some(8),
+                allow_finished_phase: false,
+                reply_to_seat: None,
+                require_nudge_enabled: false,
+            },
+            mood: PersonaMood::Smug,
+            text: "这碰下来稳赢了！",
+        };
         let reply_prompt = build_chain_reply_prompt(
             &seats,
             Seat::West,
-            Seat::South,
-            PersonaMood::Smug,
-            "这碰下来稳赢了！",
+            &prev,
             &chain,
-            Some(&view),
-            Some(&facts),
+            Some(OwnHandContext {
+                view: &view,
+                facts: &facts,
+            }),
         );
         assert!(reply_prompt.contains("这碰下来稳赢了！"));
-        assert!(reply_prompt.contains("急眼快攻哥"));
+        assert!(reply_prompt.contains("急眼快攻哥（上家）"));
+        assert!(reply_prompt.contains("小王（对门）"));
+        assert!(!reply_prompt.contains("急眼快攻哥（自家）"));
+        assert!(!reply_prompt.contains("（自己）"));
         assert!(reply_prompt.contains("预计算手牌事实"));
         assert!(reply_prompt.contains("严禁臆测他家暗牌"));
+    }
+
+    #[test]
+    fn seat_label_and_settlement_chain_use_glossary_self_and_replier_perspective() {
+        let seats = sample_seats();
+        assert_eq!(
+            seat_label(&seats, Seat::South, Seat::South),
+            "急眼快攻哥（自家）"
+        );
+        assert_eq!(
+            seat_label(&seats, Seat::West, Seat::South),
+            "急眼快攻哥（上家）"
+        );
+        assert_eq!(
+            seat_label(&seats, Seat::West, Seat::West),
+            "阴阳茶艺师（自家）"
+        );
+
+        let settlement = HandSettlement {
+            wind_round: Wind::East,
+            hand_number: 1,
+            dealer_streak: 0,
+            dealer: Seat::East,
+            outcome: HandOutcome::Win {
+                winners: vec![WinnerSettlement {
+                    seat: Seat::South,
+                    win_kind: WinKind::Ron,
+                    items: vec![ScoreItem {
+                        code: "menqing".to_string(),
+                        label: "门前清".to_string(),
+                        fan: 1,
+                    }],
+                    total_fan: 1,
+                    base_points: 2,
+                }],
+                discarder: Some(Seat::East),
+                winning_tile: Tile::new(0).unwrap(),
+            },
+            kong_transfers: Vec::new(),
+            score_deltas: [-2, 2, 0, 0],
+            new_scores: [-2, 2, 0, 0],
+            revealed_hands: Seat::ALL.map(|seat| RevealedHand {
+                seat,
+                closed_tiles: vec![Tile::new(seat.index() as u8).unwrap()],
+                drawn_tile: None,
+                melds: Vec::new(),
+            }),
+        };
+
+        let chain = BanterChainContext {
+            trigger: BanterChainTrigger::HandSettled(Box::new(settlement)),
+            hands_revealed: true,
+            replies_emitted: 0,
+            max_replies: 2,
+            spoken_seats: vec![Seat::South],
+        };
+        let prev = ChainPrevLine {
+            guard: BanterGuard {
+                match_id: 1,
+                seat: Seat::South,
+                seat_generation: 1,
+                persona_id: PersonaId::QuickHothead,
+                event_seq: 12,
+                hand_generation: 1,
+                max_seq_drift: None,
+                allow_finished_phase: true,
+                reply_to_seat: None,
+                require_nudge_enabled: false,
+            },
+            mood: PersonaMood::Smug,
+            text: "点炮舒服不？",
+        };
+        let west_reply = build_chain_reply_prompt(&seats, Seat::West, &prev, &chain, None);
+        assert!(west_reply.contains("阴阳茶艺师（自家）"));
+        assert!(west_reply.contains("急眼快攻哥（上家）"));
+        assert!(west_reply.contains("小王（对门）"));
+        assert!(!west_reply.contains("急眼快攻哥（自家）"));
+        assert!(!west_reply.contains("小王（自家）"));
+        assert!(!west_reply.contains("（自己）"));
     }
 
     #[test]
@@ -1966,5 +2298,30 @@ mod tests {
         assert!(prompt.contains("小王"));
         assert!(prompt.contains("阴阳茶艺师"));
         assert!(prompt.contains("红温老雀神"));
+    }
+
+    #[test]
+    fn human_discard_table_inflection_formats_discarder_relative_to_ai_speaker() {
+        let seats = sample_seats();
+        let discarder = Seat::East; // 小王 (Human)
+        let speaker = Seat::South; // 急眼快攻哥 (AI)
+        let trigger_desc = format!(
+            "{}刚刚舍出 {}",
+            seat_label(&seats, speaker, discarder),
+            format_tile_zh(Tile::new(0).unwrap())
+        );
+        let view = dummy_view(speaker, vec![Tile::new(0).unwrap(); 13], None);
+        let facts = analyze_hand_facts(&view, None);
+        let prompt = build_mid_hand_inflection_prompt(
+            &seats,
+            speaker,
+            MidHandInflection::EndgameLowWall { wall_remaining: 8 },
+            &trigger_desc,
+            &view,
+            &facts,
+        );
+        assert!(prompt.contains("小王（上家）刚刚舍出 一万"));
+        assert!(!prompt.contains("小王（自家）"));
+        assert!(!prompt.contains("（自己）"));
     }
 }

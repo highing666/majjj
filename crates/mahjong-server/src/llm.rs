@@ -17,6 +17,7 @@ use tokio::net::TcpStream;
 
 use crate::persona::PersonaMood;
 use crate::persona_memory::normalize_grudge_note;
+use crate::storage::normalize_single_line_text;
 
 /// Default LAN Windows `llama-server` endpoint (see Spec #63 / #65).
 pub const DEFAULT_LLM_BASE_URL: &str = "http://192.168.5.50:8080";
@@ -490,21 +491,33 @@ fn contains_thinking_tag(text: &str) -> bool {
     lower.contains("<think>") || lower.contains("</think>")
 }
 
-fn normalize_banter_text(raw: &str) -> String {
-    let mut normalized = String::with_capacity(raw.len());
-    let mut prev_space = false;
-    for ch in raw.trim().chars() {
-        if matches!(ch, '\r' | '\n' | '\t') {
-            if !prev_space && !normalized.is_empty() {
-                normalized.push(' ');
-                prev_space = true;
-            }
-        } else {
-            normalized.push(ch);
-            prev_space = ch == ' ';
-        }
+fn extract_completion_content(body: &[u8], context_label: &str) -> Result<String, LlmError> {
+    let parsed: ChatCompletionResponse =
+        serde_json::from_slice(body).map_err(|err| LlmError::InvalidResponse {
+            reason: format!("{context_label} JSON 解析失败：{err}"),
+        })?;
+    let Some(choice) = parsed.choices.into_iter().next() else {
+        return Err(LlmError::InvalidResponse {
+            reason: "choices 为空".to_string(),
+        });
+    };
+    if choice
+        .message
+        .reasoning_content
+        .as_deref()
+        .is_some_and(|rc| !rc.trim().is_empty())
+    {
+        return Err(LlmError::ThinkingLeakage);
     }
-    normalized.trim().to_string()
+    let Some(content) = choice.message.content else {
+        return Err(LlmError::InvalidResponse {
+            reason: "message.content 缺失".to_string(),
+        });
+    };
+    if contains_thinking_tag(&content) {
+        return Err(LlmError::ThinkingLeakage);
+    }
+    Ok(content)
 }
 
 fn build_chat_completions_payload(
@@ -554,31 +567,7 @@ fn build_chat_completions_payload(
 
 /// Validates and parses a raw OpenAI `/v1/chat/completions` JSON response body into [`BanterOutput`].
 fn parse_chat_completion_response(body: &[u8]) -> Result<BanterOutput, LlmError> {
-    let parsed: ChatCompletionResponse =
-        serde_json::from_slice(body).map_err(|err| LlmError::InvalidResponse {
-            reason: format!("chat completion JSON 解析失败：{err}"),
-        })?;
-    let Some(choice) = parsed.choices.into_iter().next() else {
-        return Err(LlmError::InvalidResponse {
-            reason: "choices 为空".to_string(),
-        });
-    };
-    if choice
-        .message
-        .reasoning_content
-        .as_deref()
-        .is_some_and(|rc| !rc.trim().is_empty())
-    {
-        return Err(LlmError::ThinkingLeakage);
-    }
-    let Some(content) = choice.message.content else {
-        return Err(LlmError::InvalidResponse {
-            reason: "message.content 缺失".to_string(),
-        });
-    };
-    if contains_thinking_tag(&content) {
-        return Err(LlmError::ThinkingLeakage);
-    }
+    let content = extract_completion_content(body, "chat completion")?;
     let output: BanterOutput =
         serde_json::from_str(content.trim()).map_err(|err| LlmError::InvalidResponse {
             reason: format!("结构化 {{ mood, text }} 解析失败：{err}"),
@@ -586,7 +575,7 @@ fn parse_chat_completion_response(body: &[u8]) -> Result<BanterOutput, LlmError>
     if contains_thinking_tag(&output.text) {
         return Err(LlmError::ThinkingLeakage);
     }
-    let text = normalize_banter_text(&output.text);
+    let text = normalize_single_line_text(&output.text);
     if text.is_empty() {
         return Err(LlmError::EmptyBanterText);
     }
@@ -638,31 +627,7 @@ fn build_memory_note_payload(model: &str, request: &MemoryNoteRequest) -> serde_
 }
 
 fn parse_memory_note_response(body: &[u8]) -> Result<String, LlmError> {
-    let parsed: ChatCompletionResponse =
-        serde_json::from_slice(body).map_err(|err| LlmError::InvalidResponse {
-            reason: format!("memory note chat completion JSON 解析失败：{err}"),
-        })?;
-    let Some(choice) = parsed.choices.into_iter().next() else {
-        return Err(LlmError::InvalidResponse {
-            reason: "choices 为空".to_string(),
-        });
-    };
-    if choice
-        .message
-        .reasoning_content
-        .as_deref()
-        .is_some_and(|rc| !rc.trim().is_empty())
-    {
-        return Err(LlmError::ThinkingLeakage);
-    }
-    let Some(content) = choice.message.content else {
-        return Err(LlmError::InvalidResponse {
-            reason: "message.content 缺失".to_string(),
-        });
-    };
-    if contains_thinking_tag(&content) {
-        return Err(LlmError::ThinkingLeakage);
-    }
+    let content = extract_completion_content(body, "memory note chat completion")?;
     let output: MemoryNoteJsonOutput =
         serde_json::from_str(content.trim()).map_err(|err| LlmError::InvalidResponse {
             reason: format!("结构化 {{ note }} 解析失败：{err}"),
@@ -677,6 +642,44 @@ fn parse_memory_note_response(body: &[u8]) -> Result<String, LlmError> {
     Ok(note)
 }
 
+impl OpenAiLlmClient {
+    fn ensure_http_success(&self, status: StatusCode, body: &[u8]) -> Result<(), LlmError> {
+        if status.is_success() {
+            return Ok(());
+        }
+        let snippet = String::from_utf8_lossy(body)
+            .trim()
+            .chars()
+            .take(160)
+            .collect();
+        Err(LlmError::HttpStatus {
+            endpoint: self.endpoint.raw_normalized.clone(),
+            status: status.as_u16(),
+            body: snippet,
+        })
+    }
+
+    async fn post_chat_completion(
+        &self,
+        payload: &serde_json::Value,
+        serialize_label: &str,
+    ) -> Result<Vec<u8>, LlmError> {
+        let bytes = serde_json::to_vec(payload).map_err(|err| LlmError::InvalidResponse {
+            reason: format!("{serialize_label}：{err}"),
+        })?;
+        let (status, body) = self
+            .send_http(
+                Method::POST,
+                "/v1/chat/completions",
+                Some(bytes),
+                self.request_timeout,
+            )
+            .await?;
+        self.ensure_http_success(status, &body)?;
+        Ok(body)
+    }
+}
+
 impl LlmClient for OpenAiLlmClient {
     fn endpoint(&self) -> &str {
         &self.endpoint.raw_normalized
@@ -687,18 +690,7 @@ impl LlmClient for OpenAiLlmClient {
             let (health_status, health_body) = self
                 .send_http(Method::GET, "/health", None, self.health_timeout)
                 .await?;
-            if !health_status.is_success() {
-                let snippet = String::from_utf8_lossy(&health_body)
-                    .trim()
-                    .chars()
-                    .take(160)
-                    .collect();
-                return Err(LlmError::HttpStatus {
-                    endpoint: self.endpoint.raw_normalized.clone(),
-                    status: health_status.as_u16(),
-                    body: snippet,
-                });
-            }
+            self.ensure_http_success(health_status, &health_body)?;
             if let Ok(parsed_health) = serde_json::from_slice::<HealthBody>(&health_body) {
                 if let Some(status_text) = parsed_health.status {
                     if !status_text.eq_ignore_ascii_case("ok") {
@@ -712,18 +704,7 @@ impl LlmClient for OpenAiLlmClient {
             let (models_status, models_body) = self
                 .send_http(Method::GET, "/v1/models", None, self.health_timeout)
                 .await?;
-            if !models_status.is_success() {
-                let snippet = String::from_utf8_lossy(&models_body)
-                    .trim()
-                    .chars()
-                    .take(160)
-                    .collect();
-                return Err(LlmError::HttpStatus {
-                    endpoint: self.endpoint.raw_normalized.clone(),
-                    status: models_status.as_u16(),
-                    body: snippet,
-                });
-            }
+            self.ensure_http_success(models_status, &models_body)?;
             let models: ModelsResponse =
                 serde_json::from_slice(&models_body).map_err(|err| LlmError::InvalidResponse {
                     reason: format!("/v1/models JSON 解析失败：{err}"),
@@ -754,29 +735,9 @@ impl LlmClient for OpenAiLlmClient {
         Box::pin(async move {
             let model = self.current_model();
             let payload = build_chat_completions_payload(&model, &request);
-            let bytes = serde_json::to_vec(&payload).map_err(|err| LlmError::InvalidResponse {
-                reason: format!("序列化请求失败：{err}"),
-            })?;
-            let (status, body) = self
-                .send_http(
-                    Method::POST,
-                    "/v1/chat/completions",
-                    Some(bytes),
-                    self.request_timeout,
-                )
+            let body = self
+                .post_chat_completion(&payload, "序列化请求失败")
                 .await?;
-            if !status.is_success() {
-                let snippet = String::from_utf8_lossy(&body)
-                    .trim()
-                    .chars()
-                    .take(160)
-                    .collect();
-                return Err(LlmError::HttpStatus {
-                    endpoint: self.endpoint.raw_normalized.clone(),
-                    status: status.as_u16(),
-                    body: snippet,
-                });
-            }
             parse_chat_completion_response(&body)
         })
     }
@@ -788,29 +749,9 @@ impl LlmClient for OpenAiLlmClient {
         Box::pin(async move {
             let model = self.current_model();
             let payload = build_memory_note_payload(&model, &request);
-            let bytes = serde_json::to_vec(&payload).map_err(|err| LlmError::InvalidResponse {
-                reason: format!("序列化记忆笔记请求失败：{err}"),
-            })?;
-            let (status, body) = self
-                .send_http(
-                    Method::POST,
-                    "/v1/chat/completions",
-                    Some(bytes),
-                    self.request_timeout,
-                )
+            let body = self
+                .post_chat_completion(&payload, "序列化记忆笔记请求失败")
                 .await?;
-            if !status.is_success() {
-                let snippet = String::from_utf8_lossy(&body)
-                    .trim()
-                    .chars()
-                    .take(160)
-                    .collect();
-                return Err(LlmError::HttpStatus {
-                    endpoint: self.endpoint.raw_normalized.clone(),
-                    status: status.as_u16(),
-                    body: snippet,
-                });
-            }
             parse_memory_note_response(&body)
         })
     }

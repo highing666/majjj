@@ -339,6 +339,9 @@ export function createPresentationQueue(
     }
 
     sessionState = reduced.state;
+    if ("HandStarted" in item.event.kind) {
+      clearAllBubbles();
+    }
     if ("HandSettled" in item.event.kind) {
       settlementVisible = false;
     } else if (!shouldShowSettlement(sessionState.snapshot)) {

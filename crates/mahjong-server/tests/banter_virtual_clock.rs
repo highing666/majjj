@@ -1,170 +1,25 @@
 mod common;
 
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
-use common::{no_reaction_wall, tile, tiles};
+use common::{
+    no_reaction_wall, pump_ai_turn, tile, tiles, yield_tasks, PlannedReply, ScriptedLlmClient,
+    VirtualClient,
+};
 use mahjong_ai::AiDifficulty;
 use mahjong_core::{
     build_preset_wall, MatchMode, PlayerAction, PlayerEventKind, PresetWallProvider, Seat,
 };
-use mahjong_server::llm::{
-    BanterGenerationRequest, BanterOutput, LlmClient, LlmError, LlmFuture, LlmHealthStatus,
-};
+use mahjong_server::banter::ASYNC_BANTER_TIMEOUT;
+use mahjong_server::llm::BanterOutput;
 use mahjong_server::pacing::PacingMode;
 use mahjong_server::persona::{PersonaId, PersonaMood};
 use mahjong_server::protocol::{
-    ClientMessage, SeatKind, SeatingRule, ServerMessage, TablePace, TablePhase, TableSnapshot,
+    ClientMessage, SeatKind, SeatingRule, ServerMessage, TablePace, TablePhase,
 };
-use mahjong_server::session::{
-    BoxedWallProvider, OutboundSignal, TableOptions, TableRuntime, WallProviderFactory,
-};
-use tokio::sync::{mpsc, Notify};
-
-#[derive(Debug)]
-enum PlannedReply {
-    Immediate(Result<BanterOutput, LlmError>),
-    Delayed(Duration, Result<BanterOutput, LlmError>),
-    Gated(Arc<Notify>, Result<BanterOutput, LlmError>),
-}
-
-#[derive(Debug)]
-struct ScriptedLlmClient {
-    replies: Mutex<VecDeque<PlannedReply>>,
-    captured_requests: Mutex<Vec<BanterGenerationRequest>>,
-}
-
-impl ScriptedLlmClient {
-    fn new(replies: Vec<PlannedReply>) -> Arc<Self> {
-        Arc::new(Self {
-            replies: Mutex::new(replies.into()),
-            captured_requests: Mutex::new(Vec::new()),
-        })
-    }
-
-    fn captured(&self) -> Vec<BanterGenerationRequest> {
-        self.captured_requests
-            .lock()
-            .expect("lock captured")
-            .clone()
-    }
-}
-
-impl LlmClient for ScriptedLlmClient {
-    fn endpoint(&self) -> &str {
-        "http://virtual-llm.local:8080"
-    }
-
-    fn health_check(&self) -> LlmFuture<'_, Result<LlmHealthStatus, LlmError>> {
-        Box::pin(async {
-            Ok(LlmHealthStatus {
-                endpoint: "http://virtual-llm.local:8080".to_string(),
-                model_id: "virtual-qwen".to_string(),
-            })
-        })
-    }
-
-    fn generate_banter(
-        &self,
-        request: BanterGenerationRequest,
-    ) -> LlmFuture<'_, Result<BanterOutput, LlmError>> {
-        self.captured_requests
-            .lock()
-            .expect("lock captured")
-            .push(request);
-        let next = self
-            .replies
-            .lock()
-            .expect("lock replies")
-            .pop_front()
-            .unwrap_or_else(|| {
-                PlannedReply::Immediate(Ok(BanterOutput {
-                    mood: PersonaMood::Deadpan,
-                    text: "默认补位吐槽".to_string(),
-                }))
-            });
-        Box::pin(async move {
-            match next {
-                PlannedReply::Immediate(res) => res,
-                PlannedReply::Delayed(delay, res) => {
-                    tokio::time::sleep(delay).await;
-                    res
-                }
-                PlannedReply::Gated(notify, res) => {
-                    notify.notified().await;
-                    res
-                }
-            }
-        })
-    }
-}
-
-struct VirtualClient {
-    conn_id: u64,
-    tx: mpsc::UnboundedSender<OutboundSignal>,
-    rx: mpsc::UnboundedReceiver<OutboundSignal>,
-}
-
-impl VirtualClient {
-    async fn connect(runtime: &TableRuntime, client_id: &str, nickname: &str) -> Self {
-        let conn_id = runtime.allocate_conn_id().await;
-        let (tx, rx) = mpsc::unbounded_channel();
-        let mut client = Self { conn_id, tx, rx };
-        client
-            .send(
-                runtime,
-                &ClientMessage::Hello {
-                    client_id: client_id.to_string(),
-                    nickname: nickname.to_string(),
-                    table_id: None,
-                    seat_token: None,
-                },
-            )
-            .await;
-        let _ = client.recv_snapshot().await;
-        client
-    }
-
-    async fn send(&self, runtime: &TableRuntime, msg: &ClientMessage) {
-        let raw = serde_json::to_string(msg).expect("serialize ClientMessage");
-        let _ = runtime
-            .handle_raw_text(self.conn_id, &raw, true, &self.tx)
-            .await;
-    }
-
-    fn drain_all(&mut self) -> Vec<ServerMessage> {
-        let mut out = Vec::new();
-        while let Ok(sig) = self.rx.try_recv() {
-            match sig {
-                OutboundSignal::Message(m) => out.push(*m),
-                OutboundSignal::ReplaceAndClose => out.push(ServerMessage::SessionReplaced),
-            }
-        }
-        out
-    }
-
-    async fn recv_snapshot(&mut self) -> TableSnapshot {
-        loop {
-            match self.rx.recv().await.expect("outbound msg") {
-                OutboundSignal::Message(msg) => match *msg {
-                    ServerMessage::TableSnapshot(snap) => return snap,
-                    ServerMessage::LobbyUpdated { .. } | ServerMessage::TableBanter { .. } => {
-                        continue
-                    }
-                    other => panic!("expected TableSnapshot, got {other:?}"),
-                },
-                OutboundSignal::ReplaceAndClose => panic!("unexpected SessionReplaced"),
-            }
-        }
-    }
-}
-
-async fn yield_tasks() {
-    for _ in 0..8 {
-        tokio::task::yield_now().await;
-    }
-}
+use mahjong_server::session::{BoxedWallProvider, TableOptions, TableRuntime, WallProviderFactory};
+use tokio::sync::Notify;
 
 fn east_discards_south_pons_then_east_tsumo_walls() -> WallProviderFactory {
     // Hand 1: East discards 1m; South holds 11m + 222m 333m 55s 67s 9p (NOT tenpai on 1m,
@@ -190,33 +45,14 @@ fn east_discards_south_pons_then_east_tsumo_walls() -> WallProviderFactory {
     })
 }
 
-#[tokio::test(start_paused = true)]
-async fn highlight_sync_cap_bounds_meld_delay_emits_outage_notice_and_recovers_on_settlement() {
-    let llm = ScriptedLlmClient::new(vec![
-        // 1. HandStarted opening banter (fast)
-        PlannedReply::Immediate(Ok(BanterOutput {
-            mood: PersonaMood::Plotting,
-            text: "开局手气来了，你们小心点炮！".to_string(),
-        })),
-        // 2. MeldDeclared (South Pon) hangs 5s -> must hit 1500ms sync cap and NOT stall AI discard!
-        PlannedReply::Delayed(
-            Duration::from_secs(5),
-            Ok(BanterOutput {
-                mood: PersonaMood::Smug,
-                text: "太晚了不应该出现".to_string(),
-            }),
-        ),
-        // 3. HandSettled recovers -> must emit LlmStatusNotice { available: true } + TableBanter!
-        PlannedReply::Immediate(Ok(BanterOutput {
-            mood: PersonaMood::Tilted,
-            text: "这手自摸算你走运，下把加倍讨回来！".to_string(),
-        })),
-    ]);
-
+async fn setup_east_south_pon_table(
+    seed: u64,
+    llm: Arc<ScriptedLlmClient>,
+) -> (TableRuntime, VirtualClient, u64) {
     let options =
-        TableOptions::with_wall_factory(11, east_discards_south_pons_then_east_tsumo_walls())
+        TableOptions::with_wall_factory(seed, east_discards_south_pons_then_east_tsumo_walls())
             .with_pacing(PacingMode::Immediate)
-            .with_llm_client(llm.clone());
+            .with_llm_client(llm);
     let runtime = TableRuntime::with_options(8789, None, options);
 
     let mut east = VirtualClient::connect(&runtime, "e1", "小王").await;
@@ -249,6 +85,35 @@ async fn highlight_sync_cap_bounds_meld_delay_emits_outage_notice_and_recovers_o
     east.send(&runtime, &ClientMessage::StartMatch).await;
     let start_snap = east.recv_snapshot().await;
     assert_eq!(start_snap.phase, TablePhase::InMatch);
+    (runtime, east, start_snap.seq)
+}
+
+#[tokio::test(start_paused = true)]
+async fn highlight_sync_cap_unblocks_at_1500ms_without_false_outage_and_delivers_1800ms_banter() {
+    let llm = ScriptedLlmClient::from_replies(vec![
+        // 1. HandStarted opening banter (fast)
+        PlannedReply::Immediate(Ok(BanterOutput {
+            mood: PersonaMood::Plotting,
+            text: "开局手气来了，你们小心点炮！".to_string(),
+        })),
+        // 2. MeldDeclared (South Pon) takes 1800ms: slightly slower than 1500ms sync cap,
+        // well within 6000ms ASYNC_BANTER_TIMEOUT -> gameplay unblocks at 1500ms with NO outage notice,
+        // and the banter still arrives asynchronously at 1800ms!
+        PlannedReply::Delayed(
+            Duration::from_millis(1800),
+            Ok(BanterOutput {
+                mood: PersonaMood::Smug,
+                text: "碰你这张一万，照样稳稳接上！".to_string(),
+            }),
+        ),
+        // 3. Follow-up chain reply after Pon banter commits
+        PlannedReply::Immediate(Ok(BanterOutput {
+            mood: PersonaMood::Mocking,
+            text: "刚碰一张就飘成这样？".to_string(),
+        })),
+    ]);
+
+    let (runtime, mut east, start_seq) = setup_east_south_pon_table(11, llm.clone()).await;
 
     // Let async HandStarted banter finish.
     yield_tasks().await;
@@ -269,7 +134,7 @@ async fn highlight_sync_cap_bounds_meld_delay_emits_outage_notice_and_recovers_o
     east.send(
         &runtime,
         &ClientMessage::SubmitAction {
-            expected_seq: start_snap.seq,
+            expected_seq: start_seq,
             client_action_id: "discard-1m".to_string(),
             action: PlayerAction::Discard {
                 tile: tile("1m"),
@@ -278,71 +143,70 @@ async fn highlight_sync_cap_bounds_meld_delay_emits_outage_notice_and_recovers_o
         },
     )
     .await;
+    pump_ai_turn().await;
 
-    // Give Rayon AI pool a tiny real-thread slice to decide Pon.
-    for _ in 0..40 {
-        tokio::task::yield_now().await;
-        std::thread::sleep(Duration::from_millis(5));
-    }
     let after_pon = east.drain_all();
-    let saw_pon = after_pon.iter().any(|m| {
-        matches!(
+    assert!(
+        after_pon.iter().any(|m| matches!(
             m,
             ServerMessage::EventBatch { events, .. }
                 if events.iter().any(|e| matches!(e.kind, PlayerEventKind::MeldDeclared { seat: Seat::South, .. }))
-        )
-    });
-    assert!(saw_pon, "expected South Pon EventBatch, got {after_pon:?}");
+        )),
+        "expected South Pon EventBatch, got {after_pon:?}"
+    );
 
-    // At t = 1400ms (before 1500ms sync cap), South's follow-up discard is still held waiting for sync banter
-    // and no outage notice has fired yet.
+    // At t = 1400ms (before 1500ms sync cap), South's follow-up discard is still held.
     tokio::time::advance(Duration::from_millis(1400)).await;
     yield_tasks().await;
     let mid_wait = east.drain_all();
     assert!(
         !mid_wait.iter().any(|m| matches!(
             m,
-            ServerMessage::LlmStatusNotice {
-                available: false,
-                ..
-            }
+            ServerMessage::LlmStatusNotice { .. } | ServerMessage::TableBanter { .. }
         )),
-        "must not emit timeout notice before 1500ms cap: {mid_wait:?}"
+        "must neither fail nor finish early at 1400ms: {mid_wait:?}"
     );
 
-    // Crossing t = 1500ms triggers hard cap: emits LlmStatusNotice { available: false } (no fake banter!)
-    // and unblocks South AI's follow-up discard!
+    // Crossing t = 1550ms (> 1500ms sync cap): gameplay unblocks (South discards) with ZERO false outage notice!
     tokio::time::advance(Duration::from_millis(150)).await;
-    for _ in 0..40 {
-        tokio::task::yield_now().await;
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    pump_ai_turn().await;
     let after_cap = east.drain_all();
-    assert!(
-        after_cap.iter().any(|m| matches!(
-            m,
-            ServerMessage::LlmStatusNotice {
-                available: false,
-                ..
-            }
-        )),
-        "expected LlmStatusNotice {{ available: false }} after 1500ms cap, got {after_cap:?}"
-    );
     assert!(
         !after_cap
             .iter()
-            .any(|m| matches!(m, ServerMessage::TableBanter { .. })),
-        "must never emit fake banter on timeout: {after_cap:?}"
+            .any(|m| matches!(m, ServerMessage::LlmStatusNotice { .. })),
+        "1500ms sync cap must NOT emit a false LlmStatusNotice outage: {after_cap:?}"
     );
     assert!(
-        after_cap.iter().any(|m| {
-            matches!(
-                m,
-                ServerMessage::EventBatch { events, .. }
-                    if events.iter().any(|e| matches!(e.kind, PlayerEventKind::TileDiscarded { seat: Seat::South, .. }))
-            )
-        }),
-        "AI follow-up discard must proceed right after 1500ms cap without stalling gameplay: {after_cap:?}"
+        after_cap.iter().any(|m| matches!(
+            m,
+            ServerMessage::EventBatch { events, .. }
+                if events.iter().any(|e| matches!(e.kind, PlayerEventKind::TileDiscarded { seat: Seat::South, .. }))
+        )),
+        "AI follow-up discard must proceed right after 1500ms cap: {after_cap:?}"
+    );
+
+    // Crossing t = 1850ms (> 1800ms): the background highlight call finishes and still delivers TableBanter!
+    tokio::time::advance(Duration::from_millis(300)).await;
+    yield_tasks().await;
+    let after_1800 = east.drain_all();
+    assert!(
+        after_1800.iter().any(|m| matches!(
+            m,
+            ServerMessage::TableBanter {
+                seat: Seat::South,
+                mood: PersonaMood::Smug,
+                text,
+                ..
+            } if text.contains("碰你这张一万，照样稳稳接上")
+        )),
+        "1800ms highlight banter must still be delivered asynchronously after 1500ms unblock: {after_1800:?}"
+    );
+    assert!(
+        !after_1800
+            .iter()
+            .any(|m| matches!(m, ServerMessage::LlmStatusNotice { .. })),
+        "no outage notice should fire for an 1800ms reply: {after_1800:?}"
     );
 
     // Verify mid-hand prompts never leaked East's hidden red dragon (`红中`) into South's Pon prompt.
@@ -356,10 +220,125 @@ async fn highlight_sync_cap_bounds_meld_delay_emits_outage_notice_and_recovers_o
 }
 
 #[tokio::test(start_paused = true)]
+async fn true_llm_timeout_past_async_limit_emits_outage_notice_and_clears_on_recovery() {
+    let llm = ScriptedLlmClient::from_replies(vec![
+        // 1. HandStarted opening banter (fast)
+        PlannedReply::Immediate(Ok(BanterOutput {
+            mood: PersonaMood::Plotting,
+            text: "开局手气来了！".to_string(),
+        })),
+        // 2. MeldDeclared (South Pon) hangs 10s (> 6000ms ASYNC_BANTER_TIMEOUT) -> genuine timeout!
+        PlannedReply::Delayed(
+            Duration::from_secs(10),
+            Ok(BanterOutput {
+                mood: PersonaMood::Smug,
+                text: "超过完整超时不应该出现".to_string(),
+            }),
+        ),
+        // 3. Subsequent quick emote reply recovers -> emits LlmStatusNotice { available: true } + TableBanter!
+        PlannedReply::Immediate(Ok(BanterOutput {
+            mood: PersonaMood::Tilted,
+            text: "网卡刚恢复，这就来回喷你！".to_string(),
+        })),
+    ]);
+
+    let (runtime, mut east, start_seq) = setup_east_south_pon_table(12, llm).await;
+    yield_tasks().await;
+    let _ = east.drain_all();
+
+    east.send(
+        &runtime,
+        &ClientMessage::SubmitAction {
+            expected_seq: start_seq,
+            client_action_id: "discard-1m".to_string(),
+            action: PlayerAction::Discard {
+                tile: tile("1m"),
+                from_drawn: false,
+            },
+        },
+    )
+    .await;
+    pump_ai_turn().await;
+    let _ = east.drain_all();
+
+    // At 1600ms: gameplay unblocks, still NO false outage notice yet!
+    tokio::time::advance(Duration::from_millis(1600)).await;
+    pump_ai_turn().await;
+    let after_cap = east.drain_all();
+    assert!(
+        !after_cap.iter().any(|m| matches!(
+            m,
+            ServerMessage::LlmStatusNotice {
+                available: false,
+                ..
+            }
+        )),
+        "must not emit outage at 1600ms before full ASYNC_BANTER_TIMEOUT: {after_cap:?}"
+    );
+    assert!(
+        after_cap.iter().any(|m| matches!(
+            m,
+            ServerMessage::EventBatch { events, .. }
+                if events.iter().any(|e| matches!(e.kind, PlayerEventKind::TileDiscarded { seat: Seat::South, .. }))
+        )),
+        "gameplay must unblock at 1500ms even when LLM hangs 10s: {after_cap:?}"
+    );
+
+    // Crossing full ASYNC_BANTER_TIMEOUT (6000ms total): emits LlmStatusNotice { available: false } and NO fake banter!
+    tokio::time::advance(ASYNC_BANTER_TIMEOUT).await;
+    yield_tasks().await;
+    let after_full_timeout = east.drain_all();
+    assert!(
+        after_full_timeout.iter().any(|m| matches!(
+            m,
+            ServerMessage::LlmStatusNotice {
+                available: false,
+                ..
+            }
+        )),
+        "expected genuine LlmStatusNotice {{ available: false }} past 6000ms timeout, got {after_full_timeout:?}"
+    );
+    assert!(
+        !after_full_timeout
+            .iter()
+            .any(|m| matches!(m, ServerMessage::TableBanter { .. })),
+        "must never emit fake banter on timeout: {after_full_timeout:?}"
+    );
+
+    // Triggering a fresh request (QuickEmote) succeeds -> emits LlmStatusNotice { available: true } + TableBanter!
+    east.send(
+        &runtime,
+        &ClientMessage::SendQuickEmote {
+            emote: mahjong_server::protocol::QuickEmote::IsThatIt,
+        },
+    )
+    .await;
+    yield_tasks().await;
+    let recovery = east.drain_all();
+    assert!(
+        recovery.iter().any(|m| matches!(
+            m,
+            ServerMessage::LlmStatusNotice {
+                available: true,
+                ..
+            }
+        )),
+        "expected recovery LlmStatusNotice {{ available: true }}, got {recovery:?}"
+    );
+    assert!(
+        recovery.iter().any(|m| matches!(
+            m,
+            ServerMessage::TableBanter { text, .. } if text.contains("网卡刚恢复")
+        )),
+        "expected recovered TableBanter, got {recovery:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn takeover_and_disband_drop_in_flight_banter_without_ghost_lines() {
     let gate1 = Arc::new(Notify::new());
     let gate2 = Arc::new(Notify::new());
-    let llm = ScriptedLlmClient::new(vec![
+    let llm = ScriptedLlmClient::from_replies(vec![
         PlannedReply::Gated(
             Arc::clone(&gate1),
             Ok(BanterOutput {
@@ -413,9 +392,6 @@ async fn takeover_and_disband_drop_in_flight_banter_without_ghost_lines() {
     let _ = observer.recv_snapshot().await;
     yield_tasks().await;
 
-    // Identify which AI seat is currently running the gated opening banter by checking all AI seats,
-    // then have observer take over EVERY AI seat? One observer can take over 1 seat, so let's connect 3 observers
-    // or take over the exact seat that received the HandStarted prompt.
     let prompt0 = llm.captured()[0].system_prompt.clone();
     let target_seat = start_snap
         .seats
@@ -466,15 +442,13 @@ async fn takeover_and_disband_drop_in_flight_banter_without_ghost_lines() {
         "ghost TableBanter leaked to taken-over seat: {obs_after_takeover:?}"
     );
 
-    // Confirm taken-over seat still has mood == None via RequestSnapshot.
     observer
         .send(&runtime, &ClientMessage::RequestSnapshot)
         .await;
     let verify_snap = observer.recv_snapshot().await;
     assert_eq!(verify_snap.seats[target_seat.index()].mood, None);
 
-    // Now test DisbandMatch while gate2 is in-flight: disconnect observer so East can disband solo,
-    // disband first match, start match #2 (hits gate2), then immediately disband match #2!
+    // Disband match #2 while gate2 is in-flight.
     runtime.on_disconnect(observer.conn_id).await;
     east.send(&runtime, &ClientMessage::RequestDisbandMatch)
         .await;
@@ -486,14 +460,12 @@ async fn takeover_and_disband_drop_in_flight_banter_without_ghost_lines() {
     assert_eq!(match2_snap.phase, TablePhase::InMatch);
     yield_tasks().await;
 
-    // Immediately disband match #2 while gate2 is in-flight.
     east.send(&runtime, &ClientMessage::RequestDisbandMatch)
         .await;
     let lobby_snap2 = east.recv_snapshot().await;
     assert_eq!(lobby_snap2.phase, TablePhase::Lobby);
     let _ = east.drain_all();
 
-    // Release gate2 -> MUST be strictly dropped in Lobby!
     gate2.notify_waiters();
     yield_tasks().await;
     let after_disband = east.drain_all();

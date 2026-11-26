@@ -13,6 +13,7 @@
   import { ALL_SEATS, seatIndex, seatRelativeSlot } from "../protocol/seats";
   import {
     computeBanterBubbleAnchor,
+    rectToPercentStyle,
     type BanterBubbleAnchor,
   } from "./banterLayout";
   import type { TableLayout } from "./layout";
@@ -89,10 +90,17 @@
   });
 
   function anchorStyle(layout: TableLayout, anchor: BanterBubbleAnchor): string {
-    const leftPct = (anchor.leftPx / layout.width) * 100;
-    const topPct = (anchor.topPx / layout.height) * 100;
-    const widthPct = (anchor.maxWidthPx / layout.width) * 100;
-    return `left: ${leftPct.toFixed(3)}%; top: ${topPct.toFixed(3)}%; width: ${widthPct.toFixed(3)}%; max-height: ${anchor.maxHeightPx}px;`;
+    const pos = rectToPercentStyle(
+      layout,
+      {
+        x: anchor.leftPx,
+        y: anchor.topPx,
+        width: anchor.maxWidthPx,
+        height: anchor.maxHeightPx,
+      },
+      false,
+    );
+    return `${pos} max-height: ${anchor.maxHeightPx}px;`;
   }
 </script>
 

@@ -509,6 +509,8 @@
             canConfirmNextHand={(playerView?.legal_actions ?? []).includes(
               "ConfirmNextHand",
             )}
+            activeBubbles={presentationState.activeBubbles}
+            reducedEffects={renderQualityState.reducedEffects}
             disabled={inputLocked}
             destructivePending={snapshot !== null &&
               snapshot.pending_destructive_op !== null}
@@ -593,6 +595,8 @@
       seats={activeSnap.seats}
       yourSeat={activeSnap.your_seat}
       lastSettlement={presentedPlayerView.last_settlement}
+      activeBubbles={presentationState.activeBubbles}
+      reducedEffects={renderQualityState.reducedEffects}
       disabled={actionsDisabled}
       onUpdateConfig={(config) => client.updateLobbyConfig(config)}
       onStartMatch={() => client.startMatch()}

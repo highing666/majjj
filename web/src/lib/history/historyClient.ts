@@ -340,6 +340,89 @@ export function createHistoryController(
     }
   }
 
+  function createClearConfirmFlow<TRes>(config: {
+    phaseKey: "clearPhase" | "clearMemoryPhase";
+    noticeKey: "clearNotice" | "clearMemoryNotice";
+    errorKey: "clearErrorMessage" | "clearMemoryErrorMessage";
+    execute: () => Promise<TRes>;
+    formatNotice: (res: TRes) => string;
+    fallbackError: string;
+    reload: () => Promise<void>;
+  }) {
+    return {
+      request() {
+        if (state[config.phaseKey] === "submitting") {
+          return;
+        }
+        emit({
+          [config.phaseKey]: "confirming",
+          [config.noticeKey]: null,
+          [config.errorKey]: null,
+        } as Partial<HistoryState>);
+      },
+      cancel() {
+        const phase = state[config.phaseKey];
+        if (phase === "confirming" || phase === "error") {
+          emit({
+            [config.phaseKey]: "idle",
+            [config.errorKey]: null,
+          } as Partial<HistoryState>);
+        }
+      },
+      async confirm() {
+        const phase = state[config.phaseKey];
+        if (phase !== "confirming" && phase !== "error") {
+          return false;
+        }
+        emit({
+          [config.phaseKey]: "submitting",
+          [config.noticeKey]: null,
+          [config.errorKey]: null,
+        } as Partial<HistoryState>);
+        try {
+          const res = await config.execute();
+          emit({
+            [config.phaseKey]: "idle",
+            [config.noticeKey]: config.formatNotice(res),
+            [config.errorKey]: null,
+          } as Partial<HistoryState>);
+          await config.reload();
+          return true;
+        } catch (err) {
+          const msg =
+            err instanceof Error ? err.message : config.fallbackError;
+          emit({
+            [config.phaseKey]: "error",
+            [config.errorKey]: msg,
+          } as Partial<HistoryState>);
+          return false;
+        }
+      },
+    };
+  }
+
+  const clearHistoryFlow = createClearConfirmFlow({
+    phaseKey: "clearPhase",
+    noticeKey: "clearNotice",
+    errorKey: "clearErrorMessage",
+    execute: () => client.clearHistory(true),
+    formatNotice: (res) =>
+      `已清空 ${res.cleared_matches} 场对局、${res.cleared_hands} 小局历史战绩，默认配置与偏好已保留。`,
+    fallbackError: "清空战绩失败，请稍后重试。",
+    reload: loadStats,
+  });
+
+  const clearMemoryFlow = createClearConfirmFlow({
+    phaseKey: "clearMemoryPhase",
+    noticeKey: "clearMemoryNotice",
+    errorKey: "clearMemoryErrorMessage",
+    execute: () => client.clearPersonaMemory(true),
+    formatNotice: (res) =>
+      `已清空 ${res.cleared_pairs} 组牌友记忆账本与 ${res.cleared_notes} 条恩怨小本本。`,
+    fallbackError: "清空牌友记忆失败，请稍后重试。",
+    reload: loadPersonaMemory,
+  });
+
   return {
     getState: () => state,
     subscribe(listener) {
@@ -412,106 +495,14 @@ export function createHistoryController(
         return false;
       }
     },
-    requestClear() {
-      if (state.clearPhase === "submitting") {
-        return;
-      }
-      emit({
-        clearPhase: "confirming",
-        clearNotice: null,
-        clearErrorMessage: null,
-      });
-    },
-    cancelClear() {
-      if (state.clearPhase === "confirming" || state.clearPhase === "error") {
-        emit({
-          clearPhase: "idle",
-          clearErrorMessage: null,
-        });
-      }
-    },
-    async confirmClear() {
-      if (state.clearPhase !== "confirming" && state.clearPhase !== "error") {
-        return false;
-      }
-      emit({
-        clearPhase: "submitting",
-        clearNotice: null,
-        clearErrorMessage: null,
-      });
-      try {
-        const res = await client.clearHistory(true);
-        emit({
-          clearPhase: "idle",
-          clearNotice: `已清空 ${res.cleared_matches} 场对局、${res.cleared_hands} 小局历史战绩，默认配置与偏好已保留。`,
-          clearErrorMessage: null,
-        });
-        await loadStats();
-        return true;
-      } catch (err) {
-        const msg =
-          err instanceof Error ? err.message : "清空战绩失败，请稍后重试。";
-        emit({
-          clearPhase: "error",
-          clearErrorMessage: msg,
-        });
-        return false;
-      }
-    },
+    requestClear: () => clearHistoryFlow.request(),
+    cancelClear: () => clearHistoryFlow.cancel(),
+    confirmClear: () => clearHistoryFlow.confirm(),
     async refreshPersonaMemory() {
       await loadPersonaMemory();
     },
-    requestClearMemory() {
-      if (state.clearMemoryPhase === "submitting") {
-        return;
-      }
-      emit({
-        clearMemoryPhase: "confirming",
-        clearMemoryNotice: null,
-        clearMemoryErrorMessage: null,
-      });
-    },
-    cancelClearMemory() {
-      if (
-        state.clearMemoryPhase === "confirming" ||
-        state.clearMemoryPhase === "error"
-      ) {
-        emit({
-          clearMemoryPhase: "idle",
-          clearMemoryErrorMessage: null,
-        });
-      }
-    },
-    async confirmClearMemory() {
-      if (
-        state.clearMemoryPhase !== "confirming" &&
-        state.clearMemoryPhase !== "error"
-      ) {
-        return false;
-      }
-      emit({
-        clearMemoryPhase: "submitting",
-        clearMemoryNotice: null,
-        clearMemoryErrorMessage: null,
-      });
-      try {
-        const res = await client.clearPersonaMemory(true);
-        emit({
-          clearMemoryPhase: "idle",
-          clearMemoryNotice: `已清空 ${res.cleared_pairs} 组牌友记忆账本与 ${res.cleared_notes} 条恩怨小本本。`,
-          clearMemoryErrorMessage: null,
-        });
-        await loadPersonaMemory();
-        return true;
-      } catch (err) {
-        const msg =
-          err instanceof Error ? err.message : "清空牌友记忆失败，请稍后重试。";
-        emit({
-          clearMemoryPhase: "error",
-          clearMemoryErrorMessage: msg,
-        });
-        return false;
-      }
-    },
+    requestClearMemory: () => clearMemoryFlow.request(),
+    cancelClearMemory: () => clearMemoryFlow.cancel(),
+    confirmClearMemory: () => clearMemoryFlow.confirm(),
   };
 }
