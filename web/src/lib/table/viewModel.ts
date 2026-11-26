@@ -11,9 +11,10 @@ import type { Tile } from "../protocol/generated/Tile";
 import { parseMeld, type MeldKind } from "../protocol/melds";
 import {
   ALL_SEATS,
+  formatRelativeSeatDisplay,
+  formatSeatlessDisplay,
   getRelativeSeats,
   resolveSeatNickname,
-  seatLabel,
   seatRelativeRole,
   seatRelativeShortRole,
   seatRelativeSlot,
@@ -95,8 +96,8 @@ export interface MatchStandingRow {
 }
 
 /**
- * Formats a canonical seat display title (`东座 · 房主`, `南座 · AI 2`, or `西座`).
- * Retained temporarily for #60/#61 migration compatibility.
+ * Formats a viewer-relative seat display title (`下家 · 房主`), or falls back to
+ * seatless display (`房主`, `AI 2`, `3号位`) when `viewer === null`.
  */
 export function formatSeatDisplayName(
   seat: Seat,
@@ -106,9 +107,9 @@ export function formatSeatDisplayName(
     SeatDisplayEntry,
     SeatDisplayEntry,
   ] | null,
+  viewer: Seat | null = null,
 ): string {
-  const name = resolveSeatNickname(seat, seats);
-  return name ? `${seatLabel(seat)} · ${name}` : seatLabel(seat);
+  return formatRelativeSeatDisplay(seat, viewer, seats);
 }
 
 /**
@@ -232,20 +233,25 @@ export function formatScoreDelta(delta: number): string {
 }
 
 /**
- * Builds ranked standings from `MatchSummary` and `SeatInfo[4]`.
+ * Builds ranked standings from `MatchSummary` and `SeatInfo[4]`, projecting
+ * viewer-relative roles when `viewer !== null` and seatless names otherwise.
  */
 export function buildMatchStandings(
   summary: MatchSummary,
   seats: readonly [SeatInfo, SeatInfo, SeatInfo, SeatInfo],
+  viewer: Seat | null = null,
 ): MatchStandingRow[] {
   const rows = ALL_SEATS.map((seat, idx) => {
     const info = seats[idx];
+    const seatName = viewer !== null ? seatRelativeRole(viewer, seat) : "";
     const nickname =
-      info.nickname || (info.kind === "Ai" ? `AI ${idx + 1}` : seatLabel(seat));
+      viewer !== null
+        ? resolveSeatNickname(seat, seats)
+        : formatSeatlessDisplay(seat, seats);
     return {
       rank: 1,
       seat,
-      seatName: seatLabel(seat),
+      seatName,
       nickname,
       isAi: info.kind === "Ai",
       initialScore: summary.initial_scores[idx],
