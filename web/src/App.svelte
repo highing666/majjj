@@ -50,8 +50,12 @@
   import TableCanvas from "./lib/table/TableCanvas.svelte";
   import TakeOverModal from "./lib/table/TakeOverModal.svelte";
   import { formatRelativeSeatParen } from "./lib/protocol/seats";
+  import type { TableLayout } from "./lib/table/layout";
   import { formatRoundTitle } from "./lib/table/tiles";
-  import { findLegalDiscardAction } from "./lib/table/viewModel";
+  import {
+    deriveTurnCueState,
+    findLegalDiscardAction,
+  } from "./lib/table/viewModel";
   import type { WebGLRecoveryState } from "./lib/table/webglRecovery";
   import AudioResumeCapsule from "./lib/ui/AudioResumeCapsule.svelte";
   import SettingsModal from "./lib/ui/SettingsModal.svelte";
@@ -84,6 +88,7 @@
   let devicePrefs = $state<DevicePreferences>(initialDevicePrefs);
   let renderQualityState = $state<RenderQualityState>(renderQuality.getState());
   let webglRecoveryState = $state<WebGLRecoveryState | null>(null);
+  let tableLayout = $state<TableLayout | null>(null);
   let audioStatus = $state<AudioStatus>(audioRouter.getStatus());
   let settingsOpen = $state(false);
   let takeOverTarget = $state<{
@@ -158,6 +163,7 @@
     wakeLock.syncPhase(phase);
     if (phase !== "InMatch") {
       webglRecoveryState = null;
+      tableLayout = null;
       renderQuality.resetSamplingWindow();
     }
   });
@@ -182,6 +188,26 @@
       sessionState.pendingActionId !== null ||
       yourSeatAiAssisted,
   );
+  const turnCue = $derived(
+    deriveTurnCueState({
+      playerView: presentedPlayerView,
+      pendingAddedKong: presentationState.pendingAddedKong,
+      inputLocked,
+      reducedEffects: renderQualityState.reducedEffects,
+    }),
+  );
+  const turnBarStyle = $derived.by(() => {
+    if (!tableLayout) {
+      return "";
+    }
+    const { turnBarRect, width, height, centerStage } = tableLayout;
+    const centerX = turnBarRect.x + turnBarRect.width / 2;
+    const bottomPx = height - (turnBarRect.y + turnBarRect.height);
+    const leftPct = (centerX / width) * 100;
+    const bottomPct = (bottomPx / height) * 100;
+    const maxW = Math.max(200, centerStage.width - 8);
+    return `left: ${leftPct.toFixed(3)}%; bottom: ${bottomPct.toFixed(3)}%; max-width: min(calc(100% - 16px), ${maxW}px);`;
+  });
   const settlementVisible = $derived(
     presentedSnapshot !== null &&
       presentedSnapshot.phase === "InMatch" &&
@@ -427,7 +453,9 @@
             {inputLocked}
             confirmDiscard={devicePrefs.confirm_discard}
             paperGrainEnabled={renderQualityState.paperGrainEnabled}
+            reducedEffects={renderQualityState.reducedEffects}
             onDiscard={handleCanvasDiscard}
+            onLayoutChange={(layout) => (tableLayout = layout)}
             onFrameTick={() => renderQuality.recordFrame()}
             onWebGLRecoveryChange={(state) => (webglRecoveryState = state)}
             onRefresh={reloadPage}
@@ -453,13 +481,34 @@
           />
 
           {#if presentedPlayerView.phase === "Playing"}
-            <div class="action-bar-slot">
-              <ActionBar
-                playerView={presentedPlayerView}
-                disabled={inputLocked}
-                {hasModalOpen}
-                onAction={handleActionBar}
-              />
+            {@const isShortDock = tableLayout?.isShortLandscape ?? false}
+            <div
+              class="action-bar-slot"
+              class:turn-dock-short={isShortDock}
+              style={turnBarStyle}
+            >
+              {#if turnCue.mode === "action_prompt"}
+                <ActionBar
+                  playerView={presentedPlayerView}
+                  disabled={inputLocked}
+                  {hasModalOpen}
+                  onAction={handleActionBar}
+                />
+              {:else if turnCue.turnPillText !== null}
+                <div
+                  class="turn-cue-pill"
+                  class:turn-cue-pill-static={!turnCue.animateBreath}
+                  role="status"
+                  aria-live="polite"
+                >
+                  <span class="turn-cue-star" aria-hidden="true">✦</span>
+                  <span>{turnCue.turnPillText}</span>
+                </div>
+              {:else if turnCue.waitHintText !== null}
+                <div class="turn-wait-hint" role="status">
+                  {turnCue.waitHintText}
+                </div>
+              {/if}
             </div>
           {/if}
         </div>
@@ -855,6 +904,8 @@
     bottom: clamp(68px, 15%, 124px);
     z-index: 20;
     max-width: calc(100% - 16px);
+    display: flex;
+    justify-content: center;
     pointer-events: none;
   }
 
@@ -862,13 +913,86 @@
     pointer-events: auto;
   }
 
-  @media (max-height: 460px) {
-    .action-bar-slot {
-      position: static;
-      transform: none;
-      max-width: 100%;
-      margin-top: 8px;
-      pointer-events: auto;
+  .turn-cue-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 16px;
+    border-radius: 999px;
+    background: linear-gradient(180deg, #ffe08a 0%, #eca535 100%);
+    border: 1.5px solid #181a20;
+    color: #181a20;
+    font-weight: 800;
+    font-size: 13px;
+    line-height: 1.2;
+    white-space: nowrap;
+    box-shadow:
+      0 2px 0 #181a20,
+      0 0 16px rgba(245, 190, 88, 0.5);
+    animation: turnCuePulse 1.7s ease-in-out infinite;
+  }
+
+  .turn-cue-pill-static {
+    animation: none;
+    box-shadow:
+      0 2px 0 #181a20,
+      0 0 0 1.5px #f5be58,
+      0 0 14px rgba(245, 190, 88, 0.45);
+  }
+
+  .turn-cue-star {
+    font-size: 12px;
+    line-height: 1;
+  }
+
+  .turn-wait-hint {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 12px;
+    border-radius: 999px;
+    background: rgba(9, 20, 24, 0.64);
+    border: 1px solid rgba(212, 168, 87, 0.22);
+    color: #94a3b8;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.2;
+    white-space: nowrap;
+  }
+
+  .turn-dock-short .turn-cue-pill {
+    padding: 2px 12px;
+    font-size: 11px;
+    gap: 4px;
+  }
+
+  .turn-dock-short .turn-wait-hint {
+    padding: 1px 10px;
+    font-size: 10.5px;
+  }
+
+  .turn-dock-short :global(.action-bar) {
+    padding: 4px 8px;
+    gap: 5px;
+    border-radius: 10px;
+  }
+
+  .turn-dock-short :global(.action-btn) {
+    padding: 3px 8px;
+    font-size: 12px;
+    gap: 4px;
+  }
+
+  @keyframes turnCuePulse {
+    0%,
+    100% {
+      box-shadow:
+        0 2px 0 #181a20,
+        0 0 12px rgba(245, 190, 88, 0.42);
+    }
+    50% {
+      box-shadow:
+        0 2px 0 #181a20,
+        0 0 22px rgba(245, 190, 88, 0.85);
     }
   }
 </style>

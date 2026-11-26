@@ -85,6 +85,32 @@ export interface MatchStandingRow {
   netDelta: number;
 }
 
+export type TurnCueMode =
+  | "idle"
+  | "action_prompt"
+  | "discard_drawn"
+  | "discard_post_pon";
+
+export interface TurnCueState {
+  mode: TurnCueMode;
+  activeSlot: RelativeSlot | null;
+  showStageWash: boolean;
+  animateBreath: boolean;
+  highlightDrawnTile: boolean;
+  highlightClosedHand: boolean;
+  turnPillText: string | null;
+  waitHintText: string | null;
+  dimViewerHand: boolean;
+  centerEdgeGlowSlot: RelativeSlot | null;
+}
+
+export interface DeriveTurnCueOptions {
+  playerView: PlayerView | null;
+  pendingAddedKong?: PendingAddedKong | null;
+  inputLocked?: boolean;
+  reducedEffects?: boolean;
+}
+
 /**
  * Filters out claimed discards (`claimed_by !== null`) and chunks river tiles into rows of `rowSize` (6).
  */
@@ -478,5 +504,105 @@ export function buildSeatBadgeModel(
     isAiAssisted: seatInfo.kind === "Human" && seatInfo.ai_assisted,
     name,
     scoreText: formatScoreDelta(seatView.score),
+  };
+}
+
+function hasLegalDiscardAction(legalActions: readonly PlayerAction[]): boolean {
+  return legalActions.some(
+    (action) =>
+      typeof action === "object" && action !== null && "Discard" in action,
+  );
+}
+
+/**
+ * Derives the 4-layer turn cue state from the current `PlayerView`, pending added kong,
+ * input lock, and reduced-effects policy. Never derives or exposes any tile-advice hints.
+ */
+export function deriveTurnCueState(
+  options: DeriveTurnCueOptions,
+): TurnCueState {
+  const {
+    playerView,
+    pendingAddedKong = null,
+    inputLocked = false,
+    reducedEffects = false,
+  } = options;
+
+  if (!playerView || playerView.phase !== "Playing") {
+    return {
+      mode: "idle",
+      activeSlot: null,
+      showStageWash: false,
+      animateBreath: false,
+      highlightDrawnTile: false,
+      highlightClosedHand: false,
+      turnPillText: null,
+      waitHintText: null,
+      dimViewerHand: false,
+      centerEdgeGlowSlot: null,
+    };
+  }
+
+  const activeSeat = playerView.turn.active_seat;
+  const activeSlot =
+    activeSeat !== null ? seatRelativeSlot(playerView.viewer, activeSeat) : null;
+  const centerEdgeGlowSlot = activeSlot;
+
+  if (!inputLocked && buildActionBarItems(playerView).length > 0) {
+    return {
+      mode: "action_prompt",
+      activeSlot,
+      showStageWash: true,
+      animateBreath: !reducedEffects,
+      highlightDrawnTile: false,
+      highlightClosedHand: false,
+      turnPillText: null,
+      waitHintText: null,
+      dimViewerHand: false,
+      centerEdgeGlowSlot,
+    };
+  }
+
+  const canDiscardTurn =
+    !inputLocked &&
+    activeSeat === playerView.viewer &&
+    hasLegalDiscardAction(playerView.legal_actions);
+
+  if (canDiscardTurn) {
+    const isDrawnTurn = playerView.hand.drawn_tile !== null;
+    return {
+      mode: isDrawnTurn ? "discard_drawn" : "discard_post_pon",
+      activeSlot,
+      showStageWash: true,
+      animateBreath: !reducedEffects,
+      highlightDrawnTile: isDrawnTurn,
+      highlightClosedHand: !isDrawnTurn,
+      turnPillText: isDrawnTurn
+        ? "轮到你出牌"
+        : "轮到你出牌 · 碰后请择牌打出",
+      waitHintText: null,
+      dimViewerHand: false,
+      centerEdgeGlowSlot,
+    };
+  }
+
+  const waitHintText =
+    pendingAddedKong !== null
+      ? "补杠待确认…"
+      : activeSeat !== null && activeSeat !== playerView.viewer
+        ? `等待${seatRelativeRole(playerView.viewer, activeSeat)}行动…`
+        : null;
+
+  return {
+    mode: "idle",
+    activeSlot,
+    showStageWash: false,
+    animateBreath: false,
+    highlightDrawnTile: false,
+    highlightClosedHand: false,
+    turnPillText: null,
+    waitHintText,
+    dimViewerHand: true,
+    centerEdgeGlowSlot,
   };
 }
