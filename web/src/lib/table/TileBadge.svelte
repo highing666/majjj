@@ -1,18 +1,15 @@
 <script lang="ts">
+  import atlasPngUrl from "../../assets/atlas/tiles@2x.png";
   import type { Tile } from "../protocol/generated/Tile";
   import {
-    getDragonKind,
-    getSuitUnit,
-    getTileLabel,
-    getTileNumeral,
-    getTileSuit,
-    getTileTone,
-  } from "./tiles";
+    projectTileBadgeAtlas,
+    type TileBadgeSize,
+  } from "./tileBadgeAtlas";
 
   interface Props {
     tile: Tile | null;
     faceUp?: boolean;
-    size?: "xs" | "sm" | "md";
+    size?: TileBadgeSize;
     dimmed?: boolean;
     highlighted?: boolean;
   }
@@ -25,133 +22,59 @@
     highlighted = false,
   }: Props = $props();
 
-  const suit = $derived(tile !== null ? getTileSuit(tile) : null);
-  const numeral = $derived(tile !== null ? getTileNumeral(tile) : "");
-  const label = $derived(tile !== null && faceUp ? getTileLabel(tile) : "扣牌");
-  const suitUnit = $derived(suit !== null ? getSuitUnit(suit) : "");
-  const isWhiteDragon = $derived(
-    tile !== null && getDragonKind(tile) === "White",
-  );
-  const toneClass = $derived(
-    !faceUp || tile === null ? "tone-back" : `tone-${getTileTone(tile)}`,
-  );
+  const projection = $derived(projectTileBadgeAtlas(tile, faceUp, size));
 </script>
 
 <span
-  class="tile-badge size-{size} {toneClass}"
+  class="tile-badge size-{size}"
+  class:tile-back={!projection.faceUp}
   class:tile-dimmed={dimmed}
   class:tile-highlighted={highlighted}
-  title={label}
-  aria-label={label}
->
-  {#if !faceUp || tile === null}
-    <span class="tile-back-inner"></span>
-  {:else if isWhiteDragon}
-    <span class="tile-white-frame"></span>
-  {:else if suitUnit}
-    <span class="tile-top">{numeral}</span>
-    <span class="tile-bottom">{suitUnit}</span>
-  {:else}
-    <span class="tile-honor">{numeral}</span>
-  {/if}
-</span>
+  role="img"
+  style:width={`${projection.width}px`}
+  style:height={`${projection.height}px`}
+  style:background-image={`url("${atlasPngUrl}")`}
+  style:background-size={projection.backgroundSize}
+  style:background-position={projection.backgroundPosition}
+  title={projection.ariaLabel}
+  aria-label={projection.ariaLabel}
+></span>
 
 <style>
   .tile-badge {
-    display: inline-flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    border-radius: 5px;
-    border: 1.5px solid #181a20;
-    background: #f5eedf;
-    box-shadow: inset 0 -2px 0 #ddd0b6;
-    font-weight: 800;
-    line-height: 1;
+    display: inline-block;
     flex: 0 0 auto;
+    vertical-align: middle;
+    background-repeat: no-repeat;
+    background-color: transparent;
+    border: 0;
     user-select: none;
+    transition:
+      filter 0.12s ease,
+      box-shadow 0.12s ease,
+      opacity 0.12s ease;
   }
 
   .size-xs {
-    width: 22px;
-    height: 30px;
-    font-size: 10px;
-  }
-
-  .size-sm {
-    width: 26px;
-    height: 36px;
-    font-size: 11px;
-  }
-
-  .size-md {
-    width: 32px;
-    height: 44px;
-    font-size: 13px;
-  }
-
-  .tone-back {
-    background: #1e5c5e;
-    box-shadow: none;
-    padding: 3px;
-  }
-
-  .tile-back-inner {
-    width: 100%;
-    height: 100%;
-    border: 1px solid #2e787a;
-    border-radius: 2px;
-  }
-
-  .tile-white-frame {
-    width: 62%;
-    height: 68%;
-    border: 2px solid #1d4f8c;
     border-radius: 3px;
   }
 
-  .tone-man .tile-top,
-  .tone-red {
-    color: #b12824;
+  .size-sm {
+    border-radius: 3.5px;
   }
 
-  .tone-man .tile-bottom {
-    color: #181a20;
-  }
-
-  .tone-bamboo {
-    color: #1f6e4a;
-  }
-
-  .tone-dot {
-    color: #1d4f8c;
-  }
-
-  .tone-ink {
-    color: #181a20;
-  }
-
-  .tile-top {
-    font-size: 0.95em;
-  }
-
-  .tile-bottom {
-    font-size: 0.85em;
-    margin-top: 1px;
-  }
-
-  .tile-honor {
-    font-size: 1.15em;
+  .size-md {
+    border-radius: 4px;
   }
 
   .tile-dimmed {
     opacity: 0.72;
+    filter: saturate(0.75);
   }
 
   .tile-highlighted {
-    border-color: #d4891c;
     box-shadow:
-      0 0 0 2px rgba(245, 190, 88, 0.45),
-      inset 0 -2px 0 #ddd0b6;
+      0 0 0 1.5px #f5be58,
+      0 0 10px rgba(245, 190, 88, 0.72);
   }
 </style>
