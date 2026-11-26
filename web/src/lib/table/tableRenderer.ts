@@ -25,8 +25,8 @@ import {
 } from "./feltBackdrop";
 import {
   computeBottomRiverSlotPoint,
+  computeCenterSealEdgeBars,
   computeCenterSealLayout,
-  computeCenterSealPointer,
   computeOpponentHandSlots,
   computeRiverSlotPoint,
   computeTableLayout,
@@ -47,6 +47,7 @@ import {
   findLegalDiscardAction,
   getRelativeSeats,
   seatRelativeSlot,
+  type RelativeSlot,
 } from "./viewModel";
 
 const SEAL_BG = 0x0d1b20;
@@ -167,7 +168,7 @@ function fitTextToWidth(label: Text, maxWidth: number): void {
 }
 
 /**
- * Manages the PixiJS v8 scene layers for the Piltover Stage (Scheme A) + Four-Corner Minimal (Scheme C) table.
+ * Manages the PixiJS v8 scene layers for the Piltover Stage (Scheme A) + Three-Column Theater (Scheme B) table.
  * Reserves dedicated `ghostLayer` (#42) and `effectsLayer` (#43) containers.
  */
 export class TableSceneRenderer {
@@ -315,12 +316,22 @@ export class TableSceneRenderer {
       (entry) => entry.claimed_by === null,
     ).length;
 
+    const activeSlot = view.turn.active_seat
+      ? seatRelativeSlot(view.viewer, view.turn.active_seat)
+      : null;
+
     renderFeltBackdrop(this.feltLayer, layout, this.atlas);
-    this.drawCenterSeal(layout, view.viewer, view.turn, view.wall_remaining);
-    this.drawRivers(layout, relative, seatByName, findLatestRiverSeq(view.seats));
+    this.drawCenterSeal(layout, activeSlot, view.turn, view.wall_remaining);
+    this.drawRivers(
+      layout,
+      relative,
+      seatByName,
+      findLatestRiverSeq(view.seats),
+      activeSlot,
+    );
     this.drawMelds(layout, relative, seatByName, params.pendingAddedKong);
     this.drawOpponentHands(layout, relative, seatByName);
-    this.drawCornerBadges(
+    this.drawSeatBadges(
       layout,
       relative,
       seatByName,
@@ -378,85 +389,94 @@ export class TableSceneRenderer {
 
   private drawCenterSeal(
     layout: TableLayout,
-    viewer: Seat,
+    activeSlot: RelativeSlot | null,
     turn: NonNullable<TableSnapshot["player_view"]>["turn"],
     wallRemaining: number,
   ): void {
     disposeContainerChildren(this.centerSealLayer);
     const { centerSeal } = layout;
     const sealLayout = computeCenterSealLayout(centerSeal);
-    const activeSlot = turn.active_seat
-      ? seatRelativeSlot(viewer, turn.active_seat)
-      : null;
-    const pointer = computeCenterSealPointer(centerSeal, activeSlot);
+    const edgeBars = computeCenterSealEdgeBars(centerSeal);
     const cx = centerSeal.x + centerSeal.width / 2;
-    const cy = centerSeal.y + centerSeal.height / 2;
-    const ringRadius = sealLayout.ringRadius;
 
-    const ring = new Graphics();
-    ring
-      .circle(cx, cy, ringRadius)
-      .fill({ color: SEAL_BG, alpha: 0.9 })
-      .stroke({ width: 1.5, color: BRASS, alpha: 0.52 });
-    ring
-      .circle(cx, cy, Math.max(4, ringRadius - 4))
-      .stroke({ width: 1, color: BRASS, alpha: 0.22 });
-    this.centerSealLayer.addChild(ring);
+    const pill = new Graphics();
+    pill
+      .roundRect(
+        centerSeal.x,
+        centerSeal.y,
+        centerSeal.width,
+        centerSeal.height,
+        sealLayout.pillRadius,
+      )
+      .fill({ color: 0x0a171c, alpha: 0.94 })
+      .stroke({ width: 1.5, color: BRASS, alpha: 0.48 });
+    this.centerSealLayer.addChild(pill);
 
-    if (pointer) {
-      const glowArc = new Graphics();
-      glowArc
-        .arc(cx, cy, ringRadius, pointer.arcStart, pointer.arcEnd)
-        .stroke({ width: 5, color: ACTIVE_GLOW, alpha: 0.24, cap: "round" });
-      this.centerSealLayer.addChild(glowArc);
-
-      const activeArc = new Graphics();
-      activeArc
-        .arc(cx, cy, ringRadius, pointer.arcStart, pointer.arcEnd)
-        .stroke({ width: 2.5, color: ACTIVE_GLOW, alpha: 0.98, cap: "round" });
-      this.centerSealLayer.addChild(activeArc);
-
-      const arrow = new Graphics();
-      arrow
-        .poly([
-          pointer.tip.x,
-          pointer.tip.y,
-          pointer.baseLeft.x,
-          pointer.baseLeft.y,
-          pointer.baseRight.x,
-          pointer.baseRight.y,
-        ])
-        .fill({ color: ACTIVE_GLOW, alpha: 1 });
-      this.centerSealLayer.addChild(arrow);
+    for (const slot of ["top", "bottom", "left", "right"] as const) {
+      const bar = edgeBars[slot];
+      const isActive = slot === activeSlot;
+      const g = new Graphics();
+      if (isActive) {
+        g.roundRect(
+          bar.activeRect.x - 2,
+          bar.activeRect.y - 2,
+          bar.activeRect.width + 4,
+          bar.activeRect.height + 4,
+          3,
+        ).fill({ color: ACTIVE_GLOW, alpha: 0.28 });
+        g.roundRect(
+          bar.activeRect.x,
+          bar.activeRect.y,
+          bar.activeRect.width,
+          bar.activeRect.height,
+          2,
+        ).fill({ color: ACTIVE_GLOW, alpha: 0.98 });
+      } else {
+        g.roundRect(
+          bar.rect.x,
+          bar.rect.y,
+          bar.rect.width,
+          bar.rect.height,
+          2,
+        ).fill({ color: BRASS, alpha: 0.2 });
+      }
+      this.centerSealLayer.addChild(g);
     }
 
+    const textGroup = new Container();
     const roundText = new Text({
       text: formatCompactRoundTitle(turn),
       style: {
         fontFamily: SERIF_FONT,
-        fontSize: sealLayout.roundFontSize,
-        fontWeight: "800",
+        fontSize: sealLayout.fontSize,
+        fontWeight: "900",
         fill: TEXT_LIGHT,
       },
     });
-    roundText.anchor.set(0.5);
-    roundText.position.set(cx, sealLayout.roundY);
-    fitTextToWidth(roundText, centerSeal.width - 12);
-    this.centerSealLayer.addChild(roundText);
+    roundText.anchor.set(0, 0.5);
 
     const wallText = new Text({
-      text: `余 ${wallRemaining}`,
+      text: ` · 牌墙余 ${wallRemaining}`,
       style: {
         fontFamily: UI_FONT,
-        fontSize: sealLayout.wallFontSize,
+        fontSize: Math.max(9.5, sealLayout.fontSize - 1.5),
         fontWeight: "700",
         fill: TEXT_MUTED,
       },
     });
-    wallText.anchor.set(0.5);
-    wallText.position.set(cx, sealLayout.wallY);
-    fitTextToWidth(wallText, centerSeal.width - 12);
-    this.centerSealLayer.addChild(wallText);
+    wallText.anchor.set(0, 0.5);
+    wallText.position.set(roundText.width, 0);
+
+    textGroup.addChild(roundText, wallText);
+    const totalW = roundText.width + wallText.width;
+    if (totalW > sealLayout.textMaxWidth && totalW > 0) {
+      textGroup.scale.set(sealLayout.textMaxWidth / totalW);
+    }
+    textGroup.position.set(
+      Math.round(cx - (totalW * textGroup.scale.x) / 2),
+      sealLayout.textY,
+    );
+    this.centerSealLayer.addChild(textGroup);
   }
 
   private drawRivers(
@@ -464,6 +484,7 @@ export class TableSceneRenderer {
     relative: ReturnType<typeof getRelativeSeats>,
     seatByName: Map<Seat, PublicSeatView>,
     latestSeq: number,
+    activeSlot: RelativeSlot | null,
   ): void {
     disposeContainerChildren(this.riverLayer);
     const { riverTileW: tw, riverTileH: th } = layout;
@@ -512,13 +533,51 @@ export class TableSceneRenderer {
     };
 
     for (const side of ["bottom", "top", "left", "right"] as const) {
+      const trough = layout.riverTroughs[side];
+      const isActive = side === activeSlot;
+      const troughBg = new Graphics();
+      if (isActive) {
+        troughBg
+          .roundRect(
+            trough.x - 1.5,
+            trough.y - 1.5,
+            trough.width + 3,
+            trough.height + 3,
+            10,
+          )
+          .stroke({ width: 3, color: ACTIVE_GLOW, alpha: 0.24 });
+      }
+      troughBg
+        .roundRect(trough.x, trough.y, trough.width, trough.height, 9)
+        .fill({ color: 0x071014, alpha: 0.78 })
+        .stroke({
+          width: isActive ? 1.5 : 1,
+          color: isActive ? ACTIVE_GLOW : BRASS,
+          alpha: isActive ? 0.85 : 0.34,
+        });
+      troughBg
+        .roundRect(
+          trough.x + 1,
+          trough.y + 1,
+          Math.max(1, trough.width - 2),
+          Math.max(1, trough.height - 2),
+          8,
+        )
+        .stroke({ width: 1, color: 0x020608, alpha: 0.55 });
+      this.riverLayer.addChild(troughBg);
+
+      const perLine = layout.riverGrid[side].perLine;
       const rows = buildVisibleRiverRows(
         seatByName.get(relative[side])?.river ?? [],
-        6,
+        perLine,
       );
       rows.forEach((row, rIdx) => {
         row.forEach((entry, cIdx) => {
-          const slot = computeRiverSlotPoint(layout, side, rIdx * 6 + cIdx);
+          const slot = computeRiverSlotPoint(
+            layout,
+            side,
+            rIdx * perLine + cIdx,
+          );
           placeRiverTile(
             entry.tile,
             slot.x,
@@ -697,7 +756,7 @@ export class TableSceneRenderer {
     }
   }
 
-  private drawCornerBadges(
+  private drawSeatBadges(
     layout: TableLayout,
     relative: ReturnType<typeof getRelativeSeats>,
     seatByName: Map<Seat, PublicSeatView>,
@@ -723,10 +782,12 @@ export class TableSceneRenderer {
         dealer,
         activeSeat,
       );
-      const padX = layout.isWide ? 7 : 4;
+      const compact = rect.width < 120 || rect.height < 24;
+      const padX = compact ? 4 : 7;
+      const padY = compact ? 3 : 4;
       const box = new Graphics();
       box
-        .roundRect(rect.x, rect.y, rect.width, rect.height, 8)
+        .roundRect(rect.x, rect.y, rect.width, rect.height, compact ? 7 : 9)
         .fill({
           color: model.isActive ? 0x1b3b44 : SEAL_BG,
           alpha: 0.9,
@@ -738,12 +799,12 @@ export class TableSceneRenderer {
         });
       this.badgeLayer.addChild(box);
 
-      const pillH = rect.height - 8;
-      const pillFontSize = layout.isWide ? 11 : rect.height >= 24 ? 10 : 9;
-      const rolePillW = layout.isWide ? 34 : 24;
+      const pillH = Math.max(12, rect.height - padY * 2);
+      const pillFontSize = compact ? 9 : 11;
+      const rolePillW = compact ? 24 : 32;
       const rolePill = new Graphics();
       rolePill
-        .roundRect(rect.x + padX, rect.y + 4, rolePillW, pillH, 5)
+        .roundRect(rect.x + padX, rect.y + padY, rolePillW, pillH, 5)
         .fill({ color: model.isActive ? 0x265663 : 0x264852 });
       this.badgeLayer.addChild(rolePill);
 
@@ -766,12 +827,12 @@ export class TableSceneRenderer {
 
       let leftCursor = rect.x + padX + rolePillW;
       if (model.isDealer) {
-        const dealerGap = layout.isWide ? 4 : 3;
-        const dealerPillW = layout.isWide ? 20 : 15;
+        const dealerGap = compact ? 3 : 4;
+        const dealerPillW = compact ? 14 : 19;
         const dealerX = leftCursor + dealerGap;
         const dealerPill = new Graphics();
         dealerPill
-          .roundRect(dealerX, rect.y + 4, dealerPillW, pillH, 5)
+          .roundRect(dealerX, rect.y + padY, dealerPillW, pillH, 5)
           .fill({ color: DEALER_CORAL });
         this.badgeLayer.addChild(dealerPill);
 
@@ -798,7 +859,7 @@ export class TableSceneRenderer {
         text: model.scoreText,
         style: {
           fontFamily: UI_FONT,
-          fontSize: layout.isWide ? 12 : 10,
+          fontSize: compact ? 10 : 12,
           fontWeight: "800",
           fill: model.isActive ? ACTIVE_GLOW : BRASS,
         },
@@ -810,8 +871,8 @@ export class TableSceneRenderer {
       );
       this.badgeLayer.addChild(scoreText);
 
-      const scoreGap = layout.isWide ? 5 : 4;
-      const nameStart = leftCursor + (layout.isWide ? 6 : 4);
+      const scoreGap = compact ? 3 : 5;
+      const nameStart = leftCursor + (compact ? 4 : 6);
       const nameMaxW = Math.max(
         8,
         rect.x + rect.width - padX - scoreText.width - scoreGap - nameStart,
@@ -828,7 +889,7 @@ export class TableSceneRenderer {
         text: `${model.name}${statusSuffix}`,
         style: {
           fontFamily: UI_FONT,
-          fontSize: layout.isWide ? 12 : 10,
+          fontSize: compact ? 10 : 12,
           fontWeight: model.isActive ? "700" : "600",
           fill: model.isOffline || model.isAiAssisted ? PENDING_AMBER : TEXT_LIGHT,
         },
