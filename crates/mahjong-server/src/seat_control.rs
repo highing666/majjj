@@ -264,6 +264,10 @@ impl TableSession {
             conn_mut.seat_token = new_token;
         }
 
+        if !caller_nickname.trim().is_empty() {
+            self.history.record_nickname(caller_nickname);
+        }
+
         let pending_op_updated = self.reconcile_pending_destructive_op_on_seat_join(seat);
         self.notify_takeover_participants(conn_id, pending_op_updated);
     }
@@ -278,6 +282,10 @@ impl TableSession {
     ) {
         let _ = self.bump_seat_generation(seat);
         self.in_flight_ai.retain(|&(_, _, s, _)| s != seat);
+
+        if !caller_nickname.trim().is_empty() {
+            self.history.record_nickname(caller_nickname);
+        }
 
         let slot = &mut self.seats[seat.index()];
         slot.info.kind = SeatKind::Human;

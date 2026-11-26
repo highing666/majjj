@@ -7,6 +7,9 @@ use std::path::{Path, PathBuf};
 use common::TempDirGuard;
 use mahjong_ai::{AiDifficulty, AiStyle};
 use mahjong_core::{MatchError, MatchMode, PlayerAction, Seat, Suit, Tile, TurnSource};
+use mahjong_server::history_dto::{
+    ClearHistoryRequest, ClearHistoryResponse, HistoryExportResponse, StatsResponse,
+};
 use mahjong_server::protocol::{
     ClientMessage, DestructiveOpKind, HealthResponse, LanUrlInfo, LobbyConfig,
     PendingDestructiveOp, SeatInfo, SeatKind, SeatingRule, ServerMessage, TablePace, TablePhase,
@@ -27,6 +30,10 @@ fn export_all_contract_types(out_dir: &Path) {
     ClientMessage::export_all_to(out_dir).expect("export ClientMessage bindings");
     ServerMessage::export_all_to(out_dir).expect("export ServerMessage bindings");
     HealthResponse::export_all_to(out_dir).expect("export HealthResponse bindings");
+    StatsResponse::export_all_to(out_dir).expect("export StatsResponse bindings");
+    HistoryExportResponse::export_all_to(out_dir).expect("export HistoryExportResponse bindings");
+    ClearHistoryRequest::export_all_to(out_dir).expect("export ClearHistoryRequest bindings");
+    ClearHistoryResponse::export_all_to(out_dir).expect("export ClearHistoryResponse bindings");
     TurnSource::export_all_to(out_dir).expect("export TurnSource binding");
     Suit::export_all_to(out_dir).expect("export Suit binding");
     MatchError::export_all_to(out_dir).expect("export MatchError binding");
@@ -85,18 +92,25 @@ fn server_and_core_ts_bindings_match_committed_files_with_zero_drift() {
         vec![
             "AiDifficulty.ts",
             "AiStyle.ts",
+            "ClearHistoryRequest.ts",
+            "ClearHistoryResponse.ts",
             "ClientMessage.ts",
             "DestructiveOpKind.ts",
             "DiscardEntry.ts",
             "HandOutcome.ts",
+            "HandRecord.ts",
+            "HandSeatRecord.ts",
             "HandSettlement.ts",
             "HealthResponse.ts",
+            "HistoryExportResponse.ts",
             "KongKind.ts",
             "KongTransfer.ts",
             "LanUrlInfo.ts",
             "LobbyConfig.ts",
             "MatchError.ts",
             "MatchMode.ts",
+            "MatchRecord.ts",
+            "MatchSeatRecord.ts",
             "MatchSummary.ts",
             "MeldView.ts",
             "PendingDestructiveOp.ts",
@@ -104,7 +118,9 @@ fn server_and_core_ts_bindings_match_committed_files_with_zero_drift() {
             "PlayerEvent.ts",
             "PlayerEventKind.ts",
             "PlayerHandView.ts",
+            "PlayerStats.ts",
             "PlayerView.ts",
+            "PreferencesData.ts",
             "PublicPhase.ts",
             "PublicSeatView.ts",
             "RevealedHand.ts",
@@ -116,6 +132,7 @@ fn server_and_core_ts_bindings_match_committed_files_with_zero_drift() {
             "SeatKind.ts",
             "SeatingRule.ts",
             "ServerMessage.ts",
+            "StatsResponse.ts",
             "Suit.ts",
             "TablePace.ts",
             "TablePhase.ts",
@@ -127,7 +144,7 @@ fn server_and_core_ts_bindings_match_committed_files_with_zero_drift() {
             "Wind.ts",
             "WinnerSettlement.ts",
         ],
-        "exact set of 43 exported server, AI, and core TypeScript files"
+        "exact set of 53 exported server, history, AI, and core TypeScript files"
     );
 
     for (name, contents) in &expected_files {
