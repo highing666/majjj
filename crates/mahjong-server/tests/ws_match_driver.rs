@@ -1616,6 +1616,7 @@ async fn zero_ai_threads_returns_invalid_ai_threads_error() {
         port: 0,
         static_dir: None,
         ai_threads: 0,
+        ..ServerConfig::default()
     }
     .spawn()
     .await
@@ -1640,6 +1641,7 @@ async fn bounded_rayon_pool_drives_one_player_matches_with_deterministic_budget_
         port: 0,
         static_dir: None,
         ai_threads: 1,
+        ..ServerConfig::default()
     }
     .spawn_with_options(options)
     .await
@@ -1913,6 +1915,7 @@ async fn bounded_rayon_pool_drives_two_player_east_only_and_free_table_with_dete
         port: 0,
         static_dir: None,
         ai_threads: 2,
+        ..ServerConfig::default()
     }
     .spawn_with_options(options)
     .await
@@ -2202,6 +2205,7 @@ async fn bounded_rayon_pool_one_thread_handles_concurrent_multi_ai_reaction_wind
         port: 0,
         static_dir: None,
         ai_threads: 1,
+        ..ServerConfig::default()
     }
     .spawn_with_options(
         TableOptions::with_wall_factory(88, factory).with_pacing(PacingMode::Immediate),

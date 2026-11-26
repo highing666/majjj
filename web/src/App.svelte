@@ -1,6 +1,11 @@
 <script lang="ts">
   import { createAudioEventRouter } from "./lib/audio/audioRouter";
   import type { AudioStatus } from "./lib/audio/audioTypes";
+  import {
+    createShutdownController,
+    type ShutdownState,
+  } from "./lib/lifecycle/shutdownController";
+  import ShutdownControl from "./lib/lifecycle/ShutdownControl.svelte";
   import { matchModeLabel, patchLobbyConfig } from "./lib/lobby/lobbyConfig";
   import LobbyView from "./lib/lobby/LobbyView.svelte";
   import {
@@ -49,7 +54,11 @@
   const audioRouter = createAudioEventRouter({
     initialPreferences: initialDevicePrefs,
   });
+  const shutdownController = createShutdownController({
+    onShutdownSuccess: () => client.dispose(),
+  });
   let sessionState = $state<SessionState>(client.getState());
+  let shutdownState = $state<ShutdownState>(shutdownController.getState());
   let presentationState = $state<PresentationState>(
     presentationQueue.getState(),
   );
@@ -63,6 +72,9 @@
   $effect(() => {
     const unsubscribeClient = client.subscribe((next) => {
       sessionState = next;
+    });
+    const unsubscribeShutdown = shutdownController.subscribe((next) => {
+      shutdownState = next;
     });
     const unsubscribePrefs = preferencesStore.subscribe((next) => {
       devicePrefs = next;
@@ -92,6 +104,7 @@
       unsubscribePresentation();
       unsubscribeRenderQuality();
       unsubscribePrefs();
+      unsubscribeShutdown();
       unsubscribeClient();
       wakeLock.dispose();
       renderQuality.dispose();
@@ -108,6 +121,10 @@
   });
 
   const snapshot = $derived(sessionState.snapshot);
+
+  $effect(() => {
+    shutdownController.syncHostIsLoopback(snapshot?.host_is_loopback === true);
+  });
 
   $effect(() => {
     const phase = presentedSnapshot?.phase ?? null;
@@ -140,6 +157,9 @@
   );
   const hasModalOpen = $derived(
     settingsOpen ||
+      shutdownState.phase === "confirming" ||
+      shutdownState.phase === "submitting" ||
+      shutdownState.phase === "error" ||
       (snapshot !== null &&
         (snapshot.pending_destructive_op !== null || settlementVisible)),
   );
@@ -202,7 +222,17 @@
 </script>
 
 <main class="app-shell" class:app-shell-match={presentedSnapshot?.phase === "InMatch"}>
-  {#if sessionState.replacedByNewTab}
+  {#if shutdownState.phase === "stopped"}
+    <div class="banner banner-warn" role="status">
+      <div>
+        <strong>本机服务已关闭</strong>
+        <div>
+          本机 majjj 服务已安全停止。如需继续游玩，请重新启动应用或服务后刷新页面。
+        </div>
+      </div>
+      <button class="btn" type="button" onclick={reloadPage}>刷新页面</button>
+    </div>
+  {:else if sessionState.replacedByNewTab}
     <div class="banner banner-danger" role="alert">
       <div>
         <strong>会话已被新标签页接管</strong>
@@ -481,19 +511,34 @@
         等待服务端版本信息…
       {/if}
     </span>
-    <span>
-      连接状态：{sessionState.replacedByNewTab
-        ? "已被新标签页接管"
-        : sessionState.connectionStatus === "connected"
-          ? "已连接"
-          : sessionState.connectionStatus === "connecting"
-            ? "连接中"
-            : "已断开"}
+    <span class="footer-status">
+      连接状态：{shutdownState.phase === "stopped"
+        ? "本机服务已关闭"
+        : sessionState.replacedByNewTab
+          ? "已被新标签页接管"
+          : sessionState.connectionStatus === "connected"
+            ? "已连接"
+            : sessionState.connectionStatus === "connecting"
+              ? "连接中"
+              : "已断开"}
+      <ShutdownControl
+        state={shutdownState}
+        onRequestConfirm={() => shutdownController.requestConfirm()}
+        onCancel={() => shutdownController.cancelConfirm()}
+        onConfirm={() => shutdownController.confirmShutdown()}
+      />
     </span>
   </footer>
 </main>
 
 <style>
+  .footer-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
   .app-shell-match {
     max-width: 1380px;
     padding-top: max(10px, env(safe-area-inset-top));

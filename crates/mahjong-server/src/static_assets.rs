@@ -3,6 +3,7 @@
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
+use rust_embed::RustEmbed;
 use thiserror::Error;
 
 /// Resolved static HTTP asset ready to be written into an HTTP response.
@@ -76,41 +77,40 @@ impl DiskStaticAssets {
             return Err(StaticAssetError::InvalidPath);
         }
         let bytes = fs::read(&canonical)?;
-        let content_type = content_type_for_path(rel);
-        let cache_control = cache_control_for_path(rel);
-        Ok(Some(StaticAsset {
-            bytes,
-            content_type,
-            cache_control,
-        }))
+        Ok(Some(build_asset(rel, bytes)))
     }
 }
 
 impl StaticAssetSource for DiskStaticAssets {
     fn resolve(&self, uri_path: &str) -> Result<Option<StaticAsset>, StaticAssetError> {
-        let rel = normalize_relative_path(uri_path)?;
-
-        if rel == "api" || rel.starts_with("api/") || rel == "ws" || rel.starts_with("ws/") {
-            return Ok(None);
-        }
-
-        if rel.is_empty() {
-            return self.read_checked_file("index.html");
-        }
-
-        if let Some(asset) = self.read_checked_file(&rel)? {
-            return Ok(Some(asset));
-        }
-
-        if rel == "assets" || rel.starts_with("assets/") {
-            return Ok(None);
-        }
-
-        self.read_checked_file("index.html")
+        resolve_with_reader(uri_path, |rel| self.read_checked_file(rel))
     }
 }
 
-/// No-op asset source used when `--static-dir` is not configured.
+#[derive(RustEmbed)]
+#[folder = "../../web/dist"]
+struct WebDistEmbed;
+
+/// Embedded-bundle [`StaticAssetSource`] compiling `web/dist` into the server binary.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct EmbeddedStaticAssets;
+
+impl EmbeddedStaticAssets {
+    /// Iterates over all embedded relative asset paths (e.g. `"index.html"`, `"assets/app.js"`).
+    pub fn asset_paths() -> impl Iterator<Item = std::borrow::Cow<'static, str>> {
+        WebDistEmbed::iter()
+    }
+}
+
+impl StaticAssetSource for EmbeddedStaticAssets {
+    fn resolve(&self, uri_path: &str) -> Result<Option<StaticAsset>, StaticAssetError> {
+        resolve_with_reader(uri_path, |rel| {
+            Ok(WebDistEmbed::get(rel).map(|file| build_asset(rel, file.data.into_owned())))
+        })
+    }
+}
+
+/// No-op asset source for tests or environments that intentionally serve no static frontend.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NoopStaticAssets;
 
@@ -119,6 +119,42 @@ impl StaticAssetSource for NoopStaticAssets {
         let _ = normalize_relative_path(uri_path)?;
         Ok(None)
     }
+}
+
+fn build_asset(rel: &str, bytes: Vec<u8>) -> StaticAsset {
+    StaticAsset {
+        bytes,
+        content_type: content_type_for_path(rel),
+        cache_control: cache_control_for_path(rel),
+    }
+}
+
+fn resolve_with_reader<F>(
+    uri_path: &str,
+    read_file: F,
+) -> Result<Option<StaticAsset>, StaticAssetError>
+where
+    F: Fn(&str) -> Result<Option<StaticAsset>, StaticAssetError>,
+{
+    let rel = normalize_relative_path(uri_path)?;
+
+    if rel == "api" || rel.starts_with("api/") || rel == "ws" || rel.starts_with("ws/") {
+        return Ok(None);
+    }
+
+    if rel.is_empty() {
+        return read_file("index.html");
+    }
+
+    if let Some(asset) = read_file(&rel)? {
+        return Ok(Some(asset));
+    }
+
+    if rel == "assets" || rel.starts_with("assets/") {
+        return Ok(None);
+    }
+
+    read_file("index.html")
 }
 
 fn normalize_relative_path(uri_path: &str) -> Result<String, StaticAssetError> {
@@ -257,5 +293,94 @@ fn content_type_for_path(rel: &str) -> &'static str {
         Some("mp3") => "audio/mpeg",
         Some("wasm") => "application/wasm",
         _ => "application/octet-stream",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{EmbeddedStaticAssets, StaticAssetError, StaticAssetSource};
+
+    #[test]
+    fn embedded_assets_serve_index_hashed_assets_spa_fallback_and_block_traversal() {
+        let assets = EmbeddedStaticAssets;
+
+        // Root & /index.html -> text/html + no-cache
+        for path in ["/", "/index.html"] {
+            let asset = assets
+                .resolve(path)
+                .expect("resolve root")
+                .expect("index.html must be embedded");
+            assert_eq!(asset.content_type, "text/html; charset=utf-8");
+            assert_eq!(asset.cache_control, "no-cache");
+            assert!(
+                String::from_utf8_lossy(&asset.bytes).contains("Majjj"),
+                "embedded index.html should contain Majjj title"
+            );
+        }
+
+        // Find at least one hashed JS asset and one hashed CSS asset from embedded bundle.
+        let mut embedded_paths = EmbeddedStaticAssets::asset_paths();
+        let js_asset = embedded_paths
+            .find(|p| p.starts_with("assets/") && p.ends_with(".js"))
+            .expect("embedded bundle must contain hashed JS asset");
+        let resolved_js = assets
+            .resolve(&format!("/{js_asset}"))
+            .expect("resolve js")
+            .expect("js asset exists");
+        assert_eq!(
+            resolved_js.content_type,
+            "application/javascript; charset=utf-8"
+        );
+        assert_eq!(
+            resolved_js.cache_control,
+            "public, max-age=31536000, immutable"
+        );
+        assert!(!resolved_js.bytes.is_empty());
+
+        let css_asset = EmbeddedStaticAssets::asset_paths()
+            .find(|p| p.starts_with("assets/") && p.ends_with(".css"))
+            .expect("embedded bundle must contain hashed CSS asset");
+        let resolved_css = assets
+            .resolve(&format!("/{css_asset}"))
+            .expect("resolve css")
+            .expect("css asset exists");
+        assert_eq!(resolved_css.content_type, "text/css; charset=utf-8");
+        assert_eq!(
+            resolved_css.cache_control,
+            "public, max-age=31536000, immutable"
+        );
+
+        // /api/* and /ws return None (not SPA fallback)
+        assert!(assets.resolve("/api/health").unwrap().is_none());
+        assert!(assets.resolve("/api/unknown").unwrap().is_none());
+        assert!(assets.resolve("/ws").unwrap().is_none());
+
+        // Missing asset under /assets/ returns None
+        assert!(assets
+            .resolve("/assets/missing-999999.js")
+            .unwrap()
+            .is_none());
+
+        // SPA fallback for client routes
+        let spa = assets
+            .resolve("/lobby/seat")
+            .expect("spa resolve")
+            .expect("spa fallback returns index.html");
+        assert_eq!(spa.cache_control, "no-cache");
+        assert_eq!(spa.content_type, "text/html; charset=utf-8");
+
+        // Traversal / backslash / null byte rejected
+        for evil in [
+            "/../Cargo.toml",
+            "/%2e%2e/Cargo.toml",
+            "/assets/%2e%2e/index.html",
+            "/index.html%00.js",
+            "/assets\\index.js",
+        ] {
+            assert!(
+                matches!(assets.resolve(evil), Err(StaticAssetError::InvalidPath)),
+                "expected InvalidPath for {evil}"
+            );
+        }
     }
 }
