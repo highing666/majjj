@@ -1,6 +1,9 @@
 import type { ClearHistoryRequest } from "../protocol/generated/ClearHistoryRequest";
 import type { ClearHistoryResponse } from "../protocol/generated/ClearHistoryResponse";
+import type { ClearPersonaMemoryRequest } from "../protocol/generated/ClearPersonaMemoryRequest";
+import type { ClearPersonaMemoryResponse } from "../protocol/generated/ClearPersonaMemoryResponse";
 import type { HistoryExportResponse } from "../protocol/generated/HistoryExportResponse";
+import type { PersonaMemoryResponse } from "../protocol/generated/PersonaMemoryResponse";
 import type { PreferencesData } from "../protocol/generated/PreferencesData";
 import type { StatsResponse } from "../protocol/generated/StatsResponse";
 
@@ -36,6 +39,8 @@ export interface HistoryClient {
   fetchPreferences(): Promise<PreferencesData>;
   exportHistory(): Promise<HistoryExportResponse>;
   clearHistory(confirm?: boolean): Promise<ClearHistoryResponse>;
+  fetchPersonaMemory(): Promise<PersonaMemoryResponse>;
+  clearPersonaMemory(confirm?: boolean): Promise<ClearPersonaMemoryResponse>;
 }
 
 export type HistoryExportPhase = "idle" | "exporting" | "success" | "error";
@@ -52,6 +57,12 @@ export interface HistoryState {
   clearPhase: HistoryClearPhase;
   clearNotice: string | null;
   clearErrorMessage: string | null;
+  personaMemory: PersonaMemoryResponse | null;
+  personaMemoryLoading: boolean;
+  personaMemoryErrorMessage: string | null;
+  clearMemoryPhase: HistoryClearPhase;
+  clearMemoryNotice: string | null;
+  clearMemoryErrorMessage: string | null;
 }
 
 export type HistoryListener = (state: HistoryState) => void;
@@ -71,6 +82,10 @@ export interface HistoryController {
   requestClear(): void;
   cancelClear(): void;
   confirmClear(): Promise<boolean>;
+  refreshPersonaMemory(): Promise<void>;
+  requestClearMemory(): void;
+  cancelClearMemory(): void;
+  confirmClearMemory(): Promise<boolean>;
 }
 
 function defaultFetch(
@@ -229,12 +244,39 @@ export function createHistoryClient(
         "清空战绩",
       );
     },
+    fetchPersonaMemory() {
+      return requestJson<PersonaMemoryResponse>(
+        fetchFn,
+        "/api/persona-memory",
+        { method: "GET", cache: "no-store" },
+        "获取牌友记忆",
+      );
+    },
+    async clearPersonaMemory(confirm = true) {
+      if (confirm !== true) {
+        throw new HistoryClientError(
+          "清空牌友记忆必须显式确认（confirm: true）。",
+        );
+      }
+      const payload: ClearPersonaMemoryRequest = { confirm: true };
+      return requestJson<ClearPersonaMemoryResponse>(
+        fetchFn,
+        "/api/persona-memory/clear",
+        {
+          method: "POST",
+          cache: "no-store",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        },
+        "清空牌友记忆",
+      );
+    },
   };
 }
 
 /**
  * Pure TypeScript controller for the history panel lifecycle, export flow,
- * and explicit two-step clear confirmation with automatic stats refresh.
+ * persona memory lookup, and explicit two-step clear confirmations with refresh.
  */
 export function createHistoryController(
   options: HistoryControllerOptions = {},
@@ -255,6 +297,12 @@ export function createHistoryController(
     clearPhase: "idle",
     clearNotice: null,
     clearErrorMessage: null,
+    personaMemory: null,
+    personaMemoryLoading: false,
+    personaMemoryErrorMessage: null,
+    clearMemoryPhase: "idle",
+    clearMemoryNotice: null,
+    clearMemoryErrorMessage: null,
   };
 
   function emit(patch: Partial<HistoryState>): void {
@@ -276,6 +324,22 @@ export function createHistoryController(
     }
   }
 
+  async function loadPersonaMemory(): Promise<void> {
+    emit({ personaMemoryLoading: true, personaMemoryErrorMessage: null });
+    try {
+      const personaMemory = await client.fetchPersonaMemory();
+      emit({
+        personaMemoryLoading: false,
+        personaMemory,
+        personaMemoryErrorMessage: null,
+      });
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : "获取牌友记忆失败，请稍后重试。";
+      emit({ personaMemoryLoading: false, personaMemoryErrorMessage: msg });
+    }
+  }
+
   return {
     getState: () => state,
     subscribe(listener) {
@@ -294,17 +358,25 @@ export function createHistoryController(
         clearPhase: "idle",
         clearNotice: null,
         clearErrorMessage: null,
+        clearMemoryPhase: "idle",
+        clearMemoryNotice: null,
+        clearMemoryErrorMessage: null,
       });
       await loadStats();
     },
     close() {
-      if (state.clearPhase === "submitting") {
+      if (
+        state.clearPhase === "submitting" ||
+        state.clearMemoryPhase === "submitting"
+      ) {
         return;
       }
       emit({
         open: false,
         clearPhase: "idle",
         clearErrorMessage: null,
+        clearMemoryPhase: "idle",
+        clearMemoryErrorMessage: null,
       });
     },
     async refresh() {
@@ -382,6 +454,61 @@ export function createHistoryController(
         emit({
           clearPhase: "error",
           clearErrorMessage: msg,
+        });
+        return false;
+      }
+    },
+    async refreshPersonaMemory() {
+      await loadPersonaMemory();
+    },
+    requestClearMemory() {
+      if (state.clearMemoryPhase === "submitting") {
+        return;
+      }
+      emit({
+        clearMemoryPhase: "confirming",
+        clearMemoryNotice: null,
+        clearMemoryErrorMessage: null,
+      });
+    },
+    cancelClearMemory() {
+      if (
+        state.clearMemoryPhase === "confirming" ||
+        state.clearMemoryPhase === "error"
+      ) {
+        emit({
+          clearMemoryPhase: "idle",
+          clearMemoryErrorMessage: null,
+        });
+      }
+    },
+    async confirmClearMemory() {
+      if (
+        state.clearMemoryPhase !== "confirming" &&
+        state.clearMemoryPhase !== "error"
+      ) {
+        return false;
+      }
+      emit({
+        clearMemoryPhase: "submitting",
+        clearMemoryNotice: null,
+        clearMemoryErrorMessage: null,
+      });
+      try {
+        const res = await client.clearPersonaMemory(true);
+        emit({
+          clearMemoryPhase: "idle",
+          clearMemoryNotice: `已清空 ${res.cleared_pairs} 组牌友记忆账本与 ${res.cleared_notes} 条恩怨小本本。`,
+          clearMemoryErrorMessage: null,
+        });
+        await loadPersonaMemory();
+        return true;
+      } catch (err) {
+        const msg =
+          err instanceof Error ? err.message : "清空牌友记忆失败，请稍后重试。";
+        emit({
+          clearMemoryPhase: "error",
+          clearMemoryErrorMessage: msg,
         });
         return false;
       }

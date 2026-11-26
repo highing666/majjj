@@ -16,6 +16,7 @@ use thiserror::Error;
 use tokio::net::TcpStream;
 
 use crate::persona::PersonaMood;
+use crate::persona_memory::normalize_grudge_note;
 
 /// Default LAN Windows `llama-server` endpoint (see Spec #63 / #65).
 pub const DEFAULT_LLM_BASE_URL: &str = "http://192.168.5.50:8080";
@@ -73,6 +74,35 @@ pub struct BanterOutput {
     pub mood: PersonaMood,
     /// Single-line Chinese banter text (`牌桌台词`).
     pub text: String,
+}
+
+/// Structured request for distilling one concise persona grudge note (`<= 30` chars).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MemoryNoteRequest {
+    /// System prompt establishing persona identity and strict `{ "note": "..." }` JSON output.
+    pub system_prompt: String,
+    /// User prompt describing the memorable hand or finished match outcome.
+    pub user_prompt: String,
+    /// Sampling temperature.
+    pub temperature: f32,
+    /// Nucleus sampling `top_p`.
+    pub top_p: f32,
+    /// Maximum completion tokens for a concise single-line JSON output.
+    pub max_tokens: u32,
+}
+
+impl MemoryNoteRequest {
+    /// Builds a memory note generation request using tuned concise-output defaults.
+    #[must_use]
+    pub fn new(system_prompt: impl Into<String>, user_prompt: impl Into<String>) -> Self {
+        Self {
+            system_prompt: system_prompt.into(),
+            user_prompt: user_prompt.into(),
+            temperature: 0.7,
+            top_p: DEFAULT_TOP_P,
+            max_tokens: 80,
+        }
+    }
 }
 
 /// Successful health/model probe result returned by [`LlmClient::health_check`].
@@ -134,6 +164,17 @@ pub trait LlmClient: Send + Sync + std::fmt::Debug {
         &self,
         request: BanterGenerationRequest,
     ) -> LlmFuture<'_, Result<BanterOutput, LlmError>>;
+
+    /// Requests one concise structured `{ note }` grudge note (`<= 30` chars) for `PersonaMemory`.
+    ///
+    /// Defaults to returning an empty string (ignored by storage) so existing test doubles
+    /// compile without changes while production and memory tests override it.
+    fn generate_memory_note(
+        &self,
+        _request: MemoryNoteRequest,
+    ) -> LlmFuture<'_, Result<String, LlmError>> {
+        Box::pin(async { Ok(String::new()) })
+    }
 }
 
 /// Resolves the effective LLM base URL with strict precedence:
@@ -555,6 +596,87 @@ fn parse_chat_completion_response(body: &[u8]) -> Result<BanterOutput, LlmError>
     })
 }
 
+#[derive(Debug, Deserialize)]
+struct MemoryNoteJsonOutput {
+    note: String,
+}
+
+fn build_memory_note_payload(model: &str, request: &MemoryNoteRequest) -> serde_json::Value {
+    serde_json::json!({
+        "model": model,
+        "messages": [
+            { "role": "system", "content": request.system_prompt },
+            { "role": "user", "content": request.user_prompt }
+        ],
+        "temperature": request.temperature,
+        "top_p": request.top_p,
+        "max_tokens": request.max_tokens,
+        "stream": false,
+        "chat_template_kwargs": {
+            "enable_thinking": false
+        },
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "persona_memory_note",
+                "strict": true,
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "note": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 48
+                        }
+                    },
+                    "required": ["note"],
+                    "additionalProperties": false
+                }
+            }
+        }
+    })
+}
+
+fn parse_memory_note_response(body: &[u8]) -> Result<String, LlmError> {
+    let parsed: ChatCompletionResponse =
+        serde_json::from_slice(body).map_err(|err| LlmError::InvalidResponse {
+            reason: format!("memory note chat completion JSON 解析失败：{err}"),
+        })?;
+    let Some(choice) = parsed.choices.into_iter().next() else {
+        return Err(LlmError::InvalidResponse {
+            reason: "choices 为空".to_string(),
+        });
+    };
+    if choice
+        .message
+        .reasoning_content
+        .as_deref()
+        .is_some_and(|rc| !rc.trim().is_empty())
+    {
+        return Err(LlmError::ThinkingLeakage);
+    }
+    let Some(content) = choice.message.content else {
+        return Err(LlmError::InvalidResponse {
+            reason: "message.content 缺失".to_string(),
+        });
+    };
+    if contains_thinking_tag(&content) {
+        return Err(LlmError::ThinkingLeakage);
+    }
+    let output: MemoryNoteJsonOutput =
+        serde_json::from_str(content.trim()).map_err(|err| LlmError::InvalidResponse {
+            reason: format!("结构化 {{ note }} 解析失败：{err}"),
+        })?;
+    if contains_thinking_tag(&output.note) {
+        return Err(LlmError::ThinkingLeakage);
+    }
+    let note = normalize_grudge_note(&output.note);
+    if note.is_empty() {
+        return Err(LlmError::EmptyBanterText);
+    }
+    Ok(note)
+}
+
 impl LlmClient for OpenAiLlmClient {
     fn endpoint(&self) -> &str {
         &self.endpoint.raw_normalized
@@ -658,13 +780,48 @@ impl LlmClient for OpenAiLlmClient {
             parse_chat_completion_response(&body)
         })
     }
+
+    fn generate_memory_note(
+        &self,
+        request: MemoryNoteRequest,
+    ) -> LlmFuture<'_, Result<String, LlmError>> {
+        Box::pin(async move {
+            let model = self.current_model();
+            let payload = build_memory_note_payload(&model, &request);
+            let bytes = serde_json::to_vec(&payload).map_err(|err| LlmError::InvalidResponse {
+                reason: format!("序列化记忆笔记请求失败：{err}"),
+            })?;
+            let (status, body) = self
+                .send_http(
+                    Method::POST,
+                    "/v1/chat/completions",
+                    Some(bytes),
+                    self.request_timeout,
+                )
+                .await?;
+            if !status.is_success() {
+                let snippet = String::from_utf8_lossy(&body)
+                    .trim()
+                    .chars()
+                    .take(160)
+                    .collect();
+                return Err(LlmError::HttpStatus {
+                    endpoint: self.endpoint.raw_normalized.clone(),
+                    status: status.as_u16(),
+                    body: snippet,
+                });
+            }
+            parse_memory_note_response(&body)
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        build_chat_completions_payload, parse_chat_completion_response, resolve_llm_base_url,
-        BanterGenerationRequest, BanterOutput, LlmError, OpenAiLlmClient, DEFAULT_LLM_BASE_URL,
+        build_chat_completions_payload, build_memory_note_payload, parse_chat_completion_response,
+        parse_memory_note_response, resolve_llm_base_url, BanterGenerationRequest, BanterOutput,
+        LlmError, MemoryNoteRequest, OpenAiLlmClient, DEFAULT_LLM_BASE_URL,
     };
     use crate::persona::PersonaMood;
 
@@ -776,5 +933,30 @@ mod tests {
             parse_chat_completion_response(invalid_mood),
             Err(LlmError::InvalidResponse { .. })
         ));
+    }
+
+    #[test]
+    fn memory_note_payload_and_parser_disable_thinking_and_clamp_to_thirty_chars() {
+        let req = MemoryNoteRequest::new("system note", "user note");
+        let payload = build_memory_note_payload("Qwen3.5-9B-Q5_K_M", &req);
+        assert_eq!(payload["chat_template_kwargs"]["enable_thinking"], false);
+        assert_eq!(payload["response_format"]["type"], "json_schema");
+        assert_eq!(
+            payload["response_format"]["json_schema"]["name"],
+            "persona_memory_note"
+        );
+
+        let long_raw = r#"{"choices":[{"message":{"content":"{\"note\":\"  小王上回清一色自摸把我打得怀疑人生，下次见他必须先扣住他的万子绝不留情面  \"}"}}]}"#
+            .as_bytes();
+        let parsed = parse_memory_note_response(long_raw).expect("valid memory note");
+        assert_eq!(parsed.chars().count(), 30);
+
+        let thinking =
+            r#"{"choices":[{"message":{"content":"<think>x</think>{\"note\":\"记住小王\"}"}}]}"#
+                .as_bytes();
+        assert_eq!(
+            parse_memory_note_response(thinking),
+            Err(LlmError::ThinkingLeakage)
+        );
     }
 }
