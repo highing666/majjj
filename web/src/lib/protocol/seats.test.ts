@@ -3,16 +3,16 @@ import {
   ALL_SEATS,
   formatRelativeSeatDisplay,
   formatRelativeSeatParen,
+  formatSeatEntrySeatless,
   formatSeatlessDisplay,
   getRelativeSeats,
+  resolveSeatEntryNickname,
   resolveSeatNickname,
   seatIndex,
-  seatLabel,
   seatNumberLabel,
   seatRelativeRole,
   seatRelativeShortRole,
   seatRelativeSlot,
-  seatShortWind,
   type SeatDisplayEntry,
 } from "./seats";
 
@@ -89,7 +89,15 @@ describe("protocol/seats", () => {
     expect(formatSeatlessDisplay("East", SAMPLE_SEATS)).toBe("小红");
     expect(formatSeatlessDisplay("South", SAMPLE_SEATS)).toBe("AI 2");
     expect(formatSeatlessDisplay("West", SAMPLE_SEATS)).toBe("3号位");
+    expect(formatSeatlessDisplay("North", SAMPLE_SEATS)).toBe("AI北");
+    expect(formatSeatlessDisplay("East", null)).toBe("1号位");
     expect(formatSeatlessDisplay("North", null)).toBe("4号位");
+
+    expect(resolveSeatEntryNickname("West", SAMPLE_SEATS[2])).toBe("");
+    expect(formatSeatEntrySeatless("East", SAMPLE_SEATS[0])).toBe("小红");
+    expect(formatSeatEntrySeatless("South", SAMPLE_SEATS[1])).toBe("AI 2");
+    expect(formatSeatEntrySeatless("West", SAMPLE_SEATS[2])).toBe("3号位");
+    expect(formatSeatEntrySeatless("North", null)).toBe("4号位");
 
     expect(formatRelativeSeatDisplay("East", "South", SAMPLE_SEATS)).toBe(
       "上家 · 小红",
@@ -107,16 +115,12 @@ describe("protocol/seats", () => {
     expect(formatRelativeSeatDisplay("West", null, SAMPLE_SEATS)).toBe(
       "3号位",
     );
+    expect(formatRelativeSeatDisplay("East", "South", null)).toBe("上家");
 
     expect(formatRelativeSeatParen("East", "South", SAMPLE_SEATS)).toBe(
       "上家（小红）",
     );
     expect(formatRelativeSeatParen("West", "South", SAMPLE_SEATS)).toBe("下家");
     expect(formatRelativeSeatParen("West", null, SAMPLE_SEATS)).toBe("3号位");
-  });
-
-  it("keeps legacy seatLabel and seatShortWind helpers intact during migration", () => {
-    expect(ALL_SEATS.map(seatLabel)).toEqual(["东座", "南座", "西座", "北座"]);
-    expect(ALL_SEATS.map(seatShortWind)).toEqual(["东", "南", "西", "北"]);
   });
 });

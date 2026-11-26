@@ -115,20 +115,43 @@ export function seatNumberLabel(seat: Seat): string {
 }
 
 /**
+ * Resolves the display nickname for a single `SeatDisplayEntry` at `seat`
+ * (trimmed nickname, else `AI {idx+1}` for AI, else `""`).
+ */
+export function resolveSeatEntryNickname(
+  seat: Seat,
+  entry?: SeatDisplayEntry | null,
+): string {
+  const trimmed = entry?.nickname.trim() ?? "";
+  if (trimmed.length > 0) {
+    return trimmed;
+  }
+  const seatKind = entry
+    ? "kind" in entry
+      ? entry.kind
+      : entry.seat_kind
+    : null;
+  return seatKind === "Ai" ? `AI ${seatIndex(seat) + 1}` : "";
+}
+
+/**
  * Resolves the display nickname for `seat` (trimmed nickname, else `AI {idx+1}` for AI, else `""`).
  */
 export function resolveSeatNickname(
   seat: Seat,
   seats?: SeatDisplayList | null,
 ): string {
-  const idx = seatIndex(seat);
-  const info = seats?.[idx];
-  const trimmed = info?.nickname.trim() ?? "";
-  if (trimmed.length > 0) {
-    return trimmed;
-  }
-  const seatKind = info ? ("kind" in info ? info.kind : info.seat_kind) : null;
-  return seatKind === "Ai" ? `AI ${idx + 1}` : "";
+  return resolveSeatEntryNickname(seat, seats?.[seatIndex(seat)]);
+}
+
+/**
+ * Formats a single seat entry in viewerless contexts (nickname, falling back to `1~4号位`).
+ */
+export function formatSeatEntrySeatless(
+  seat: Seat,
+  entry?: SeatDisplayEntry | null,
+): string {
+  return resolveSeatEntryNickname(seat, entry) || seatNumberLabel(seat);
 }
 
 /**
@@ -138,7 +161,7 @@ export function formatSeatlessDisplay(
   seat: Seat,
   seats?: SeatDisplayList | null,
 ): string {
-  return resolveSeatNickname(seat, seats) || seatNumberLabel(seat);
+  return formatSeatEntrySeatless(seat, seats?.[seatIndex(seat)]);
 }
 
 /**
@@ -173,38 +196,4 @@ export function formatRelativeSeatParen(
   const role = seatRelativeRole(viewer, seat);
   const name = resolveSeatNickname(seat, seats);
   return name ? `${role}（${name}）` : role;
-}
-
-/**
- * Returns Chinese seat label (`东座`/`南座`/`西座`/`北座`).
- * Retained temporarily for #60/#61 migration compatibility.
- */
-export function seatLabel(seat: Seat): string {
-  switch (seat) {
-    case "East":
-      return "东座";
-    case "South":
-      return "南座";
-    case "West":
-      return "西座";
-    case "North":
-      return "北座";
-  }
-}
-
-/**
- * Returns single-character wind label for a seat (`东`/`南`/`西`/`北`).
- * Retained temporarily for #60/#61 migration compatibility.
- */
-export function seatShortWind(seat: Seat): string {
-  switch (seat) {
-    case "East":
-      return "东";
-    case "South":
-      return "南";
-    case "West":
-      return "西";
-    case "North":
-      return "北";
-  }
 }

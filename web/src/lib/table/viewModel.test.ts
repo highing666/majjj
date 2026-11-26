@@ -29,7 +29,6 @@ import {
   extractContentBoxSize,
   findLegalDiscardAction,
   formatScoreDelta,
-  formatSeatDisplayName,
   getRelativeSeats,
   resolveActionBarShortcut,
   seatRelativeSlot,
@@ -193,66 +192,6 @@ describe("table viewModel helpers", () => {
     expect(seatRelativeSlot("West", "North")).toBe("right");
     expect(seatRelativeSlot("West", "East")).toBe("top");
     expect(seatRelativeSlot("West", "South")).toBe("left");
-
-    const sampleSeats = [
-      {
-        seat: "East",
-        kind: "Human",
-        nickname: "房主",
-        connected: true,
-        ai_assisted: false,
-        ai_difficulty: null,
-        ai_style: null,
-        voice_pack_id: null,
-      },
-      {
-        seat: "South",
-        kind: "Ai",
-        nickname: "",
-        connected: true,
-        ai_assisted: false,
-        ai_difficulty: "Strong",
-        ai_style: "Balanced",
-        voice_pack_id: null,
-      },
-      {
-        seat: "West",
-        kind: "Human",
-        nickname: "",
-        connected: true,
-        ai_assisted: false,
-        ai_difficulty: null,
-        ai_style: null,
-        voice_pack_id: null,
-      },
-      {
-        seat: "North",
-        kind: "Ai",
-        nickname: "AI北",
-        connected: true,
-        ai_assisted: false,
-        ai_difficulty: "Strong",
-        ai_style: "Balanced",
-        voice_pack_id: null,
-      },
-    ] as const;
-    expect(formatSeatDisplayName("East", sampleSeats)).toBe("房主");
-    expect(formatSeatDisplayName("South", sampleSeats)).toBe("AI 2");
-    expect(formatSeatDisplayName("West", sampleSeats)).toBe("3号位");
-    expect(formatSeatDisplayName("North", sampleSeats)).toBe("AI北");
-    expect(formatSeatDisplayName("East", null)).toBe("1号位");
-
-    expect(formatSeatDisplayName("East", sampleSeats, "South")).toBe(
-      "上家 · 房主",
-    );
-    expect(formatSeatDisplayName("South", sampleSeats, "South")).toBe(
-      "自家 · AI 2",
-    );
-    expect(formatSeatDisplayName("West", sampleSeats, "South")).toBe("下家");
-    expect(formatSeatDisplayName("North", sampleSeats, "South")).toBe(
-      "对门 · AI北",
-    );
-    expect(formatSeatDisplayName("East", null, "South")).toBe("上家");
   });
 
   it("omits claimed discards and chunks rivers strictly into 6-tile rows", () => {
@@ -671,6 +610,86 @@ describe("table viewModel helpers", () => {
     expect(assistedModel.isAiAssisted).toBe(true);
     expect(assistedModel.isOffline).toBe(true);
     expect(assistedModel.role).toBe("下家");
+
+    const emptyHumanModel = buildSeatBadgeModel(
+      "South",
+      {
+        seat: "South",
+        score: 0,
+        hand_count: 13,
+        river: [],
+        melds: [],
+        last_draw_or_meld_seq: 0,
+      },
+      {
+        seat: "South",
+        kind: "Human",
+        nickname: "",
+        connected: true,
+        ai_assisted: false,
+        ai_difficulty: null,
+        ai_style: null,
+        voice_pack_id: null,
+      },
+      "East",
+      "East",
+      null,
+    );
+    expect(emptyHumanModel.role).toBe("下家");
+    expect(emptyHumanModel.name).toBe("2号位");
+
+    const whitespaceHumanModel = buildSeatBadgeModel(
+      "West",
+      {
+        seat: "West",
+        score: 0,
+        hand_count: 13,
+        river: [],
+        melds: [],
+        last_draw_or_meld_seq: 0,
+      },
+      {
+        seat: "West",
+        kind: "Human",
+        nickname: "   ",
+        connected: true,
+        ai_assisted: false,
+        ai_difficulty: null,
+        ai_style: null,
+        voice_pack_id: null,
+      },
+      "East",
+      "East",
+      null,
+    );
+    expect(whitespaceHumanModel.role).toBe("对门");
+    expect(whitespaceHumanModel.name).toBe("3号位");
+
+    const whitespaceAiModel = buildSeatBadgeModel(
+      "North",
+      {
+        seat: "North",
+        score: 0,
+        hand_count: 13,
+        river: [],
+        melds: [],
+        last_draw_or_meld_seq: 0,
+      },
+      {
+        seat: "North",
+        kind: "Ai",
+        nickname: "   ",
+        connected: true,
+        ai_assisted: false,
+        ai_difficulty: "Strong",
+        ai_style: "Balanced",
+        voice_pack_id: null,
+      },
+      "East",
+      "East",
+      null,
+    );
+    expect(whitespaceAiModel.name).toBe("AI");
   });
 
   it("assigns full 2-char counter-clockwise relative roles with zero wind characters across all 4 viewer perspectives", () => {

@@ -28,13 +28,6 @@ export interface LobbyTableViewModel {
   shuffleNotice: string | null;
 }
 
-const UNSEATED_SLOTS = {
-  bottom: "East",
-  right: "South",
-  top: "West",
-  left: "North",
-} as const satisfies Record<RelativeSlot, Seat>;
-
 /**
  * Projects a lobby `TableSnapshot` into a top-down counter-clockwise 4-sided ring-table
  * view model, rotating to keep `your_seat` at `bottom` (`自家`) when seated.
@@ -44,7 +37,7 @@ export function buildLobbyTableViewModel(
 ): LobbyTableViewModel {
   const viewer = snapshot.your_seat;
   const isSeated = viewer !== null;
-  const mapping = viewer !== null ? getRelativeSeats(viewer) : UNSEATED_SLOTS;
+  const mapping = getRelativeSeats(viewer ?? "East");
 
   const makeSlot = (slot: RelativeSlot): LobbyTableSlot => {
     const seat = mapping[slot];

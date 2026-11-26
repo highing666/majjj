@@ -4,6 +4,7 @@ import type { TableSnapshot } from "../protocol/generated/TableSnapshot";
 import {
   formatRelativeSeatDisplay,
   formatRelativeSeatParen,
+  formatSeatEntrySeatless,
   formatSeatlessDisplay,
   seatIndex,
 } from "../protocol/seats";
@@ -210,12 +211,7 @@ export function getTakeOverModalCopy(
   seatInfo: SeatInfo,
   kind: TakeOverKind,
 ): TakeOverModalCopy {
-  const seatText = formatSeatlessDisplay(seatInfo.seat, [
-    seatInfo,
-    seatInfo,
-    seatInfo,
-    seatInfo,
-  ]);
+  const seatText = formatSeatEntrySeatless(seatInfo.seat, seatInfo);
   if (kind === "ai") {
     return {
       title: "确认接管 AI 座位？",

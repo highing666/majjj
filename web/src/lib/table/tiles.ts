@@ -2,12 +2,6 @@ import type { Suit } from "../protocol/generated/Suit";
 import type { Tile } from "../protocol/generated/Tile";
 import type { TurnView } from "../protocol/generated/TurnView";
 import type { Wind } from "../protocol/generated/Wind";
-export {
-  ALL_SEATS,
-  seatIndex,
-  seatLabel,
-  seatShortWind,
-} from "../protocol/seats";
 
 export type DragonKind = "Red" | "Green" | "White";
 export type TileTone = "man" | "bamboo" | "dot" | "red" | "ink";

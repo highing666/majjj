@@ -391,11 +391,7 @@ export class TableSceneRenderer {
     const pointer = computeCenterSealPointer(centerSeal, activeSlot);
     const cx = centerSeal.x + centerSeal.width / 2;
     const cy = centerSeal.y + centerSeal.height / 2;
-    const outerRadius = Math.min(centerSeal.width, centerSeal.height) / 2;
-    const ringInset = Math.max(4, Math.round(outerRadius * 0.16));
-    const ringRadius = pointer
-      ? pointer.arcRadius
-      : Math.max(4, outerRadius - ringInset);
+    const ringRadius = sealLayout.ringRadius;
 
     const ring = new Graphics();
     ring
@@ -727,7 +723,7 @@ export class TableSceneRenderer {
         dealer,
         activeSeat,
       );
-      const padX = layout.isWide ? 7 : 5;
+      const padX = layout.isWide ? 7 : 4;
       const box = new Graphics();
       box
         .roundRect(rect.x, rect.y, rect.width, rect.height, 8)
@@ -744,7 +740,7 @@ export class TableSceneRenderer {
 
       const pillH = rect.height - 8;
       const pillFontSize = layout.isWide ? 11 : rect.height >= 24 ? 10 : 9;
-      const rolePillW = layout.isWide ? 34 : 26;
+      const rolePillW = layout.isWide ? 34 : 24;
       const rolePill = new Graphics();
       rolePill
         .roundRect(rect.x + padX, rect.y + 4, rolePillW, pillH, 5)
@@ -765,13 +761,13 @@ export class TableSceneRenderer {
         rect.x + padX + rolePillW / 2,
         rect.y + rect.height / 2,
       );
-      fitTextToWidth(roleLabel, rolePillW - 4);
+      fitTextToWidth(roleLabel, rolePillW - 3);
       this.badgeLayer.addChild(roleLabel);
 
       let leftCursor = rect.x + padX + rolePillW;
       if (model.isDealer) {
         const dealerGap = layout.isWide ? 4 : 3;
-        const dealerPillW = layout.isWide ? 20 : 16;
+        const dealerPillW = layout.isWide ? 20 : 15;
         const dealerX = leftCursor + dealerGap;
         const dealerPill = new Graphics();
         dealerPill
@@ -814,10 +810,11 @@ export class TableSceneRenderer {
       );
       this.badgeLayer.addChild(scoreText);
 
+      const scoreGap = layout.isWide ? 5 : 4;
       const nameStart = leftCursor + (layout.isWide ? 6 : 4);
       const nameMaxW = Math.max(
         8,
-        rect.x + rect.width - padX - scoreText.width - 5 - nameStart,
+        rect.x + rect.width - padX - scoreText.width - scoreGap - nameStart,
       );
       const statusSuffix =
         model.isOffline && model.isAiAssisted

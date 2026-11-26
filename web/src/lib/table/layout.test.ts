@@ -59,6 +59,12 @@ describe("Scheme C four-corner minimal computeTableLayout", () => {
       const sealLayout = computeCenterSealLayout(layout.centerSeal);
       expect("windY" in sealLayout).toBe(false);
       expect("windFontSize" in sealLayout).toBe(false);
+      expect(sealLayout.outerRadius).toBe(
+        Math.min(layout.centerSeal.width, layout.centerSeal.height) / 2,
+      );
+      expect(sealLayout.ringInset).toBeGreaterThanOrEqual(4);
+      expect(sealLayout.ringRadius).toBeGreaterThan(0);
+      expect(sealLayout.ringRadius).toBeLessThan(sealLayout.outerRadius);
       expect(sealLayout.roundFontSize).toBeGreaterThan(0);
       expect(sealLayout.wallFontSize).toBeGreaterThan(0);
       expect(sealLayout.roundY - sealLayout.roundFontSize / 2).toBeGreaterThanOrEqual(
@@ -91,10 +97,13 @@ describe("Scheme C four-corner minimal computeTableLayout", () => {
       const tr = layout.badges.right;
       const bl = layout.badges.left;
       const br = layout.badges.bottom;
-      const expectedMinBadgeW = layout.isWide ? 140 : 108;
+      const expectedMinBadgeW = layout.isWide ? 140 : 114;
       for (const badge of [tl, tr, bl, br]) {
         expectInsideBounds(badge, width, height);
         expect(badge.width).toBeGreaterThanOrEqual(expectedMinBadgeW);
+      }
+      if (!layout.isWide && width >= 390) {
+        expect(tl.width).toBeGreaterThanOrEqual(132);
       }
       expect(tl.x + tl.width / 2).toBeLessThan(width / 2);
       expect(tl.y + tl.height / 2).toBeLessThan(height / 2);
@@ -281,7 +290,9 @@ describe("Scheme C four-corner minimal computeTableLayout", () => {
     expect(left.tip.x).toBeLessThan(left.baseRight.x);
     expect(Math.abs(left.tip.y - cy)).toBeLessThan(0.01);
 
+    const sealLayout = computeCenterSealLayout(seal);
     for (const ptr of [bottom, right, top, left]) {
+      expect(ptr.arcRadius).toBe(sealLayout.ringRadius);
       expect(ptr.arcRadius).toBeGreaterThan(0);
       expect(ptr.arcRadius).toBeLessThan(Math.min(seal.width, seal.height) / 2);
       expect(ptr.arcEnd).toBeGreaterThan(ptr.arcStart);

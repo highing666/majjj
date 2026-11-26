@@ -37,6 +37,9 @@ export interface ViewerHandGeometry {
 }
 
 export interface CenterSealLayout {
+  outerRadius: number;
+  ringInset: number;
+  ringRadius: number;
   roundFontSize: number;
   wallFontSize: number;
   roundY: number;
@@ -151,7 +154,7 @@ export function computeTableLayout(
   const badgePad = isWide ? 18 : 8;
   const badgeW = isWide
     ? clamp(Math.round(width * 0.16), 140, 178)
-    : clamp(Math.round(width * 0.31), 108, 128);
+    : clamp(Math.round(width * 0.34), 114, 134);
   const badgeH = height >= 500 ? 28 : 22;
 
   const tlBadge: Rect = {
@@ -393,12 +396,18 @@ export function computeTableLayout(
 }
 
 /**
- * Computes strictly bounded inner compact-round and wall-remaining coordinates for the center seal.
+ * Computes strictly bounded inner ring, compact-round, and wall-remaining coordinates for the center seal.
  */
 export function computeCenterSealLayout(seal: Rect): CenterSealLayout {
+  const outerRadius = Math.min(seal.width, seal.height) / 2;
+  const ringInset = Math.max(4, Math.round(outerRadius * 0.16));
+  const ringRadius = Math.max(4, outerRadius - ringInset);
   const roundFontSize = seal.height >= 58 ? 14 : 11;
   const wallFontSize = seal.height >= 58 ? 11 : 10;
   return {
+    outerRadius,
+    ringInset,
+    ringRadius,
     roundFontSize,
     wallFontSize,
     roundY: Math.round(seal.y + seal.height * 0.38),
@@ -454,9 +463,7 @@ export function computeCenterSealPointer(
   const dir = POINTER_DIRECTIONS[activeSlot];
   const cx = seal.x + seal.width / 2;
   const cy = seal.y + seal.height / 2;
-  const outerRadius = Math.min(seal.width, seal.height) / 2;
-  const ringInset = Math.max(4, Math.round(outerRadius * 0.16));
-  const arcRadius = Math.max(4, outerRadius - ringInset);
+  const { outerRadius, ringRadius: arcRadius } = computeCenterSealLayout(seal);
   const baseRadius = arcRadius - 0.5;
   const halfBase = Math.max(4, Math.round(outerRadius * 0.22));
   const px = -dir.dy;

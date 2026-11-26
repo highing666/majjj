@@ -680,9 +680,10 @@
 
   .seat-top {
     display: flex;
+    flex-wrap: wrap;
     justify-content: space-between;
     align-items: center;
-    gap: 8px;
+    gap: 4px 8px;
   }
 
   .seat-name {
@@ -840,6 +841,10 @@
     .seat-card {
       padding: 8px;
       gap: 6px;
+    }
+
+    .seat-top {
+      gap: 4px 6px;
     }
 
     .seat-name {
