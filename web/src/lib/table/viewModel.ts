@@ -11,32 +11,22 @@ import type { Tile } from "../protocol/generated/Tile";
 import { parseMeld, type MeldKind } from "../protocol/melds";
 import {
   ALL_SEATS,
-  formatRelativeSeatDisplay,
   formatSeatlessDisplay,
   getRelativeSeats,
   resolveSeatNickname,
+  seatNumberLabel,
   seatRelativeRole,
-  seatRelativeShortRole,
   seatRelativeSlot,
   type RelativeRole,
-  type RelativeRoleShort,
-  type RelativeSeats,
   type RelativeSlot,
-  type SeatDisplayEntry,
 } from "../protocol/seats";
 import type { PendingAddedKong } from "../session/reducer";
 import { getTileLabel } from "./tiles";
 
 export {
   getRelativeSeats,
-  seatRelativeRole,
-  seatRelativeShortRole,
   seatRelativeSlot,
-  type RelativeRole,
-  type RelativeRoleShort,
-  type RelativeSeats,
   type RelativeSlot,
-  type SeatDisplayEntry,
 };
 
 export interface MeldTileSlot {
@@ -93,23 +83,6 @@ export interface MatchStandingRow {
   initialScore: number;
   finalScore: number;
   netDelta: number;
-}
-
-/**
- * Formats a viewer-relative seat display title (`下家 · 房主`), or falls back to
- * seatless display (`房主`, `AI 2`, `3号位`) when `viewer === null`.
- */
-export function formatSeatDisplayName(
-  seat: Seat,
-  seats?: readonly [
-    SeatDisplayEntry,
-    SeatDisplayEntry,
-    SeatDisplayEntry,
-    SeatDisplayEntry,
-  ] | null,
-  viewer: Seat | null = null,
-): string {
-  return formatRelativeSeatDisplay(seat, viewer, seats);
 }
 
 /**
@@ -493,7 +466,9 @@ export function buildSeatBadgeModel(
   activeSeat: Seat | null,
 ): SeatBadgeModel {
   const role = seatRelativeRole(viewer, seat);
-  const rawName = seatInfo.nickname || (seatInfo.kind === "Ai" ? "AI" : role);
+  const rawName =
+    seatInfo.nickname.trim() ||
+    (seatInfo.kind === "Ai" ? "AI" : seatNumberLabel(seat));
   const name = rawName.length > 7 ? `${rawName.slice(0, 6)}…` : rawName;
   return {
     role,
