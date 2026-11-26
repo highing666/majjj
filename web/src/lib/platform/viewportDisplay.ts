@@ -1,8 +1,8 @@
 import type { TablePhase } from "../protocol/generated/TablePhase";
 
-const SHORT_LANDSCAPE_MAX_HEIGHT = 460;
-const NARROW_PORTRAIT_MAX_WIDTH = 600;
-const NATIVE_EXIT_ESCAPE_GRACE_MS = 400;
+export const SHORT_LANDSCAPE_MAX_HEIGHT = 460;
+export const NARROW_PORTRAIT_MAX_WIDTH = 600;
+const FULLSCREEN_ESCAPE_GRACE_MS = 400;
 
 export interface KeyEventTargetLike {
   readonly tagName?: string;
@@ -162,7 +162,7 @@ export function createViewportDisplayController(
   let nativeFullscreen = Boolean(readNativeFullscreenElement(documentTarget));
   let viewportImmersive = false;
   let portraitBypassed = false;
-  let lastNativeExitAtMs: number | null = null;
+  let lastEscapeExitAtMs: number | null = null;
   let programmaticNativeExit = false;
   let disposed = false;
 
@@ -339,6 +339,13 @@ export function createViewportDisplayController(
       void toggleFullscreen();
       return true;
     }
+    if (event.key === "Escape" && viewportImmersive && !nativeFullscreen) {
+      event.preventDefault?.();
+      lastEscapeExitAtMs = nowFn();
+      viewportImmersive = false;
+      syncAndNotify();
+      return true;
+    }
     return false;
   }
 
@@ -350,7 +357,7 @@ export function createViewportDisplayController(
     const hasNative = Boolean(readNativeFullscreenElement(documentTarget));
     nativeFullscreen = hasNative;
     if (wasNative && !hasNative && !programmaticNativeExit) {
-      lastNativeExitAtMs = nowFn();
+      lastEscapeExitAtMs = nowFn();
     }
     if (!hasNative && !viewportImmersive) {
       // Ensure state stays synced when native fullscreen is exited externally.
@@ -439,8 +446,8 @@ export function createViewportDisplayController(
       if (nativeFullscreen || Boolean(readNativeFullscreenElement(documentTarget))) {
         return true;
       }
-      if (lastNativeExitAtMs !== null) {
-        return nowFn() - lastNativeExitAtMs <= NATIVE_EXIT_ESCAPE_GRACE_MS;
+      if (lastEscapeExitAtMs !== null) {
+        return nowFn() - lastEscapeExitAtMs <= FULLSCREEN_ESCAPE_GRACE_MS;
       }
       return false;
     },

@@ -5,8 +5,11 @@ import {
   computeCenterSealLayout,
   computeOpponentHandSlots,
   computeRiverSlotPoint,
+  computeSeatBadgeLayout,
   computeTableLayout,
   computeViewerHandSlots,
+  MELD_GROUP_GAP,
+  MELD_TILE_GAP,
   type Rect,
 } from "./layout";
 
@@ -209,6 +212,47 @@ describe("Scheme B three-column theater computeTableLayout", () => {
           expect(rectsOverlap(coreBoxes[i], coreBoxes[j])).toBe(false);
         }
       }
+
+      // Multi-meld 对门 (2-4 melds, up to 4 tiles each): zero overlap with all core regions
+      for (const meldCount of [2, 3, 4]) {
+        const kongMeldW = 4 * layout.meldTileW + 3 * MELD_TILE_GAP;
+        const totalTopMeldW =
+          meldCount * kongMeldW + (meldCount - 1) * MELD_GROUP_GAP;
+        const multiTopMeldRect: Rect = {
+          x: layout.melds.top.x - totalTopMeldW,
+          y: layout.melds.top.y,
+          width: totalTopMeldW,
+          height: layout.meldTileH,
+        };
+        expectInsideBounds(multiTopMeldRect, width, height);
+        if (wide) {
+          expectRectContains(layout.centerStage, multiTopMeldRect);
+        }
+        const nonTopMeldBoxes = [
+          layout.topLeftSafeRect,
+          layout.topRightSafeRect,
+          layout.centerSeal,
+          layout.turnBarRect,
+          layout.viewerHandRect,
+          layout.oppHands.top,
+          layout.oppHands.left,
+          layout.oppHands.right,
+          layout.badges.top,
+          layout.badges.right,
+          layout.badges.left,
+          layout.badges.bottom,
+          layout.personaPockets.top,
+          layout.personaPockets.left,
+          layout.personaPockets.right,
+          layout.riverTroughs.bottom,
+          layout.riverTroughs.top,
+          layout.riverTroughs.left,
+          layout.riverTroughs.right,
+        ];
+        for (const box of nonTopMeldBoxes) {
+          expect(rectsOverlap(multiTopMeldRect, box)).toBe(false);
+        }
+      }
     },
   );
 
@@ -327,5 +371,37 @@ describe("Scheme B three-column theater computeTableLayout", () => {
         bar.activeRect.width * bar.activeRect.height,
       ).toBeGreaterThan(bar.rect.width * bar.rect.height);
     }
+  });
+
+  it("computes seat badge pill, dealer chip, and clamped name-width metrics inside badge bounds", () => {
+    const standardRect: Rect = { x: 20, y: 40, width: 180, height: 28 };
+    const dealerMetrics = computeSeatBadgeLayout(standardRect, true, 36);
+    expect(dealerMetrics.compact).toBe(false);
+    expect(dealerMetrics.padX).toBe(7);
+    expect(dealerMetrics.padY).toBe(4);
+    expect(dealerMetrics.pillH).toBe(20);
+    expect(dealerMetrics.rolePillW).toBe(32);
+    expect(dealerMetrics.dealerPillW).toBe(19);
+    expect(dealerMetrics.scoreGap).toBe(5);
+    expectRectContains(standardRect, dealerMetrics.rolePillRect);
+    expect(dealerMetrics.dealerPillRect).not.toBeNull();
+    expectRectContains(standardRect, dealerMetrics.dealerPillRect!);
+    expect(rectsOverlap(dealerMetrics.rolePillRect, dealerMetrics.dealerPillRect!)).toBe(
+      false,
+    );
+    expect(dealerMetrics.nameStartX).toBeGreaterThan(
+      dealerMetrics.dealerPillRect!.x + dealerMetrics.dealerPillRect!.width,
+    );
+    expect(dealerMetrics.nameMaxW).toBe(
+      dealerMetrics.scoreRightX - 36 - dealerMetrics.scoreGap - dealerMetrics.nameStartX,
+    );
+
+    const compactRect: Rect = { x: 10, y: 12, width: 96, height: 20 };
+    const compactNonDealer = computeSeatBadgeLayout(compactRect, false, 120);
+    expect(compactNonDealer.compact).toBe(true);
+    expect(compactNonDealer.dealerPillRect).toBeNull();
+    expect(compactNonDealer.rolePillW).toBe(24);
+    expect(compactNonDealer.nameMaxW).toBe(8);
+    expectRectContains(compactRect, compactNonDealer.rolePillRect);
   });
 });

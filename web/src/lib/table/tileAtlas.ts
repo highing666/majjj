@@ -12,6 +12,17 @@ import feltBrushUrl from "../../assets/textures/felt-brush@2x.png";
 import feltImpastoUrl from "../../assets/textures/felt-impasto@2x.png";
 import type { Tile } from "../protocol/generated/Tile";
 import {
+  ATLAS_GRID,
+  ATLAS_REQUIRED_BODY_FRAMES,
+  ATLAS_TILE_FRAME_COUNT,
+  type BambooStalkSpec,
+  type PlumPinSpec,
+  type SpecColorKey,
+  STYLE_A_PALETTE,
+  STYLE_A_SPEC,
+  toRgbaCss,
+} from "./atlasConstants";
+import {
   getDragonKind,
   getTileLabel,
   getTileNumeral,
@@ -20,40 +31,36 @@ import {
 } from "./tiles";
 
 export type TileBodyKind = "standing" | "laid";
+export { ATLAS_REQUIRED_BODY_FRAMES, ATLAS_TILE_FRAME_COUNT };
 
-export const ATLAS_TILE_FRAME_COUNT = 34;
-export const ATLAS_REQUIRED_BODY_FRAMES = [
-  "body_standing",
-  "body_laid",
-  "body_back",
-  "body_shadow",
-  "body_laid_back",
-] as const;
-
-const CELL_W = 144;
-const CELL_H = 192;
-const FRAME_W = 136;
-const FRAME_H = 184;
-const FRAME_PAD = 4;
-const GRID_COLS = 10;
-const GRID_ROWS = 8;
+const CELL_W = ATLAS_GRID.cellW;
+const CELL_H = ATLAS_GRID.cellH;
+const FRAME_W = ATLAS_GRID.frameW;
+const FRAME_H = ATLAS_GRID.frameH;
+const FRAME_PAD = ATLAS_GRID.pad;
+const GRID_COLS = ATLAS_GRID.cols;
+const GRID_ROWS = ATLAS_GRID.rows;
 const ATLAS_W = CELL_W * GRID_COLS; // 1440 <= 2048
 const ATLAS_H = CELL_H * GRID_ROWS; // 1536 <= 2048
 
-const IVORY = "#F6EFE0";
-const IVORY_HIGHLIGHT = "#FFFDF8";
-const IVORY_BOTTOM_LIP = "#E2D4B7";
-const JADE_BACK = "#186258";
-const JADE_BACK_DARK = "#0E433C";
-const JADE_BORDER = "#091D1B";
-const JADE_RIM = "rgba(167, 243, 208, 0.42)";
-const GOLD_DOT = "rgba(212, 168, 87, 0.55)";
-const WHITE_BEVEL = "rgba(128, 114, 88, 0.22)";
-const INK = "#1C1917";
-const RED = "#B92822";
-const GREEN = "#137449";
-const BLUE = "#1B4E8D";
+const IVORY = STYLE_A_PALETTE.ivory;
+const IVORY_HIGHLIGHT = STYLE_A_PALETTE.ivoryTop.hex;
+const IVORY_BOTTOM_LIP = STYLE_A_PALETTE.ivoryBottom;
+const JADE_BACK = STYLE_A_PALETTE.jadeBack;
+const JADE_BACK_DARK = STYLE_A_PALETTE.jadeBackDark;
+const JADE_BORDER = STYLE_A_PALETTE.jadeBorder;
+const JADE_RIM = toRgbaCss(STYLE_A_PALETTE.jadeRim);
+const GOLD_DOT = toRgbaCss(STYLE_A_PALETTE.goldDot);
+const WHITE_BEVEL = toRgbaCss(STYLE_A_PALETTE.whiteBevel);
+const INK = STYLE_A_PALETTE.ink;
+const RED = STYLE_A_PALETTE.crimson;
+const GREEN = STYLE_A_PALETTE.jade;
+const BLUE = STYLE_A_PALETTE.cobalt;
 const KAITI_FONT_STACK = '"Kaiti SC", "STKaiti", "BiauKai", "Songti SC", serif';
+
+function resolveSpecColor(key: SpecColorKey): string {
+  return STYLE_A_PALETTE[key];
+}
 
 export interface TileAtlas {
   readonly width: number;
@@ -381,72 +388,23 @@ function drawBambooTile(
   }
 
   // Style A Bamboo: ZERO blue! Traditional jade green & crimson only, symmetric M/W 8-bamboo.
-  const layouts: Record<number, Array<[number, number, number, string, number?]>> = {
-    2: [
-      [0, -34, 48, GREEN],
-      [0, 34, 48, GREEN],
-    ],
-    3: [
-      [0, -34, 46, GREEN],
-      [-26, 34, 46, GREEN],
-      [26, 34, 46, GREEN],
-    ],
-    4: [
-      [-24, -34, 46, GREEN],
-      [24, -34, 46, GREEN],
-      [-24, 34, 46, GREEN],
-      [24, 34, 46, GREEN],
-    ],
-    5: [
-      [-30, -36, 42, GREEN],
-      [30, -36, 42, GREEN],
-      [0, 0, 42, RED],
-      [-30, 36, 42, GREEN],
-      [30, 36, 42, GREEN],
-    ],
-    6: [
-      [-30, -34, 46, GREEN],
-      [0, -34, 46, GREEN],
-      [30, -34, 46, GREEN],
-      [-30, 34, 46, GREEN],
-      [0, 34, 46, GREEN],
-      [30, 34, 46, GREEN],
-    ],
-    7: [
-      [0, -48, 36, RED],
-      [-30, 0, 36, GREEN],
-      [0, 0, 36, GREEN],
-      [30, 0, 36, GREEN],
-      [-30, 48, 36, GREEN],
-      [0, 48, 36, GREEN],
-      [30, 48, 36, GREEN],
-    ],
-    8: [
-      [-38, -34, 42, GREEN],
-      [-14, -32, 40, GREEN, 28],
-      [14, -32, 40, GREEN, -28],
-      [38, -34, 42, GREEN],
-      [-38, 34, 42, GREEN],
-      [-14, 32, 40, GREEN, -28],
-      [14, 32, 40, GREEN, 28],
-      [38, 34, 42, GREEN],
-    ],
-    9: [
-      [-32, -46, 34, GREEN],
-      [0, -46, 34, RED],
-      [32, -46, 34, GREEN],
-      [-32, 0, 34, GREEN],
-      [0, 0, 34, RED],
-      [32, 0, 34, GREEN],
-      [-32, 46, 34, GREEN],
-      [0, 46, 34, RED],
-      [32, 46, 34, GREEN],
-    ],
-  };
-
-  const stalkW = rank >= 7 ? 12 : 14;
-  for (const [dx, dy, h, color, angle] of layouts[rank]) {
-    drawBambooStalk(ctx, cx + dx, cy + dy, stalkW, h, color, angle ?? 0);
+  const entries = STYLE_A_SPEC.bamboo[
+    String(rank) as keyof typeof STYLE_A_SPEC.bamboo
+  ] as readonly BambooStalkSpec[];
+  const scaleX = FRAME_W / 100;
+  const scaleY = (FRAME_H / 136) * (laid ? 128 / 130 : 121 / 130);
+  const artTop = oy + (laid ? 2.5 : 8.5) * (FRAME_H / 136);
+  const stalkW = (rank >= 7 ? 10.2 : 12.2) * scaleX;
+  for (const entry of entries) {
+    drawBambooStalk(
+      ctx,
+      ox + entry.x * scaleX,
+      artTop + entry.y * scaleY,
+      stalkW,
+      entry.h * scaleY,
+      resolveSpecColor(entry.color),
+      entry.angle,
+    );
   }
 }
 
@@ -518,71 +476,20 @@ function drawDotTile(
     return;
   }
 
-  const layouts: Record<number, Array<[number, number, number, string]>> = {
-    2: [
-      [0, -34, 21, GREEN],
-      [0, 34, 21, BLUE],
-    ],
-    3: [
-      [-30, -42, 17, BLUE],
-      [0, 0, 17, RED],
-      [30, 42, 17, GREEN],
-    ],
-    4: [
-      [-26, -32, 18, BLUE],
-      [26, -32, 18, GREEN],
-      [-26, 32, 18, GREEN],
-      [26, 32, 18, BLUE],
-    ],
-    5: [
-      [-30, -40, 16, BLUE],
-      [30, -40, 16, GREEN],
-      [0, 0, 16.5, RED],
-      [-30, 40, 16, GREEN],
-      [30, 40, 16, BLUE],
-    ],
-    6: [
-      [-24, -44, 16, GREEN],
-      [24, -44, 16, GREEN],
-      [-24, 0, 16, RED],
-      [24, 0, 16, RED],
-      [-24, 44, 16, RED],
-      [24, 44, 16, RED],
-    ],
-    7: [
-      [-32, -52, 14, GREEN],
-      [0, -38, 14, GREEN],
-      [32, -24, 14, GREEN],
-      [-25, 11, 15, RED],
-      [25, 11, 15, RED],
-      [-25, 48, 15, RED],
-      [25, 48, 15, RED],
-    ],
-    8: [
-      [-25, -52, 14.5, BLUE],
-      [25, -52, 14.5, BLUE],
-      [-25, -17, 14.5, BLUE],
-      [25, -17, 14.5, BLUE],
-      [-25, 17, 14.5, BLUE],
-      [25, 17, 14.5, BLUE],
-      [-25, 52, 14.5, BLUE],
-      [25, 52, 14.5, BLUE],
-    ],
-    9: [
-      [-34, -48, 14, GREEN],
-      [0, -48, 14, GREEN],
-      [34, -48, 14, GREEN],
-      [-34, 0, 14, RED],
-      [0, 0, 14, RED],
-      [34, 0, 14, RED],
-      [-34, 48, 14, BLUE],
-      [0, 48, 14, BLUE],
-      [34, 48, 14, BLUE],
-    ],
-  };
-
-  for (const [dx, dy, r, color] of layouts[rank]) {
-    drawPlumPip(ctx, cx + dx, cy + dy, r, color);
+  const entries = STYLE_A_SPEC.dot[
+    String(rank) as keyof typeof STYLE_A_SPEC.dot
+  ] as readonly PlumPinSpec[];
+  const scaleX = FRAME_W / 100;
+  const scaleY = (FRAME_H / 136) * (laid ? 128 / 130 : 121 / 130);
+  const artTop = oy + (laid ? 2.5 : 8.5) * (FRAME_H / 136);
+  for (const entry of entries) {
+    drawPlumPip(
+      ctx,
+      ox + entry.x * scaleX,
+      artTop + entry.y * scaleY,
+      entry.r * scaleX,
+      resolveSpecColor(entry.color),
+    );
   }
 }
 
