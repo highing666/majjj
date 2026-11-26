@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use common::{
-    no_reaction_wall, pump_ai_turn, tile, tiles, yield_tasks, PlannedReply, ScriptedLlmClient,
-    VirtualClient,
+    make_pcm16_mono_wav, no_reaction_wall, pump_ai_turn, tile, tiles, yield_tasks, PlannedReply,
+    ScriptedLlmClient, VirtualClient,
 };
 use mahjong_ai::AiDifficulty;
 use mahjong_core::{
@@ -29,26 +29,7 @@ use mahjong_server::tts::{
 use tokio::sync::Notify;
 
 fn make_sample_wav(tag: u8, payload_len: usize) -> Vec<u8> {
-    let data_len = payload_len as u32;
-    let riff_len = 36 + data_len;
-    let sample_rate: u32 = 24_000;
-    let byte_rate = sample_rate * 2;
-    let mut out = Vec::with_capacity(44 + payload_len);
-    out.extend_from_slice(b"RIFF");
-    out.extend_from_slice(&riff_len.to_le_bytes());
-    out.extend_from_slice(b"WAVE");
-    out.extend_from_slice(b"fmt ");
-    out.extend_from_slice(&16_u32.to_le_bytes());
-    out.extend_from_slice(&1_u16.to_le_bytes());
-    out.extend_from_slice(&1_u16.to_le_bytes());
-    out.extend_from_slice(&sample_rate.to_le_bytes());
-    out.extend_from_slice(&byte_rate.to_le_bytes());
-    out.extend_from_slice(&2_u16.to_le_bytes());
-    out.extend_from_slice(&16_u16.to_le_bytes());
-    out.extend_from_slice(b"data");
-    out.extend_from_slice(&data_len.to_le_bytes());
-    out.resize(44 + payload_len, tag);
-    out
+    make_pcm16_mono_wav(payload_len / 2, tag)
 }
 
 #[derive(Debug)]
@@ -1196,7 +1177,9 @@ async fn runtime_audio_cache_respects_lru_ttl_and_no_tts_emits_banter_id_only() 
     assert!(runtime.get_banter_audio("b-2").is_none());
     assert!(runtime.get_banter_audio("b-3").is_none());
 
-    // 2. No TTS configured (`--no-tts` mode): TableBanter still carries banter_id, zero audio/status events.
+    // 2. No TTS configured (`--no-tts` mode): Hello immediately sends TtsStatusNotice(available=false)
+    // so clients with `hide_banter_bubble_with_voice` auto-restore bubbles, while TableBanter still carries banter_id
+    // and zero audio synthesis events occur.
     let wall2 = no_reaction_wall();
     let factory2: WallProviderFactory = Arc::new(move || {
         BoxedWallProvider(Box::new(PresetWallProvider::single(
@@ -1212,6 +1195,17 @@ async fn runtime_audio_cache_respects_lru_ttl_and_no_tts_emits_banter_id_only() 
             .with_llm_client(llm),
     );
     let mut east2 = VirtualClient::connect(&runtime_no_tts, "e2", "老李").await;
+    let hello_msgs = east2.drain_all();
+    assert!(
+        hello_msgs.iter().any(|m| matches!(
+            m,
+            ServerMessage::TtsStatusNotice {
+                available: false,
+                message,
+            } if message == "局域网语音合成已关闭，当前仅显示漫画气泡与离线角色语音包"
+        )),
+        "--no-tts must send TtsStatusNotice(available=false) on Hello: {hello_msgs:?}"
+    );
     let _ = start_solo_match(&runtime_no_tts, &mut east2).await;
     yield_tasks().await;
     let msgs = east2.drain_all();

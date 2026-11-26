@@ -4,8 +4,8 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use common::{
-    connect_ws, fetch_health, recv_msg, recv_snapshot, send_msg, spawn_seeded_server, spawn_server,
-    WsClient,
+    connect_ws, fetch_health, recv_non_ping_msg as recv_msg, recv_snapshot, send_msg,
+    spawn_seeded_server, spawn_server, WsClient,
 };
 use futures_util::{SinkExt, StreamExt};
 use mahjong_ai::{AiDifficulty, AiStyle};

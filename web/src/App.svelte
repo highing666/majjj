@@ -46,6 +46,7 @@
   import type { SessionState } from "./lib/session/reducer";
   import DestructiveOpModal from "./lib/table/DestructiveOpModal.svelte";
   import {
+    buildHumanVoicePackSyncKey,
     resolveHumanVoicePackSyncTarget,
     shouldHideBanterBubbles,
   } from "./lib/table/banterVisibility";
@@ -154,9 +155,9 @@
       audioStatus = next;
     });
     const unsubscribeBanterVoiceState = audioRouter.onBanterVoiceStateChange(
-      (active) => {
+      (active, pendingBanterIds) => {
         activeBanterVoice = active;
-        presentationQueue.setActiveBanterVoice(active);
+        presentationQueue.setActiveBanterVoice(active, pendingBanterIds);
       },
     );
     const unsubscribeSemantic = presentationQueue.onSemanticEvent((event) => {
@@ -406,7 +407,11 @@
   function handleSelectHumanVoicePack(voicePackId: HumanVoicePackId): void {
     preferencesStore.update({ human_voice_pack_id: voicePackId });
     if (!actionsDisabled && snapshot !== null && snapshot.your_seat !== null) {
-      lastSyncedVoicePackKey = `${snapshot.table_id}:${snapshot.your_seat}:${voicePackId}`;
+      lastSyncedVoicePackKey = buildHumanVoicePackSyncKey(
+        snapshot.table_id,
+        snapshot.your_seat,
+        voicePackId,
+      );
       client.setSeatVoicePack(voicePackId);
     }
   }

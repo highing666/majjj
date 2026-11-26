@@ -327,6 +327,86 @@ class PluggableBackendContractTests(unittest.TestCase):
         self.assertIn("tilted_master_tilted.wav", clone_call[1]["ref_audio"])
         self.assertEqual(clone_call[2], 120)
 
+    def test_cosyvoice3_and_qwen3_base_clone_resolve_reference_clip_fallbacks(self) -> None:
+        fake_torch = _FakeTorch(_FakeCuda(available=True))
+        with tempfile.TemporaryDirectory() as tmp:
+            voices_dir = pathlib.Path(tmp)
+            # QuickHothead has exact mood clip + neutral clip + ref clip
+            (voices_dir / "quick_hothead_tilted.wav").write_bytes(b"RIFFtilted")
+            (voices_dir / "quick_hothead_tilted.txt").write_text("急眼红温参考台词\n", encoding="utf-8")
+            (voices_dir / "quick_hothead_neutral.wav").write_bytes(b"RIFFneutral")
+            (voices_dir / "quick_hothead_neutral.txt").write_text("急眼中性参考台词\n", encoding="utf-8")
+            (voices_dir / "quick_hothead_ref.wav").write_bytes(b"RIFFref")
+            (voices_dir / "quick_hothead_ref.txt").write_text("急眼通用参考台词\n", encoding="utf-8")
+
+            # TeaSarcasm only has generate_voice_packs.py's *_ref.wav / *_ref.txt
+            (voices_dir / "tea_sarcasm_ref.wav").write_bytes(b"RIFFtearef")
+            (voices_dir / "tea_sarcasm_ref.txt").write_text("阴阳茶艺师离线参考台词\n", encoding="utf-8")
+
+            # 1. CosyVoice3: prefers _neutral.wav, falls back to _ref.wav
+            cosy_extracted: dict[str, str] = {}
+
+            class FakeCosy:
+                sample_rate = 24000
+
+                def extract_speaker_features(self, ref_audio_path: str):
+                    cosy_extracted[pathlib.Path(ref_audio_path).name] = ref_audio_path
+                    return {"ref": ref_audio_path}
+
+            cosy_backend = create_backend(
+                BACKEND_COSYVOICE3,
+                model_path="FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
+                registry=self.registry,
+                voices_dir=voices_dir,
+                torch_module=fake_torch,
+                model_loader=lambda model_path, **kwargs: FakeCosy(),
+            )
+            cosy_backend.load()
+            self.assertIn("quick_hothead_neutral.wav", cosy_extracted)
+            self.assertIn("tea_sarcasm_ref.wav", cosy_extracted)
+
+            # 2. Qwen3BaseClone: prefers _<mood>.wav -> _neutral.wav -> _ref.wav (with matching .txt)
+            used_prompts: list[dict[str, str]] = []
+
+            class FakeBase:
+                def create_voice_clone_prompt(self, *, ref_audio: str, ref_text: str, x_vector_only_mode: bool):
+                    return {"ref_audio": pathlib.Path(ref_audio).name, "ref_text": ref_text}
+
+                def generate_voice_clone(self, *, text: str, language: str, voice_clone_prompt: dict, max_new_tokens: int):
+                    used_prompts.append(voice_clone_prompt)
+                    return ([[0.0, 0.1]], 24000)
+
+            base_backend = create_backend(
+                BACKEND_QWEN3_BASE_CLONE,
+                model_path="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+                registry=self.registry,
+                voices_dir=voices_dir,
+                torch_module=fake_torch,
+                model_loader=lambda model_path, **kwargs: FakeBase(),
+            )
+            base_backend.load()
+
+            base_backend.synthesize(
+                self.registry.resolve(persona_id="QuickHothead", mood="Tilted"),
+                "红温了！",
+            )
+            base_backend.synthesize(
+                self.registry.resolve(persona_id="QuickHothead", mood="Smug"),
+                "这把稳了！",
+            )
+            base_backend.synthesize(
+                self.registry.resolve(persona_id="TeaSarcasm", mood="Mocking"),
+                "真厉害呢。",
+            )
+            self.assertEqual(
+                used_prompts,
+                [
+                    {"ref_audio": "quick_hothead_tilted.wav", "ref_text": "急眼红温参考台词"},
+                    {"ref_audio": "quick_hothead_neutral.wav", "ref_text": "急眼中性参考台词"},
+                    {"ref_audio": "tea_sarcasm_ref.wav", "ref_text": "阴阳茶艺师离线参考台词"},
+                ],
+            )
+
     def test_create_backend_rejects_unknown_backend_name(self) -> None:
         with self.assertRaises(ValueError):
             create_backend("nonexistent-engine", model_path="x", registry=self.registry)

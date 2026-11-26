@@ -4,12 +4,16 @@ import type {
   AudioBufferLike,
   AudioBufferSourceNodeLike,
   AudioContextLike,
-  AudioNodeLike,
   BanterVoicePriority,
   BanterVoiceStateListener,
   FetchLike,
   GainNodeLike,
 } from "./audioTypes";
+import {
+  connectWithRelativePan,
+  defaultFetch,
+  stopSourceQuietly,
+} from "./voAudioUtils";
 import { rampSfxGain, VO_DUCK_FACTOR } from "./voManager";
 
 export const BANTER_VOICE_MAX_QUEUE_LENGTH = 2;
@@ -36,6 +40,7 @@ export interface BanterVoicePlayerOptions {
 export interface BanterVoicePlayer {
   isPlaying(): boolean;
   getActive(): ActiveBanterVoiceState | null;
+  getPendingBanterIds(): ReadonlySet<string>;
   getQueueLength(): number;
   subscribe(listener: BanterVoiceStateListener): () => void;
   enqueue(
@@ -60,32 +65,28 @@ interface ActiveBanterSlot {
   source: AudioBufferSourceNodeLike | null;
 }
 
-function defaultFetch(): FetchLike | null {
-  if (typeof globalThis.fetch !== "function") {
-    return null;
-  }
-  return (input: string) => globalThis.fetch(input);
-}
-
 function isAllowedAudioUrl(audioUrl: string): boolean {
   const trimmed = audioUrl.trim();
   return trimmed.length > 0 && trimmed.startsWith("/");
 }
 
-function stopSourceQuietly(source: AudioBufferSourceNodeLike): void {
-  source.onended = null;
-  try {
-    source.stop();
-  } catch {
-    // Ignore already-stopped source errors.
+function setsEqual(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+  if (a.size !== b.size) {
+    return false;
   }
+  for (const item of a) {
+    if (!b.has(item)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /**
  * Manages asynchronous same-origin WAV fetching, Web Audio decoding, bounded
  * cross-seat queuing (max 2 pending items with priority-aware eviction),
  * same-seat preemption, relative stereo panning, shared `sfxGain` ducking,
- * and active `(seat, banterId)` state notifications for realtime `BanterVoice`.
+ * and active `(seat, banterId)` + pending queue notifications for realtime `BanterVoice`.
  */
 export function createBanterVoicePlayer(
   options: BanterVoicePlayerOptions = {},
@@ -103,6 +104,7 @@ export function createBanterVoicePlayer(
 
   let active: ActiveBanterSlot | null = null;
   let lastNotified: ActiveBanterVoiceState | null = null;
+  let lastNotifiedPendingIds: ReadonlySet<string> = new Set();
   let lastCtx: AudioContextLike | null = null;
   let lastSfxGain: GainNodeLike | null = null;
   let currentBaseSfxVolume = 1;
@@ -120,20 +122,33 @@ export function createBanterVoicePlayer(
     };
   }
 
-  function notifySpeakingState(): void {
+  function computePendingBanterIds(): ReadonlySet<string> {
+    const ids = new Set<string>();
+    if (active !== null && active.phase === "loading") {
+      ids.add(active.item.banterId);
+    }
+    for (const entry of pendingQueue) {
+      ids.add(entry.item.banterId);
+    }
+    return ids;
+  }
+
+  function notifyPlaybackState(): void {
     const next = computeActiveState();
-    const same =
+    const nextPending = computePendingBanterIds();
+    const sameActive =
       (lastNotified === null && next === null) ||
       (lastNotified !== null &&
         next !== null &&
         lastNotified.seat === next.seat &&
         lastNotified.banterId === next.banterId);
-    if (same) {
+    if (sameActive && setsEqual(lastNotifiedPendingIds, nextPending)) {
       return;
     }
     lastNotified = next;
+    lastNotifiedPendingIds = nextPending;
     for (const listener of listeners) {
-      listener(next);
+      listener(next, nextPending);
     }
   }
 
@@ -179,8 +194,8 @@ export function createBanterVoicePlayer(
       return;
     }
     active = null;
-    notifySpeakingState();
     drainNext();
+    notifyPlaybackState();
   }
 
   function startSlot(
@@ -191,6 +206,7 @@ export function createBanterVoicePlayer(
   ): void {
     if (disposed || !fetchFn || !isAllowedAudioUrl(item.audioUrl)) {
       drainNext();
+      notifyPlaybackState();
       return;
     }
 
@@ -209,6 +225,7 @@ export function createBanterVoicePlayer(
       source: null,
     };
     active = slot;
+    notifyPlaybackState();
 
     void (async () => {
       let buffer: AudioBufferLike;
@@ -239,13 +256,7 @@ export function createBanterVoicePlayer(
         return;
       }
 
-      let target: AudioNodeLike = voGain;
-      if (item.pan !== 0 && typeof ctx.createStereoPanner === "function") {
-        const panner = ctx.createStereoPanner();
-        panner.pan.value = Math.max(-1, Math.min(1, item.pan));
-        panner.connect(voGain);
-        target = panner;
-      }
+      const target = connectWithRelativePan(ctx, voGain, item.pan);
 
       const source = ctx.createBufferSource();
       source.buffer = buffer;
@@ -264,26 +275,26 @@ export function createBanterVoicePlayer(
           return;
         }
         active = null;
-        notifySpeakingState();
         if (!disposed && !isExternalVoiceActive()) {
           rampSfxGain(ctx, sfxGain, currentBaseSfxVolume);
         }
         drainNext();
+        notifyPlaybackState();
       };
 
       try {
         source.start(ctx.currentTime);
       } catch {
         active = null;
-        notifySpeakingState();
         if (!wasExternalDucking && !isExternalVoiceActive()) {
           rampSfxGain(ctx, sfxGain, currentBaseSfxVolume);
         }
         drainNext();
+        notifyPlaybackState();
         return;
       }
 
-      notifySpeakingState();
+      notifyPlaybackState();
     })();
   }
 
@@ -309,13 +320,11 @@ export function createBanterVoicePlayer(
       if (prev.source !== null) {
         stopSourceQuietly(prev.source);
       }
-      if (wasPlaying) {
-        notifySpeakingState();
-        if (!disposed && lastCtx && lastSfxGain && !isExternalVoiceActive()) {
-          rampSfxGain(lastCtx, lastSfxGain, currentBaseSfxVolume);
-        }
+      if (wasPlaying && !disposed && lastCtx && lastSfxGain && !isExternalVoiceActive()) {
+        rampSfxGain(lastCtx, lastSfxGain, currentBaseSfxVolume);
       }
     }
+    notifyPlaybackState();
   }
 
   return {
@@ -325,13 +334,15 @@ export function createBanterVoicePlayer(
 
     getActive: computeActiveState,
 
+    getPendingBanterIds: computePendingBanterIds,
+
     getQueueLength(): number {
       return pendingQueue.length;
     },
 
     subscribe(listener: BanterVoiceStateListener): () => void {
       listeners.add(listener);
-      listener(computeActiveState());
+      listener(computeActiveState(), computePendingBanterIds());
       return () => {
         listeners.delete(listener);
       };
@@ -367,11 +378,8 @@ export function createBanterVoicePlayer(
         if (prev.source !== null) {
           stopSourceQuietly(prev.source);
         }
-        if (wasPlaying) {
-          notifySpeakingState();
-          if (!isExternalVoiceActive()) {
-            rampSfxGain(prev.ctx, prev.sfxGain, currentBaseSfxVolume);
-          }
+        if (wasPlaying && !isExternalVoiceActive()) {
+          rampSfxGain(prev.ctx, prev.sfxGain, currentBaseSfxVolume);
         }
         startSlot(ctx, voGain, sfxGain, item);
         return;
@@ -379,6 +387,7 @@ export function createBanterVoicePlayer(
 
       // Cross-seat arrival: enqueue with max-2 bounded priority eviction.
       enqueueWithEviction({ item, ctx, voGain, sfxGain });
+      notifyPlaybackState();
     },
 
     updateSfxBaseVolume(baseSfxVolume: number): void {

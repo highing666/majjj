@@ -8,8 +8,9 @@ use mahjong_core::Seat;
 use tokio::time::Instant;
 
 use crate::persona::PersonaId;
-use crate::protocol::ServerMessage;
-use crate::tts::{TtsSynthesisRequest, TTS_COOLDOWN_DURATION};
+use crate::protocol::{SeatKind, ServerMessage, TablePhase};
+use crate::session::TableSession;
+use crate::tts::{TtsAudioOutput, TtsError, TtsSynthesisRequest, TTS_COOLDOWN_DURATION};
 
 /// Maximum cached synthesized WAV clips in memory (Spec #81: 24 entries).
 pub const BANTER_AUDIO_CACHE_MAX_ENTRIES: usize = 24;
@@ -231,6 +232,11 @@ pub(crate) struct PendingTtsJob {
     pub deadline_ms: u32,
 }
 
+/// Non-blocking status notice emitted on `Hello` when `--no-tts` explicitly disables LAN TTS,
+/// ensuring clients with `hide_banter_bubble_with_voice` always auto-restore comic banter bubbles.
+pub(crate) const TTS_DISABLED_MESSAGE: &str =
+    "局域网语音合成已关闭，当前仅显示漫画气泡与离线角色语音包";
+
 fn format_tts_unavailable_message(err_display: &str) -> String {
     format!("局域网台词语音服务暂不可用（{err_display}），已自动退回漫画气泡与角色语音包")
 }
@@ -256,7 +262,11 @@ impl TtsSessionState {
             consecutive_failures: 0,
             cooldown_until: None,
             probe_scheduled: false,
-            last_error: None,
+            last_error: if enabled {
+                None
+            } else {
+                Some(TTS_DISABLED_MESSAGE.to_string())
+            },
             next_banter_seq: 1,
             seat_banter_generation: [0; 4],
         }
@@ -295,7 +305,7 @@ impl TtsSessionState {
         }
     }
 
-    pub(crate) fn current_outage_notice(&self) -> Option<ServerMessage> {
+    pub(crate) fn current_status_notice(&self) -> Option<ServerMessage> {
         if self.available {
             return None;
         }
@@ -406,6 +416,87 @@ impl TtsSessionState {
     }
 }
 
+impl TableSession {
+    fn is_tts_guard_fresh(&self, guard: &TtsGuard) -> bool {
+        let phase_ok = self.phase == TablePhase::InMatch
+            || (guard.allow_finished_phase && self.phase == TablePhase::Finished);
+        if !phase_ok {
+            return false;
+        }
+        let seat_slot = &self.seats[guard.seat.index()];
+        if seat_slot.info.kind != SeatKind::Ai
+            || seat_slot.info.persona_id != Some(guard.persona_id)
+            || self.seat_generation[guard.seat.index()] != guard.seat_generation
+            || self.tts.seat_banter_generation(guard.seat) != guard.seat_banter_generation
+        {
+            return false;
+        }
+        self.active_match.as_ref().is_some_and(|active| {
+            active.match_id == guard.match_id && active.hand_generation == guard.hand_generation
+        })
+    }
+
+    pub(crate) fn commit_tts_result(
+        &mut self,
+        guard: TtsGuard,
+        dispatched_at: Instant,
+        deadline_ms: u32,
+        result: Result<TtsAudioOutput, TtsError>,
+    ) -> Option<Instant> {
+        let now = Instant::now();
+        match result {
+            Err(err) => {
+                eprintln!(
+                    "warning: TTS synthesis failed for {}: {err}",
+                    guard.banter_id
+                );
+                let (notice, probe_at) = self.tts.record_synthesis_failure(&err.to_string(), now);
+                if let Some(notice) = notice {
+                    self.broadcast_all(notice);
+                }
+                probe_at
+            }
+            Ok(audio) => {
+                self.tts.record_synthesis_success();
+                let within_deadline = now.saturating_duration_since(dispatched_at)
+                    <= Duration::from_millis(u64::from(deadline_ms));
+                if !within_deadline || !self.is_tts_guard_fresh(&guard) {
+                    return None;
+                }
+                let inserted = self
+                    .banter_audio_cache
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(guard.banter_id.clone(), audio.wav_bytes, now);
+                if inserted {
+                    self.broadcast_all(ServerMessage::TableBanterAudioReady {
+                        audio_url: format!("/api/banter-audio/{}", guard.banter_id),
+                        banter_id: guard.banter_id,
+                        seat: guard.seat,
+                        duration_ms: audio.duration_ms,
+                    });
+                }
+                None
+            }
+        }
+    }
+
+    pub(crate) fn commit_tts_health_probe(
+        &mut self,
+        result: Result<(), String>,
+    ) -> Option<Instant> {
+        if let Err(ref err) = result {
+            eprintln!("warning: LAN TTS /health probe failed: {err}");
+        }
+        let now = Instant::now();
+        let (notice, next_probe_at) = self.tts.record_health_probe_result(result, now);
+        if let Some(notice) = notice {
+            self.broadcast_all(notice);
+        }
+        next_probe_at
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -414,7 +505,7 @@ mod tests {
 
     use super::{
         is_valid_banter_id, BanterAudioCache, TtsSessionState, BANTER_AUDIO_CACHE_MAX_BYTES,
-        BANTER_AUDIO_CACHE_MAX_ENTRIES, BANTER_AUDIO_CACHE_TTL,
+        BANTER_AUDIO_CACHE_MAX_ENTRIES, BANTER_AUDIO_CACHE_TTL, TTS_DISABLED_MESSAGE,
     };
     use crate::protocol::ServerMessage;
     use crate::tts::TTS_COOLDOWN_DURATION;
@@ -540,5 +631,17 @@ mod tests {
         ));
         assert!(next_probe_ok.is_none());
         assert!(state.should_dispatch(t30));
+    }
+
+    #[test]
+    fn disabled_tts_session_state_reports_unavailable_status_notice() {
+        let state = TtsSessionState::new(false);
+        assert!(matches!(
+            state.current_status_notice(),
+            Some(ServerMessage::TtsStatusNotice {
+                available: false,
+                message,
+            }) if message == TTS_DISABLED_MESSAGE
+        ));
     }
 }

@@ -331,6 +331,108 @@ class BatchPipelineEndToEndTests(unittest.TestCase):
         self.assertEqual(calls[1][1]["text"], "一万")
         self.assertIn("女声", calls[1][1]["instruct"])
 
+    def test_exported_reference_clips_load_cleanly_in_cosyvoice3_and_qwen3_base_clone(self) -> None:
+        server_dir = THIS_DIR / "server"
+        if str(server_dir) not in sys.path:
+            sys.path.insert(0, str(server_dir))
+
+        from backends import (  # type: ignore[import-not-found]
+            BACKEND_COSYVOICE3,
+            BACKEND_QWEN3_BASE_CLONE,
+            create_backend,
+        )
+        from personas import PersonaRegistry  # type: ignore[import-not-found]
+
+        registry = PersonaRegistry.from_file(server_dir / "personas.json")
+
+        class FakeCuda:
+            @staticmethod
+            def is_available() -> bool:
+                return True
+
+            @staticmethod
+            def set_per_process_memory_fraction(fraction: float, device: int = 0) -> None:
+                pass
+
+        class FakeTorch:
+            bfloat16 = "bf16"
+            cuda = FakeCuda()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            out_dir = root / "vo"
+            voices_dir = root / "voices"
+
+            gvp.generate_voice_packs(
+                pack_ids=None,
+                output_dir=out_dir,
+                voices_dir=voices_dir,
+                synthesizer=gvp.DryRunSynthesizer(),
+                encoder=_fake_m4a_encoder,
+                bitrate_bps=24000,
+            )
+
+            cosy_refs: List[pathlib.Path] = []
+
+            class FakeCosy:
+                sample_rate = 24000
+
+                def extract_speaker_features(self, ref_audio_path: str) -> Dict[str, str]:
+                    path = pathlib.Path(ref_audio_path)
+                    self.assert_exists(path)
+                    cosy_refs.append(path)
+                    return {"ref_audio_path": ref_audio_path}
+
+                @staticmethod
+                def assert_exists(path: pathlib.Path) -> None:
+                    if not path.is_file():
+                        raise FileNotFoundError(f"Missing reference audio: {path}")
+
+            cosy_backend = create_backend(
+                BACKEND_COSYVOICE3,
+                registry=registry,
+                voices_dir=voices_dir,
+                torch_module=FakeTorch(),
+                model_loader=lambda model_path, **kwargs: FakeCosy(),
+            )
+            cosy_backend.load()
+            self.assertEqual(len(cosy_refs), 5)
+            self.assertEqual(
+                {p.name for p in cosy_refs},
+                {f"{p.voice_pack_id}_ref.wav" for p in registry.list_personas()},
+            )
+
+            base_calls: List[Tuple[pathlib.Path, str]] = []
+
+            class FakeBase:
+                def create_voice_clone_prompt(
+                    self, *, ref_audio: str, ref_text: str, x_vector_only_mode: bool
+                ) -> Dict[str, Any]:
+                    path = pathlib.Path(ref_audio)
+                    if not path.is_file():
+                        raise FileNotFoundError(f"Missing reference audio: {path}")
+                    base_calls.append((path, ref_text))
+                    return {"ref_audio": ref_audio, "ref_text": ref_text}
+
+                def generate_voice_clone(
+                    self, *, text: str, language: str, voice_clone_prompt: Dict[str, Any], max_new_tokens: int
+                ) -> Tuple[List[List[float]], int]:
+                    return ([[0.0, 0.1]], 24000)
+
+            base_backend = create_backend(
+                BACKEND_QWEN3_BASE_CLONE,
+                registry=registry,
+                voices_dir=voices_dir,
+                torch_module=FakeTorch(),
+                model_loader=lambda model_path, **kwargs: FakeBase(),
+            )
+            base_backend.load()
+            self.assertEqual(len(base_calls), 30)
+            for ref_path, ref_text in base_calls:
+                self.assertTrue(ref_path.name.endswith("_ref.wav"))
+                expected_txt = ref_path.with_suffix(".txt").read_text(encoding="utf-8").strip()
+                self.assertEqual(ref_text, expected_txt)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -19,6 +19,7 @@ import {
   type PendingAddedKong,
   type SessionState,
 } from "../session/reducer";
+import { isBubbleActivelySpeaking } from "../table/banterVisibility";
 import {
   IMPACT_DURATION_MS,
   createPresentationEffectsBus,
@@ -90,7 +91,10 @@ export interface PresentationQueue {
   subscribe(listener: PresentationStateListener): () => void;
   onSemanticEvent(listener: SemanticEventListener): () => void;
   onBanterVoiceEvent(listener: BanterVoiceEventListener): () => void;
-  setActiveBanterVoice(active: ActiveBanterVoiceState | null): void;
+  setActiveBanterVoice(
+    active: ActiveBanterVoiceState | null,
+    pendingBanterIds?: ReadonlySet<string>,
+  ): void;
   enqueueServerMessage(message: ServerMessage): void;
   emitLocalUiAction(action: LocalUiAction): void;
   skipActiveImpact(): boolean;
@@ -223,6 +227,7 @@ export function createPresentationQueue(
   const bubbleTimers: Partial<Record<Seat, unknown>> = {};
   const deferredDismissBubbleIds: Partial<Record<Seat, number>> = {};
   let activeBanterVoice: ActiveBanterVoiceState | null = null;
+  let pendingBanterVoiceIds: ReadonlySet<string> = new Set();
   let nextBubbleId = 1;
   let settlementVisible = false;
   let pace: TablePace = "Standard";
@@ -272,14 +277,15 @@ export function createPresentationQueue(
     };
   }
 
-  function isBubbleSpeaking(bubble: ActiveBanterBubble | null): boolean {
+  function isBubbleHeldByVoice(bubble: ActiveBanterBubble | null): boolean {
+    if (isBubbleActivelySpeaking(bubble, activeBanterVoice)) {
+      return true;
+    }
     return (
       bubble !== null &&
-      activeBanterVoice !== null &&
       bubble.kind === "banter" &&
-      bubble.seat === activeBanterVoice.seat &&
       bubble.banterId !== null &&
-      bubble.banterId === activeBanterVoice.banterId
+      pendingBanterVoiceIds.has(bubble.banterId)
     );
   }
 
@@ -593,7 +599,7 @@ export function createPresentationQueue(
       if (disposed || activeBubbles[seat]?.bubbleId !== bubbleId) {
         return;
       }
-      if (isBubbleSpeaking(activeBubbles[seat])) {
+      if (isBubbleHeldByVoice(activeBubbles[seat])) {
         deferredDismissBubbleIds[seat] = bubbleId;
         return;
       }
@@ -803,11 +809,15 @@ export function createPresentationQueue(
       };
     },
 
-    setActiveBanterVoice(nextActive: ActiveBanterVoiceState | null): void {
+    setActiveBanterVoice(
+      nextActive: ActiveBanterVoiceState | null,
+      nextPendingIds?: ReadonlySet<string>,
+    ): void {
       if (disposed) {
         return;
       }
       activeBanterVoice = nextActive ? { ...nextActive } : null;
+      pendingBanterVoiceIds = nextPendingIds ? new Set(nextPendingIds) : new Set();
       for (const seat of ALL_SEATS) {
         const deferredId = deferredDismissBubbleIds[seat];
         if (deferredId === undefined) {
@@ -818,7 +828,7 @@ export function createPresentationQueue(
           delete deferredDismissBubbleIds[seat];
           continue;
         }
-        if (!isBubbleSpeaking(bubble)) {
+        if (!isBubbleHeldByVoice(bubble)) {
           delete deferredDismissBubbleIds[seat];
           scheduleSeatBubbleDismissTimer(seat, deferredId, banterVoiceTailMs);
         }
@@ -880,6 +890,7 @@ export function createPresentationQueue(
       }
       disposed = true;
       activeBanterVoice = null;
+      pendingBanterVoiceIds = new Set();
       clearQueueAndEffects();
       clearAllBubbles();
       clearBanterTracking();

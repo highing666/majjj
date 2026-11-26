@@ -108,6 +108,14 @@ export interface HumanVoicePackSyncTarget {
   readonly syncKey: string;
 }
 
+export function buildHumanVoicePackSyncKey(
+  tableId: string,
+  seat: Seat,
+  packId: HumanVoicePackId,
+): string {
+  return `${tableId}:${seat}:${packId}`;
+}
+
 /**
  * Resolves whether the device's persisted `human_voice_pack_id` should be synced
  * to the server via `SetSeatVoicePack`. Returns `null` when the user kept default
@@ -131,7 +139,7 @@ export function resolveHumanVoicePackSyncTarget(
   if (currentSeatVoicePackId === preferredPackId) {
     return null;
   }
-  const syncKey = `${tableId}:${yourSeat}:${preferredPackId}`;
+  const syncKey = buildHumanVoicePackSyncKey(tableId, yourSeat, preferredPackId);
   if (lastSyncedKey === syncKey) {
     return null;
   }

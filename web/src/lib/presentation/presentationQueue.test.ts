@@ -1555,4 +1555,156 @@ describe("PresentationQueue", () => {
     queue.setActiveBanterVoice(null);
     expect(scheduled.size).toBe(0);
   });
+
+  it("keeps queued cross-seat banter bubbles visible at Fast pace while an earlier speaker is playing, and cleans up after playback or eviction", () => {
+    const scheduled = new Map<number, { cb: () => void; delayMs: number }>();
+    let nextTimerId = 1;
+
+    const queue = createPresentationQueue({
+      banterDurationMs: 4500,
+      banterVoiceTailMs: 500,
+      scheduler: {
+        setTimeout(cb, delayMs) {
+          const id = nextTimerId++;
+          scheduled.set(id, { cb, delayMs });
+          return id;
+        },
+        clearTimeout(handle) {
+          scheduled.delete(handle as number);
+        },
+      },
+    });
+
+    const snap = makeSnapshot(3, "Fast");
+    snap.seats[1] = {
+      ...snap.seats[1],
+      kind: "Ai",
+      persona_id: "QuickHothead",
+      mood: "Smug",
+      nickname: "急眼快攻哥",
+    };
+    snap.seats[2] = {
+      ...snap.seats[2],
+      kind: "Ai",
+      persona_id: "TeaSarcasm",
+      mood: "Mocking",
+      nickname: "阴阳茶艺师",
+    };
+    snap.seats[3] = {
+      ...snap.seats[3],
+      kind: "Ai",
+      persona_id: "StubbornBlamer",
+      mood: "Tilted",
+      nickname: "嘴硬死磕王",
+    };
+    queue.enqueueServerMessage({ TableSnapshot: snap });
+
+    // South (b-q-1) and West (b-q-2) emit back-to-back banter at Fast pace (3510ms timer each)
+    queue.enqueueServerMessage({
+      TableBanter: {
+        banter_id: "b-q-1",
+        seat: "South",
+        persona_id: "QuickHothead",
+        mood: "Smug",
+        text: "这把自摸稳了！",
+        event_seq: 4,
+        reply_to_seat: null,
+      },
+    });
+    queue.enqueueServerMessage({
+      TableBanter: {
+        banter_id: "b-q-2",
+        seat: "West",
+        persona_id: "TeaSarcasm",
+        mood: "Mocking",
+        text: "急眼哥别高兴太早呀。",
+        event_seq: 4,
+        reply_to_seat: "South",
+      },
+    });
+
+    // South is speaking b-q-1 while West's b-q-2 is waiting in BanterVoicePlayer's queue
+    queue.setActiveBanterVoice(
+      { seat: "South", banterId: "b-q-1" },
+      new Set(["b-q-2"]),
+    );
+
+    const baseTimerIds = [...scheduled.keys()];
+    expect(baseTimerIds).toHaveLength(2);
+    expect(scheduled.get(baseTimerIds[0]!)?.delayMs).toBe(3510);
+    expect(scheduled.get(baseTimerIds[1]!)?.delayMs).toBe(3510);
+
+    // Both Fast-pace base timers expire while South is STILL speaking and West is STILL queued
+    for (const id of baseTimerIds) {
+      const entry = scheduled.get(id)!;
+      scheduled.delete(id);
+      entry.cb();
+    }
+    expect(queue.getState().activeBubbles.South?.banterId).toBe("b-q-1");
+    expect(queue.getState().activeBubbles.West?.banterId).toBe("b-q-2");
+    expect(scheduled.size).toBe(0);
+
+    // South finishes speaking, West enters loading phase (still pending) -> South gets 500ms tail, West stays deferred
+    queue.setActiveBanterVoice(null, new Set(["b-q-2"]));
+    expect(scheduled.size).toBe(1);
+    const [southTailId] = [...scheduled.keys()];
+    expect(scheduled.get(southTailId!)?.delayMs).toBe(500);
+    const southTail = scheduled.get(southTailId!)!;
+    scheduled.delete(southTailId!);
+    southTail.cb();
+    expect(queue.getState().activeBubbles.South).toBeNull();
+    expect(queue.getState().activeBubbles.West?.banterId).toBe("b-q-2");
+
+    // West starts playing, then finishes -> West gets 500ms tail and dismisses cleanly
+    queue.setActiveBanterVoice({ seat: "West", banterId: "b-q-2" }, new Set());
+    expect(scheduled.size).toBe(0);
+    expect(queue.getState().activeBubbles.West?.banterId).toBe("b-q-2");
+
+    queue.setActiveBanterVoice(null, new Set());
+    expect(scheduled.size).toBe(1);
+    const [westTailId] = [...scheduled.keys()];
+    expect(scheduled.get(westTailId!)?.delayMs).toBe(500);
+    const westTail = scheduled.get(westTailId!)!;
+    scheduled.delete(westTailId!);
+    westTail.cb();
+    expect(queue.getState().activeBubbles.West).toBeNull();
+    expect(scheduled.size).toBe(0);
+
+    // Eviction/flush case: North bubble is queued, base timer expires, then evicted from queue -> dismisses cleanly
+    queue.enqueueServerMessage({
+      TableBanter: {
+        banter_id: "b-q-3",
+        seat: "North",
+        persona_id: "StubbornBlamer",
+        mood: "Tilted",
+        text: "发牌员又演我！",
+        event_seq: 5,
+        reply_to_seat: null,
+      },
+    });
+    queue.setActiveBanterVoice(
+      { seat: "South", banterId: "b-other" },
+      new Set(["b-q-3"]),
+    );
+    const [northBaseId] = [...scheduled.keys()];
+    const northBase = scheduled.get(northBaseId!)!;
+    scheduled.delete(northBaseId!);
+    northBase.cb();
+    expect(queue.getState().activeBubbles.North?.banterId).toBe("b-q-3");
+
+    // b-q-3 is evicted from BanterVoicePlayer queue -> tail timer arms and cleans up North bubble
+    queue.setActiveBanterVoice(
+      { seat: "South", banterId: "b-other" },
+      new Set(),
+    );
+    expect(scheduled.size).toBe(1);
+    const [northTailId] = [...scheduled.keys()];
+    const northTail = scheduled.get(northTailId!)!;
+    scheduled.delete(northTailId!);
+    northTail.cb();
+    expect(queue.getState().activeBubbles.North).toBeNull();
+    expect(scheduled.size).toBe(0);
+
+    queue.dispose();
+  });
 });

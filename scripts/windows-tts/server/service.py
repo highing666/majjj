@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 import time
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple, TypeVar
 
 from audio import DEFAULT_CHANNELS, compute_duration_ms, encode_wav_pcm16
 from backends import TtsBackend
@@ -14,6 +14,8 @@ from vram_guard import DEFAULT_MAX_NEW_TOKENS, clamp_max_new_tokens
 
 DEFAULT_DEADLINE_MS = 2500
 SUPPORTED_FORMATS = ("wav", "pcm")
+
+_T = TypeVar("_T")
 
 
 class TtsServiceError(Exception):
@@ -187,7 +189,11 @@ class TtsService:
 
         return plan, text, fmt
 
-    async def synthesize(self, req: SynthesizeRequest) -> SynthesizeResponse:
+    async def _run_serialized_gpu_job(
+        self,
+        req: SynthesizeRequest,
+        worker: Callable[[SynthesisVoicePlan, str], _T],
+    ) -> Tuple[_T, str, int, int]:
         plan, text, fmt = self._validate_request(req)
         enqueued_at = self._clock_ms()
 
@@ -207,35 +213,62 @@ class TtsService:
                     )
 
                 synth_start = self._clock_ms()
-                raw_audio = await asyncio.to_thread(
-                    self.backend.synthesize,
-                    plan,
-                    text,
-                    max_new_tokens=self.max_new_tokens,
-                )
+                output = await asyncio.to_thread(worker, plan, text)
                 synth_ms = max(0, int(round(self._clock_ms() - synth_start)))
         finally:
             self._queue_depth -= 1
+
+        return output, fmt, queue_wait_ms, synth_ms
+
+    def _build_audio_headers(
+        self,
+        *,
+        request_id: str,
+        duration_ms: int,
+        synth_ms: int,
+        queue_wait_ms: int,
+        sample_rate: int,
+        audio_format: Optional[str] = None,
+    ) -> Dict[str, str]:
+        headers = {
+            "X-TTS-Request-Id": request_id,
+            "X-TTS-Duration-Ms": str(duration_ms),
+            "X-TTS-Synth-Ms": str(synth_ms),
+            "X-TTS-Queue-Wait-Ms": str(queue_wait_ms),
+            "X-TTS-Backend": self.backend.backend_name,
+            "X-TTS-Model": self.backend.model_id,
+            "X-Audio-Sample-Rate": str(sample_rate),
+            "X-Audio-Channels": str(DEFAULT_CHANNELS),
+        }
+        if audio_format is not None:
+            headers["X-Audio-Format"] = audio_format
+        return headers
+
+    async def synthesize(self, req: SynthesizeRequest) -> SynthesizeResponse:
+        raw_audio, fmt, queue_wait_ms, synth_ms = await self._run_serialized_gpu_job(
+            req,
+            lambda plan, text: self.backend.synthesize(
+                plan,
+                text,
+                max_new_tokens=self.max_new_tokens,
+            ),
+        )
 
         duration_ms = compute_duration_ms(
             len(raw_audio.pcm16_bytes),
             sample_rate=raw_audio.sample_rate,
             channels=DEFAULT_CHANNELS,
         )
-
-        headers = {
-            "X-TTS-Request-Id": req.request_id,
-            "X-TTS-Duration-Ms": str(duration_ms),
-            "X-TTS-Synth-Ms": str(synth_ms),
-            "X-TTS-Queue-Wait-Ms": str(queue_wait_ms),
-            "X-TTS-Backend": self.backend.backend_name,
-            "X-TTS-Model": self.backend.model_id,
-            "X-Audio-Sample-Rate": str(raw_audio.sample_rate),
-            "X-Audio-Channels": str(DEFAULT_CHANNELS),
-        }
+        headers = self._build_audio_headers(
+            request_id=req.request_id,
+            duration_ms=duration_ms,
+            synth_ms=synth_ms,
+            queue_wait_ms=queue_wait_ms,
+            sample_rate=raw_audio.sample_rate,
+            audio_format="pcm_s16le" if fmt == "pcm" else None,
+        )
 
         if fmt == "pcm":
-            headers["X-Audio-Format"] = "pcm_s16le"
             return SynthesizeResponse(
                 body=raw_audio.pcm16_bytes,
                 content_type="application/octet-stream",
@@ -255,34 +288,16 @@ class TtsService:
 
     async def synthesize_stream(self, req: SynthesizeRequest) -> SynthesizeStreamResponse:
         """v1.5 streaming extension: yields raw 24 kHz 16-bit mono PCM chunks."""
-        plan, text, _ = self._validate_request(req)
-        enqueued_at = self._clock_ms()
-
-        self._queue_depth += 1
-        try:
-            async with self._gpu_semaphore:
-                acquired_at = self._clock_ms()
-                queue_wait_ms = max(0, int(round(acquired_at - enqueued_at)))
-                if queue_wait_ms >= req.deadline_ms:
-                    raise DeadlineExceededError(
-                        request_id=req.request_id,
-                        deadline_ms=req.deadline_ms,
-                        queue_wait_ms=queue_wait_ms,
-                    )
-
-                synth_start = self._clock_ms()
-                chunks = await asyncio.to_thread(
-                    lambda: list(
-                        self.backend.synthesize_stream(
-                            plan,
-                            text,
-                            max_new_tokens=self.max_new_tokens,
-                        )
-                    )
+        chunks, _, queue_wait_ms, synth_ms = await self._run_serialized_gpu_job(
+            req,
+            lambda plan, text: list(
+                self.backend.synthesize_stream(
+                    plan,
+                    text,
+                    max_new_tokens=self.max_new_tokens,
                 )
-                synth_ms = max(0, int(round(self._clock_ms() - synth_start)))
-        finally:
-            self._queue_depth -= 1
+            ),
+        )
 
         total_bytes = sum(len(chunk) for chunk in chunks)
         duration_ms = compute_duration_ms(
@@ -290,17 +305,14 @@ class TtsService:
             sample_rate=self.backend.sample_rate,
             channels=DEFAULT_CHANNELS,
         )
-        headers = {
-            "X-TTS-Request-Id": req.request_id,
-            "X-TTS-Duration-Ms": str(duration_ms),
-            "X-TTS-Synth-Ms": str(synth_ms),
-            "X-TTS-Queue-Wait-Ms": str(queue_wait_ms),
-            "X-TTS-Backend": self.backend.backend_name,
-            "X-TTS-Model": self.backend.model_id,
-            "X-Audio-Sample-Rate": str(self.backend.sample_rate),
-            "X-Audio-Channels": str(DEFAULT_CHANNELS),
-            "X-Audio-Format": "pcm_s16le",
-        }
+        headers = self._build_audio_headers(
+            request_id=req.request_id,
+            duration_ms=duration_ms,
+            synth_ms=synth_ms,
+            queue_wait_ms=queue_wait_ms,
+            sample_rate=self.backend.sample_rate,
+            audio_format="pcm_s16le",
+        )
         return SynthesizeStreamResponse(
             chunks=chunks,
             content_type="application/octet-stream",
