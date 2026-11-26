@@ -42,6 +42,7 @@ function makeSnapshot(overrides: Partial<TableSnapshot> = {}): TableSnapshot {
       pace: "Standard",
     },
     pace: "Standard",
+    slow_think_nudge_enabled: true,
     seats: [
       makeSeat("East", {
         kind: "Human",

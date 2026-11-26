@@ -8,7 +8,7 @@ use rand_chacha::ChaCha8Rng;
 use rand_core::SeedableRng;
 use tokio::sync::Mutex;
 
-use crate::banter::{PendingBanterJob, ASYNC_BANTER_TIMEOUT, HIGHLIGHT_SYNC_CAP};
+use crate::banter::{PendingBanterJob, SlowThinkTicket, ASYNC_BANTER_TIMEOUT, HIGHLIGHT_SYNC_CAP};
 use crate::llm::{LlmClient, LlmError};
 use crate::pacing::{overlapped_wait, AiTurnTrigger, ReleaseTicket};
 use crate::server::ServerError;
@@ -63,6 +63,7 @@ pub(crate) struct ScheduledWork {
     pub pending_release: Option<ReleaseTicket>,
     pub sync_banter: Vec<PendingBanterJob>,
     pub async_banter: Vec<PendingBanterJob>,
+    pub slow_think_nudge: Option<SlowThinkTicket>,
 }
 
 impl ScheduledWork {
@@ -71,6 +72,7 @@ impl ScheduledWork {
             && self.pending_release.is_none()
             && self.sync_banter.is_empty()
             && self.async_banter.is_empty()
+            && self.slow_think_nudge.is_none()
     }
 }
 
@@ -182,7 +184,29 @@ pub(crate) fn spawn_scheduled_work(
         pending_release,
         sync_banter,
         async_banter,
+        slow_think_nudge,
     } = work;
+
+    if let (Some(ticket), Some(llm)) = (slow_think_nudge, llm_client.as_ref()) {
+        let runtime = Arc::clone(&runtime);
+        let llm = Arc::clone(llm);
+        tokio::spawn(async move {
+            let now = tokio::time::Instant::now();
+            if ticket.fire_at > now {
+                tokio::time::sleep_until(ticket.fire_at).await;
+            }
+            let job = {
+                let mut session = runtime.lock().await;
+                session.fire_slow_think_nudge(ticket)
+            };
+            if let Some(job) = job {
+                let (guard, result) =
+                    run_banter_job_with_timeout(&llm, job, ASYNC_BANTER_TIMEOUT).await;
+                let mut session = runtime.lock().await;
+                session.commit_banter_result(guard, result);
+            }
+        });
+    }
 
     if let Some(llm) = llm_client.as_ref() {
         for job in async_banter {

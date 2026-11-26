@@ -1,6 +1,7 @@
 import type { AiStyle } from "./generated/AiStyle";
 import type { PersonaId } from "./generated/PersonaId";
 import type { PersonaMood } from "./generated/PersonaMood";
+import type { QuickEmote } from "./generated/QuickEmote";
 
 export const PERSONA_IDS: readonly PersonaId[] = [
   "QuickHothead",
@@ -163,4 +164,69 @@ export function personaFrameKey(
   mood: PersonaMood,
 ): string {
   return `persona_${personaId}_${mood}`;
+}
+
+export const QUICK_EMOTE_COOLDOWN_MS = 4000;
+
+export const QUICK_EMOTE_IDS: readonly QuickEmote[] = [
+  "IsThatIt",
+  "HurryUp",
+  "SpareMe",
+  "NicePlay",
+  "DealerRigged",
+  "GoingBig",
+] as const;
+
+export interface QuickEmoteMeta {
+  readonly id: QuickEmote;
+  readonly label: string;
+  readonly shortLabel: string;
+  readonly accentHex: string;
+}
+
+export const QUICK_EMOTE_CATALOG: Record<QuickEmote, QuickEmoteMeta> = {
+  IsThatIt: {
+    id: "IsThatIt",
+    label: "就这？",
+    shortLabel: "就这？",
+    accentHex: "#F5BE58",
+  },
+  HurryUp: {
+    id: "HurryUp",
+    label: "搞快点",
+    shortLabel: "搞快点",
+    accentHex: "#E85D3F",
+  },
+  SpareMe: {
+    id: "SpareMe",
+    label: "别点我 / 求放过",
+    shortLabel: "求放过",
+    accentHex: "#6AA4E8",
+  },
+  NicePlay: {
+    id: "NicePlay",
+    label: "666 / 漂亮",
+    shortLabel: "666",
+    accentHex: "#49BFA0",
+  },
+  DealerRigged: {
+    id: "DealerRigged",
+    label: "发牌员演我",
+    shortLabel: "发牌员",
+    accentHex: "#C9485B",
+  },
+  GoingBig: {
+    id: "GoingBig",
+    label: "这把我要胡大的",
+    shortLabel: "胡大的",
+    accentHex: "#9C6EE6",
+  },
+};
+
+export const QUICK_EMOTE_LIST: readonly QuickEmoteMeta[] = QUICK_EMOTE_IDS.map(
+  (id) => QUICK_EMOTE_CATALOG[id],
+);
+
+export function getQuickEmoteMeta(emote: QuickEmote): QuickEmoteMeta {
+  return QUICK_EMOTE_CATALOG[emote];
 }

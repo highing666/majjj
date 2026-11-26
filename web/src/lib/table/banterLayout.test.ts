@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { computeBanterBubbleAnchor } from "./banterLayout";
+import {
+  computeBanterBubbleAnchor,
+  computeQuickEmoteDockRect,
+} from "./banterLayout";
 import { computeTableLayout, type Rect } from "./layout";
 import type { RelativeSlot } from "./viewModel";
 
@@ -49,6 +52,33 @@ describe("banterLayout — comic speech bubble anchors", () => {
           `${vp.name}/${slot} must never cover viewerHandRect`,
         ).toBe(false);
       }
+    }
+  });
+
+  it("keeps QuickEmoteBar dock inside viewport bounds and strictly clear of hand, action bar, and bottom badge", () => {
+    for (const vp of viewports) {
+      const layout = computeTableLayout(vp.width, vp.height);
+      const dock = computeQuickEmoteDockRect(layout);
+      expect(dock.x, `${vp.name} left`).toBeGreaterThanOrEqual(0);
+      expect(dock.y, `${vp.name} top`).toBeGreaterThanOrEqual(0);
+      expect(dock.x + dock.width, `${vp.name} right`).toBeLessThanOrEqual(
+        vp.width,
+      );
+      expect(dock.y + dock.height, `${vp.name} bottom`).toBeLessThanOrEqual(
+        vp.height,
+      );
+      expect(
+        rectsOverlap(dock, layout.viewerHandRect),
+        `${vp.name} quick-emote dock must never overlap viewerHandRect`,
+      ).toBe(false);
+      expect(
+        rectsOverlap(dock, layout.turnBarRect),
+        `${vp.name} quick-emote dock must never overlap turnBarRect`,
+      ).toBe(false);
+      expect(
+        rectsOverlap(dock, layout.badges.bottom),
+        `${vp.name} quick-emote dock must never overlap bottom badge`,
+      ).toBe(false);
     }
   });
 });

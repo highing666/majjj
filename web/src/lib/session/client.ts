@@ -2,6 +2,7 @@ import type { ClientMessage } from "../protocol/generated/ClientMessage";
 import type { LobbyConfig } from "../protocol/generated/LobbyConfig";
 import type { PersonaId } from "../protocol/generated/PersonaId";
 import type { PlayerAction } from "../protocol/generated/PlayerAction";
+import type { QuickEmote } from "../protocol/generated/QuickEmote";
 import type { Seat } from "../protocol/generated/Seat";
 import type { ServerMessage } from "../protocol/generated/ServerMessage";
 import type { TablePace } from "../protocol/generated/TablePace";
@@ -82,6 +83,8 @@ export interface TableClient {
   updateLobbyConfig(config: LobbyConfig): boolean;
   setSeatPersona(seat: Seat, personaId: PersonaId | null): boolean;
   setPace(pace: TablePace): boolean;
+  sendQuickEmote(emote: QuickEmote): boolean;
+  setSlowThinkNudge(enabled: boolean): boolean;
   startMatch(): boolean;
   returnToLobby(): boolean;
   requestSnapshot(): boolean;
@@ -515,6 +518,14 @@ export function createTableClient(
 
     setPace(pace: TablePace): boolean {
       return sendRaw({ SetPace: { pace } });
+    },
+
+    sendQuickEmote(emote: QuickEmote): boolean {
+      return sendRaw({ SendQuickEmote: { emote } });
+    },
+
+    setSlowThinkNudge(enabled: boolean): boolean {
+      return sendRaw({ SetSlowThinkNudge: { enabled } });
     },
 
     startMatch(): boolean {

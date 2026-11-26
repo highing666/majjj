@@ -154,6 +154,61 @@ pub struct HealthResponse {
     pub port: u16,
 }
 
+/// Six fixed table-wide human quick emotes (`快捷互动`) triggering immediate AI banter replies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+pub enum QuickEmote {
+    /// 「就这？」
+    IsThatIt,
+    /// 「搞快点」
+    HurryUp,
+    /// 「别点我 / 求放过」
+    SpareMe,
+    /// 「666 / 漂亮」
+    NicePlay,
+    /// 「发牌员演我」
+    DealerRigged,
+    /// 「这把我要胡大的」
+    GoingBig,
+}
+
+impl QuickEmote {
+    /// All six quick emotes in canonical UI display order.
+    pub const ALL: [Self; 6] = [
+        Self::IsThatIt,
+        Self::HurryUp,
+        Self::SpareMe,
+        Self::NicePlay,
+        Self::DealerRigged,
+        Self::GoingBig,
+    ];
+
+    /// Authoritative Chinese bubble label broadcast to the table.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::IsThatIt => "就这？",
+            Self::HurryUp => "搞快点",
+            Self::SpareMe => "别点我 / 求放过",
+            Self::NicePlay => "666 / 漂亮",
+            Self::DealerRigged => "发牌员演我",
+            Self::GoingBig => "这把我要胡大的",
+        }
+    }
+
+    /// Zero-based index for deterministic speaker rotation.
+    #[must_use]
+    pub const fn index(self) -> usize {
+        match self {
+            Self::IsThatIt => 0,
+            Self::HurryUp => 1,
+            Self::SpareMe => 2,
+            Self::NicePlay => 3,
+            Self::DealerRigged => 4,
+            Self::GoingBig => 5,
+        }
+    }
+}
+
 /// Full authoritative seat-projected snapshot sent on connect, reconnect, and `RequestSnapshot`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct TableSnapshot {
@@ -165,6 +220,8 @@ pub struct TableSnapshot {
     pub config: LobbyConfig,
     /// Active table pace.
     pub pace: TablePace,
+    /// Whether AI personas gently nudge slow-thinking humans after 15–20 seconds.
+    pub slow_think_nudge_enabled: bool,
     /// Public status for all four seats in `[East, South, West, North]` order.
     pub seats: [SeatInfo; 4],
     /// Seat owned by this connection, or `None` if unseated.
@@ -225,6 +282,10 @@ pub enum ClientMessage {
     },
     /// Update table pacing tier.
     SetPace { pace: TablePace },
+    /// Send a one-click table-wide quick emote (`快捷互动`) during an active match.
+    SendQuickEmote { emote: QuickEmote },
+    /// Toggle persistent gentle AI nudge banter after 15–20 seconds of human thinking.
+    SetSlowThinkNudge { enabled: bool },
     /// Reserved Slice 5 message: toggle temporary AI assistance for a seat.
     ToggleAiAssist { seat: Seat, enabled: bool },
     /// Reserved Slice 5 message: take over an offline human or AI seat.
@@ -267,6 +328,7 @@ pub enum ServerMessage {
         phase: TablePhase,
         config: LobbyConfig,
         seats: [SeatInfo; 4],
+        slow_think_nudge_enabled: bool,
     },
     /// Action rejection carrying the server's latest sequence number.
     ActionRejected {
@@ -297,6 +359,12 @@ pub enum ServerMessage {
         #[ts(type = "number")]
         event_seq: u64,
         reply_to_seat: Option<Seat>,
+    },
+    /// Broadcast human quick-emote comic bubble (`快捷互动`) to all connected clients.
+    QuickEmoteBroadcast {
+        seat: Seat,
+        emote: QuickEmote,
+        text: String,
     },
     /// Status notice emitted when the mandatory LAN LLM service disconnects, times out, or recovers.
     LlmStatusNotice { available: bool, message: String },

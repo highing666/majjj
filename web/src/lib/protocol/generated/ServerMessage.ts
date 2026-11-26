@@ -4,6 +4,7 @@ import type { PersonaId } from "./PersonaId";
 import type { PersonaMood } from "./PersonaMood";
 import type { PlayerAction } from "./PlayerAction";
 import type { PlayerEvent } from "./PlayerEvent";
+import type { QuickEmote } from "./QuickEmote";
 import type { Seat } from "./Seat";
 import type { SeatInfo } from "./SeatInfo";
 import type { TablePhase } from "./TablePhase";
@@ -12,4 +13,4 @@ import type { TableSnapshot } from "./TableSnapshot";
 /**
  * Server-to-client WebSocket JSON messages.
  */
-export type ServerMessage = { "TableSnapshot": TableSnapshot } | { "EventBatch": { from_seq: number, to_seq: number, events: Array<PlayerEvent>, updated_legal_actions: Array<PlayerAction>, } } | { "LobbyUpdated": { phase: TablePhase, config: LobbyConfig, seats: [SeatInfo, SeatInfo, SeatInfo, SeatInfo], } } | { "ActionRejected": { reason: string, current_seq: number, } } | { "ServerPing": { ts_ms: number, } } | { "ServerPong": { ts_ms: number, } } | "SessionReplaced" | { "ErrorNotice": { message: string, } } | { "TableBanter": { seat: Seat, persona_id: PersonaId, mood: PersonaMood, text: string, event_seq: number, reply_to_seat: Seat | null, } } | { "LlmStatusNotice": { available: boolean, message: string, } };
+export type ServerMessage = { "TableSnapshot": TableSnapshot } | { "EventBatch": { from_seq: number, to_seq: number, events: Array<PlayerEvent>, updated_legal_actions: Array<PlayerAction>, } } | { "LobbyUpdated": { phase: TablePhase, config: LobbyConfig, seats: [SeatInfo, SeatInfo, SeatInfo, SeatInfo], slow_think_nudge_enabled: boolean, } } | { "ActionRejected": { reason: string, current_seq: number, } } | { "ServerPing": { ts_ms: number, } } | { "ServerPong": { ts_ms: number, } } | "SessionReplaced" | { "ErrorNotice": { message: string, } } | { "TableBanter": { seat: Seat, persona_id: PersonaId, mood: PersonaMood, text: string, event_seq: number, reply_to_seat: Seat | null, } } | { "QuickEmoteBroadcast": { seat: Seat, emote: QuickEmote, text: string, } } | { "LlmStatusNotice": { available: boolean, message: string, } };

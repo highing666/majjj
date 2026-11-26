@@ -5,12 +5,14 @@
   import type { ActiveBanterMap } from "../presentation/presentationQueue";
   import type { PlayerAction } from "../protocol/generated/PlayerAction";
   import type { PlayerView } from "../protocol/generated/PlayerView";
+  import type { QuickEmote } from "../protocol/generated/QuickEmote";
   import type { Seat } from "../protocol/generated/Seat";
   import type { TablePace } from "../protocol/generated/TablePace";
   import type { TableSnapshot } from "../protocol/generated/TableSnapshot";
   import ActionBar from "./ActionBar.svelte";
   import BanterBubbles from "./BanterBubbles.svelte";
   import type { TableLayout } from "./layout";
+  import QuickEmoteBar from "./QuickEmoteBar.svelte";
   import SeatControlBar from "./SeatControlBar.svelte";
   import TablePersonaPockets from "./TablePersonaPockets.svelte";
   import { formatRoundTitle } from "./tiles";
@@ -31,6 +33,7 @@
     hasModalOpen: boolean;
     canTogglePace: boolean;
     canDisband: boolean;
+    canSendQuickEmote: boolean;
     shouldSuppressEscape: () => boolean;
     onToggleFullscreen: () => void;
     onTogglePace: () => void;
@@ -38,6 +41,7 @@
     onDisband: () => void;
     onToggleAiAssist: (seat: Seat, enabled: boolean) => void;
     onAction: (action: PlayerAction) => void;
+    onSendQuickEmote: (emote: QuickEmote) => boolean;
     floatingBanners?: Snippet;
   }
 
@@ -56,6 +60,7 @@
     hasModalOpen,
     canTogglePace,
     canDisband,
+    canSendQuickEmote,
     shouldSuppressEscape,
     onToggleFullscreen,
     onTogglePace,
@@ -63,6 +68,7 @@
     onDisband,
     onToggleAiAssist,
     onAction,
+    onSendQuickEmote,
     floatingBanners,
   }: Props = $props();
 
@@ -181,6 +187,12 @@
       </div>
     {/if}
   </div>
+
+  <QuickEmoteBar
+    {tableLayout}
+    disabled={!canSendQuickEmote}
+    {onSendQuickEmote}
+  />
 {/if}
 
 <style>

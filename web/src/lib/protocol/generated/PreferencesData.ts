@@ -35,4 +35,8 @@ default_pace: TablePace,
 /**
  * Optional persisted base URL for the LAN `llama-server` endpoint.
  */
-llm_base_url: string | null, };
+llm_base_url: string | null, 
+/**
+ * Whether AI personas gently nudge a human player after 15–20 seconds of thinking.
+ */
+slow_think_nudge_enabled: boolean, };
