@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use axum::body::Bytes;
 use axum::extract::ws::{Message as WsMessage, WebSocket};
-use axum::extract::{ConnectInfo, Request, State, WebSocketUpgrade};
+use axum::extract::{ConnectInfo, Path, Request, State, WebSocketUpgrade};
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, HOST};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri};
 use axum::middleware::{self, Next};
@@ -23,6 +23,7 @@ use tokio::task::JoinHandle;
 use tokio::time::{Instant, MissedTickBehavior};
 
 use crate::ai_pool::default_ai_threads;
+use crate::banter_audio::is_valid_banter_id;
 use crate::history_dto::ClearHistoryRequest;
 use crate::lan::read_local_hostname;
 use crate::lifecycle::{
@@ -36,6 +37,7 @@ use crate::static_assets::{
     DiskStaticAssets, EmbeddedStaticAssets, StaticAssetError, StaticAssetSource,
 };
 use crate::storage::{current_unix_ms, load_preferences_for_dir};
+use crate::tts::{resolve_tts_base_url, HttpTtsClient, TtsClient};
 
 const DEFAULT_PING_INTERVAL: Duration = Duration::from_secs(10);
 const DEFAULT_ACTIVITY_TIMEOUT: Duration = Duration::from_secs(25);
@@ -85,6 +87,12 @@ pub struct ServerConfig {
     pub llm_url: Option<String>,
     /// Optional injected [`LlmClient`] for automated tests (bypasses constructing `OpenAiLlmClient`).
     pub llm_client: Option<Arc<dyn LlmClient>>,
+    /// Optional explicit LAN emotional TTS base URL override (`--tts-url` / `MAJJJ_TTS_URL`).
+    pub tts_url: Option<String>,
+    /// Explicitly disables LAN emotional TTS synthesis (`--no-tts` / `MAJJJ_NO_TTS`).
+    pub no_tts: bool,
+    /// Optional injected [`TtsClient`] for automated tests (bypasses constructing `HttpTtsClient`).
+    pub tts_client: Option<Arc<dyn TtsClient>>,
 }
 
 impl Default for ServerConfig {
@@ -101,6 +109,9 @@ impl Default for ServerConfig {
             idle_timeouts: IdleTimeouts::default(),
             llm_url: None,
             llm_client: None,
+            tts_url: None,
+            no_tts: false,
+            tts_client: None,
         }
     }
 }
@@ -282,6 +293,27 @@ impl ServerConfig {
         self
     }
 
+    /// Overrides the optional LAN emotional TTS base URL (`--tts-url` / `MAJJJ_TTS_URL`).
+    #[must_use]
+    pub fn with_tts_url(mut self, tts_url: impl Into<Option<String>>) -> Self {
+        self.tts_url = tts_url.into();
+        self
+    }
+
+    /// Explicitly disables LAN emotional TTS synthesis (`--no-tts` / `MAJJJ_NO_TTS`).
+    #[must_use]
+    pub fn with_no_tts(mut self, no_tts: bool) -> Self {
+        self.no_tts = no_tts;
+        self
+    }
+
+    /// Injects a custom [`TtsClient`] implementation (primarily for automated tests).
+    #[must_use]
+    pub fn with_tts_client(mut self, tts_client: Arc<dyn TtsClient>) -> Self {
+        self.tts_client = Some(tts_client);
+        self
+    }
+
     /// Binds the TCP socket immediately (failing on port conflicts without fallback) and
     /// spawns the Axum HTTP/WebSocket server on the current Tokio runtime.
     ///
@@ -340,16 +372,16 @@ impl ServerConfig {
             source,
         })?;
 
-        let persisted_llm_url = match options.data_dir() {
+        let (persisted_llm_url, persisted_tts_url) = match options.data_dir() {
             Some(dir) => {
-                load_preferences_for_dir(dir)
-                    .map_err(|source| ServerError::DataDir {
+                let prefs =
+                    load_preferences_for_dir(dir).map_err(|source| ServerError::DataDir {
                         path: dir.to_path_buf(),
                         source,
-                    })?
-                    .llm_base_url
+                    })?;
+                (prefs.llm_base_url, prefs.tts_base_url)
             }
-            None => None,
+            None => (None, None),
         };
 
         let llm_client: Arc<dyn LlmClient> = match self.llm_client {
@@ -383,6 +415,25 @@ impl ServerConfig {
 
         if options.llm_client().is_none() {
             options = options.with_llm_client(Arc::clone(&llm_client));
+        }
+
+        // Optional graceful-degradation TTS wiring: never block or fail startup.
+        if !self.no_tts && options.tts_client().is_none() {
+            if let Some(injected_tts) = self.tts_client {
+                options = options.with_tts_client(injected_tts);
+            } else {
+                let effective_tts_url =
+                    resolve_tts_base_url(self.tts_url.as_deref(), persisted_tts_url.as_deref());
+                match HttpTtsClient::new(&effective_tts_url) {
+                    Ok(client) => {
+                        options = options.with_tts_client(Arc::new(client));
+                    }
+                    Err(err) => {
+                        eprintln!("warning: invalid LAN TTS endpoint '{effective_tts_url}': {err}");
+                        options = options.with_tts_startup_error(err.to_string());
+                    }
+                }
+            }
         }
 
         let session = TableRuntime::try_with_options_and_threads(
@@ -451,6 +502,7 @@ fn build_router(state: AppState) -> Router {
             "/api/persona-memory/clear",
             post(persona_memory_clear_handler),
         )
+        .route("/api/banter-audio/{banter_id}", get(banter_audio_handler))
         .route("/api/shutdown", post(shutdown_handler))
         .route("/api/{*rest}", any(api_not_found))
         .route("/api", any(api_not_found))
@@ -573,6 +625,23 @@ async fn persona_memory_clear_handler(State(state): State<AppState>, body: Bytes
             &serde_json::json!({ "error": format!("failed to clear persona memory: {err}") }),
         ),
     }
+}
+
+async fn banter_audio_handler(
+    Path(banter_id): Path<String>,
+    State(state): State<AppState>,
+) -> Response {
+    if !is_valid_banter_id(&banter_id) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let Some(wav_bytes) = state.session.get_banter_audio(&banter_id) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let mut response = (StatusCode::OK, wav_bytes).into_response();
+    response
+        .headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static("audio/wav"));
+    response
 }
 
 async fn api_not_found() -> Response {

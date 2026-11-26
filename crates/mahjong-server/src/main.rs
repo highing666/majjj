@@ -67,6 +67,19 @@ struct Cli {
     /// Base URL for the mandatory LAN OpenAI-compatible `llama-server` endpoint.
     #[arg(long, env = "MAJJJ_LLM_URL")]
     llm_url: Option<String>,
+
+    /// Base URL for the optional LAN emotional TTS service endpoint.
+    #[arg(long, env = "MAJJJ_TTS_URL")]
+    tts_url: Option<String>,
+
+    /// Explicitly disable LAN emotional TTS synthesis (`BanterVoice`).
+    #[arg(
+        long,
+        env = "MAJJJ_NO_TTS",
+        default_value_t = false,
+        value_parser = clap::builder::BoolishValueParser::new()
+    )]
+    no_tts: bool,
 }
 
 impl From<Cli> for ServerConfig {
@@ -80,6 +93,8 @@ impl From<Cli> for ServerConfig {
             .with_no_open(cli.no_open || cli.headless)
             .with_headless(cli.headless)
             .with_llm_url(cli.llm_url)
+            .with_tts_url(cli.tts_url)
+            .with_no_tts(cli.no_tts)
     }
 }
 
@@ -413,6 +428,59 @@ mod tests {
             ServerConfig::from(flag_cli).llm_url.as_deref(),
             Some("http://127.0.0.1:18080")
         );
+    }
+
+    #[test]
+    fn cli_accepts_tts_url_and_no_tts_flag_and_truthy_env_overrides() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var("MAJJJ_TTS_URL");
+        std::env::remove_var("MAJJJ_NO_TTS");
+
+        let default_cli = Cli::try_parse_from(["mahjong-server"]).expect("parse defaults");
+        let default_cfg = ServerConfig::from(default_cli);
+        assert_eq!(default_cfg.tts_url, None);
+        assert!(!default_cfg.no_tts);
+
+        std::env::set_var("MAJJJ_TTS_URL", "http://192.168.5.77:8081");
+        let env_cli = Cli::try_parse_from(["mahjong-server"]).expect("parse MAJJJ_TTS_URL");
+        assert_eq!(
+            ServerConfig::from(env_cli).tts_url.as_deref(),
+            Some("http://192.168.5.77:8081")
+        );
+
+        let flag_cli =
+            Cli::try_parse_from(["mahjong-server", "--tts-url", "http://127.0.0.1:18081"])
+                .expect("parse --tts-url over env");
+        std::env::remove_var("MAJJJ_TTS_URL");
+        assert_eq!(
+            ServerConfig::from(flag_cli).tts_url.as_deref(),
+            Some("http://127.0.0.1:18081")
+        );
+
+        for truthy in ["1", "true", "yes", "on"] {
+            std::env::set_var("MAJJJ_NO_TTS", truthy);
+            let parsed = Cli::try_parse_from(["mahjong-server"]);
+            std::env::remove_var("MAJJJ_NO_TTS");
+            let parsed = parsed.unwrap_or_else(|err| panic!("parse MAJJJ_NO_TTS={truthy}: {err}"));
+            assert!(
+                ServerConfig::from(parsed).no_tts,
+                "MAJJJ_NO_TTS={truthy} must disable TTS"
+            );
+        }
+        for falsy in ["0", "false", "no", "off"] {
+            std::env::set_var("MAJJJ_NO_TTS", falsy);
+            let parsed = Cli::try_parse_from(["mahjong-server"]);
+            std::env::remove_var("MAJJJ_NO_TTS");
+            let parsed = parsed.unwrap_or_else(|err| panic!("parse MAJJJ_NO_TTS={falsy}: {err}"));
+            assert!(
+                !ServerConfig::from(parsed).no_tts,
+                "MAJJJ_NO_TTS={falsy} must keep TTS enabled"
+            );
+        }
+
+        let no_tts_flag =
+            Cli::try_parse_from(["mahjong-server", "--no-tts"]).expect("parse --no-tts");
+        assert!(ServerConfig::from(no_tts_flag).no_tts);
     }
 
     #[test]

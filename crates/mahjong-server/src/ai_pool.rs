@@ -1,6 +1,6 @@
 //! Bounded Rayon AI worker pool construction and asynchronous Tokio dispatch.
 
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use mahjong_ai::DecisionContext;
 use mahjong_core::{PlayerView, Seat};
@@ -12,11 +12,13 @@ use crate::banter::{
     BanterChainContext, BanterGuard, PendingBanterJob, SlowThinkTicket, ASYNC_BANTER_TIMEOUT,
     HIGHLIGHT_SYNC_CAP,
 };
+use crate::banter_audio::PendingTtsJob;
 use crate::llm::{LlmClient, LlmError};
 use crate::pacing::{overlapped_wait, AiTurnTrigger, ReleaseTicket};
 use crate::persona_memory::MemoryNoteJob;
 use crate::server::ServerError;
 use crate::session::TableSession;
+use crate::tts::{TtsClient, TtsError};
 
 /// Computes the default worker count for the dedicated Rayon AI thinking pool:
 /// `(available_parallelism / 2).clamp(1, 4)` (or `1` if parallelism cannot be queried).
@@ -103,9 +105,72 @@ async fn run_banter_job_with_timeout(
     (job.guard, job.chain, res)
 }
 
+pub(crate) fn spawn_tts_health_probe(
+    runtime: Weak<Mutex<TableSession>>,
+    tts: Arc<dyn TtsClient>,
+    initial_probe_at: Option<tokio::time::Instant>,
+) {
+    tokio::spawn(async move {
+        let mut next_probe_at = initial_probe_at;
+        loop {
+            if let Some(target) = next_probe_at {
+                let now = tokio::time::Instant::now();
+                if target > now {
+                    tokio::time::sleep_until(target).await;
+                }
+            }
+            if runtime.upgrade().is_none() {
+                return;
+            }
+            let probe_result = tts
+                .health_check()
+                .await
+                .map(|_| ())
+                .map_err(|err| err.to_string());
+            let Some(strong) = runtime.upgrade() else {
+                return;
+            };
+            let reschedule_at = {
+                let mut session = strong.lock().await;
+                session.commit_tts_health_probe(probe_result)
+            };
+            match reschedule_at {
+                Some(at) => next_probe_at = Some(at),
+                None => return,
+            }
+        }
+    });
+}
+
+fn spawn_tts_synthesis_task(
+    runtime: Arc<Mutex<TableSession>>,
+    tts: Arc<dyn TtsClient>,
+    job: PendingTtsJob,
+) {
+    tokio::spawn(async move {
+        let deadline = std::time::Duration::from_millis(u64::from(job.deadline_ms));
+        let endpoint = tts.endpoint().to_string();
+        let res = match tokio::time::timeout(deadline, tts.synthesize(job.request)).await {
+            Ok(inner) => inner,
+            Err(_) => Err(TtsError::Timeout {
+                endpoint,
+                timeout_ms: u64::from(job.deadline_ms),
+            }),
+        };
+        let schedule_probe_at = {
+            let mut session = runtime.lock().await;
+            session.commit_tts_result(job.guard, job.dispatched_at, job.deadline_ms, res)
+        };
+        if let Some(probe_at) = schedule_probe_at {
+            spawn_tts_health_probe(Arc::downgrade(&runtime), tts, Some(probe_at));
+        }
+    });
+}
+
 fn spawn_banter_task_with_done(
     runtime: Arc<Mutex<TableSession>>,
     llm: Arc<dyn LlmClient>,
+    tts_client: Option<Arc<dyn TtsClient>>,
     job: PendingBanterJob,
     done_tx: Option<tokio::sync::oneshot::Sender<()>>,
 ) {
@@ -127,15 +192,18 @@ fn spawn_banter_task_with_done(
         }
         let (guard, chain, result) =
             run_banter_job_with_timeout(&llm, job, ASYNC_BANTER_TIMEOUT).await;
-        let followup = {
+        let commit = {
             let mut session = runtime.lock().await;
             session.commit_banter_result(guard, chain, result)
         };
         if let Some(tx) = done_tx {
             let _ = tx.send(());
         }
-        if let Some(next_job) = followup {
-            spawn_async_banter_task(runtime, llm, next_job);
+        if let (Some(tts_job), Some(tts)) = (commit.tts_job, tts_client.clone()) {
+            spawn_tts_synthesis_task(Arc::clone(&runtime), tts, tts_job);
+        }
+        if let Some(next_job) = commit.followup {
+            spawn_async_banter_task(runtime, llm, tts_client, next_job);
         }
     });
 }
@@ -143,15 +211,17 @@ fn spawn_banter_task_with_done(
 fn spawn_async_banter_task(
     runtime: Arc<Mutex<TableSession>>,
     llm: Arc<dyn LlmClient>,
+    tts_client: Option<Arc<dyn TtsClient>>,
     job: PendingBanterJob,
 ) {
-    spawn_banter_task_with_done(runtime, llm, job, None);
+    spawn_banter_task_with_done(runtime, llm, tts_client, job, None);
 }
 
 fn spawn_gameplay_work(
     runtime: Arc<Mutex<TableSession>>,
     ai_pool: Arc<rayon::ThreadPool>,
     llm_client: Option<Arc<dyn LlmClient>>,
+    tts_client: Option<Arc<dyn TtsClient>>,
     pending_release: Option<ReleaseTicket>,
     ai_jobs: Vec<PendingAiJob>,
 ) {
@@ -159,6 +229,7 @@ fn spawn_gameplay_work(
         let runtime = Arc::clone(&runtime);
         let ai_pool = Arc::clone(&ai_pool);
         let llm_client = llm_client.clone();
+        let tts_client = tts_client.clone();
         tokio::spawn(async move {
             let now = tokio::time::Instant::now();
             if ticket.release_at > now {
@@ -169,7 +240,7 @@ fn spawn_gameplay_work(
                 session.complete_pending_release(ticket)
             };
             if !next_work.is_empty() {
-                spawn_scheduled_work(runtime, ai_pool, llm_client, next_work);
+                spawn_scheduled_work(runtime, ai_pool, llm_client, tts_client, next_work);
             }
         });
     }
@@ -179,6 +250,7 @@ fn spawn_gameplay_work(
         let ai_pool_for_next = Arc::clone(&ai_pool);
         let ai_pool_for_job = Arc::clone(&ai_pool);
         let llm_client = llm_client.clone();
+        let tts_client = tts_client.clone();
         tokio::spawn(async move {
             let PendingAiJob {
                 key,
@@ -219,7 +291,7 @@ fn spawn_gameplay_work(
                 session.complete_ai_job(key, action)
             };
             if !next_work.is_empty() {
-                spawn_scheduled_work(runtime, ai_pool_for_next, llm_client, next_work);
+                spawn_scheduled_work(runtime, ai_pool_for_next, llm_client, tts_client, next_work);
             }
         });
     }
@@ -229,6 +301,7 @@ pub(crate) fn spawn_scheduled_work(
     runtime: Arc<Mutex<TableSession>>,
     ai_pool: Arc<rayon::ThreadPool>,
     llm_client: Option<Arc<dyn LlmClient>>,
+    tts_client: Option<Arc<dyn TtsClient>>,
     work: ScheduledWork,
 ) {
     let ScheduledWork {
@@ -243,6 +316,7 @@ pub(crate) fn spawn_scheduled_work(
     if let (Some(ticket), Some(llm)) = (slow_think_nudge, llm_client.as_ref()) {
         let runtime = Arc::clone(&runtime);
         let llm = Arc::clone(llm);
+        let tts_client = tts_client.clone();
         tokio::spawn(async move {
             let now = tokio::time::Instant::now();
             if ticket.fire_at > now {
@@ -255,12 +329,15 @@ pub(crate) fn spawn_scheduled_work(
             if let Some(job) = job {
                 let (guard, chain, result) =
                     run_banter_job_with_timeout(&llm, job, ASYNC_BANTER_TIMEOUT).await;
-                let followup = {
+                let commit = {
                     let mut session = runtime.lock().await;
                     session.commit_banter_result(guard, chain, result)
                 };
-                if let Some(next_job) = followup {
-                    spawn_async_banter_task(runtime, llm, next_job);
+                if let (Some(tts_job), Some(tts)) = (commit.tts_job, tts_client.clone()) {
+                    spawn_tts_synthesis_task(Arc::clone(&runtime), tts, tts_job);
+                }
+                if let Some(next_job) = commit.followup {
+                    spawn_async_banter_task(runtime, llm, tts_client, next_job);
                 }
             }
         });
@@ -268,7 +345,12 @@ pub(crate) fn spawn_scheduled_work(
 
     if let Some(llm) = llm_client.as_ref() {
         for job in async_banter {
-            spawn_async_banter_task(Arc::clone(&runtime), Arc::clone(llm), job);
+            spawn_async_banter_task(
+                Arc::clone(&runtime),
+                Arc::clone(llm),
+                tts_client.clone(),
+                job,
+            );
         }
         for job in memory_notes {
             let runtime = Arc::clone(&runtime);
@@ -314,6 +396,7 @@ pub(crate) fn spawn_scheduled_work(
                 spawn_banter_task_with_done(
                     Arc::clone(&runtime),
                     Arc::clone(&llm),
+                    tts_client.clone(),
                     job,
                     Some(done_tx),
                 );
@@ -330,12 +413,26 @@ pub(crate) fn spawn_scheduled_work(
                 .await;
 
                 if pending_release.is_some() || !ai_jobs.is_empty() {
-                    spawn_gameplay_work(runtime, ai_pool, Some(llm), pending_release, ai_jobs);
+                    spawn_gameplay_work(
+                        runtime,
+                        ai_pool,
+                        Some(llm),
+                        tts_client,
+                        pending_release,
+                        ai_jobs,
+                    );
                 }
             });
             return;
         }
     }
 
-    spawn_gameplay_work(runtime, ai_pool, llm_client, pending_release, ai_jobs);
+    spawn_gameplay_work(
+        runtime,
+        ai_pool,
+        llm_client,
+        tts_client,
+        pending_release,
+        ai_jobs,
+    );
 }

@@ -395,12 +395,19 @@ fn frozen_server_protocol_types_roundtrip_serde_json_without_loss() {
             message: "not enabled".to_string(),
         },
         ServerMessage::TableBanter {
+            banter_id: "b-1".to_string(),
             seat: Seat::South,
             persona_id: PersonaId::QuickHothead,
             mood: PersonaMood::Smug,
             text: "五巡就胡，你们太慢了！".to_string(),
             event_seq: 18,
             reply_to_seat: Some(Seat::East),
+        },
+        ServerMessage::TableBanterAudioReady {
+            banter_id: "b-1".to_string(),
+            seat: Seat::South,
+            audio_url: "/api/banter-audio/b-1".to_string(),
+            duration_ms: 1420,
         },
         ServerMessage::QuickEmoteBroadcast {
             seat: Seat::East,
@@ -410,6 +417,10 @@ fn frozen_server_protocol_types_roundtrip_serde_json_without_loss() {
         ServerMessage::LlmStatusNotice {
             available: false,
             message: "局域网推理服务异常：请求超时".to_string(),
+        },
+        ServerMessage::TtsStatusNotice {
+            available: false,
+            message: "局域网台词语音服务暂不可用，已自动退回漫画气泡与角色语音包".to_string(),
         },
     ];
     for msg in &server_messages {
