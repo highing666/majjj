@@ -26,6 +26,7 @@ import {
   buildSeatBadgeModel,
   buildVisibleRiverRows,
   computeCanvasResolution,
+  deriveTurnCueState,
   extractContentBoxSize,
   findLegalDiscardAction,
   formatScoreDelta,
@@ -766,5 +767,332 @@ describe("table viewModel helpers", () => {
         expect(badge.scoreText).toBe("-4");
       }
     }
+  });
+});
+
+describe("deriveTurnCueState (4-layer turn cue)", () => {
+  it("derives discard_drawn for 13+1 drawn turn with stage wash, breathing, drawn lift/caret, and gold pill", () => {
+    const view = makePlayerView({
+      viewer: "East",
+      phase: "Playing",
+      hand: {
+        closed_tiles: [0, 1, 2, 9, 10, 11, 18, 19, 20, 27, 27, 31, 31],
+        drawn_tile: 5,
+      },
+      turn: {
+        wind_round: "East",
+        hand_number: 1,
+        dealer_streak: 0,
+        dealer: "East",
+        active_seat: "East",
+      },
+      legal_actions: [
+        { Discard: { tile: 5, from_drawn: true } },
+        { Discard: { tile: 0, from_drawn: false } },
+      ],
+    });
+
+    const cue = deriveTurnCueState({
+      playerView: view,
+      pendingAddedKong: null,
+      inputLocked: false,
+      reducedEffects: false,
+    });
+
+    expect(cue).toEqual({
+      mode: "discard_drawn",
+      activeSlot: "bottom",
+      showStageWash: true,
+      animateBreath: true,
+      highlightDrawnTile: true,
+      highlightClosedHand: false,
+      turnPillText: "轮到你出牌",
+      waitHintText: null,
+      dimViewerHand: false,
+      centerEdgeGlowSlot: "bottom",
+    });
+    expect(Object.keys(cue).sort()).toEqual([
+      "activeSlot",
+      "animateBreath",
+      "centerEdgeGlowSlot",
+      "dimViewerHand",
+      "highlightClosedHand",
+      "highlightDrawnTile",
+      "mode",
+      "showStageWash",
+      "turnPillText",
+      "waitHintText",
+    ]);
+  });
+
+  it("derives discard_post_pon for 13-tile post-pon discard without drawn caret", () => {
+    const view = makePlayerView({
+      viewer: "South",
+      phase: "Playing",
+      hand: {
+        closed_tiles: [0, 1, 2, 9, 10, 11, 18, 19, 20, 27],
+        drawn_tile: null,
+      },
+      turn: {
+        wind_round: "East",
+        hand_number: 1,
+        dealer_streak: 0,
+        dealer: "East",
+        active_seat: "South",
+      },
+      legal_actions: [{ Discard: { tile: 27, from_drawn: false } }],
+    });
+
+    const cue = deriveTurnCueState({
+      playerView: view,
+      pendingAddedKong: null,
+      inputLocked: false,
+      reducedEffects: false,
+    });
+
+    expect(cue).toEqual({
+      mode: "discard_post_pon",
+      activeSlot: "bottom",
+      showStageWash: true,
+      animateBreath: true,
+      highlightDrawnTile: false,
+      highlightClosedHand: true,
+      turnPillText: "轮到你出牌 · 碰后请择牌打出",
+      waitHintText: null,
+      dimViewerHand: false,
+      centerEdgeGlowSlot: "bottom",
+    });
+  });
+
+  it("derives action_prompt when ActionBar items are available and suppresses turnPillText", () => {
+    const reactionView = makePlayerView({
+      viewer: "East",
+      phase: "Playing",
+      hand: {
+        closed_tiles: [0, 1, 2, 9, 10, 11, 18, 19, 20, 27, 27, 31, 31],
+        drawn_tile: null,
+      },
+      turn: {
+        wind_round: "East",
+        hand_number: 1,
+        dealer_streak: 0,
+        dealer: "East",
+        active_seat: "West",
+      },
+      legal_actions: [{ Pon: { tile: 27 } }, "Pass"],
+    });
+
+    expect(
+      deriveTurnCueState({
+        playerView: reactionView,
+        pendingAddedKong: null,
+        inputLocked: false,
+        reducedEffects: false,
+      }),
+    ).toEqual({
+      mode: "action_prompt",
+      activeSlot: "top",
+      showStageWash: true,
+      animateBreath: true,
+      highlightDrawnTile: false,
+      highlightClosedHand: false,
+      turnPillText: null,
+      waitHintText: null,
+      dimViewerHand: false,
+      centerEdgeGlowSlot: "top",
+    });
+
+    // Self-turn with Tsumo + Discard also hands over Layer 2 slot to ActionBar
+    const tsumoAndDiscardView = makePlayerView({
+      viewer: "East",
+      phase: "Playing",
+      hand: {
+        closed_tiles: [0, 1, 2, 9, 10, 11, 18, 19, 20, 27, 27, 31, 31],
+        drawn_tile: 31,
+      },
+      turn: {
+        wind_round: "East",
+        hand_number: 1,
+        dealer_streak: 0,
+        dealer: "East",
+        active_seat: "East",
+      },
+      legal_actions: [
+        "Tsumo",
+        { Discard: { tile: 31, from_drawn: true } },
+      ],
+    });
+
+    const tsumoCue = deriveTurnCueState({
+      playerView: tsumoAndDiscardView,
+      pendingAddedKong: null,
+      inputLocked: false,
+      reducedEffects: false,
+    });
+    expect(tsumoCue.mode).toBe("action_prompt");
+    expect(tsumoCue.turnPillText).toBeNull();
+    expect(tsumoCue.dimViewerHand).toBe(false);
+    expect(tsumoCue.centerEdgeGlowSlot).toBe("bottom");
+  });
+
+  it("derives idle with Layer 3 dimming and Layer 4 edge glow when waiting on another seat, locked, or pending added kong", () => {
+    const waitingView = makePlayerView({
+      viewer: "East",
+      phase: "Playing",
+      turn: {
+        wind_round: "East",
+        hand_number: 1,
+        dealer_streak: 0,
+        dealer: "East",
+        active_seat: "North",
+      },
+      legal_actions: [],
+    });
+
+    expect(
+      deriveTurnCueState({
+        playerView: waitingView,
+        pendingAddedKong: null,
+        inputLocked: false,
+        reducedEffects: false,
+      }),
+    ).toEqual({
+      mode: "idle",
+      activeSlot: "left",
+      showStageWash: false,
+      animateBreath: false,
+      highlightDrawnTile: false,
+      highlightClosedHand: false,
+      turnPillText: null,
+      waitHintText: "等待上家行动…",
+      dimViewerHand: true,
+      centerEdgeGlowSlot: "left",
+    });
+
+    // inputLocked suppresses active turn cues and dims viewer hand
+    const lockedOwnTurn = makePlayerView({
+      viewer: "East",
+      phase: "Playing",
+      hand: {
+        closed_tiles: [0, 1, 2, 9, 10, 11, 18, 19, 20, 27, 27, 31, 31],
+        drawn_tile: 5,
+      },
+      turn: {
+        wind_round: "East",
+        hand_number: 1,
+        dealer_streak: 0,
+        dealer: "East",
+        active_seat: "East",
+      },
+      legal_actions: [{ Discard: { tile: 5, from_drawn: true } }],
+    });
+
+    expect(
+      deriveTurnCueState({
+        playerView: lockedOwnTurn,
+        pendingAddedKong: null,
+        inputLocked: true,
+        reducedEffects: false,
+      }),
+    ).toEqual({
+      mode: "idle",
+      activeSlot: "bottom",
+      showStageWash: false,
+      animateBreath: false,
+      highlightDrawnTile: false,
+      highlightClosedHand: false,
+      turnPillText: null,
+      waitHintText: null,
+      dimViewerHand: true,
+      centerEdgeGlowSlot: "bottom",
+    });
+
+    // Pending AddedKong on viewer shows waitHintText while keeping RobKongHu action_prompt for opponents
+    const pendingKongSelf = makePlayerView({
+      viewer: "East",
+      phase: "Playing",
+      turn: {
+        wind_round: "East",
+        hand_number: 1,
+        dealer_streak: 0,
+        dealer: "East",
+        active_seat: "East",
+      },
+      legal_actions: [],
+    });
+    expect(
+      deriveTurnCueState({
+        playerView: pendingKongSelf,
+        pendingAddedKong: { seat: "East", tile: 27 },
+        inputLocked: false,
+        reducedEffects: false,
+      }).waitHintText,
+    ).toBe("补杠待确认…");
+
+    // BetweenHands resets all cues and does not dim viewer hand
+    const betweenHands = makePlayerView({
+      phase: "BetweenHands",
+      turn: {
+        wind_round: "East",
+        hand_number: 1,
+        dealer_streak: 0,
+        dealer: "East",
+        active_seat: null,
+      },
+      legal_actions: ["ConfirmNextHand"],
+    });
+    expect(
+      deriveTurnCueState({
+        playerView: betweenHands,
+        pendingAddedKong: null,
+        inputLocked: false,
+        reducedEffects: false,
+      }),
+    ).toEqual({
+      mode: "idle",
+      activeSlot: null,
+      showStageWash: false,
+      animateBreath: false,
+      highlightDrawnTile: false,
+      highlightClosedHand: false,
+      turnPillText: null,
+      waitHintText: null,
+      dimViewerHand: false,
+      centerEdgeGlowSlot: null,
+    });
+  });
+
+  it("disables animateBreath in reducedEffects mode while keeping static highlights intact", () => {
+    const drawnView = makePlayerView({
+      viewer: "East",
+      phase: "Playing",
+      hand: {
+        closed_tiles: [0, 1, 2, 9, 10, 11, 18, 19, 20, 27, 27, 31, 31],
+        drawn_tile: 5,
+      },
+      turn: {
+        wind_round: "East",
+        hand_number: 1,
+        dealer_streak: 0,
+        dealer: "East",
+        active_seat: "East",
+      },
+      legal_actions: [{ Discard: { tile: 5, from_drawn: true } }],
+    });
+
+    const cue = deriveTurnCueState({
+      playerView: drawnView,
+      pendingAddedKong: null,
+      inputLocked: false,
+      reducedEffects: true,
+    });
+
+    expect(cue.mode).toBe("discard_drawn");
+    expect(cue.animateBreath).toBe(false);
+    expect(cue.showStageWash).toBe(true);
+    expect(cue.highlightDrawnTile).toBe(true);
+    expect(cue.turnPillText).toBe("轮到你出牌");
+    expect(cue.dimViewerHand).toBe(false);
+    expect(cue.centerEdgeGlowSlot).toBe("bottom");
   });
 });
