@@ -7,7 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use http_body_util::BodyExt;
+use http_body_util::{BodyExt, Full};
+use hyper::body::Bytes;
 use hyper::header::{CACHE_CONTROL, CONTENT_TYPE};
 use hyper::{Request, StatusCode};
 use hyper_util::rt::TokioIo;
@@ -54,47 +55,67 @@ impl Drop for TempDirGuard {
 
 #[allow(dead_code)]
 pub async fn spawn_server(static_dir: Option<PathBuf>) -> ServerHandle {
-    ServerConfig {
-        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
-        port: 0,
-        static_dir,
-        ..ServerConfig::default()
-    }
-    .spawn()
-    .await
-    .expect("spawn server")
+    ServerConfig::default()
+        .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
+        .with_port(0)
+        .with_static_dir(static_dir)
+        .spawn()
+        .await
+        .expect("spawn server")
 }
 
 #[allow(dead_code)]
 pub async fn spawn_seeded_server(seed: u64, static_dir: Option<PathBuf>) -> ServerHandle {
-    ServerConfig {
-        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
-        port: 0,
-        static_dir,
-        ..ServerConfig::default()
-    }
-    .spawn_with_options(TableOptions::seeded(seed).with_pacing(PacingMode::Immediate))
-    .await
-    .expect("spawn seeded server")
+    ServerConfig::default()
+        .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
+        .with_port(0)
+        .with_static_dir(static_dir)
+        .spawn_with_options(TableOptions::seeded(seed).with_pacing(PacingMode::Immediate))
+        .await
+        .expect("spawn seeded server")
 }
 
 #[allow(dead_code)]
 pub async fn spawn_with_wall_factory(seed: u64, factory: WallProviderFactory) -> ServerHandle {
-    ServerConfig {
-        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
-        port: 0,
-        static_dir: None,
-        ..ServerConfig::default()
-    }
-    .spawn_with_options(
-        TableOptions::with_wall_factory(seed, factory).with_pacing(PacingMode::Immediate),
-    )
-    .await
-    .expect("spawn server with wall factory")
+    ServerConfig::default()
+        .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
+        .with_port(0)
+        .spawn_with_options(
+            TableOptions::with_wall_factory(seed, factory).with_pacing(PacingMode::Immediate),
+        )
+        .await
+        .expect("spawn server with wall factory")
 }
 
 #[allow(dead_code)]
 pub async fn http_get(addr: SocketAddr, uri_path: &str) -> (StatusCode, hyper::HeaderMap, Vec<u8>) {
+    http_request_with_body("GET", addr, uri_path, None).await
+}
+
+#[allow(dead_code)]
+pub async fn http_post(
+    addr: SocketAddr,
+    uri_path: &str,
+) -> (StatusCode, hyper::HeaderMap, Vec<u8>) {
+    http_request_with_body("POST", addr, uri_path, None).await
+}
+
+#[allow(dead_code)]
+pub async fn http_post_raw(
+    addr: SocketAddr,
+    uri_path: &str,
+    body: Option<&[u8]>,
+) -> (StatusCode, hyper::HeaderMap, Vec<u8>) {
+    http_request_with_body("POST", addr, uri_path, body).await
+}
+
+#[allow(dead_code)]
+pub async fn http_request_with_body(
+    method: &str,
+    addr: SocketAddr,
+    uri_path: &str,
+    body: Option<&[u8]>,
+) -> (StatusCode, hyper::HeaderMap, Vec<u8>) {
     let stream = TcpStream::connect(addr).await.expect("connect to server");
     let io = TokioIo::new(stream);
     let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
@@ -104,12 +125,15 @@ pub async fn http_get(addr: SocketAddr, uri_path: &str) -> (StatusCode, hyper::H
         let _ = conn.await;
     });
 
-    let req = Request::builder()
-        .method("GET")
+    let payload = body.map(Bytes::copy_from_slice).unwrap_or_default();
+    let mut builder = Request::builder()
+        .method(method)
         .uri(uri_path)
-        .header("Host", addr.to_string())
-        .body(http_body_util::Empty::<hyper::body::Bytes>::new())
-        .expect("build request");
+        .header("Host", addr.to_string());
+    if body.is_some() {
+        builder = builder.header(CONTENT_TYPE, "application/json");
+    }
+    let req = builder.body(Full::new(payload)).expect("build request");
     let res = sender.send_request(req).await.expect("send request");
     let status = res.status();
     let headers = res.headers().clone();
@@ -173,9 +197,19 @@ pub async fn recv_msg(ws: &mut WsClient) -> ServerMessage {
 }
 
 #[allow(dead_code)]
-pub async fn recv_snapshot(ws: &mut WsClient) -> TableSnapshot {
+pub async fn recv_non_ping_msg(ws: &mut WsClient) -> ServerMessage {
     loop {
         match recv_msg(ws).await {
+            ServerMessage::ServerPing { .. } => continue,
+            other => return other,
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub async fn recv_snapshot(ws: &mut WsClient) -> TableSnapshot {
+    loop {
+        match recv_non_ping_msg(ws).await {
             ServerMessage::TableSnapshot(snap) => return snap,
             ServerMessage::LobbyUpdated { .. } => continue,
             other => panic!("expected TableSnapshot, got {other:?}"),
@@ -188,7 +222,7 @@ pub async fn recv_event_batch(
     ws: &mut WsClient,
 ) -> (u64, u64, Vec<PlayerEvent>, Vec<PlayerAction>) {
     loop {
-        match recv_msg(ws).await {
+        match recv_non_ping_msg(ws).await {
             ServerMessage::EventBatch {
                 from_seq,
                 to_seq,

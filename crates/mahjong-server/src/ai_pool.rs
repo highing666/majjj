@@ -37,10 +37,17 @@ pub(crate) fn build_ai_pool(ai_threads: usize) -> Result<Arc<rayon::ThreadPool>,
     Ok(Arc::new(pool))
 }
 
-pub(crate) struct PendingAiJob {
+/// Unique key identifying an in-flight AI decision job bound to match, sequence, seat, and generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct AiJobKey {
     pub match_id: u64,
     pub seq: u64,
     pub seat: Seat,
+    pub seat_generation: u64,
+}
+
+pub(crate) struct PendingAiJob {
+    pub key: AiJobKey,
     pub view: PlayerView,
     pub ctx: DecisionContext,
     pub step_seed: u64,
@@ -89,9 +96,7 @@ pub(crate) fn spawn_scheduled_work(
         let ai_pool_for_job = Arc::clone(&ai_pool);
         tokio::spawn(async move {
             let PendingAiJob {
-                match_id,
-                seq,
-                seat,
+                key,
                 view,
                 ctx,
                 step_seed,
@@ -107,13 +112,13 @@ pub(crate) fn spawn_scheduled_work(
 
             let Ok(action) = rx.await else {
                 let mut session = runtime.lock().await;
-                session.cancel_ai_job(match_id, seq, seat);
+                session.cancel_ai_job(key);
                 return;
             };
 
             let planned_delay = {
                 let mut session = runtime.lock().await;
-                session.plan_ai_action_delay(match_id, seq, seat, action, trigger, step_seed)
+                session.plan_ai_action_delay(key, action, trigger, step_seed)
             };
             let Some(target_delay) = planned_delay else {
                 return;
@@ -126,7 +131,7 @@ pub(crate) fn spawn_scheduled_work(
 
             let next_work = {
                 let mut session = runtime.lock().await;
-                session.complete_ai_job(match_id, seq, seat, action)
+                session.complete_ai_job(key, action)
             };
             if !next_work.is_empty() {
                 spawn_scheduled_work(runtime, ai_pool_for_next, next_work);

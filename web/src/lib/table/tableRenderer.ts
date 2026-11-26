@@ -755,13 +755,21 @@ export class TableSceneRenderer {
         20,
         rect.x + rect.width - padX - scoreText.width - 6 - nameStart,
       );
+      const statusSuffix =
+        model.isOffline && model.isAiAssisted
+          ? "·离线托管"
+          : model.isOffline
+            ? "·离线"
+            : model.isAiAssisted
+              ? "·托管"
+              : "";
       const nameLabel = new Text({
-        text: model.isOffline ? `${model.name}·离线` : model.name,
+        text: `${model.name}${statusSuffix}`,
         style: {
           fontFamily: UI_FONT,
           fontSize: layout.isWide ? 12 : 10,
           fontWeight: model.isActive ? "700" : "600",
-          fill: model.isOffline ? PENDING_AMBER : TEXT_LIGHT,
+          fill: model.isOffline || model.isAiAssisted ? PENDING_AMBER : TEXT_LIGHT,
         },
       });
       nameLabel.anchor.set(0, 0.5);

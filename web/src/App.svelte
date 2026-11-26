@@ -1,6 +1,16 @@
 <script lang="ts">
   import { createAudioEventRouter } from "./lib/audio/audioRouter";
   import type { AudioStatus } from "./lib/audio/audioTypes";
+  import {
+    createHistoryController,
+    type HistoryState,
+  } from "./lib/history/historyClient";
+  import HistoryModal from "./lib/history/HistoryModal.svelte";
+  import {
+    createShutdownController,
+    type ShutdownState,
+  } from "./lib/lifecycle/shutdownController";
+  import ShutdownControl from "./lib/lifecycle/ShutdownControl.svelte";
   import { matchModeLabel, patchLobbyConfig } from "./lib/lobby/lobbyConfig";
   import LobbyView from "./lib/lobby/LobbyView.svelte";
   import {
@@ -15,8 +25,11 @@
     type PresentationState,
   } from "./lib/presentation/presentationQueue";
   import type { PlayerAction } from "./lib/protocol/generated/PlayerAction";
+  import type { Seat } from "./lib/protocol/generated/Seat";
+  import type { SeatInfo } from "./lib/protocol/generated/SeatInfo";
   import type { TablePace } from "./lib/protocol/generated/TablePace";
   import type { Tile } from "./lib/protocol/generated/Tile";
+  import { seatIndex } from "./lib/protocol/seats";
   import { createTableClient } from "./lib/session/client";
   import type { SessionState } from "./lib/session/reducer";
   import ActionBar from "./lib/table/ActionBar.svelte";
@@ -26,8 +39,16 @@
     createRenderQualityController,
     type RenderQualityState,
   } from "./lib/table/renderQuality";
+  import {
+    buildOfflinePauseBanner,
+    buildTakeOverSeatItems,
+    getOfflineHumanTakeOverSeats,
+    type TakeOverKind,
+  } from "./lib/table/seatControl";
+  import SeatControlBar from "./lib/table/SeatControlBar.svelte";
   import SettlementModal from "./lib/table/SettlementModal.svelte";
   import TableCanvas from "./lib/table/TableCanvas.svelte";
+  import TakeOverModal from "./lib/table/TakeOverModal.svelte";
   import { formatRoundTitle, seatLabel } from "./lib/table/tiles";
   import { findLegalDiscardAction } from "./lib/table/viewModel";
   import type { WebGLRecoveryState } from "./lib/table/webglRecovery";
@@ -49,7 +70,13 @@
   const audioRouter = createAudioEventRouter({
     initialPreferences: initialDevicePrefs,
   });
+  const shutdownController = createShutdownController({
+    onShutdownSuccess: () => client.dispose(),
+  });
+  const historyController = createHistoryController();
   let sessionState = $state<SessionState>(client.getState());
+  let shutdownState = $state<ShutdownState>(shutdownController.getState());
+  let historyState = $state<HistoryState>(historyController.getState());
   let presentationState = $state<PresentationState>(
     presentationQueue.getState(),
   );
@@ -58,11 +85,21 @@
   let webglRecoveryState = $state<WebGLRecoveryState | null>(null);
   let audioStatus = $state<AudioStatus>(audioRouter.getStatus());
   let settingsOpen = $state(false);
+  let takeOverTarget = $state<{
+    seatInfo: SeatInfo;
+    kind: TakeOverKind;
+  } | null>(null);
   const initialNickname = client.getIdentity().nickname;
 
   $effect(() => {
     const unsubscribeClient = client.subscribe((next) => {
       sessionState = next;
+    });
+    const unsubscribeShutdown = shutdownController.subscribe((next) => {
+      shutdownState = next;
+    });
+    const unsubscribeHistory = historyController.subscribe((next) => {
+      historyState = next;
     });
     const unsubscribePrefs = preferencesStore.subscribe((next) => {
       devicePrefs = next;
@@ -92,6 +129,8 @@
       unsubscribePresentation();
       unsubscribeRenderQuality();
       unsubscribePrefs();
+      unsubscribeHistory();
+      unsubscribeShutdown();
       unsubscribeClient();
       wakeLock.dispose();
       renderQuality.dispose();
@@ -108,6 +147,10 @@
   });
 
   const snapshot = $derived(sessionState.snapshot);
+
+  $effect(() => {
+    shutdownController.syncHostIsLoopback(snapshot?.host_is_loopback === true);
+  });
 
   $effect(() => {
     const phase = presentedSnapshot?.phase ?? null;
@@ -128,8 +171,15 @@
     sessionState.replacedByNewTab ||
       sessionState.connectionStatus !== "connected",
   );
+  const yourSeatAiAssisted = $derived(
+    snapshot !== null &&
+      snapshot.your_seat !== null &&
+      snapshot.seats[seatIndex(snapshot.your_seat)].ai_assisted,
+  );
   const inputLocked = $derived(
-    actionsDisabled || sessionState.pendingActionId !== null,
+    actionsDisabled ||
+      sessionState.pendingActionId !== null ||
+      yourSeatAiAssisted,
   );
   const settlementVisible = $derived(
     presentedSnapshot !== null &&
@@ -140,6 +190,11 @@
   );
   const hasModalOpen = $derived(
     settingsOpen ||
+      historyState.open ||
+      takeOverTarget !== null ||
+      shutdownState.phase === "confirming" ||
+      shutdownState.phase === "submitting" ||
+      shutdownState.phase === "error" ||
       (snapshot !== null &&
         (snapshot.pending_destructive_op !== null || settlementVisible)),
   );
@@ -199,10 +254,29 @@
       client.updateLobbyConfig(patchLobbyConfig(snapshot.config, { pace }));
     }
   }
+
+  function openTakeOverModal(seatInfo: SeatInfo, kind: TakeOverKind): void {
+    takeOverTarget = { seatInfo, kind };
+  }
+
+  function handleConfirmTakeOver(seat: Seat): void {
+    client.takeOverSeat(seat, true);
+    takeOverTarget = null;
+  }
 </script>
 
 <main class="app-shell" class:app-shell-match={presentedSnapshot?.phase === "InMatch"}>
-  {#if sessionState.replacedByNewTab}
+  {#if shutdownState.phase === "stopped"}
+    <div class="banner banner-warn" role="status">
+      <div>
+        <strong>本机服务已关闭</strong>
+        <div>
+          本机 majjj 服务已安全停止。如需继续游玩，请重新启动应用或服务后刷新页面。
+        </div>
+      </div>
+      <button class="btn" type="button" onclick={reloadPage}>刷新页面</button>
+    </div>
+  {:else if sessionState.replacedByNewTab}
     <div class="banner banner-danger" role="alert">
       <div>
         <strong>会话已被新标签页接管</strong>
@@ -260,6 +334,8 @@
       onUpdateConfig={(config) => client.updateLobbyConfig(config)}
       onStartMatch={() => client.startMatch()}
       onOpenSettings={() => (settingsOpen = true)}
+      onOpenHistory={() => void historyController.open()}
+      onTakeOverSeat={(seatInfo) => openTakeOverModal(seatInfo, "offline_human")}
     />
   {:else if presentedSnapshot.phase === "InMatch"}
     <section class="match-shell">
@@ -327,6 +403,12 @@
       </header>
 
       {#if presentedSnapshot && presentedPlayerView}
+        <SeatControlBar
+          snapshot={snapshot ?? presentedSnapshot}
+          disabled={actionsDisabled}
+          onToggleAiAssist={(seat, enabled) => client.toggleAiAssist(seat, enabled)}
+        />
+
         <div
           class="table-stage"
           class:stage-shaking={presentationState.activeImpact?.dampedShake ??
@@ -394,11 +476,52 @@
           />
         {/if}
       {:else}
+        {@const activeSnap = snapshot ?? presentedSnapshot}
+        {@const offlineNotice = buildOfflinePauseBanner(activeSnap)}
+        {@const takeOverItems = buildTakeOverSeatItems(activeSnap)}
+        {#if offlineNotice !== null}
+          <div class="banner banner-warn" role="status">
+            <span>{offlineNotice}</span>
+          </div>
+        {/if}
         <section class="card placeholder-card">
           <h1>对局进行中</h1>
           <p class="placeholder-note">
-            当前本机未入座，正在观摩实时牌桌。待本场对局结束后可返回开桌大厅入座。
+            当前本机未入座。你可以直接接管 AI 座位立即加入本小局，或经确认后接管已离线人类座位继续对局。
           </p>
+          <div class="observer-seats-grid">
+            {#each takeOverItems as item (item.seatInfo.seat)}
+              <article class="observer-seat-card">
+                <div class="observer-seat-head">
+                  <strong>{item.displayName}</strong>
+                  <span
+                    class="tag"
+                    class:tag-offline={item.takeOverKind === "offline_human"}
+                    class:tag-online={item.takeOverKind === null && item.seatInfo.kind === "Human"}
+                  >
+                    {item.statusLabel}
+                  </span>
+                </div>
+                {#if item.takeOverKind !== null && item.actionLabel !== null}
+                  {@const kind = item.takeOverKind}
+                  <button
+                    class="btn"
+                    class:btn-jade={kind === "ai"}
+                    class:btn-primary={kind === "offline_human"}
+                    type="button"
+                    disabled={actionsDisabled}
+                    onclick={() => openTakeOverModal(item.seatInfo, kind)}
+                  >
+                    {item.actionLabel}
+                  </button>
+                {:else}
+                  <button class="btn" type="button" disabled>
+                    不可接管
+                  </button>
+                {/if}
+              </article>
+            {/each}
+          </div>
         </section>
       {/if}
 
@@ -413,24 +536,32 @@
       {/if}
     </section>
   {:else if presentedPlayerView?.match_summary}
+    {@const activeSnap = snapshot ?? presentedSnapshot}
     <MatchSummaryView
       summary={presentedPlayerView.match_summary}
-      config={presentedSnapshot.config}
-      seats={presentedSnapshot.seats}
-      yourSeat={presentedSnapshot.your_seat}
+      config={activeSnap.config}
+      seats={activeSnap.seats}
+      yourSeat={activeSnap.your_seat}
       lastSettlement={presentedPlayerView.last_settlement}
       disabled={actionsDisabled}
       onUpdateConfig={(config) => client.updateLobbyConfig(config)}
       onStartMatch={() => client.startMatch()}
       onReturnToLobby={() => client.returnToLobby()}
+      onOpenHistory={() => void historyController.open()}
+      onTakeOverSeat={(seatInfo) => openTakeOverModal(seatInfo, "offline_human")}
     />
   {:else}
+    {@const activeSnap = snapshot ?? presentedSnapshot}
+    {@const offlineTakeOverSeats = getOfflineHumanTakeOverSeats(
+      activeSnap.seats,
+      activeSnap.your_seat,
+    )}
     <section class="card placeholder-card">
       <h1>对局已结束</h1>
       <p class="placeholder-note">
         当前牌桌已进入总结算阶段。
       </p>
-      {#if presentedSnapshot.your_seat !== null}
+      {#if activeSnap.your_seat !== null}
         <div class="fallback-actions">
           <button
             class="btn btn-subtle"
@@ -448,6 +579,19 @@
           >
             原班人马再开一桌
           </button>
+        </div>
+      {:else if offlineTakeOverSeats.length > 0}
+        <div class="fallback-actions">
+          {#each offlineTakeOverSeats as item (item.seatInfo.seat)}
+            <button
+              class="btn btn-primary"
+              type="button"
+              disabled={actionsDisabled}
+              onclick={() => openTakeOverModal(item.seatInfo, "offline_human")}
+            >
+              {item.actionLabel ?? "接管离线座位"}（{item.displayName}）
+            </button>
+          {/each}
         </div>
       {/if}
     </section>
@@ -468,10 +612,30 @@
     onClose={() => (settingsOpen = false)}
   />
 
+  <HistoryModal
+    state={historyState}
+    onClose={() => historyController.close()}
+    onRefresh={() => void historyController.refresh()}
+    onExport={() => void historyController.requestExport()}
+    onRequestClear={() => historyController.requestClear()}
+    onCancelClear={() => historyController.cancelClear()}
+    onConfirmClear={() => void historyController.confirmClear()}
+  />
+
   <AudioResumeCapsule
     visible={audioStatus.needsResumeCapsule}
     onResume={() => audioRouter.unlockFromGesture()}
   />
+
+  {#if takeOverTarget !== null}
+    <TakeOverModal
+      seatInfo={takeOverTarget.seatInfo}
+      kind={takeOverTarget.kind}
+      disabled={actionsDisabled}
+      onConfirm={handleConfirmTakeOver}
+      onCancel={() => (takeOverTarget = null)}
+    />
+  {/if}
 
   <footer class="footer-bar">
     <span>
@@ -481,19 +645,34 @@
         等待服务端版本信息…
       {/if}
     </span>
-    <span>
-      连接状态：{sessionState.replacedByNewTab
-        ? "已被新标签页接管"
-        : sessionState.connectionStatus === "connected"
-          ? "已连接"
-          : sessionState.connectionStatus === "connecting"
-            ? "连接中"
-            : "已断开"}
+    <span class="footer-status">
+      连接状态：{shutdownState.phase === "stopped"
+        ? "本机服务已关闭"
+        : sessionState.replacedByNewTab
+          ? "已被新标签页接管"
+          : sessionState.connectionStatus === "connected"
+            ? "已连接"
+            : sessionState.connectionStatus === "connecting"
+              ? "连接中"
+              : "已断开"}
+      <ShutdownControl
+        state={shutdownState}
+        onRequestConfirm={() => shutdownController.requestConfirm()}
+        onCancel={() => shutdownController.cancelConfirm()}
+        onConfirm={() => shutdownController.confirmShutdown()}
+      />
     </span>
   </footer>
 </main>
 
 <style>
+  .footer-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
   .app-shell-match {
     max-width: 1380px;
     padding-top: max(10px, env(safe-area-inset-top));
@@ -522,6 +701,29 @@
     display: flex;
     flex-wrap: wrap;
     gap: 10px;
+  }
+
+  .observer-seats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 12px;
+  }
+
+  .observer-seat-card {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    background: var(--bg-muted);
+  }
+
+  .observer-seat-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
   }
 
   .match-shell {

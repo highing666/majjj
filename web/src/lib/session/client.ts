@@ -21,6 +21,7 @@ const WS_READY_CONNECTING = 0;
 const WS_READY_OPEN = 1;
 const BASE_BACKOFF_MS = 300;
 const MAX_BACKOFF_MS = 5000;
+const DEFAULT_PROBE_TIMEOUT_MS = 2000;
 
 export interface WebSocketLike {
   readonly readyState: number;
@@ -47,12 +48,20 @@ export interface WindowEventsLike {
   removeEventListener(type: string, listener: (ev: unknown) => void): void;
 }
 
+export interface DocumentEventsLike {
+  readonly visibilityState: string;
+  addEventListener(type: string, listener: (ev: unknown) => void): void;
+  removeEventListener(type: string, listener: (ev: unknown) => void): void;
+}
+
 export interface TableClientOptions {
   wsUrl?: string;
   storage?: StorageLike;
   createWebSocket?: (url: string) => WebSocketLike;
   idGenerator?: () => string;
   windowEvents?: WindowEventsLike | null;
+  documentEvents?: DocumentEventsLike | null;
+  probeTimeoutMs?: number;
 }
 
 export type SessionListener = (state: SessionState) => void;
@@ -76,6 +85,8 @@ export interface TableClient {
   requestSnapshot(): boolean;
   sendPing(tsMs?: number): boolean;
   submitAction(action: PlayerAction): boolean;
+  toggleAiAssist(seat: Seat, enabled: boolean): boolean;
+  takeOverSeat(seat: Seat, confirm: boolean): boolean;
   requestEndFreeTable(): boolean;
   requestDisbandMatch(): boolean;
   confirmDestructiveOp(op_id: string, accept: boolean): boolean;
@@ -123,11 +134,22 @@ export function createTableClient(
       : typeof window !== "undefined"
         ? window
         : null;
+  const documentEvents =
+    options.documentEvents !== undefined
+      ? options.documentEvents
+      : typeof document !== "undefined"
+        ? document
+        : null;
+  const probeTimeoutMs = Math.max(
+    0,
+    options.probeTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS,
+  );
 
   let state = createInitialSessionState();
   let socket: WebSocketLike | null = null;
   let detachSocketListeners: (() => void) | null = null;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let probeTimer: ReturnType<typeof setTimeout> | null = null;
   let reconnectAttempt = 0;
   let reconnectDisabled = false;
   let disposed = false;
@@ -157,6 +179,13 @@ export function createTableClient(
     if (reconnectTimer !== null) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
+    }
+  }
+
+  function clearProbeTimer(): void {
+    if (probeTimer !== null) {
+      clearTimeout(probeTimer);
+      probeTimer = null;
     }
   }
 
@@ -223,6 +252,8 @@ export function createTableClient(
       return;
     }
 
+    clearProbeTimer();
+
     if (typeof parsed === "object" && parsed !== null && "TableSnapshot" in parsed) {
       reconnectAttempt = 0;
     }
@@ -276,6 +307,7 @@ export function createTableClient(
 
     pausedForPageHide = false;
     clearReconnectTimer();
+    clearProbeTimer();
     setState({
       ...state,
       connectionStatus: "connecting",
@@ -306,6 +338,7 @@ export function createTableClient(
       if (socket !== ws) {
         return;
       }
+      clearProbeTimer();
       if (detachSocketListeners !== null) {
         detachSocketListeners();
         detachSocketListeners = null;
@@ -338,6 +371,7 @@ export function createTableClient(
   function handlePageHide(): void {
     pausedForPageHide = true;
     clearReconnectTimer();
+    clearProbeTimer();
     if (socket !== null && socket.readyState === WS_READY_OPEN) {
       sendRaw("ClientLeaving");
     }
@@ -351,9 +385,54 @@ export function createTableClient(
     connect();
   }
 
+  function probeConnection(): void {
+    if (
+      disposed ||
+      reconnectDisabled ||
+      pausedForPageHide ||
+      socket === null ||
+      socket.readyState !== WS_READY_OPEN
+    ) {
+      return;
+    }
+    const probedSocket = socket;
+    if (!sendRaw({ ClientPing: { ts_ms: Date.now() } })) {
+      return;
+    }
+    if (probeTimer !== null) {
+      return;
+    }
+    probeTimer = setTimeout(() => {
+      probeTimer = null;
+      if (disposed || reconnectDisabled || socket !== probedSocket) {
+        return;
+      }
+      closeActiveSocket();
+      setState({
+        ...state,
+        connectionStatus: "disconnected",
+      });
+      scheduleReconnect();
+    }, probeTimeoutMs);
+  }
+
+  function handleVisibilityChange(): void {
+    if (documentEvents?.visibilityState === "visible") {
+      probeConnection();
+    }
+  }
+
+  function handleOnline(): void {
+    probeConnection();
+  }
+
   if (windowEvents !== null) {
     windowEvents.addEventListener("pagehide", handlePageHide);
     windowEvents.addEventListener("pageshow", handlePageShow);
+    windowEvents.addEventListener("online", handleOnline);
+  }
+  if (documentEvents !== null) {
+    documentEvents.addEventListener("visibilitychange", handleVisibilityChange);
   }
 
   return {
@@ -388,9 +467,17 @@ export function createTableClient(
       }
       disposed = true;
       clearReconnectTimer();
+      clearProbeTimer();
       if (windowEvents !== null) {
         windowEvents.removeEventListener("pagehide", handlePageHide);
         windowEvents.removeEventListener("pageshow", handlePageShow);
+        windowEvents.removeEventListener("online", handleOnline);
+      }
+      if (documentEvents !== null) {
+        documentEvents.removeEventListener(
+          "visibilitychange",
+          handleVisibilityChange,
+        );
       }
       closeActiveSocket();
       listeners.clear();
@@ -467,6 +554,14 @@ export function createTableClient(
         });
       }
       return sent;
+    },
+
+    toggleAiAssist(seat: Seat, enabled: boolean): boolean {
+      return sendRaw({ ToggleAiAssist: { seat, enabled } });
+    },
+
+    takeOverSeat(seat: Seat, confirm: boolean): boolean {
+      return sendRaw({ TakeOverSeat: { seat, confirm } });
     },
 
     requestEndFreeTable(): boolean {

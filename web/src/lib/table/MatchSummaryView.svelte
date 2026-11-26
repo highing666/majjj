@@ -6,6 +6,7 @@
   import type { MatchSummary } from "../protocol/generated/MatchSummary";
   import type { Seat } from "../protocol/generated/Seat";
   import type { SeatInfo } from "../protocol/generated/SeatInfo";
+  import { getOfflineHumanTakeOverSeats } from "./seatControl";
   import TileBadge from "./TileBadge.svelte";
   import { formatRoundTitle, getTileLabel, seatLabel } from "./tiles";
   import {
@@ -24,6 +25,8 @@
     onUpdateConfig: (config: LobbyConfig) => void;
     onStartMatch: () => void;
     onReturnToLobby: () => void;
+    onOpenHistory?: () => void;
+    onTakeOverSeat?: (seatInfo: SeatInfo) => void;
   }
 
   let {
@@ -36,11 +39,16 @@
     onUpdateConfig,
     onStartMatch,
     onReturnToLobby,
+    onOpenHistory,
+    onTakeOverSeat,
   }: Props = $props();
 
   const standings = $derived(buildMatchStandings(summary, seats));
   const modeLabel = $derived(matchModeLabel(summary.mode));
   const canOperate = $derived(yourSeat !== null && !disabled);
+  const offlineTakeOverSeats = $derived(
+    getOfflineHumanTakeOverSeats(seats, yourSeat),
+  );
 </script>
 
 <section class="card summary-card">
@@ -51,8 +59,43 @@
         {modeLabel} · 共完成 {summary.hands_played} 小局
       </p>
     </div>
-    <span class="tag tag-online">已完赛</span>
+    <div class="summary-head-actions">
+      <span class="tag tag-online">已完赛</span>
+      {#if onOpenHistory}
+        <button
+          class="btn btn-subtle history-trigger"
+          type="button"
+          onclick={onOpenHistory}
+        >
+          战绩
+        </button>
+      {/if}
+    </div>
   </header>
+
+  {#if offlineTakeOverSeats.length > 0 && onTakeOverSeat}
+    <div class="offline-takeover-box" role="status">
+      <div class="offline-takeover-copy">
+        <strong>发现已离线的人类座位</strong>
+        <span>当前本机未入座，可经确认后跨设备接管离线座位参与下一桌或返回大厅。</span>
+      </div>
+      <div class="offline-takeover-list">
+        {#each offlineTakeOverSeats as item (item.seatInfo.seat)}
+          <div class="offline-takeover-item">
+            <span>{item.displayName}</span>
+            <button
+              class="btn btn-primary offline-takeover-btn"
+              type="button"
+              {disabled}
+              onclick={() => onTakeOverSeat(item.seatInfo)}
+            >
+              {item.actionLabel ?? "接管离线座位"}
+            </button>
+          </div>
+        {/each}
+      </div>
+    </div>
+  {/if}
 
   <div class="standings-table-wrap">
     <table class="standings-table">
@@ -186,6 +229,18 @@
     justify-content: space-between;
     align-items: flex-start;
     gap: 10px;
+  }
+
+  .summary-head-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .history-trigger {
+    padding: 5px 10px;
+    font-size: 12px;
   }
 
   h1 {
@@ -341,5 +396,44 @@
     justify-content: flex-end;
     gap: 10px;
     padding-top: 6px;
+  }
+
+  .offline-takeover-box {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px;
+    border-radius: 10px;
+    border: 1px solid #e2b887;
+    background: #fff7ea;
+  }
+
+  .offline-takeover-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 13px;
+  }
+
+  .offline-takeover-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .offline-takeover-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    background: #fff;
+    border: 1px solid var(--border);
+    font-size: 13px;
+  }
+
+  .offline-takeover-btn {
+    padding: 5px 10px;
+    font-size: 12px;
   }
 </style>

@@ -1,6 +1,7 @@
 //! Single active `TableSession` state and full match WebSocket coordination.
 
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -13,11 +14,15 @@ use mahjong_core::{
 };
 use rand_chacha::ChaCha8Rng;
 use rand_core::{RngCore, SeedableRng};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, watch, Mutex};
 use uuid::Uuid;
 
 use crate::ai_pool::{
-    build_ai_pool, default_ai_threads, spawn_scheduled_work, PendingAiJob, ScheduledWork,
+    build_ai_pool, default_ai_threads, spawn_scheduled_work, AiJobKey, PendingAiJob, ScheduledWork,
+};
+use crate::history_dto::{
+    ClearHistoryResponse, HandRecord, HandSeatRecord, HistoryExportResponse, MatchRecord,
+    MatchSeatRecord, PreferencesData, StatsResponse, HISTORY_SCHEMA_VERSION,
 };
 use crate::lan::{discover_lan_urls, read_local_hostname, read_system_interfaces};
 use crate::pacing::{
@@ -28,7 +33,9 @@ use crate::protocol::{
     ClientMessage, DestructiveOpKind, LanUrlInfo, LobbyConfig, PendingDestructiveOp, SeatInfo,
     SeatKind, SeatingRule, ServerMessage, TablePhase, TableSnapshot,
 };
+use crate::seat_control::HandAttribution;
 use crate::server::ServerError;
+use crate::storage::{current_unix_ms, normalize_nickname, HistoryStore};
 
 /// `Send`-safe wrapper around a boxed [`WallProvider`] for injecting deterministic walls in tests.
 pub struct BoxedWallProvider(pub Box<dyn WallProvider + Send>);
@@ -53,6 +60,7 @@ pub struct TableOptions {
     rng_seed: Option<u64>,
     ai_budget: Option<DecisionBudget>,
     pacing: PacingMode,
+    data_dir: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for TableOptions {
@@ -61,6 +69,7 @@ impl std::fmt::Debug for TableOptions {
             .field("rng_seed", &self.rng_seed)
             .field("ai_budget", &self.ai_budget)
             .field("pacing", &self.pacing)
+            .field("data_dir", &self.data_dir)
             .finish_non_exhaustive()
     }
 }
@@ -74,6 +83,7 @@ impl Default for TableOptions {
             rng_seed: None,
             ai_budget: None,
             pacing: PacingMode::Humanized,
+            data_dir: None,
         }
     }
 }
@@ -92,6 +102,7 @@ impl TableOptions {
             rng_seed: Some(seed),
             ai_budget: None,
             pacing: PacingMode::Humanized,
+            data_dir: None,
         }
     }
 
@@ -103,6 +114,7 @@ impl TableOptions {
             rng_seed: Some(seed),
             ai_budget: None,
             pacing: PacingMode::Humanized,
+            data_dir: None,
         }
     }
 
@@ -120,10 +132,23 @@ impl TableOptions {
         self
     }
 
+    /// Configures a persistent directory for `hands.jsonl`, `matches.jsonl`, and `preferences.json`.
+    #[must_use]
+    pub fn with_data_dir(mut self, data_dir: impl Into<PathBuf>) -> Self {
+        self.data_dir = Some(data_dir.into());
+        self
+    }
+
     /// Returns the configured [`PacingMode`].
     #[must_use]
     pub fn pacing(&self) -> PacingMode {
         self.pacing
+    }
+
+    /// Returns the configured persistent data directory, if any.
+    #[must_use]
+    pub fn data_dir(&self) -> Option<&Path> {
+        self.data_dir.as_deref()
     }
 }
 
@@ -168,13 +193,15 @@ pub enum OutboundSignal {
 pub struct HandleOutcome {
     /// Whether the WebSocket loop should close the connection after processing this message.
     pub close_socket: bool,
+    /// Whether the inbound text frame parsed as a valid [`ClientMessage`] (refreshes liveness).
+    pub valid_inbound_message: bool,
 }
 
 #[derive(Debug, Clone)]
-struct SeatRecord {
-    info: SeatInfo,
-    client_id: Option<String>,
-    seat_token: Option<String>,
+pub(crate) struct SeatRecord {
+    pub(crate) info: SeatInfo,
+    pub(crate) client_id: Option<String>,
+    pub(crate) seat_token: Option<String>,
 }
 
 impl SeatRecord {
@@ -202,17 +229,17 @@ impl SeatRecord {
 }
 
 #[derive(Debug, Clone)]
-struct ClientConnection {
-    client_id: String,
-    seat_token: String,
-    nickname: String,
-    seat: Option<Seat>,
-    host_is_loopback: bool,
-    tx: mpsc::UnboundedSender<OutboundSignal>,
+pub(crate) struct ClientConnection {
+    pub(crate) client_id: String,
+    pub(crate) seat_token: String,
+    pub(crate) nickname: String,
+    pub(crate) seat: Option<Seat>,
+    pub(crate) host_is_loopback: bool,
+    pub(crate) tx: mpsc::UnboundedSender<OutboundSignal>,
 }
 
-struct PendingRelease {
-    ticket: ReleaseTicket,
+pub(crate) struct PendingRelease {
+    pub(crate) ticket: ReleaseTicket,
     public_views: [PlayerView; 4],
     deferred_events: Vec<RecordedEvent>,
     scheduled: bool,
@@ -224,13 +251,17 @@ struct ActiveDiscardWindow {
     had_human_reactor: bool,
 }
 
-struct ActiveMatchState {
-    match_id: u64,
-    game: ActiveMatch,
+pub(crate) struct ActiveMatchState {
+    pub(crate) match_id: u64,
+    pub(crate) match_uuid: String,
+    pub(crate) game: ActiveMatch,
     accepted_action_ids: HashSet<(Seat, String)>,
-    pending_release: Option<PendingRelease>,
+    pub(crate) pending_release: Option<PendingRelease>,
     active_discard_window: Option<ActiveDiscardWindow>,
     ai_turn_trigger: AiTurnTrigger,
+    pub(crate) hand_attribution: HandAttribution,
+    pub(crate) hands_settled: u32,
+    pub(crate) any_ai_assisted: [bool; 4],
 }
 
 impl ActiveMatchState {
@@ -251,24 +282,27 @@ impl ActiveMatchState {
 /// Active single-table session state.
 pub struct TableSession {
     table_id: String,
-    phase: TablePhase,
-    config: LobbyConfig,
-    seats: [SeatRecord; 4],
+    pub(crate) phase: TablePhase,
+    pub(crate) config: LobbyConfig,
+    pub(crate) seats: [SeatRecord; 4],
+    pub(crate) seat_generation: [u64; 4],
     seq: u64,
-    pending_destructive_op: Option<PendingDestructiveOp>,
-    active_match: Option<ActiveMatchState>,
+    pub(crate) pending_destructive_op: Option<PendingDestructiveOp>,
+    pub(crate) active_match: Option<ActiveMatchState>,
     next_match_id: u64,
     next_release_generation: u64,
-    in_flight_ai: HashSet<(u64, u64, Seat)>,
+    pub(crate) in_flight_ai: HashSet<AiJobKey>,
     options: TableOptions,
     rng: ChaCha8Rng,
     ai_base_seed: u64,
-    issued_tokens: HashMap<String, String>,
-    connections: HashMap<u64, ClientConnection>,
-    token_to_conn: HashMap<String, u64>,
+    pub(crate) issued_tokens: HashMap<String, String>,
+    pub(crate) connections: HashMap<u64, ClientConnection>,
+    pub(crate) token_to_conn: HashMap<String, u64>,
     next_conn_id: u64,
     port: u16,
     local_hostname: Option<String>,
+    pub(crate) history: HistoryStore,
+    phase_tx: watch::Sender<TablePhase>,
 }
 
 impl TableSession {
@@ -279,14 +313,42 @@ impl TableSession {
     }
 
     /// Creates a new `TableSession` with custom [`TableOptions`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`TableOptions::data_dir`] cannot be opened.
     #[must_use]
     pub fn with_options(port: u16, local_hostname: Option<String>, options: TableOptions) -> Self {
+        Self::try_with_options(port, local_hostname, options)
+            .expect("table session options must be valid")
+    }
+
+    /// Creates a new `TableSession` with custom [`TableOptions`], loading persisted history & preferences.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::DataDir`] if [`TableOptions::data_dir`] cannot be initialized.
+    pub fn try_with_options(
+        port: u16,
+        local_hostname: Option<String>,
+        options: TableOptions,
+    ) -> Result<Self, ServerError> {
+        let history = match options.data_dir() {
+            Some(dir) => HistoryStore::open(dir).map_err(|source| ServerError::DataDir {
+                path: dir.to_path_buf(),
+                source,
+            })?,
+            None => HistoryStore::in_memory(),
+        };
+        let config = LobbyConfig::from(history.preferences());
         let base_seed = options.rng_seed.unwrap_or_else(random_u64);
-        Self {
+        let (phase_tx, _) = watch::channel(TablePhase::Lobby);
+        Ok(Self {
             table_id: Uuid::new_v4().to_string(),
             phase: TablePhase::Lobby,
-            config: LobbyConfig::default(),
+            config,
             seats: Seat::ALL.map(SeatRecord::empty),
+            seat_generation: [0; 4],
             seq: 0,
             pending_destructive_op: None,
             active_match: None,
@@ -302,7 +364,21 @@ impl TableSession {
             next_conn_id: 1,
             port,
             local_hostname,
-        }
+            history,
+            phase_tx,
+        })
+    }
+
+    fn set_phase(&mut self, phase: TablePhase) {
+        self.phase = phase;
+        self.phase_tx.send_if_modified(|current| {
+            if *current != phase {
+                *current = phase;
+                true
+            } else {
+                false
+            }
+        });
     }
 
     fn bump_release_generation(&mut self) -> u64 {
@@ -326,10 +402,31 @@ impl TableSession {
             .count() as u8
     }
 
-    fn allocate_conn_id(&mut self) -> u64 {
+    pub(crate) fn allocate_conn_id(&mut self) -> u64 {
         let id = self.next_conn_id;
         self.next_conn_id += 1;
         id
+    }
+
+    #[cfg(test)]
+    pub(crate) fn handle_hello_for_test(
+        &mut self,
+        conn_id: u64,
+        client_id: &str,
+        nickname: &str,
+        tx: &mpsc::UnboundedSender<OutboundSignal>,
+    ) {
+        self.handle_hello(
+            conn_id,
+            true,
+            tx,
+            HelloParams {
+                client_id: client_id.to_string(),
+                nickname: nickname.to_string(),
+                table_id: None,
+                seat_token: None,
+            },
+        );
     }
 
     fn seat_infos(&self) -> [SeatInfo; 4] {
@@ -346,7 +443,7 @@ impl TableSession {
         discover_lan_urls(&interfaces, self.local_hostname.as_deref(), self.port)
     }
 
-    fn build_snapshot(&self, conn: &ClientConnection) -> TableSnapshot {
+    pub(crate) fn build_snapshot(&self, conn: &ClientConnection) -> TableSnapshot {
         let player_view = match (self.phase, conn.seat, &self.active_match) {
             (TablePhase::InMatch | TablePhase::Finished, Some(seat), Some(active)) => {
                 Some(active.public_view(seat))
@@ -374,7 +471,7 @@ impl TableSession {
         self.broadcast_snapshots_excluding(None);
     }
 
-    fn broadcast_snapshots_excluding(&self, exclude_conn_id: Option<u64>) {
+    pub(crate) fn broadcast_snapshots_excluding(&self, exclude_conn_id: Option<u64>) {
         for (&id, conn) in &self.connections {
             if exclude_conn_id == Some(id) {
                 continue;
@@ -384,7 +481,7 @@ impl TableSession {
         }
     }
 
-    fn broadcast_lobby_updated(&self, exclude_conn_id: Option<u64>) {
+    pub(crate) fn broadcast_lobby_updated(&self, exclude_conn_id: Option<u64>) {
         let msg = ServerMessage::LobbyUpdated {
             phase: self.phase,
             config: self.config,
@@ -398,7 +495,7 @@ impl TableSession {
         }
     }
 
-    fn require_seated_human(
+    pub(crate) fn require_seated_human(
         &self,
         conn_id: u64,
         action_desc: &str,
@@ -415,11 +512,14 @@ impl TableSession {
         Some((seat, conn.tx.clone()))
     }
 
-    fn send_to(tx: &mpsc::UnboundedSender<OutboundSignal>, msg: ServerMessage) {
+    pub(crate) fn send_to(tx: &mpsc::UnboundedSender<OutboundSignal>, msg: ServerMessage) {
         let _ = tx.send(OutboundSignal::Message(Box::new(msg)));
     }
 
-    fn send_error(tx: &mpsc::UnboundedSender<OutboundSignal>, message: impl Into<String>) {
+    pub(crate) fn send_error(
+        tx: &mpsc::UnboundedSender<OutboundSignal>,
+        message: impl Into<String>,
+    ) {
         Self::send_to(
             tx,
             ServerMessage::ErrorNotice {
@@ -441,6 +541,9 @@ impl TableSession {
             return;
         }
         let nickname = params.nickname.trim().to_string();
+        if !nickname.is_empty() {
+            self.history.record_nickname(&nickname);
+        }
 
         // Check if this connection is reusing an existing credential for this table.
         let valid_restore_token = match (params.table_id.as_deref(), params.seat_token.as_deref()) {
@@ -521,7 +624,7 @@ impl TableSession {
         }
     }
 
-    fn handle_join_seat(&mut self, conn_id: u64, requested_seat: Option<Seat>) {
+    pub(crate) fn handle_join_seat(&mut self, conn_id: u64, requested_seat: Option<Seat>) {
         let Some(existing_conn) = self.connections.get(&conn_id).cloned() else {
             return;
         };
@@ -572,6 +675,7 @@ impl TableSession {
         let effective_nickname = if existing_conn.nickname.is_empty() {
             format!("玩家{}", target_seat.index() + 1)
         } else {
+            self.history.record_nickname(&existing_conn.nickname);
             existing_conn.nickname.clone()
         };
 
@@ -628,7 +732,7 @@ impl TableSession {
         Self::send_to(&updated_conn.tx, ServerMessage::TableSnapshot(snapshot));
     }
 
-    fn handle_update_lobby_config(&mut self, conn_id: u64, next_config: LobbyConfig) {
+    pub(crate) fn handle_update_lobby_config(&mut self, conn_id: u64, next_config: LobbyConfig) {
         let Some((_, tx)) = self.require_seated_human(conn_id, "updating lobby config") else {
             return;
         };
@@ -640,6 +744,7 @@ impl TableSession {
             return;
         }
         self.config = next_config;
+        self.history.record_lobby_config(next_config);
         self.broadcast_lobby_updated(None);
     }
 
@@ -651,10 +756,11 @@ impl TableSession {
             return;
         }
         self.config.pace = pace;
+        self.history.record_pace(pace);
         self.broadcast_lobby_updated(None);
     }
 
-    fn handle_start_match(&mut self, conn_id: u64) {
+    pub(crate) fn handle_start_match(&mut self, conn_id: u64) {
         let Some((_, conn_tx)) = self.require_seated_human(conn_id, "starting a match") else {
             return;
         };
@@ -744,17 +850,23 @@ impl TableSession {
         let match_id = self.next_match_id;
         self.next_match_id += 1;
         let _ = self.bump_release_generation();
+        self.bump_all_seat_generations();
         self.seq = game.seq();
-        self.phase = TablePhase::InMatch;
+        self.set_phase(TablePhase::InMatch);
         self.pending_destructive_op = None;
         self.in_flight_ai.clear();
+        let hand_attribution = HandAttribution::from_seats(&self.seats);
         self.active_match = Some(ActiveMatchState {
             match_id,
+            match_uuid: Uuid::new_v4().to_string(),
             game,
             accepted_action_ids: HashSet::new(),
             pending_release: None,
             active_discard_window: None,
             ai_turn_trigger: AiTurnTrigger::AfterHandStarted,
+            hand_attribution,
+            hands_settled: 0,
+            any_ai_assisted: [false; 4],
         });
 
         self.broadcast_all_snapshots();
@@ -823,7 +935,7 @@ impl TableSession {
         }
     }
 
-    fn handle_submit_action(
+    pub(crate) fn handle_submit_action(
         &mut self,
         conn_id: u64,
         expected_seq: u64,
@@ -862,6 +974,14 @@ impl TableSession {
         }
 
         let current_seq = active.public_seq();
+        if self.seats[seat.index()].info.ai_assisted {
+            Self::send_action_rejected(
+                &tx,
+                "AI assist is active for this seat; reclaim control first",
+                current_seq,
+            );
+            return;
+        }
         if active.pending_release.is_some() {
             Self::send_action_rejected(&tx, "discard release is still pending", current_seq);
             return;
@@ -963,7 +1083,9 @@ impl TableSession {
             if emitted.len() == 1 {
                 let discard_seq = emitted[0].seq();
                 let had_human_reactor = Seat::ALL.into_iter().any(|s| {
-                    self.seats[s.index()].info.kind == SeatKind::Human
+                    let info = &self.seats[s.index()].info;
+                    info.kind == SeatKind::Human
+                        && !info.ai_assisted
                         && !active.game.project_view(s).legal_actions.is_empty()
                 });
                 active.active_discard_window = Some(ActiveDiscardWindow {
@@ -1037,35 +1159,57 @@ impl TableSession {
         self.in_flight_ai.clear();
     }
 
-    fn finalize_emitted_events(&mut self, mut emitted: Vec<RecordedEvent>) {
+    pub(crate) fn finalize_emitted_events(&mut self, mut emitted: Vec<RecordedEvent>) {
         let Some(active) = self.active_match.as_ref() else {
             return;
         };
         let match_id = active.match_id;
-        let mut public_phase = active.game.project_view(Seat::East).phase;
+        self.persist_settled_hands(&emitted);
+        let mut public_phase = self
+            .active_match
+            .as_ref()
+            .expect("active match exists")
+            .game
+            .project_view(Seat::East)
+            .phase;
         if public_phase == PublicPhase::BetweenHands {
             self.auto_confirm_ai_between_hands(&mut emitted);
             if let Some(active_after) = self.active_match.as_ref() {
                 public_phase = active_after.game.project_view(Seat::East).phase;
             }
         }
+        self.persist_finished_matches(&emitted);
+
+        let started_new_hand = self.active_match.as_ref().is_some_and(|active_ref| {
+            emitted.iter().any(|event| {
+                matches!(
+                    active_ref.game.project_event(event, Seat::East).kind,
+                    PlayerEventKind::HandStarted { .. }
+                )
+            })
+        });
+        let next_hand_attribution =
+            started_new_hand.then(|| HandAttribution::from_seats(&self.seats));
 
         let Some(active_mut) = self.active_match.as_mut() else {
             return;
         };
+        if let Some(attribution) = next_hand_attribution {
+            active_mut.hand_attribution = attribution;
+        }
         let next_trigger = compute_ai_turn_trigger(&active_mut.game, &emitted);
         active_mut.ai_turn_trigger = next_trigger;
         let new_seq = active_mut.game.seq();
         self.seq = new_seq;
         self.in_flight_ai
-            .retain(|&(m_id, seq, _)| m_id == match_id && seq == new_seq);
+            .retain(|k| k.match_id == match_id && k.seq == new_seq);
 
         let active_ref = self.active_match.as_ref().expect("active match exists");
         self.broadcast_event_batch(&active_ref.game, &emitted);
 
         match public_phase {
             PublicPhase::MatchFinished => {
-                self.phase = TablePhase::Finished;
+                self.set_phase(TablePhase::Finished);
                 self.pending_destructive_op = None;
                 self.in_flight_ai.clear();
                 self.broadcast_all_snapshots();
@@ -1084,6 +1228,88 @@ impl TableSession {
         }
     }
 
+    fn persist_settled_hands(&mut self, emitted: &[RecordedEvent]) {
+        let mode = self.config.mode;
+        let timestamp_ms = current_unix_ms();
+        let Some(active) = self.active_match.as_mut() else {
+            return;
+        };
+        for event in emitted {
+            let PlayerEventKind::HandSettled { settlement } =
+                active.game.project_event(event, Seat::East).kind
+            else {
+                continue;
+            };
+            active.hands_settled += 1;
+            for seat in Seat::ALL {
+                if active.hand_attribution.assisted_by_ai[seat.index()] {
+                    active.any_ai_assisted[seat.index()] = true;
+                }
+            }
+            let seats = Seat::ALL.map(|seat| {
+                let idx = seat.index();
+                let slot = &self.seats[idx];
+                HandSeatRecord {
+                    seat,
+                    nickname: normalize_nickname(&slot.info.nickname),
+                    seat_kind: slot.info.kind,
+                    assisted_by_ai: active.hand_attribution.assisted_by_ai[idx],
+                    took_over_ai: active.hand_attribution.took_over_ai_in_hand[idx],
+                }
+            });
+            self.history.append_hand(HandRecord {
+                schema_version: HISTORY_SCHEMA_VERSION,
+                match_id: active.match_uuid.clone(),
+                hand_index: active.hands_settled,
+                timestamp_ms,
+                mode,
+                settlement,
+                seats,
+                aborted: false,
+            });
+        }
+    }
+
+    fn persist_finished_matches(&mut self, emitted: &[RecordedEvent]) {
+        let timestamp_ms = current_unix_ms();
+        let Some(active) = self.active_match.as_ref() else {
+            return;
+        };
+        for event in emitted {
+            let PlayerEventKind::MatchFinished { summary } =
+                active.game.project_event(event, Seat::East).kind
+            else {
+                continue;
+            };
+            if summary.hands_played == 0 {
+                continue;
+            }
+            let seats = Seat::ALL.map(|seat| {
+                let idx = seat.index();
+                let slot = &self.seats[idx];
+                MatchSeatRecord {
+                    seat,
+                    nickname: normalize_nickname(&slot.info.nickname),
+                    seat_kind: slot.info.kind,
+                    assisted_by_ai: active.any_ai_assisted[idx],
+                    final_score: summary.final_scores[idx],
+                    net_delta: summary.net_deltas[idx],
+                }
+            });
+            self.history.append_match(MatchRecord {
+                schema_version: HISTORY_SCHEMA_VERSION,
+                match_id: active.match_uuid.clone(),
+                timestamp_ms,
+                mode: summary.mode,
+                hands_played: summary.hands_played,
+                initial_scores: summary.initial_scores,
+                final_scores: summary.final_scores,
+                net_deltas: summary.net_deltas,
+                seats,
+            });
+        }
+    }
+
     fn ai_decision_context(&self, seat: Seat) -> DecisionContext {
         let slot = &self.seats[seat.index()];
         DecisionContext {
@@ -1093,12 +1319,12 @@ impl TableSession {
         }
     }
 
-    fn auto_confirm_ai_between_hands(&mut self, emitted: &mut Vec<RecordedEvent>) {
+    pub(crate) fn auto_confirm_ai_between_hands(&mut self, emitted: &mut Vec<RecordedEvent>) {
         let Some(match_id) = self.active_match.as_ref().map(|a| a.match_id) else {
             return;
         };
         for seat in Seat::ALL {
-            if self.seats[seat.index()].info.kind != SeatKind::Ai {
+            if !self.is_ai_controlled(seat) {
                 continue;
             }
             let Some(view) = self
@@ -1161,20 +1387,24 @@ impl TableSession {
         let trigger = active.ai_turn_trigger;
         let mut jobs = Vec::new();
         for seat in Seat::ALL {
-            if self.seats[seat.index()].info.kind != SeatKind::Ai {
+            if !self.is_ai_controlled(seat) {
                 continue;
             }
             let view = active.game.project_view(seat);
             if view.legal_actions.is_empty() {
                 continue;
             }
-            if !self.in_flight_ai.insert((match_id, seq, seat)) {
-                continue;
-            }
-            jobs.push(PendingAiJob {
+            let key = AiJobKey {
                 match_id,
                 seq,
                 seat,
+                seat_generation: self.seat_generation[seat.index()],
+            };
+            if !self.in_flight_ai.insert(key) {
+                continue;
+            }
+            jobs.push(PendingAiJob {
+                key,
                 view,
                 ctx: self.ai_decision_context(seat),
                 step_seed: derive_ai_step_seed(self.ai_base_seed, match_id, seq, seat),
@@ -1194,29 +1424,28 @@ impl TableSession {
         }
     }
 
-    pub(crate) fn cancel_ai_job(&mut self, match_id: u64, expected_seq: u64, seat: Seat) {
-        self.in_flight_ai.remove(&(match_id, expected_seq, seat));
+    pub(crate) fn cancel_ai_job(&mut self, key: AiJobKey) {
+        self.in_flight_ai.remove(&key);
     }
 
     pub(crate) fn plan_ai_action_delay(
         &mut self,
-        match_id: u64,
-        expected_seq: u64,
-        seat: Seat,
+        key: AiJobKey,
         action: PlayerAction,
         trigger: AiTurnTrigger,
         step_seed: u64,
     ) -> Option<Duration> {
         let is_valid = self.phase == TablePhase::InMatch
-            && self.seats[seat.index()].info.kind == SeatKind::Ai
+            && self.is_ai_controlled(key.seat)
+            && self.seat_generation[key.seat.index()] == key.seat_generation
             && self.active_match.as_ref().is_some_and(|active| {
-                active.match_id == match_id
+                active.match_id == key.match_id
                     && active.pending_release.is_none()
-                    && active.game.seq() == expected_seq
-                    && self.in_flight_ai.contains(&(match_id, expected_seq, seat))
+                    && active.game.seq() == key.seq
+                    && self.in_flight_ai.contains(&key)
             });
         if !is_valid {
-            self.in_flight_ai.remove(&(match_id, expected_seq, seat));
+            self.in_flight_ai.remove(&key);
             return None;
         }
         Some(target_ai_delay(
@@ -1250,30 +1479,26 @@ impl TableSession {
         self.collect_scheduled_work()
     }
 
-    pub(crate) fn complete_ai_job(
-        &mut self,
-        match_id: u64,
-        expected_seq: u64,
-        seat: Seat,
-        action: PlayerAction,
-    ) -> ScheduledWork {
-        self.in_flight_ai.remove(&(match_id, expected_seq, seat));
+    pub(crate) fn complete_ai_job(&mut self, key: AiJobKey, action: PlayerAction) -> ScheduledWork {
+        self.in_flight_ai.remove(&key);
         if self.phase != TablePhase::InMatch {
             return ScheduledWork::default();
         }
-        if self.seats[seat.index()].info.kind != SeatKind::Ai {
+        if !self.is_ai_controlled(key.seat)
+            || self.seat_generation[key.seat.index()] != key.seat_generation
+        {
             return ScheduledWork::default();
         }
         let matches_state = self.active_match.as_ref().is_some_and(|active| {
-            active.match_id == match_id
+            active.match_id == key.match_id
                 && active.pending_release.is_none()
-                && active.game.seq() == expected_seq
+                && active.game.seq() == key.seq
         });
         if !matches_state {
             return ScheduledWork::default();
         }
 
-        self.apply_match_step(seat, action, None);
+        self.apply_match_step(key.seat, action, None);
         self.collect_scheduled_work()
     }
 
@@ -1288,8 +1513,16 @@ impl TableSession {
     }
 
     fn reset_match_to_lobby(&mut self) {
+        if self.phase == TablePhase::InMatch {
+            if let Some(active) = self.active_match.as_ref() {
+                if active.hands_settled > 0 {
+                    self.history.mark_match_aborted(&active.match_uuid);
+                }
+            }
+        }
         let _ = self.bump_release_generation();
-        self.phase = TablePhase::Lobby;
+        self.bump_all_seat_generations();
+        self.set_phase(TablePhase::Lobby);
         self.active_match = None;
         self.in_flight_ai.clear();
         self.pending_destructive_op = None;
@@ -1441,7 +1674,7 @@ impl TableSession {
         self.resolve_or_update_pending_op(op, actor);
     }
 
-    fn on_disconnect(&mut self, conn_id: u64) {
+    pub(crate) fn on_disconnect(&mut self, conn_id: u64) {
         let Some(removed) = self.connections.remove(&conn_id) else {
             return;
         };
@@ -1505,8 +1738,9 @@ impl TableRuntime {
     ///
     /// # Errors
     ///
-    /// Returns [`ServerError::InvalidAiThreads`] if `ai_threads == 0`, or
-    /// [`ServerError::AiPool`] if the Rayon thread pool cannot be constructed.
+    /// Returns [`ServerError::InvalidAiThreads`] if `ai_threads == 0`,
+    /// [`ServerError::AiPool`] if the Rayon thread pool cannot be constructed, or
+    /// [`ServerError::DataDir`] if `options.data_dir` cannot be opened.
     pub fn try_with_options_and_threads(
         port: u16,
         local_hostname: Option<String>,
@@ -1514,12 +1748,9 @@ impl TableRuntime {
         ai_threads: usize,
     ) -> Result<Self, ServerError> {
         let ai_pool = build_ai_pool(ai_threads)?;
+        let session = TableSession::try_with_options(port, local_hostname, options)?;
         Ok(Self {
-            inner: Arc::new(Mutex::new(TableSession::with_options(
-                port,
-                local_hostname,
-                options,
-            ))),
+            inner: Arc::new(Mutex::new(session)),
             ai_pool,
         })
     }
@@ -1534,6 +1765,40 @@ impl TableRuntime {
     pub async fn health_snapshot(&self) -> (TablePhase, u8) {
         let session = self.inner.lock().await;
         (session.phase(), session.online_humans())
+    }
+
+    /// Subscribes to table phase updates for lifecycle monitors.
+    pub async fn subscribe_phase(&self) -> watch::Receiver<TablePhase> {
+        let session = self.inner.lock().await;
+        session.phase_tx.subscribe()
+    }
+
+    /// Computes aggregated player stats and recent match/hand records for `GET /api/stats`.
+    pub async fn history_stats(&self) -> StatsResponse {
+        let session = self.inner.lock().await;
+        session.history.stats()
+    }
+
+    /// Returns persisted table defaults and recent nicknames for `GET /api/preferences`.
+    pub async fn history_preferences(&self) -> PreferencesData {
+        let session = self.inner.lock().await;
+        session.history.preferences().clone()
+    }
+
+    /// Exports full preferences, matches, and hands JSON backup for `GET /api/history/export`.
+    pub async fn history_export(&self) -> HistoryExportResponse {
+        let session = self.inner.lock().await;
+        session.history.export()
+    }
+
+    /// Clears `hands.jsonl` and `matches.jsonl` while preserving `preferences.json`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if clearing persisted JSONL files fails.
+    pub async fn history_clear(&self) -> Result<ClearHistoryResponse, std::io::Error> {
+        let mut session = self.inner.lock().await;
+        session.history.clear_history()
     }
 
     /// Parses and handles one raw JSON text frame from `conn_id`.
@@ -1554,12 +1819,18 @@ impl TableRuntime {
 
         if let ClientMessage::ClientPing { ts_ms } = msg {
             TableSession::send_to(tx, ServerMessage::ServerPong { ts_ms });
-            return HandleOutcome::default();
+            return HandleOutcome {
+                close_socket: false,
+                valid_inbound_message: true,
+            };
         }
 
         let (outcome, scheduled_work) = {
             let mut session = self.inner.lock().await;
-            let mut outcome = HandleOutcome::default();
+            let mut outcome = HandleOutcome {
+                close_socket: false,
+                valid_inbound_message: true,
+            };
             match msg {
                 ClientMessage::Hello {
                     client_id,
@@ -1581,13 +1852,16 @@ impl TableRuntime {
                 }
                 ClientMessage::ClientLeaving => {
                     session.on_disconnect(conn_id);
-                    outcome = HandleOutcome { close_socket: true };
+                    outcome = HandleOutcome {
+                        close_socket: true,
+                        valid_inbound_message: true,
+                    };
                 }
                 ClientMessage::ClientPing { .. } => unreachable!("handled above"),
                 other => {
                     let Some(conn) = session.connections.get(&conn_id).cloned() else {
                         TableSession::send_error(tx, "must send Hello before other messages");
-                        return HandleOutcome::default();
+                        return outcome;
                     };
 
                     match other {
@@ -1620,17 +1894,11 @@ impl TableRuntime {
                             let snapshot = session.build_snapshot(&conn);
                             TableSession::send_to(&conn.tx, ServerMessage::TableSnapshot(snapshot));
                         }
-                        ClientMessage::ToggleAiAssist { .. } => {
-                            TableSession::send_error(
-                                &conn.tx,
-                                "ToggleAiAssist is reserved for Slice 5 and not yet enabled",
-                            );
+                        ClientMessage::ToggleAiAssist { seat, enabled } => {
+                            session.handle_toggle_ai_assist(conn_id, seat, enabled);
                         }
-                        ClientMessage::TakeOverSeat { .. } => {
-                            TableSession::send_error(
-                                &conn.tx,
-                                "TakeOverSeat is reserved for Slice 5 and not yet enabled",
-                            );
+                        ClientMessage::TakeOverSeat { seat, confirm } => {
+                            session.handle_take_over_seat(conn_id, seat, confirm);
                         }
                         ClientMessage::StartMatch => {
                             session.handle_start_match(conn_id);

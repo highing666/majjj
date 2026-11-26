@@ -3,30 +3,63 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
+use axum::body::Bytes;
 use axum::extract::ws::{Message as WsMessage, WebSocket};
-use axum::extract::{ConnectInfo, State, WebSocketUpgrade};
+use axum::extract::{ConnectInfo, Request, State, WebSocketUpgrade};
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, HOST};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
+use serde::Serialize;
 use thiserror::Error;
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
+use tokio::time::{Instant, MissedTickBehavior};
 
 use crate::ai_pool::default_ai_threads;
+use crate::history_dto::ClearHistoryRequest;
 use crate::lan::read_local_hostname;
+use crate::lifecycle::{
+    is_loopback_peer, spawn_idle_shutdown_monitor, IdleTimeouts, WsConnectionTracker,
+};
 use crate::protocol::{HealthResponse, ServerMessage};
 use crate::session::{OutboundSignal, TableOptions, TableRuntime};
 use crate::static_assets::{
-    DiskStaticAssets, NoopStaticAssets, StaticAssetError, StaticAssetSource,
+    DiskStaticAssets, EmbeddedStaticAssets, StaticAssetError, StaticAssetSource,
 };
+use crate::storage::current_unix_ms;
+
+const DEFAULT_PING_INTERVAL: Duration = Duration::from_secs(10);
+const DEFAULT_ACTIVITY_TIMEOUT: Duration = Duration::from_secs(25);
+const WS_CLOSE_FLUSH_TIMEOUT: Duration = Duration::from_millis(200);
+
+/// WebSocket application-layer heartbeat timings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeartbeatConfig {
+    /// Interval between server-initiated [`ServerMessage::ServerPing`] frames (default `10s`).
+    pub ping_interval: Duration,
+    /// Duration without valid inbound activity before closing the connection (default `25s`).
+    pub activity_timeout: Duration,
+}
+
+impl Default for HeartbeatConfig {
+    fn default() -> Self {
+        Self {
+            ping_interval: DEFAULT_PING_INTERVAL,
+            activity_timeout: DEFAULT_ACTIVITY_TIMEOUT,
+        }
+    }
+}
 
 /// Configuration for starting `mahjong-server`.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ServerConfig {
     /// IP address to bind (defaults to `0.0.0.0`).
     pub bind: IpAddr,
@@ -34,8 +67,18 @@ pub struct ServerConfig {
     pub port: u16,
     /// Optional built frontend static asset directory.
     pub static_dir: Option<PathBuf>,
+    /// Optional persistent directory for `hands.jsonl`, `matches.jsonl`, and `preferences.json`.
+    pub data_dir: Option<PathBuf>,
     /// Worker thread count for the dedicated Rayon AI thinking pool (defaults to [`default_ai_threads`]).
     pub ai_threads: usize,
+    /// WebSocket application-layer ping interval and inbound activity timeout.
+    pub heartbeat: HeartbeatConfig,
+    /// Skip opening the local browser automatically on startup (desktop mode).
+    pub no_open: bool,
+    /// Run in 7x24 headless mode (implies `no_open`, disables `POST /api/shutdown` and idle auto-exit).
+    pub headless: bool,
+    /// Split idle auto-exit thresholds for desktop mode (`!headless`).
+    pub idle_timeouts: IdleTimeouts,
 }
 
 impl Default for ServerConfig {
@@ -44,7 +87,12 @@ impl Default for ServerConfig {
             bind: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
             port: 8789,
             static_dir: None,
+            data_dir: None,
             ai_threads: default_ai_threads(),
+            heartbeat: HeartbeatConfig::default(),
+            no_open: false,
+            headless: false,
+            idle_timeouts: IdleTimeouts::default(),
         }
     }
 }
@@ -66,6 +114,13 @@ pub enum ServerError {
         #[source]
         source: std::io::Error,
     },
+    /// Configured persistent data directory could not be initialized.
+    #[error("invalid data directory {path}: {source}")]
+    DataDir {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     /// Configured AI thread pool size is invalid (e.g. `0`).
     #[error("invalid AI thread count {0}: must be at least 1")]
     InvalidAiThreads(usize),
@@ -77,8 +132,8 @@ pub enum ServerError {
 /// Running server handle returned by [`ServerConfig::spawn`].
 pub struct ServerHandle {
     addr: SocketAddr,
-    shutdown_tx: Option<oneshot::Sender<()>>,
-    join_handle: JoinHandle<Result<(), std::io::Error>>,
+    shutdown_tx: watch::Sender<bool>,
+    join_handle: Option<JoinHandle<Result<(), std::io::Error>>>,
 }
 
 impl std::fmt::Debug for ServerHandle {
@@ -96,23 +151,110 @@ impl ServerHandle {
         self.addr
     }
 
+    /// Waits until the server stops on its own (e.g. via `POST /api/shutdown` or idle auto-exit).
+    ///
+    /// # Errors
+    ///
+    /// Returns any I/O error reported by `axum::serve` or the spawned server task.
+    pub async fn wait(&mut self) -> Result<(), std::io::Error> {
+        let Some(jh) = self.join_handle.as_mut() else {
+            return Ok(());
+        };
+        let joined = jh.await;
+        self.join_handle = None;
+        match joined {
+            Ok(res) => res,
+            Err(err) => Err(std::io::Error::other(err)),
+        }
+    }
+
     /// Gracefully shuts down the running server and awaits task completion.
     pub async fn shutdown(mut self) {
-        if let Some(tx) = self.shutdown_tx.take() {
-            let _ = tx.send(());
+        let _ = self.shutdown_tx.send(true);
+        if let Some(jh) = self.join_handle.take() {
+            let _ = jh.await;
         }
-        let _ = self.join_handle.await;
     }
 }
 
 #[derive(Clone)]
 struct AppState {
     port: u16,
+    headless: bool,
     session: TableRuntime,
     static_assets: Arc<dyn StaticAssetSource>,
+    heartbeat: HeartbeatConfig,
+    shutdown_tx: watch::Sender<bool>,
+    ws_tracker: WsConnectionTracker,
 }
 
 impl ServerConfig {
+    /// Overrides the IP address to bind.
+    #[must_use]
+    pub fn with_bind(mut self, bind: IpAddr) -> Self {
+        self.bind = bind;
+        self
+    }
+
+    /// Overrides the TCP port to bind (`0` selects an ephemeral port in tests).
+    #[must_use]
+    pub fn with_port(mut self, port: u16) -> Self {
+        self.port = port;
+        self
+    }
+
+    /// Overrides the optional external static asset directory.
+    #[must_use]
+    pub fn with_static_dir(mut self, static_dir: impl Into<Option<PathBuf>>) -> Self {
+        self.static_dir = static_dir.into();
+        self
+    }
+
+    /// Overrides the WebSocket heartbeat send interval and inbound activity timeout.
+    #[must_use]
+    pub fn with_heartbeat(mut self, heartbeat: HeartbeatConfig) -> Self {
+        self.heartbeat = heartbeat;
+        self
+    }
+
+    /// Overrides the persistent data directory for history and preferences.
+    #[must_use]
+    pub fn with_data_dir(mut self, data_dir: impl Into<PathBuf>) -> Self {
+        self.data_dir = Some(data_dir.into());
+        self
+    }
+
+    /// Overrides the Rayon AI pool worker thread count.
+    #[must_use]
+    pub fn with_ai_threads(mut self, ai_threads: usize) -> Self {
+        self.ai_threads = ai_threads;
+        self
+    }
+
+    /// Skips automatically opening the browser on startup in desktop mode.
+    #[must_use]
+    pub fn with_no_open(mut self, no_open: bool) -> Self {
+        self.no_open = no_open;
+        self
+    }
+
+    /// Enables or disables 7x24 headless mode (`headless` also disables `/api/shutdown` and idle exit).
+    #[must_use]
+    pub fn with_headless(mut self, headless: bool) -> Self {
+        self.headless = headless;
+        if headless {
+            self.no_open = true;
+        }
+        self
+    }
+
+    /// Overrides the split desktop idle auto-exit thresholds.
+    #[must_use]
+    pub fn with_idle_timeouts(mut self, idle_timeouts: IdleTimeouts) -> Self {
+        self.idle_timeouts = idle_timeouts;
+        self
+    }
+
     /// Binds the TCP socket immediately (failing on port conflicts without fallback) and
     /// spawns the Axum HTTP/WebSocket server on the current Tokio runtime.
     ///
@@ -135,10 +277,15 @@ impl ServerConfig {
     /// [`ServerError::Bind`] if binding `bind:port` fails.
     pub async fn spawn_with_options(
         self,
-        options: TableOptions,
+        mut options: TableOptions,
     ) -> Result<ServerHandle, ServerError> {
         if self.ai_threads == 0 {
             return Err(ServerError::InvalidAiThreads(0));
+        }
+        if options.data_dir().is_none() {
+            if let Some(dir) = &self.data_dir {
+                options = options.with_data_dir(dir.clone());
+            }
         }
 
         let static_assets: Arc<dyn StaticAssetSource> =
@@ -149,7 +296,7 @@ impl ServerConfig {
                         source,
                     }
                 })?),
-                None => Arc::new(NoopStaticAssets),
+                None => Arc::new(EmbeddedStaticAssets),
             };
 
         let bind_addr = SocketAddr::new(self.bind, self.port);
@@ -175,41 +322,107 @@ impl ServerConfig {
             options,
             self.ai_threads,
         )?;
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        let ws_tracker = WsConnectionTracker::new();
+        let monitor_handle = if self.headless {
+            None
+        } else {
+            let phase_rx = session.subscribe_phase().await;
+            Some(spawn_idle_shutdown_monitor(
+                self.idle_timeouts,
+                ws_tracker.subscribe(),
+                phase_rx,
+                shutdown_tx.clone(),
+            ))
+        };
+
         let state = AppState {
             port: local_addr.port(),
+            headless: self.headless,
             session,
             static_assets,
+            heartbeat: self.heartbeat,
+            shutdown_tx: shutdown_tx.clone(),
+            ws_tracker,
         };
         let router = build_router(state);
 
-        let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let join_handle = tokio::spawn(async move {
-            axum::serve(
+            let serve_res = axum::serve(
                 listener,
                 router.into_make_service_with_connect_info::<SocketAddr>(),
             )
             .with_graceful_shutdown(async move {
-                let _ = shutdown_rx.await;
+                let _ = shutdown_rx.wait_for(|&stopped| stopped).await;
             })
-            .await
+            .await;
+            if let Some(monitor) = monitor_handle {
+                let _ = monitor.await;
+            }
+            serve_res
         });
 
         Ok(ServerHandle {
             addr: local_addr,
-            shutdown_tx: Some(shutdown_tx),
-            join_handle,
+            shutdown_tx,
+            join_handle: Some(join_handle),
         })
     }
 }
 
 fn build_router(state: AppState) -> Router {
-    Router::new()
+    let api_router = Router::new()
         .route("/api/health", get(health_handler))
-        .route("/api/{*rest}", get(api_not_found))
-        .route("/api", get(api_not_found))
+        .route("/api/stats", get(stats_handler))
+        .route("/api/preferences", get(preferences_handler))
+        .route("/api/history/export", get(history_export_handler))
+        .route("/api/history/clear", post(history_clear_handler))
+        .route("/api/shutdown", post(shutdown_handler))
+        .route("/api/{*rest}", any(api_not_found))
+        .route("/api", any(api_not_found))
+        .layer(middleware::from_fn(api_no_store_middleware));
+
+    Router::new()
+        .merge(api_router)
         .route("/ws", get(ws_handler))
         .fallback(get(static_asset_handler))
         .with_state(state)
+}
+
+async fn api_no_store_middleware(req: Request, next: Next) -> Response {
+    let mut response = next.run(req).await;
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+fn json_with_no_store<T: Serialize>(status: StatusCode, payload: &T) -> Response {
+    let mut response = (status, Json(payload)).into_response();
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+async fn shutdown_handler(
+    extensions: axum::http::Extensions,
+    State(state): State<AppState>,
+) -> Response {
+    let peer = extensions
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ConnectInfo(addr)| *addr);
+    let status = if state.headless || !is_loopback_peer(peer) {
+        StatusCode::FORBIDDEN
+    } else {
+        let _ = state.shutdown_tx.send(true);
+        StatusCode::OK
+    };
+    let mut response = status.into_response();
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 async fn health_handler(State(state): State<AppState>) -> Response {
@@ -221,16 +434,48 @@ async fn health_handler(State(state): State<AppState>) -> Response {
         online_humans,
         port: state.port,
     };
-
-    let mut response = Json(payload).into_response();
-    response
-        .headers_mut()
-        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    response
+    json_with_no_store(StatusCode::OK, &payload)
 }
 
-async fn api_not_found() -> StatusCode {
-    StatusCode::NOT_FOUND
+async fn stats_handler(State(state): State<AppState>) -> Response {
+    let payload = state.session.history_stats().await;
+    json_with_no_store(StatusCode::OK, &payload)
+}
+
+async fn preferences_handler(State(state): State<AppState>) -> Response {
+    let payload = state.session.history_preferences().await;
+    json_with_no_store(StatusCode::OK, &payload)
+}
+
+async fn history_export_handler(State(state): State<AppState>) -> Response {
+    let payload = state.session.history_export().await;
+    json_with_no_store(StatusCode::OK, &payload)
+}
+
+async fn history_clear_handler(State(state): State<AppState>, body: Bytes) -> Response {
+    let Ok(req) = serde_json::from_slice::<ClearHistoryRequest>(&body) else {
+        return json_with_no_store(
+            StatusCode::BAD_REQUEST,
+            &serde_json::json!({ "error": "expected JSON body { \"confirm\": true }" }),
+        );
+    };
+    if !req.confirm {
+        return json_with_no_store(
+            StatusCode::BAD_REQUEST,
+            &serde_json::json!({ "error": "confirm must be true" }),
+        );
+    }
+    match state.session.history_clear().await {
+        Ok(resp) => json_with_no_store(StatusCode::OK, &resp),
+        Err(err) => json_with_no_store(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &serde_json::json!({ "error": format!("failed to clear history: {err}") }),
+        ),
+    }
+}
+
+async fn api_not_found() -> Response {
+    StatusCode::NOT_FOUND.into_response()
 }
 
 async fn ws_handler(
@@ -241,17 +486,56 @@ async fn ws_handler(
 ) -> Response {
     let host_is_loopback = compute_host_is_loopback(Some(peer), &headers);
     let runtime = state.session.clone();
-    ws.on_upgrade(move |socket| handle_ws_connection(socket, runtime, host_is_loopback))
+    let heartbeat = state.heartbeat;
+    let ws_tracker = state.ws_tracker.clone();
+    let shutdown_rx = state.shutdown_tx.subscribe();
+    ws.on_upgrade(move |socket| {
+        handle_ws_connection(
+            socket,
+            runtime,
+            host_is_loopback,
+            heartbeat,
+            ws_tracker,
+            shutdown_rx,
+        )
+    })
 }
 
-async fn handle_ws_connection(socket: WebSocket, runtime: TableRuntime, host_is_loopback: bool) {
+async fn handle_ws_connection(
+    socket: WebSocket,
+    runtime: TableRuntime,
+    host_is_loopback: bool,
+    heartbeat: HeartbeatConfig,
+    ws_tracker: WsConnectionTracker,
+    mut shutdown_rx: watch::Receiver<bool>,
+) {
+    let _ws_guard = ws_tracker.enter();
     let conn_id = runtime.allocate_conn_id().await;
     let (tx, mut rx) = mpsc::unbounded_channel::<OutboundSignal>();
     let (mut ws_tx, mut ws_rx) = socket.split();
 
+    let ping_period = heartbeat.ping_interval.max(Duration::from_millis(1));
+    let activity_timeout = heartbeat.activity_timeout.max(Duration::from_millis(1));
+    let mut ping_ticker = tokio::time::interval_at(Instant::now() + ping_period, ping_period);
+    ping_ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let timeout_sleep = tokio::time::sleep_until(Instant::now() + activity_timeout);
+    tokio::pin!(timeout_sleep);
+
     loop {
+        if *shutdown_rx.borrow_and_update() {
+            let _ = ws_tx.send(WsMessage::Close(None)).await;
+            let _ = ws_tx.close().await;
+            break;
+        }
         tokio::select! {
             biased;
+            res = shutdown_rx.changed() => {
+                if res.is_err() || *shutdown_rx.borrow() {
+                    let _ = ws_tx.send(WsMessage::Close(None)).await;
+                    let _ = ws_tx.close().await;
+                    break;
+                }
+            }
             outbound = rx.recv() => {
                 match outbound {
                     Some(OutboundSignal::Message(msg)) => {
@@ -261,8 +545,7 @@ async fn handle_ws_connection(socket: WebSocket, runtime: TableRuntime, host_is_
                     }
                     Some(OutboundSignal::ReplaceAndClose) => {
                         let _ = send_server_message(&mut ws_tx, &ServerMessage::SessionReplaced).await;
-                        let _ = ws_tx.send(WsMessage::Close(None)).await;
-                        let _ = ws_tx.close().await;
+                        close_ws_gracefully(&mut ws_tx).await;
                         break;
                     }
                     None => break,
@@ -274,18 +557,23 @@ async fn handle_ws_connection(socket: WebSocket, runtime: TableRuntime, host_is_
                         let outcome = runtime
                             .handle_raw_text(conn_id, text.as_str(), host_is_loopback, &tx)
                             .await;
+                        if outcome.valid_inbound_message {
+                            timeout_sleep.as_mut().reset(Instant::now() + activity_timeout);
+                        }
                         if outcome.close_socket {
-                            let _ = ws_tx.send(WsMessage::Close(None)).await;
-                            let _ = ws_tx.close().await;
+                            close_ws_gracefully(&mut ws_tx).await;
                             break;
                         }
                     }
                     Some(Ok(WsMessage::Ping(payload))) => {
+                        timeout_sleep.as_mut().reset(Instant::now() + activity_timeout);
                         if ws_tx.send(WsMessage::Pong(payload)).await.is_err() {
                             break;
                         }
                     }
-                    Some(Ok(WsMessage::Pong(_))) => {}
+                    Some(Ok(WsMessage::Pong(_))) => {
+                        timeout_sleep.as_mut().reset(Instant::now() + activity_timeout);
+                    }
                     Some(Ok(WsMessage::Binary(_))) => {
                         let _ = tx.send(OutboundSignal::Message(Box::new(
                             ServerMessage::ErrorNotice {
@@ -296,10 +584,30 @@ async fn handle_ws_connection(socket: WebSocket, runtime: TableRuntime, host_is_
                     Some(Ok(WsMessage::Close(_)) | Err(_)) | None => break,
                 }
             }
+            _ = ping_ticker.tick() => {
+                let ping = ServerMessage::ServerPing {
+                    ts_ms: current_unix_ms(),
+                };
+                if send_server_message(&mut ws_tx, &ping).await.is_err() {
+                    break;
+                }
+            }
+            _ = &mut timeout_sleep => {
+                close_ws_gracefully(&mut ws_tx).await;
+                break;
+            }
         }
     }
 
     runtime.on_disconnect(conn_id).await;
+}
+
+async fn close_ws_gracefully(ws_tx: &mut futures_util::stream::SplitSink<WebSocket, WsMessage>) {
+    let _ = tokio::time::timeout(WS_CLOSE_FLUSH_TIMEOUT, async {
+        let _ = ws_tx.send(WsMessage::Close(None)).await;
+        let _ = ws_tx.close().await;
+    })
+    .await;
 }
 
 async fn send_server_message(
@@ -316,8 +624,7 @@ async fn send_server_message(
 }
 
 fn compute_host_is_loopback(peer: Option<SocketAddr>, headers: &HeaderMap) -> bool {
-    let peer_loopback = peer.is_some_and(|addr| addr.ip().to_canonical().is_loopback());
-    if !peer_loopback {
+    if !is_loopback_peer(peer) {
         return false;
     }
     if let Some(host_val) = headers.get(HOST).and_then(|v| v.to_str().ok()) {
@@ -361,5 +668,128 @@ async fn static_asset_handler(State(state): State<AppState>, uri: Uri) -> Respon
         Ok(Err(StaticAssetError::Io(_))) | Err(_) => {
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+    use std::sync::Arc;
+
+    use axum::extract::{ConnectInfo, State};
+    use axum::http::header::CACHE_CONTROL;
+    use axum::http::{Extensions, StatusCode};
+    use tokio::sync::watch;
+
+    use super::{shutdown_handler, AppState, HeartbeatConfig};
+    use crate::lifecycle::WsConnectionTracker;
+    use crate::session::TableRuntime;
+    use crate::static_assets::NoopStaticAssets;
+
+    fn extensions_with_peer(peer: Option<SocketAddr>) -> Extensions {
+        let mut ext = Extensions::new();
+        if let Some(addr) = peer {
+            ext.insert(ConnectInfo(addr));
+        }
+        ext
+    }
+
+    fn test_state(headless: bool) -> (AppState, watch::Receiver<bool>) {
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let state = AppState {
+            port: 8789,
+            headless,
+            session: TableRuntime::new(8789),
+            static_assets: Arc::new(NoopStaticAssets),
+            heartbeat: HeartbeatConfig::default(),
+            shutdown_tx,
+            ws_tracker: WsConnectionTracker::new(),
+        };
+        (state, shutdown_rx)
+    }
+
+    #[tokio::test]
+    async fn shutdown_handler_allows_loopback_and_rejects_non_loopback_and_headless() {
+        // Non-loopback IPv4 -> 403 + no-store + does not shut down
+        let (state, rx) = test_state(false);
+        let resp = shutdown_handler(
+            extensions_with_peer(Some(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50)),
+                44444,
+            ))),
+            State(state),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            resp.headers()
+                .get(CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok()),
+            Some("no-store")
+        );
+        assert!(!*rx.borrow());
+
+        // Non-loopback IPv4-mapped IPv6 -> 403 + no-store
+        let (state, rx) = test_state(false);
+        let resp = shutdown_handler(
+            extensions_with_peer(Some(SocketAddr::new(
+                IpAddr::V6(Ipv4Addr::new(10, 0, 0, 9).to_ipv6_mapped()),
+                44444,
+            ))),
+            State(state),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            resp.headers()
+                .get(CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok()),
+            Some("no-store")
+        );
+        assert!(!*rx.borrow());
+
+        // Missing ConnectInfo -> 403 + no-store
+        let (state, rx) = test_state(false);
+        let resp = shutdown_handler(extensions_with_peer(None), State(state)).await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert!(!*rx.borrow());
+
+        // Headless mode -> 403 + no-store even for 127.0.0.1
+        let (state, rx) = test_state(true);
+        let resp = shutdown_handler(
+            extensions_with_peer(Some(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                44444,
+            ))),
+            State(state),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            resp.headers()
+                .get(CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok()),
+            Some("no-store")
+        );
+        assert!(!*rx.borrow());
+
+        // IPv6 loopback ::1 -> 200 + no-store + shutdown triggered
+        let (state, rx) = test_state(false);
+        let resp = shutdown_handler(
+            extensions_with_peer(Some(SocketAddr::new(
+                IpAddr::V6(Ipv6Addr::LOCALHOST),
+                44444,
+            ))),
+            State(state),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get(CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok()),
+            Some("no-store")
+        );
+        assert!(*rx.borrow());
     }
 }

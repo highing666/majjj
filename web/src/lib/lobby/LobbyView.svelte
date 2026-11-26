@@ -1,5 +1,6 @@
 <script lang="ts">
   import QRCode from "qrcode";
+  import { createHistoryClient } from "../history/historyClient";
   import type { LobbyConfig } from "../protocol/generated/LobbyConfig";
   import type { Seat } from "../protocol/generated/Seat";
   import type { SeatInfo } from "../protocol/generated/SeatInfo";
@@ -17,6 +18,8 @@
     onUpdateConfig: (config: LobbyConfig) => void;
     onStartMatch: () => void;
     onOpenSettings?: () => void;
+    onOpenHistory?: () => void;
+    onTakeOverSeat?: (seatInfo: SeatInfo) => void;
   }
 
   let {
@@ -29,6 +32,8 @@
     onUpdateConfig,
     onStartMatch,
     onOpenSettings,
+    onOpenHistory,
+    onTakeOverSeat,
   }: Props = $props();
 
   let lastAppliedNickname = $state("");
@@ -39,6 +44,26 @@
   let qrDataUrl = $state<string | null>(null);
   let qrError = $state<string | null>(null);
   let copiedLabel = $state<string | null>(null);
+  let recentNicknames = $state<string[]>([]);
+
+  $effect(() => {
+    let cancelled = false;
+    createHistoryClient()
+      .fetchPreferences()
+      .then((prefs) => {
+        if (!cancelled) {
+          recentNicknames = prefs.recent_nicknames.filter(
+            (n) => n.trim().length > 0,
+          );
+        }
+      })
+      .catch(() => {
+        // Non-blocking: ignore unavailable preferences endpoint in offline/mocked contexts.
+      });
+    return () => {
+      cancelled = true;
+    };
+  });
 
   $effect(() => {
     if (!nicknameDirty) {
@@ -119,12 +144,26 @@
       lastAppliedNickname = trimmed;
       onUpdateNickname(trimmed);
     }
+    if (trimmed.length > 0) {
+      recentNicknames = [
+        trimmed,
+        ...recentNicknames.filter((item) => item !== trimmed),
+      ].slice(0, 12);
+    }
     if (showNotice) {
       nicknameSavedNotice = true;
       setTimeout(() => {
         nicknameSavedNotice = false;
       }, 1800);
     }
+  }
+
+  function selectRecentNickname(name: string): void {
+    if (disabled) {
+      return;
+    }
+    nicknameDraft = name;
+    applyNickname(true);
   }
 
   function handleNicknameBlur(): void {
@@ -178,6 +217,15 @@
           <span class="tag">
             已入座 {humanCount} 人 · 空位将补 {aiFillCount} 名 AI
           </span>
+          {#if onOpenHistory}
+            <button
+              class="btn btn-subtle settings-trigger"
+              type="button"
+              onclick={onOpenHistory}
+            >
+              战绩
+            </button>
+          {/if}
           {#if onOpenSettings}
             <button
               class="btn btn-subtle settings-trigger"
@@ -198,6 +246,7 @@
             class="text-input"
             type="text"
             maxlength="24"
+            list="recent-nicknames-list"
             placeholder="输入昵称（留空则按座次自动命名）"
             value={nicknameDraft}
             oninput={(e) => {
@@ -209,6 +258,27 @@
           />
           <button class="btn" type="submit" {disabled}>保存昵称</button>
         </div>
+        {#if recentNicknames.length > 0}
+          <datalist id="recent-nicknames-list">
+            {#each recentNicknames as name (name)}
+              <option value={name}></option>
+            {/each}
+          </datalist>
+          <div class="recent-nicknames-row" aria-label="常用昵称">
+            <span class="recent-label">常用昵称：</span>
+            {#each recentNicknames as name (name)}
+              <button
+                class="nickname-chip"
+                class:nickname-chip-active={nicknameDraft.trim() === name}
+                type="button"
+                {disabled}
+                onclick={() => selectRecentNickname(name)}
+              >
+                {name}
+              </button>
+            {/each}
+          </div>
+        {/if}
         {#if nicknameSavedNotice}
           <p class="hint-ok">昵称已保存至本机浏览器</p>
         {/if}
@@ -260,6 +330,15 @@
                   {disabled}
                 >
                   {isSeated ? "换到此座" : "入座"}
+                </button>
+              {:else if !isSeated && seatInfo.kind === "Human" && !seatInfo.connected && onTakeOverSeat}
+                <button
+                  class="btn btn-primary"
+                  type="button"
+                  onclick={() => onTakeOverSeat(seatInfo)}
+                  {disabled}
+                >
+                  接管离线座位
                 </button>
               {:else}
                 <button class="btn" type="button" disabled>已占用</button>
@@ -465,6 +544,35 @@
     margin: 0;
     font-size: 12px;
     color: var(--jade);
+  }
+
+  .recent-nicknames-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .recent-label {
+    font-size: 12px;
+    color: var(--ink-muted);
+  }
+
+  .nickname-chip {
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 3px 10px;
+    font-size: 12px;
+    background: var(--bg-muted);
+    color: var(--ink);
+    cursor: pointer;
+  }
+
+  .nickname-chip-active {
+    border-color: var(--accent);
+    background: #fff3e8;
+    color: var(--accent);
+    font-weight: 600;
   }
 
   .seats-grid {

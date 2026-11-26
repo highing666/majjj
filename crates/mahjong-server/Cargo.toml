@@ -14,6 +14,7 @@ mahjong-core = { path = "../mahjong-core" }
 rand_chacha.workspace = true
 rand_core.workspace = true
 rayon.workspace = true
+rust-embed.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
