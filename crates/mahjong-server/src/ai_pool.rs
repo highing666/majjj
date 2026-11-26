@@ -41,6 +41,7 @@ pub(crate) struct PendingAiJob {
     pub match_id: u64,
     pub seq: u64,
     pub seat: Seat,
+    pub seat_generation: u64,
     pub view: PlayerView,
     pub ctx: DecisionContext,
     pub step_seed: u64,
@@ -92,6 +93,7 @@ pub(crate) fn spawn_scheduled_work(
                 match_id,
                 seq,
                 seat,
+                seat_generation,
                 view,
                 ctx,
                 step_seed,
@@ -107,13 +109,21 @@ pub(crate) fn spawn_scheduled_work(
 
             let Ok(action) = rx.await else {
                 let mut session = runtime.lock().await;
-                session.cancel_ai_job(match_id, seq, seat);
+                session.cancel_ai_job(match_id, seq, seat, seat_generation);
                 return;
             };
 
             let planned_delay = {
                 let mut session = runtime.lock().await;
-                session.plan_ai_action_delay(match_id, seq, seat, action, trigger, step_seed)
+                session.plan_ai_action_delay(
+                    match_id,
+                    seq,
+                    seat,
+                    seat_generation,
+                    action,
+                    trigger,
+                    step_seed,
+                )
             };
             let Some(target_delay) = planned_delay else {
                 return;
@@ -126,7 +136,7 @@ pub(crate) fn spawn_scheduled_work(
 
             let next_work = {
                 let mut session = runtime.lock().await;
-                session.complete_ai_job(match_id, seq, seat, action)
+                session.complete_ai_job(match_id, seq, seat, seat_generation, action)
             };
             if !next_work.is_empty() {
                 spawn_scheduled_work(runtime, ai_pool_for_next, next_work);

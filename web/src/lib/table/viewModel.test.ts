@@ -596,8 +596,35 @@ describe("table viewModel helpers", () => {
       isDealer: true,
       isActive: true,
       isOffline: true,
+      isAiAssisted: false,
       name: "小红",
       scoreText: "+8",
     });
+
+    const assistedModel = buildSeatBadgeModel(
+      "South",
+      {
+        seat: "South",
+        score: 8,
+        hand_count: 13,
+        river: [],
+        melds: [],
+        last_draw_or_meld_seq: 0,
+      },
+      {
+        seat: "South",
+        kind: "Human",
+        nickname: "小红",
+        connected: false,
+        ai_assisted: true,
+        ai_difficulty: "Strong",
+        ai_style: "Balanced",
+        voice_pack_id: null,
+      },
+      "East",
+      "South",
+      "South",
+    );
+    expect(assistedModel.isAiAssisted).toBe(true);
   });
 });

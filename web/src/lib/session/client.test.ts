@@ -672,4 +672,36 @@ describe("TableClient", () => {
 
     client.dispose();
   });
+
+  it("sends ToggleAiAssist and TakeOverSeat wire messages when connected", () => {
+    const sockets: MockWebSocket[] = [];
+    const client = createTableClient({
+      wsUrl: "ws://localhost:8789/ws",
+      storage: createMemoryStorage(),
+      createWebSocket: (url) => {
+        const ws = new MockWebSocket(url);
+        sockets.push(ws);
+        return ws;
+      },
+      windowEvents: null,
+    });
+
+    expect(client.toggleAiAssist("South", true)).toBe(false);
+    expect(client.takeOverSeat("West", true)).toBe(false);
+
+    client.connect();
+    sockets[0].emitOpen();
+
+    expect(client.toggleAiAssist("South", true)).toBe(true);
+    expect(client.toggleAiAssist("South", false)).toBe(true);
+    expect(client.takeOverSeat("West", true)).toBe(true);
+
+    expect(sockets[0].parsedSent().slice(1)).toEqual([
+      { ToggleAiAssist: { seat: "South", enabled: true } },
+      { ToggleAiAssist: { seat: "South", enabled: false } },
+      { TakeOverSeat: { seat: "West", confirm: true } },
+    ]);
+
+    client.dispose();
+  });
 });

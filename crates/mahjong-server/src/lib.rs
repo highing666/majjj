@@ -7,6 +7,7 @@ pub mod ai_pool;
 pub mod lan;
 pub mod pacing;
 pub mod protocol;
+mod seat_control;
 pub mod server;
 pub mod session;
 pub mod static_assets;

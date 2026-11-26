@@ -17,6 +17,7 @@
     onUpdateConfig: (config: LobbyConfig) => void;
     onStartMatch: () => void;
     onOpenSettings?: () => void;
+    onTakeOverSeat?: (seatInfo: SeatInfo) => void;
   }
 
   let {
@@ -29,6 +30,7 @@
     onUpdateConfig,
     onStartMatch,
     onOpenSettings,
+    onTakeOverSeat,
   }: Props = $props();
 
   let lastAppliedNickname = $state("");
@@ -260,6 +262,15 @@
                   {disabled}
                 >
                   {isSeated ? "换到此座" : "入座"}
+                </button>
+              {:else if !isSeated && seatInfo.kind === "Human" && !seatInfo.connected && onTakeOverSeat}
+                <button
+                  class="btn btn-primary"
+                  type="button"
+                  onclick={() => onTakeOverSeat(seatInfo)}
+                  {disabled}
+                >
+                  接管离线座位
                 </button>
               {:else}
                 <button class="btn" type="button" disabled>已占用</button>
