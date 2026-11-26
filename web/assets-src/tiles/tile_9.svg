@@ -1,24 +1,9 @@
 <svg viewBox="0 0 100 136" xmlns="http://www.w3.org/2000/svg">
-  <rect x="2.5" y="5.5" width="95" height="128" rx="11" fill="#1E5C5E"/>
-  <rect x="2.5" y="2.5" width="95" height="126" rx="10.5" fill="#F5EEDF" stroke="#181A20" stroke-width="3"/>
-  <rect x="4" y="3" width="92" height="6" rx="3" fill="#FFFDF5" opacity="0.72"/>
-  <rect x="4" y="119.5" width="92" height="9" rx="3" fill="#E4D8BE"/>
-  <g>
-    <path d="M18 104 Q50 96 82 104" fill="none" stroke="#157F56" stroke-width="6" stroke-linecap="round"/>
-    <path d="M18 104 Q50 96 82 104" fill="none" stroke="#181A20" stroke-width="2" stroke-linecap="round"/>
-    <path d="M40 82 L22 112 L34 112 L46 86 Z" fill="#157F56" stroke="#181A20" stroke-width="2" stroke-linejoin="round"/>
-    <path d="M48 84 L42 116 L54 116 L55 84 Z" fill="#C7352B" stroke="#181A20" stroke-width="2" stroke-linejoin="round"/>
-    <path d="M56 82 L64 112 L75 109 L61 80 Z" fill="#1C5296" stroke="#181A20" stroke-width="2" stroke-linejoin="round"/>
-    <ellipse cx="51" cy="65" rx="18" ry="22" fill="#157F56" stroke="#181A20" stroke-width="2.4"/>
-    <ellipse cx="53" cy="68" rx="10.5" ry="13" fill="#F5EEDF" stroke="#181A20" stroke-width="1.6"/>
-    <path d="M35 56 C27 65 30 80 44 80 C42 69 42 62 35 56 Z" fill="#1C5296" stroke="#181A20" stroke-width="2" stroke-linejoin="round"/>
-    <path d="M67 56 C75 65 72 80 58 80 C60 69 60 62 67 56 Z" fill="#1C5296" stroke="#181A20" stroke-width="2" stroke-linejoin="round"/>
-    <circle cx="52" cy="38" r="13" fill="#157F56" stroke="#181A20" stroke-width="2.3"/>
-    <path d="M46 26 C44 15 53 14 53 25 C57 16 65 19 58 28 Z" fill="#C7352B" stroke="#181A20" stroke-width="1.9" stroke-linejoin="round"/>
-    <path d="M62 37 L76 40 L62 44 Z" fill="#C48A28" stroke="#181A20" stroke-width="1.8" stroke-linejoin="round"/>
-    <circle cx="56" cy="37" r="3" fill="#F5EEDF" stroke="#181A20" stroke-width="1.4"/>
-    <circle cx="56.8" cy="37" r="1.4" fill="#181A20"/>
-    <line x1="45" y1="86" x2="43" y2="100" stroke="#181A20" stroke-width="2.4" stroke-linecap="round"/>
-    <line x1="57" y1="86" x2="59" y2="100" stroke="#181A20" stroke-width="2.4" stroke-linecap="round"/>
+  <rect x="2.5" y="1.5" width="95" height="133" rx="11" fill="#186258" stroke="#091D1B" stroke-width="1.8"/>
+  <rect x="2.5" y="7.5" width="95" height="125" rx="10.5" fill="#F6EFE0" stroke="#1C1917" stroke-width="2.6"/>
+  <rect x="4" y="8.3" width="92" height="5.5" rx="3" fill="#FFFDF8" opacity="0.88"/>
+  <rect x="4" y="124.5" width="92" height="7.5" rx="3" fill="#E2D4B7"/>
+  <g transform="translate(0 8.50) scale(1 0.9308)">
+    <image href="../illustrations/art-a-1sou.png" x="5" y="10" width="90" height="110" preserveAspectRatio="xMidYMid meet"/>
   </g>
 </svg>

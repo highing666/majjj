@@ -54,13 +54,55 @@ describe("@2x vector-export tile atlas and felt textures", () => {
     expect(threeX).toEqual([]);
   });
 
-  it("ships deterministic vector SVG sources in web/assets-src for all 34 tiles and impasto bodies", () => {
+  it("ships deterministic vector SVG sources and offline illustrations in web/assets-src for all 34 standing/laid tiles and bodies", () => {
+    const illustrationsDir = path.join(assetsSrcDir, "illustrations");
+    const sou1ArtPath = path.join(illustrationsDir, "art-a-1sou.png");
+    const pin1ArtPath = path.join(illustrationsDir, "art-a-1pin.png");
+    expect(fs.existsSync(sou1ArtPath)).toBe(true);
+    expect(fs.existsSync(pin1ArtPath)).toBe(true);
+    expect(readPngDimensions(sou1ArtPath)).toEqual({ width: 896, height: 1200 });
+    expect(readPngDimensions(pin1ArtPath)).toEqual({ width: 896, height: 1200 });
+
     for (let t = 0; t < 34; t += 1) {
-      const svgPath = path.join(assetsSrcDir, "tiles", `tile_${t}.svg`);
-      expect(fs.existsSync(svgPath)).toBe(true);
-      const svg = fs.readFileSync(svgPath, "utf8");
-      expect(svg).toContain("<svg");
-      expect(svg).toContain('viewBox="0 0 100 136"');
+      for (const prefix of ["tile", "tile_laid"] as const) {
+        const svgPath = path.join(assetsSrcDir, "tiles", `${prefix}_${t}.svg`);
+        expect(fs.existsSync(svgPath)).toBe(true);
+        const svg = fs.readFileSync(svgPath, "utf8");
+        expect(svg).toContain("<svg");
+        expect(svg).toContain('viewBox="0 0 100 136"');
+
+        // Man (0..8) and Honors (27..32): Kaiti-first font, zero hollow outline strokes
+        if (t < 9 || (t >= 27 && t <= 32)) {
+          expect(svg).toContain("Kaiti SC");
+          expect(svg).not.toMatch(/<text[^>]*\bstroke-width=/i);
+        }
+
+        // Bamboo (9..17): zero blue anywhere
+        if (t >= 9 && t <= 17) {
+          expect(svg.toUpperCase()).not.toContain("#1B4E8D");
+          expect(svg.toUpperCase()).not.toContain("#1C5296");
+          if (t === 9) {
+            expect(svg).toContain("art-a-1sou.png");
+          }
+        }
+
+        // Dots (18..26): 1-pin composites art-a-1pin.png, 2..9 use 5-petal plum blossom ellipses without gear radial lines
+        if (t >= 18 && t <= 26) {
+          if (t === 18) {
+            expect(svg).toContain("art-a-1pin.png");
+          } else {
+            expect(svg).toContain("<ellipse");
+            expect(svg).not.toContain("<line");
+          }
+        }
+
+        // White dragon (33): plain ivory face with faint inner bevel only, no blue dashed frame
+        if (t === 33) {
+          expect(svg).not.toContain("stroke-dasharray");
+          expect(svg.toUpperCase()).not.toContain("#1B4E8D");
+          expect(svg.toUpperCase()).not.toContain("#1C5296");
+        }
+      }
     }
     for (const body of ["standing", "laid", "back", "shadow", "laid_back"]) {
       expect(
@@ -69,7 +111,7 @@ describe("@2x vector-export tile atlas and felt textures", () => {
     }
   });
 
-  it("produces a single @2x spritesheet <= 2048x2048 with all 34 tiles and impasto tile bodies", () => {
+  it("produces a single @2x spritesheet <= 2048x2048 with all 34 standing tiles, 34 laid tiles, and 5 tile bodies", () => {
     const pngPath = path.join(atlasDir, "tiles@2x.png");
     const jsonPath = path.join(atlasDir, "tiles@2x.json");
 
@@ -104,15 +146,17 @@ describe("@2x vector-export tile atlas and felt textures", () => {
 
     const seenRects: Array<{ x: number; y: number; w: number; h: number }> = [];
     for (let t = 0; t < ATLAS_TILE_FRAME_COUNT; t += 1) {
-      const entry = metaJson.frames[`tile_${t}`];
-      expect(entry).toBeDefined();
-      expect(entry.frame.w).toBeGreaterThanOrEqual(100);
-      expect(entry.frame.h).toBeGreaterThanOrEqual(136);
-      expect(entry.frame.x).toBeGreaterThanOrEqual(0);
-      expect(entry.frame.y).toBeGreaterThanOrEqual(0);
-      expect(entry.frame.x + entry.frame.w).toBeLessThanOrEqual(pngDims.width);
-      expect(entry.frame.y + entry.frame.h).toBeLessThanOrEqual(pngDims.height);
-      seenRects.push(entry.frame);
+      for (const prefix of ["tile", "tile_laid"] as const) {
+        const entry = metaJson.frames[`${prefix}_${t}`];
+        expect(entry).toBeDefined();
+        expect(entry.frame.w).toBeGreaterThanOrEqual(100);
+        expect(entry.frame.h).toBeGreaterThanOrEqual(136);
+        expect(entry.frame.x).toBeGreaterThanOrEqual(0);
+        expect(entry.frame.y).toBeGreaterThanOrEqual(0);
+        expect(entry.frame.x + entry.frame.w).toBeLessThanOrEqual(pngDims.width);
+        expect(entry.frame.y + entry.frame.h).toBeLessThanOrEqual(pngDims.height);
+        seenRects.push(entry.frame);
+      }
     }
 
     for (const bodyKey of ATLAS_REQUIRED_BODY_FRAMES) {
@@ -122,6 +166,8 @@ describe("@2x vector-export tile atlas and felt textures", () => {
       expect(entry.frame.y + entry.frame.h).toBeLessThanOrEqual(pngDims.height);
       seenRects.push(entry.frame);
     }
+
+    expect(seenRects).toHaveLength(73);
 
     // Verify no two spritesheet frames overlap
     for (let i = 0; i < seenRects.length; i += 1) {
@@ -160,8 +206,15 @@ describe("@2x vector-export tile atlas and felt textures", () => {
       }
     });
 
-    it("falls back cleanly to deterministic canvas atlas and destroys all textures", async () => {
+    it("falls back cleanly to deterministic Style A dual-body canvas atlas and destroys all textures", async () => {
       const noop = () => {};
+      const recordedFonts: string[] = [];
+      const recordedStrokes: string[] = [];
+      const recordedFills: string[] = [];
+      let ellipseCount = 0;
+      let strokeTextCount = 0;
+      let lineDashCount = 0;
+
       const fakeCtx = {
         save: noop,
         restore: noop,
@@ -170,16 +223,36 @@ describe("@2x vector-export tile atlas and felt textures", () => {
         roundRect: noop,
         rect: noop,
         arc: noop,
+        ellipse: () => {
+          ellipseCount += 1;
+        },
         moveTo: noop,
         lineTo: noop,
-        fill: noop,
-        stroke: noop,
+        quadraticCurveTo: noop,
+        translate: noop,
+        rotate: noop,
+        fill: () => {
+          recordedFills.push(String(fakeCtx.fillStyle));
+        },
+        stroke: () => {
+          recordedStrokes.push(String(fakeCtx.strokeStyle));
+        },
         clip: noop,
         fillRect: noop,
-        fillText: noop,
+        fillText: () => {
+          recordedFonts.push(String(fakeCtx.font));
+        },
+        strokeText: () => {
+          strokeTextCount += 1;
+        },
+        setLineDash: () => {
+          lineDashCount += 1;
+        },
         fillStyle: "",
         strokeStyle: "",
         lineWidth: 1,
+        globalAlpha: 1,
+        lineCap: "butt",
         font: "",
         textAlign: "center",
         textBaseline: "middle",
@@ -193,17 +266,42 @@ describe("@2x vector-export tile atlas and felt textures", () => {
       };
 
       const atlas = await loadTileAtlas();
+      expect(atlas.width).toBe(1440);
+      expect(atlas.height).toBe(1536);
       expect(atlas.width).toBeLessThanOrEqual(2048);
       expect(atlas.height).toBeLessThanOrEqual(2048);
       expect(atlas.backTexture).toBeDefined();
+      expect(atlas.laidBackTexture).toBeDefined();
+      expect(atlas.laidBackTexture).not.toBe(atlas.backTexture);
       expect(atlas.shadowTexture).toBeDefined();
       expect(atlas.feltImpastoTexture).toBeDefined();
       expect(atlas.feltBrushTexture).toBeDefined();
 
-      const seen = new Set(
-        Array.from({ length: 34 }, (_, t) => atlas.getTileTexture(t)),
+      const standingSeen = new Set(
+        Array.from({ length: 34 }, (_, t) => atlas.getTileTexture(t, "standing")),
       );
-      expect(seen.size).toBe(34);
+      const laidSeen = new Set(
+        Array.from({ length: 34 }, (_, t) => atlas.getTileTexture(t, "laid")),
+      );
+      expect(standingSeen.size).toBe(34);
+      expect(laidSeen.size).toBe(34);
+      for (let t = 0; t < 34; t += 1) {
+        expect(atlas.getTileTexture(t)).toBe(atlas.getTileTexture(t, "standing"));
+        expect(atlas.getTileTexture(t, "laid")).not.toBe(
+          atlas.getTileTexture(t, "standing"),
+        );
+      }
+
+      // Style A fallback invariants: Kaiti-first font, zero hollow text strokes,
+      // plum-blossom petals (ellipses), zero dashed white dragon frame, zero legacy cobalt #1C5296.
+      expect(recordedFonts.length).toBeGreaterThan(0);
+      expect(recordedFonts.every((f) => f.includes("Kaiti SC"))).toBe(true);
+      expect(strokeTextCount).toBe(0);
+      expect(lineDashCount).toBe(0);
+      expect(ellipseCount).toBeGreaterThan(0);
+      expect(recordedFills.map((c) => c.toUpperCase())).not.toContain("#1C5296");
+      expect(recordedStrokes.map((c) => c.toUpperCase())).not.toContain("#1C5296");
+
       expect(() => atlas.destroy()).not.toThrow();
     });
   });
