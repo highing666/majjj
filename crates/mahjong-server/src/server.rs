@@ -3,6 +3,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::extract::ws::{Message as WsMessage, WebSocket};
 use axum::extract::{ConnectInfo, State, WebSocketUpgrade};
@@ -16,6 +17,7 @@ use thiserror::Error;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
+use tokio::time::{Instant, MissedTickBehavior};
 
 use crate::ai_pool::default_ai_threads;
 use crate::lan::read_local_hostname;
@@ -24,6 +26,28 @@ use crate::session::{OutboundSignal, TableOptions, TableRuntime};
 use crate::static_assets::{
     DiskStaticAssets, NoopStaticAssets, StaticAssetError, StaticAssetSource,
 };
+
+const DEFAULT_PING_INTERVAL: Duration = Duration::from_secs(10);
+const DEFAULT_ACTIVITY_TIMEOUT: Duration = Duration::from_secs(25);
+const WS_CLOSE_FLUSH_TIMEOUT: Duration = Duration::from_millis(200);
+
+/// WebSocket application-layer heartbeat timings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeartbeatConfig {
+    /// Interval between server-initiated [`ServerMessage::ServerPing`] frames (default `10s`).
+    pub ping_interval: Duration,
+    /// Duration without valid inbound activity before closing the connection (default `25s`).
+    pub activity_timeout: Duration,
+}
+
+impl Default for HeartbeatConfig {
+    fn default() -> Self {
+        Self {
+            ping_interval: DEFAULT_PING_INTERVAL,
+            activity_timeout: DEFAULT_ACTIVITY_TIMEOUT,
+        }
+    }
+}
 
 /// Configuration for starting `mahjong-server`.
 #[derive(Debug, Clone)]
@@ -36,6 +60,8 @@ pub struct ServerConfig {
     pub static_dir: Option<PathBuf>,
     /// Worker thread count for the dedicated Rayon AI thinking pool (defaults to [`default_ai_threads`]).
     pub ai_threads: usize,
+    /// WebSocket application-layer ping interval and inbound activity timeout.
+    pub heartbeat: HeartbeatConfig,
 }
 
 impl Default for ServerConfig {
@@ -45,6 +71,7 @@ impl Default for ServerConfig {
             port: 8789,
             static_dir: None,
             ai_threads: default_ai_threads(),
+            heartbeat: HeartbeatConfig::default(),
         }
     }
 }
@@ -110,9 +137,17 @@ struct AppState {
     port: u16,
     session: TableRuntime,
     static_assets: Arc<dyn StaticAssetSource>,
+    heartbeat: HeartbeatConfig,
 }
 
 impl ServerConfig {
+    /// Overrides the WebSocket heartbeat send interval and inbound activity timeout.
+    #[must_use]
+    pub fn with_heartbeat(mut self, heartbeat: HeartbeatConfig) -> Self {
+        self.heartbeat = heartbeat;
+        self
+    }
+
     /// Binds the TCP socket immediately (failing on port conflicts without fallback) and
     /// spawns the Axum HTTP/WebSocket server on the current Tokio runtime.
     ///
@@ -179,6 +214,7 @@ impl ServerConfig {
             port: local_addr.port(),
             session,
             static_assets,
+            heartbeat: self.heartbeat,
         };
         let router = build_router(state);
 
@@ -241,13 +277,26 @@ async fn ws_handler(
 ) -> Response {
     let host_is_loopback = compute_host_is_loopback(Some(peer), &headers);
     let runtime = state.session.clone();
-    ws.on_upgrade(move |socket| handle_ws_connection(socket, runtime, host_is_loopback))
+    let heartbeat = state.heartbeat;
+    ws.on_upgrade(move |socket| handle_ws_connection(socket, runtime, host_is_loopback, heartbeat))
 }
 
-async fn handle_ws_connection(socket: WebSocket, runtime: TableRuntime, host_is_loopback: bool) {
+async fn handle_ws_connection(
+    socket: WebSocket,
+    runtime: TableRuntime,
+    host_is_loopback: bool,
+    heartbeat: HeartbeatConfig,
+) {
     let conn_id = runtime.allocate_conn_id().await;
     let (tx, mut rx) = mpsc::unbounded_channel::<OutboundSignal>();
     let (mut ws_tx, mut ws_rx) = socket.split();
+
+    let ping_period = heartbeat.ping_interval.max(Duration::from_millis(1));
+    let activity_timeout = heartbeat.activity_timeout.max(Duration::from_millis(1));
+    let mut ping_ticker = tokio::time::interval_at(Instant::now() + ping_period, ping_period);
+    ping_ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let timeout_sleep = tokio::time::sleep_until(Instant::now() + activity_timeout);
+    tokio::pin!(timeout_sleep);
 
     loop {
         tokio::select! {
@@ -261,8 +310,7 @@ async fn handle_ws_connection(socket: WebSocket, runtime: TableRuntime, host_is_
                     }
                     Some(OutboundSignal::ReplaceAndClose) => {
                         let _ = send_server_message(&mut ws_tx, &ServerMessage::SessionReplaced).await;
-                        let _ = ws_tx.send(WsMessage::Close(None)).await;
-                        let _ = ws_tx.close().await;
+                        close_ws_gracefully(&mut ws_tx).await;
                         break;
                     }
                     None => break,
@@ -274,18 +322,23 @@ async fn handle_ws_connection(socket: WebSocket, runtime: TableRuntime, host_is_
                         let outcome = runtime
                             .handle_raw_text(conn_id, text.as_str(), host_is_loopback, &tx)
                             .await;
+                        if outcome.valid_inbound_message {
+                            timeout_sleep.as_mut().reset(Instant::now() + activity_timeout);
+                        }
                         if outcome.close_socket {
-                            let _ = ws_tx.send(WsMessage::Close(None)).await;
-                            let _ = ws_tx.close().await;
+                            close_ws_gracefully(&mut ws_tx).await;
                             break;
                         }
                     }
                     Some(Ok(WsMessage::Ping(payload))) => {
+                        timeout_sleep.as_mut().reset(Instant::now() + activity_timeout);
                         if ws_tx.send(WsMessage::Pong(payload)).await.is_err() {
                             break;
                         }
                     }
-                    Some(Ok(WsMessage::Pong(_))) => {}
+                    Some(Ok(WsMessage::Pong(_))) => {
+                        timeout_sleep.as_mut().reset(Instant::now() + activity_timeout);
+                    }
                     Some(Ok(WsMessage::Binary(_))) => {
                         let _ = tx.send(OutboundSignal::Message(Box::new(
                             ServerMessage::ErrorNotice {
@@ -296,10 +349,38 @@ async fn handle_ws_connection(socket: WebSocket, runtime: TableRuntime, host_is_
                     Some(Ok(WsMessage::Close(_)) | Err(_)) | None => break,
                 }
             }
+            _ = ping_ticker.tick() => {
+                let ping = ServerMessage::ServerPing {
+                    ts_ms: current_unix_ms(),
+                };
+                if send_server_message(&mut ws_tx, &ping).await.is_err() {
+                    break;
+                }
+            }
+            _ = &mut timeout_sleep => {
+                close_ws_gracefully(&mut ws_tx).await;
+                break;
+            }
         }
     }
 
     runtime.on_disconnect(conn_id).await;
+}
+
+async fn close_ws_gracefully(ws_tx: &mut futures_util::stream::SplitSink<WebSocket, WsMessage>) {
+    let _ = tokio::time::timeout(WS_CLOSE_FLUSH_TIMEOUT, async {
+        let _ = ws_tx.send(WsMessage::Close(None)).await;
+        let _ = ws_tx.close().await;
+    })
+    .await;
+}
+
+fn current_unix_ms() -> u64 {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    u64::try_from(millis).unwrap_or(u64::MAX)
 }
 
 async fn send_server_message(

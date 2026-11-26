@@ -13,5 +13,5 @@ pub mod static_assets;
 
 pub use ai_pool::default_ai_threads;
 pub use pacing::PacingMode;
-pub use server::{ServerConfig, ServerError, ServerHandle};
+pub use server::{HeartbeatConfig, ServerConfig, ServerError, ServerHandle};
 pub use session::{BoxedWallProvider, TableOptions, WallProviderFactory};

@@ -168,6 +168,8 @@ pub enum OutboundSignal {
 pub struct HandleOutcome {
     /// Whether the WebSocket loop should close the connection after processing this message.
     pub close_socket: bool,
+    /// Whether the inbound text frame parsed as a valid [`ClientMessage`] (refreshes liveness).
+    pub valid_inbound_message: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1554,12 +1556,18 @@ impl TableRuntime {
 
         if let ClientMessage::ClientPing { ts_ms } = msg {
             TableSession::send_to(tx, ServerMessage::ServerPong { ts_ms });
-            return HandleOutcome::default();
+            return HandleOutcome {
+                close_socket: false,
+                valid_inbound_message: true,
+            };
         }
 
         let (outcome, scheduled_work) = {
             let mut session = self.inner.lock().await;
-            let mut outcome = HandleOutcome::default();
+            let mut outcome = HandleOutcome {
+                close_socket: false,
+                valid_inbound_message: true,
+            };
             match msg {
                 ClientMessage::Hello {
                     client_id,
@@ -1581,13 +1589,16 @@ impl TableRuntime {
                 }
                 ClientMessage::ClientLeaving => {
                     session.on_disconnect(conn_id);
-                    outcome = HandleOutcome { close_socket: true };
+                    outcome = HandleOutcome {
+                        close_socket: true,
+                        valid_inbound_message: true,
+                    };
                 }
                 ClientMessage::ClientPing { .. } => unreachable!("handled above"),
                 other => {
                     let Some(conn) = session.connections.get(&conn_id).cloned() else {
                         TableSession::send_error(tx, "must send Hello before other messages");
-                        return HandleOutcome::default();
+                        return outcome;
                     };
 
                     match other {

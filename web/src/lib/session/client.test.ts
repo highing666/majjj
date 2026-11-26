@@ -7,8 +7,47 @@ import type { SeatInfo } from "../protocol/generated/SeatInfo";
 import type { ServerMessage } from "../protocol/generated/ServerMessage";
 import type { TableSnapshot } from "../protocol/generated/TableSnapshot";
 import { ALL_SEATS } from "../protocol/seats";
-import { createTableClient, type WebSocketLike } from "./client";
+import {
+  createTableClient,
+  type DocumentEventsLike,
+  type WebSocketLike,
+  type WindowEventsLike,
+} from "./client";
 import { createMemoryStorage } from "./storage";
+
+class MockWindowEvents implements WindowEventsLike {
+  private readonly listeners = new Map<string, Set<(ev: unknown) => void>>();
+
+  addEventListener(type: string, listener: (ev: unknown) => void): void {
+    let set = this.listeners.get(type);
+    if (!set) {
+      set = new Set();
+      this.listeners.set(type, set);
+    }
+    set.add(listener);
+  }
+
+  removeEventListener(type: string, listener: (ev: unknown) => void): void {
+    this.listeners.get(type)?.delete(listener);
+  }
+
+  emit(type: string, ev: unknown = {}): void {
+    for (const listener of [...(this.listeners.get(type) ?? [])]) {
+      listener(ev);
+    }
+  }
+
+  listenerCount(type: string): number {
+    return this.listeners.get(type)?.size ?? 0;
+  }
+}
+
+class MockDocumentEvents
+  extends MockWindowEvents
+  implements DocumentEventsLike
+{
+  visibilityState = "visible";
+}
 
 class MockWebSocket implements WebSocketLike {
   readyState = 0; // CONNECTING
@@ -671,5 +710,192 @@ describe("TableClient", () => {
     expect(received).toHaveLength(2);
 
     client.dispose();
+  });
+
+  it("probes OPEN socket on visibilitychange=visible and force-closes zombie socket after 2000ms into exponential backoff", () => {
+    const sockets: MockWebSocket[] = [];
+    const windowEvents = new MockWindowEvents();
+    const documentEvents = new MockDocumentEvents();
+    documentEvents.visibilityState = "hidden";
+
+    const client = createTableClient({
+      wsUrl: "ws://127.0.0.1:8789/ws",
+      storage: createMemoryStorage(),
+      createWebSocket: (url) => {
+        const ws = new MockWebSocket(url);
+        sockets.push(ws);
+        return ws;
+      },
+      windowEvents,
+      documentEvents,
+    });
+
+    client.connect();
+    sockets[0].emitOpen();
+    sockets[0].emitServerMessage({ TableSnapshot: makeSnapshot({ seq: 1 }) });
+
+    // Hidden visibilitychange must NOT probe.
+    documentEvents.emit("visibilitychange");
+    expect(
+      sockets[0].parsedSent().filter((m) => typeof m === "object" && "ClientPing" in m),
+    ).toHaveLength(0);
+    vi.advanceTimersByTime(2500);
+    expect(sockets[0].closeCalls).toBe(0);
+
+    // Switching back to visible sends ClientPing and starts 2000ms zombie timer.
+    documentEvents.visibilityState = "visible";
+    documentEvents.emit("visibilitychange");
+    expect(
+      sockets[0].parsedSent().filter((m) => typeof m === "object" && "ClientPing" in m),
+    ).toHaveLength(1);
+
+    vi.advanceTimersByTime(1999);
+    expect(sockets[0].closeCalls).toBe(0);
+    expect(sockets).toHaveLength(1);
+
+    // 2000ms elapses without ServerPong -> force-close + 300ms backoff reconnect.
+    vi.advanceTimersByTime(1);
+    expect(sockets[0].closeCalls).toBe(1);
+    expect(client.getState().connectionStatus).toBe("disconnected");
+
+    vi.advanceTimersByTime(299);
+    expect(sockets).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(sockets).toHaveLength(2);
+
+    // Second zombie timeout without TableSnapshot advances exponential backoff to 600ms.
+    sockets[1].emitOpen();
+    documentEvents.emit("visibilitychange");
+    expect(
+      sockets[1].parsedSent().filter((m) => typeof m === "object" && "ClientPing" in m),
+    ).toHaveLength(1);
+    vi.advanceTimersByTime(2000);
+    expect(sockets[1].closeCalls).toBe(1);
+    vi.advanceTimersByTime(599);
+    expect(sockets).toHaveLength(2);
+    vi.advanceTimersByTime(1);
+    expect(sockets).toHaveLength(3);
+
+    client.dispose();
+  });
+
+  it("probes on online event and clears probe timer when ServerPong or any valid ServerMessage arrives", () => {
+    const sockets: MockWebSocket[] = [];
+    const windowEvents = new MockWindowEvents();
+    const documentEvents = new MockDocumentEvents();
+
+    const client = createTableClient({
+      wsUrl: "ws://127.0.0.1:8789/ws",
+      storage: createMemoryStorage(),
+      createWebSocket: (url) => {
+        const ws = new MockWebSocket(url);
+        sockets.push(ws);
+        return ws;
+      },
+      windowEvents,
+      documentEvents,
+    });
+
+    client.connect();
+    sockets[0].emitOpen();
+    const snap = makeSnapshot({ seq: 1 });
+    sockets[0].emitServerMessage({ TableSnapshot: snap });
+
+    // online triggers ClientPing; ServerPong clears probe timer.
+    windowEvents.emit("online");
+    expect(
+      sockets[0].parsedSent().filter((m) => typeof m === "object" && "ClientPing" in m),
+    ).toHaveLength(1);
+    vi.advanceTimersByTime(500);
+    sockets[0].emitServerMessage({ ServerPong: { ts_ms: 123 } });
+    vi.advanceTimersByTime(5000);
+    expect(sockets[0].closeCalls).toBe(0);
+    expect(client.getState().connectionStatus).toBe("connected");
+    expect(client.getState().lastPongTsMs).toBe(123);
+
+    // visibilitychange triggers ClientPing; any valid ServerMessage (e.g. LobbyUpdated) clears probe timer.
+    documentEvents.emit("visibilitychange");
+    expect(
+      sockets[0].parsedSent().filter((m) => typeof m === "object" && "ClientPing" in m),
+    ).toHaveLength(2);
+    vi.advanceTimersByTime(1000);
+    sockets[0].emitServerMessage({
+      LobbyUpdated: {
+        phase: snap.phase,
+        config: snap.config,
+        seats: snap.seats,
+      },
+    });
+    vi.advanceTimersByTime(5000);
+    expect(sockets[0].closeCalls).toBe(0);
+    expect(client.getState().connectionStatus).toBe("connected");
+
+    // Unanswered online probe closes zombie socket at 2000ms and reconnects after 300ms.
+    windowEvents.emit("online");
+    vi.advanceTimersByTime(2000);
+    expect(sockets[0].closeCalls).toBe(1);
+    vi.advanceTimersByTime(300);
+    expect(sockets).toHaveLength(2);
+
+    client.dispose();
+  });
+
+  it("cancels probe timers on pagehide, SessionReplaced, and dispose while preserving listener cleanup", () => {
+    const sockets: MockWebSocket[] = [];
+    const windowEvents = new MockWindowEvents();
+    const documentEvents = new MockDocumentEvents();
+
+    const client = createTableClient({
+      wsUrl: "ws://127.0.0.1:8789/ws",
+      storage: createMemoryStorage(),
+      createWebSocket: (url) => {
+        const ws = new MockWebSocket(url);
+        sockets.push(ws);
+        return ws;
+      },
+      windowEvents,
+      documentEvents,
+    });
+
+    client.connect();
+    sockets[0].emitOpen();
+    sockets[0].emitServerMessage({ TableSnapshot: makeSnapshot({ seq: 1 }) });
+
+    // pagehide cancels in-flight probe and pauses reconnect until pageshow.
+    documentEvents.emit("visibilitychange");
+    vi.advanceTimersByTime(500);
+    windowEvents.emit("pagehide");
+    expect(sockets[0].parsedSent().at(-1)).toBe("ClientLeaving");
+    vi.advanceTimersByTime(5000);
+    expect(sockets[0].closeCalls).toBe(0);
+    expect(sockets).toHaveLength(1);
+
+    // Simulate server closing socket after ClientLeaving while paused.
+    sockets[0].emitClose();
+    vi.advanceTimersByTime(5000);
+    expect(sockets).toHaveLength(1);
+
+    // pageshow resumes connection.
+    windowEvents.emit("pageshow");
+    expect(sockets).toHaveLength(2);
+    sockets[1].emitOpen();
+
+    // SessionReplaced clears active probe and permanently stops reconnect.
+    windowEvents.emit("online");
+    vi.advanceTimersByTime(500);
+    sockets[1].emitServerMessage("SessionReplaced");
+    expect(client.getState().replacedByNewTab).toBe(true);
+    expect(client.getState().connectionStatus).toBe("disconnected");
+    vi.advanceTimersByTime(60_000);
+    expect(sockets).toHaveLength(2);
+    windowEvents.emit("online");
+    documentEvents.emit("visibilitychange");
+    expect(sockets).toHaveLength(2);
+
+    client.dispose();
+    expect(windowEvents.listenerCount("pagehide")).toBe(0);
+    expect(windowEvents.listenerCount("pageshow")).toBe(0);
+    expect(windowEvents.listenerCount("online")).toBe(0);
+    expect(documentEvents.listenerCount("visibilitychange")).toBe(0);
   });
 });
