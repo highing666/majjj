@@ -10,6 +10,10 @@ use crate::protocol::{LobbyConfig, SeatKind, SeatingRule, TablePace};
 /// Current schema version for JSONL history records, preferences, and HTTP exports.
 pub const HISTORY_SCHEMA_VERSION: u32 = 1;
 
+fn default_true() -> bool {
+    true
+}
+
 /// Persisted table defaults and recently used nicknames (`preferences.json`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct PreferencesData {
@@ -28,6 +32,9 @@ pub struct PreferencesData {
     /// Optional persisted base URL for the LAN `llama-server` endpoint.
     #[serde(default)]
     pub llm_base_url: Option<String>,
+    /// Whether AI personas gently nudge a human player after 15–20 seconds of thinking.
+    #[serde(default = "default_true")]
+    pub slow_think_nudge_enabled: bool,
 }
 
 impl Default for PreferencesData {
@@ -41,6 +48,7 @@ impl Default for PreferencesData {
             default_ai_difficulty: lobby.ai_difficulty,
             default_pace: lobby.pace,
             llm_base_url: None,
+            slow_think_nudge_enabled: true,
         }
     }
 }

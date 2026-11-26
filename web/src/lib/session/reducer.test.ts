@@ -114,6 +114,7 @@ function makeSnapshot(overrides: Partial<TableSnapshot> = {}): TableSnapshot {
     phase: "Lobby",
     config: makeLobbyConfig(),
     pace: "Standard",
+    slow_think_nudge_enabled: true,
     seats: makeLobbySeats(),
     your_seat: null,
     seat_token: "token-1",
@@ -199,11 +200,13 @@ describe("session reducer — snapshot, lobby sync, and session lifecycle", () =
         phase: "Lobby",
         config: nextConfig,
         seats: updatedSeats,
+        slow_think_nudge_enabled: false,
       },
     });
 
     expect(result.state.snapshot?.config).toEqual(nextConfig);
     expect(result.state.snapshot?.pace).toBe("Fast");
+    expect(result.state.snapshot?.slow_think_nudge_enabled).toBe(false);
     expect(result.state.snapshot?.seats[1].nickname).toBe("小明");
     expect(result.state.snapshot?.seats[2].persona_id).toBe("TeaSarcasm");
     expect(result.state.snapshot?.your_seat).toBe("South");
@@ -857,11 +860,13 @@ describe("session reducer — EventBatch folding, gap recovery, and ActionReject
         phase: "InMatch",
         config: makeLobbyConfig({ pace: "Fast" }),
         seats: makeLobbySeats(),
+        slow_think_nudge_enabled: false,
       },
     });
 
     expect(res.state.snapshot?.pace).toBe("Fast");
     expect(res.state.snapshot?.config.pace).toBe("Fast");
+    expect(res.state.snapshot?.slow_think_nudge_enabled).toBe(false);
     expect(res.state.snapshot?.player_view).toEqual(view);
     expect(res.state.snapshot?.pending_destructive_op).toEqual(pendingOp);
     expect(res.state.pendingAddedKong).toEqual({ seat: "East", tile: 27 });
@@ -1103,6 +1108,7 @@ describe("session reducer — EventBatch folding, gap recovery, and ActionReject
           pace: "Fast",
         }),
         seats: makeLobbySeats(),
+        slow_think_nudge_enabled: true,
       },
     }).state;
     expect(updatedConfigInFinished.snapshot?.phase).toBe("Finished");
@@ -1222,6 +1228,42 @@ describe("session reducer — TableBanter and LlmStatusNotice", () => {
       available: true,
       message: "局域网推理服务已恢复连接",
     });
+  });
+
+  it("handles QuickEmoteBroadcast cleanly and clears stale cooldown rejection when viewer sends successfully", () => {
+    const base: SessionState = {
+      ...reduceServerMessage(createInitialSessionState(), {
+        TableSnapshot: makeSnapshot({
+          phase: "InMatch",
+          your_seat: "East",
+          slow_think_nudge_enabled: false,
+        }),
+      }).state,
+      lastRejectedReason: "快捷互动冷却中，请稍后再试",
+    };
+
+    // Peer quick emote leaves viewer's rejection notice intact.
+    const peerRes = reduceServerMessage(base, {
+      QuickEmoteBroadcast: {
+        seat: "South",
+        emote: "NicePlay",
+        text: "666 / 漂亮",
+      },
+    });
+    expect(peerRes.state.lastRejectedReason).toBe("快捷互动冷却中，请稍后再试");
+    expect(peerRes.effects).toEqual([]);
+
+    // Viewer's own successful quick emote clears stale rejection notice.
+    const ownRes = reduceServerMessage(base, {
+      QuickEmoteBroadcast: {
+        seat: "East",
+        emote: "IsThatIt",
+        text: "就这？",
+      },
+    });
+    expect(ownRes.state.lastRejectedReason).toBeNull();
+    expect(ownRes.state.snapshot?.slow_think_nudge_enabled).toBe(false);
+    expect(ownRes.effects).toEqual([]);
   });
 });
 

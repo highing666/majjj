@@ -13,6 +13,8 @@
     preferences: DevicePreferences;
     pace: TablePace;
     canEditPace?: boolean;
+    slowThinkNudgeEnabled?: boolean;
+    onChangeSlowThinkNudge?: (enabled: boolean) => void;
     serverVersion?: string | null;
     tableId?: string | null;
     connectionStatusText?: string | null;
@@ -31,6 +33,8 @@
     preferences,
     pace,
     canEditPace = true,
+    slowThinkNudgeEnabled = true,
+    onChangeSlowThinkNudge,
     serverVersion = null,
     tableId = null,
     connectionStatusText = null,
@@ -255,8 +259,26 @@
           {/each}
         </div>
         {#if !canEditPace}
-          <p class="row-hint">入座并保持连接后可切换全桌共享节奏。</p>
+          <p class="row-hint">入座并保持连接后可切换全桌共享设置。</p>
         {/if}
+
+        <label class="toggle-row">
+          <div>
+            <strong>慢思考催牌调侃</strong>
+            <span class="row-hint">
+              单手思考超过约 16 秒后由随机牌友角色调侃 1 次，绝不代打；关闭后全程静默
+            </span>
+          </div>
+          <input
+            type="checkbox"
+            checked={slowThinkNudgeEnabled}
+            disabled={!canEditPace}
+            onchange={(e) =>
+              onChangeSlowThinkNudge?.(
+                (e.currentTarget as HTMLInputElement).checked,
+              )}
+          />
+        </label>
       </div>
 
       {#if serverVersion || tableId || connectionStatusText || shutdownState?.visible}

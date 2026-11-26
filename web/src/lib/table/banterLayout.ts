@@ -147,3 +147,46 @@ export function computeBanterBubbleAnchor(
     tail: "bottom-left",
   };
 }
+
+/**
+ * Computes a viewport-clamped thumb-reachable dock rect for the 6-button `QuickEmoteBar`
+ * that stays strictly clear of `viewerHandRect`, `turnBarRect`, and `badges.bottom`.
+ */
+export function computeQuickEmoteDockRect(layout: TableLayout): Rect {
+  if (layout.height > layout.width) {
+    const dockH = 44;
+    const width = Math.max(180, layout.width - EDGE_PAD * 2);
+    const maxBottom = Math.min(
+      layout.badges.bottom.y,
+      layout.turnBarRect.y,
+      layout.viewerHandRect.y,
+    ) - GAP;
+    const top = clamp(maxBottom - dockH, EDGE_PAD, layout.height - dockH - EDGE_PAD);
+    return {
+      x: EDGE_PAD,
+      y: top,
+      width,
+      height: dockH,
+    };
+  }
+
+  const compact = layout.isShortLandscape || layout.width < 700;
+  const dockH = compact ? 64 : 84;
+  const width = clamp(
+    layout.rightWing.width,
+    92,
+    Math.max(92, layout.width - layout.rightWing.x - EDGE_PAD),
+  );
+  const x = clamp(layout.rightWing.x, EDGE_PAD, layout.width - width - EDGE_PAD);
+  const y = clamp(
+    layout.height - EDGE_PAD - dockH,
+    EDGE_PAD,
+    layout.height - dockH - EDGE_PAD,
+  );
+  return {
+    x,
+    y,
+    width,
+    height: dockH,
+  };
+}

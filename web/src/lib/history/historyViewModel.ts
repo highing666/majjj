@@ -1,9 +1,14 @@
 import { matchModeLabel } from "../lobby/lobbyConfig";
 import type { HandRecord } from "../protocol/generated/HandRecord";
 import type { MatchRecord } from "../protocol/generated/MatchRecord";
+import type { PersonaId } from "../protocol/generated/PersonaId";
+import type { PersonaMemoryNoteTrigger } from "../protocol/generated/PersonaMemoryNoteTrigger";
+import type { PersonaMemoryResponse } from "../protocol/generated/PersonaMemoryResponse";
+import type { PersonaMood } from "../protocol/generated/PersonaMood";
 import type { PlayerStats } from "../protocol/generated/PlayerStats";
 import type { ScoreItem } from "../protocol/generated/ScoreItem";
 import type { Seat } from "../protocol/generated/Seat";
+import { getPersonaMeta } from "../protocol/personas";
 import { formatSeatlessDisplay, seatIndex } from "../protocol/seats";
 import { kongKindLabel, winKindLabel } from "../protocol/settlements";
 import { formatRoundTitle, getTileLabel } from "../table/tiles";
@@ -268,6 +273,112 @@ export function buildHandHistoryRows(
       winners,
       kongTransfers,
       seatDeltas,
+    };
+  });
+}
+
+export interface PersonaGrudgeNoteItem {
+  summary: string;
+  timeText: string;
+  trigger: PersonaMemoryNoteTrigger;
+  triggerLabel: string;
+}
+
+export interface PersonaPlayerMemoryItem {
+  playerNickname: string;
+  handsPlayed: number;
+  personaWins: number;
+  playerWins: number;
+  personaDealtIntoPlayer: number;
+  playerDealtIntoPersona: number;
+  highestFanSeen: number;
+  netScoreDelta: number;
+  netScoreDeltaText: string;
+  netTone: DeltaTone;
+  playerPonCount: number;
+  playerKongCount: number;
+  meldHabitText: string;
+  updatedTimeText: string;
+  grudgeNotes: PersonaGrudgeNoteItem[];
+}
+
+export interface PersonaMemoryCard {
+  personaId: PersonaId;
+  personaName: string;
+  styleLabel: string;
+  tagline: string;
+  initialMood: PersonaMood;
+  accentHex: string;
+  totalNotes: number;
+  players: PersonaPlayerMemoryItem[];
+}
+
+/**
+ * Formats a `PersonaMemoryNoteTrigger` into a concise Chinese tag.
+ */
+export function personaMemoryTriggerLabel(
+  trigger: PersonaMemoryNoteTrigger,
+): string {
+  switch (trigger) {
+    case "HighFan":
+      return "大番名场面";
+    case "RobKongHu":
+      return "抢杠胡";
+    case "MultiRon":
+      return "一炮多响";
+    case "MatchFinished":
+      return "终局复盘";
+  }
+}
+
+/**
+ * Maps `PersonaMemoryResponse` into display cards per `牌友角色`, with newest grudge notes first.
+ */
+export function buildPersonaMemoryCards(
+  memory: PersonaMemoryResponse,
+): PersonaMemoryCard[] {
+  return memory.personas.map((entry) => {
+    const meta = getPersonaMeta(entry.persona_id);
+    let totalNotes = 0;
+    const players: PersonaPlayerMemoryItem[] = entry.players.map((record) => {
+      const ledger = record.ledger;
+      totalNotes += record.grudge_notes.length;
+      const grudgeNotes: PersonaGrudgeNoteItem[] = [...record.grudge_notes]
+        .reverse()
+        .map((note) => ({
+          summary: note.summary,
+          timeText: formatHistoryTimestamp(note.created_at_ms),
+          trigger: note.trigger,
+          triggerLabel: personaMemoryTriggerLabel(note.trigger),
+        }));
+      return {
+        playerNickname: record.player_nickname,
+        handsPlayed: ledger.hands_played,
+        personaWins: ledger.persona_wins_against_player,
+        playerWins: ledger.player_wins_against_persona,
+        personaDealtIntoPlayer: ledger.persona_dealt_into_player,
+        playerDealtIntoPersona: ledger.player_dealt_into_persona,
+        highestFanSeen: ledger.highest_fan_seen,
+        netScoreDelta: ledger.net_score_delta,
+        netScoreDeltaText: formatScoreDelta(ledger.net_score_delta),
+        netTone: deltaTone(ledger.net_score_delta),
+        playerPonCount: ledger.player_pon_count,
+        playerKongCount: ledger.player_kong_count,
+        meldHabitText: `碰 ${ledger.player_pon_count} / 杠 ${ledger.player_kong_count}`,
+        updatedTimeText: formatHistoryTimestamp(record.updated_at_ms),
+        grudgeNotes,
+      };
+    });
+
+    return {
+      personaId: entry.persona_id,
+      personaName: meta.name,
+      styleLabel: meta.styleLabel,
+      tagline: meta.tagline,
+      initialMood: meta.initialMood,
+      accentHex: meta.accentHex,
+      totalNotes,
+      players,
     };
   });
 }

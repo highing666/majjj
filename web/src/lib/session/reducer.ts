@@ -518,12 +518,14 @@ export function reduceServerMessage(
         effects: [{ type: "send", message: "RequestSnapshot" }],
       };
     }
-    const { phase, config, seats } = message.LobbyUpdated;
+    const { phase, config, seats, slow_think_nudge_enabled } =
+      message.LobbyUpdated;
     const nextSnapshot: TableSnapshot = {
       ...state.snapshot,
       phase,
       config,
       pace: config.pace,
+      slow_think_nudge_enabled,
       seats,
       player_view: phase === "Lobby" ? null : state.snapshot.player_view,
       pending_destructive_op:
@@ -593,6 +595,23 @@ export function reduceServerMessage(
       },
       effects: [],
     };
+  }
+
+  if ("QuickEmoteBroadcast" in message) {
+    if (
+      state.snapshot !== null &&
+      message.QuickEmoteBroadcast.seat === state.snapshot.your_seat &&
+      state.lastRejectedReason !== null
+    ) {
+      return {
+        state: {
+          ...state,
+          lastRejectedReason: null,
+        },
+        effects: [],
+      };
+    }
+    return { state, effects: [] };
   }
 
   if ("LlmStatusNotice" in message) {

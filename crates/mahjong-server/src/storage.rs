@@ -89,7 +89,7 @@ pub fn normalize_nickname(raw: &str) -> String {
     raw.trim().to_string()
 }
 
-fn atomic_write_bytes(target: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
+pub(crate) fn atomic_write_bytes(target: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
     let parent = target.parent().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -550,6 +550,15 @@ impl HistoryStore {
         self.save_preferences();
     }
 
+    /// Updates the slow-think nudge toggle and persists `preferences.json` atomically if changed.
+    pub fn record_slow_think_nudge(&mut self, enabled: bool) {
+        if self.preferences.slow_think_nudge_enabled == enabled {
+            return;
+        }
+        self.preferences.slow_think_nudge_enabled = enabled;
+        self.save_preferences();
+    }
+
     /// Records a normalized non-empty nickname at the front of `recent_nicknames` and persists if changed.
     pub fn record_nickname(&mut self, raw_nickname: &str) {
         let normalized = normalize_nickname(raw_nickname);
@@ -679,6 +688,8 @@ mod tests {
         store.record_nickname("  Alice  ");
         store.record_nickname("Bob");
         store.record_nickname("Alice");
+        assert!(store.preferences().slow_think_nudge_enabled);
+        store.record_slow_think_nudge(false);
 
         let reopened = HistoryStore::open(&nested).expect("reopen persisted preferences");
         assert_eq!(reopened.preferences().default_mode, MatchMode::FreeTable);
@@ -691,15 +702,26 @@ mod tests {
             AiDifficulty::Intermediate
         );
         assert_eq!(reopened.preferences().default_pace, TablePace::Fast);
+        assert!(!reopened.preferences().slow_think_nudge_enabled);
         assert_eq!(
             reopened.preferences().recent_nicknames,
             vec!["Alice".to_string(), "Bob".to_string()]
         );
 
+        // Legacy preferences.json lacking slow_think_nudge_enabled defaults cleanly to true.
+        fs::write(
+            nested.join("preferences.json"),
+            r#"{"schema_version":1,"recent_nicknames":[],"default_mode":"EastOnly","default_seating":"KeepLobbySeats","default_ai_difficulty":"Strong","default_pace":"Standard"}"#,
+        )
+        .expect("write legacy prefs");
+        let legacy = HistoryStore::open(&nested).expect("legacy prefs should default nudge true");
+        assert!(legacy.preferences().slow_think_nudge_enabled);
+
         // Corrupt preferences.json falls back cleanly without failing startup.
         fs::write(nested.join("preferences.json"), "{corrupt").expect("write corrupt prefs");
         let recovered = HistoryStore::open(&nested).expect("corrupt prefs should not fail open");
         assert_eq!(recovered.preferences().default_mode, MatchMode::EastOnly);
+        assert!(recovered.preferences().slow_think_nudge_enabled);
         assert!(recovered.preferences().recent_nicknames.is_empty());
     }
 

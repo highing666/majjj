@@ -5,7 +5,11 @@
   } from "../presentation/presentationQueue";
   import type { PlayerView } from "../protocol/generated/PlayerView";
   import type { TableSnapshot } from "../protocol/generated/TableSnapshot";
-  import { getPersonaMeta, getPersonaMoodMeta } from "../protocol/personas";
+  import {
+    getPersonaMeta,
+    getPersonaMoodMeta,
+    getQuickEmoteMeta,
+  } from "../protocol/personas";
   import { ALL_SEATS, seatIndex, seatRelativeSlot } from "../protocol/seats";
   import {
     computeBanterBubbleAnchor,
@@ -50,19 +54,36 @@
         continue;
       }
       const seatInfo = snapshot.seats[seatIndex(seat)];
-      const personaMeta = getPersonaMeta(bubble.personaId);
-      const moodMeta = getPersonaMoodMeta(bubble.mood);
       const slot = seatRelativeSlot(playerView.viewer, seat);
       const anchor = computeBanterBubbleAnchor(tableLayout, slot);
-      items.push({
-        bubble,
-        anchor,
-        speakerName: seatInfo.nickname.trim() || personaMeta.name,
-        accentHex: personaMeta.accentHex,
-        moodShortLabel: moodMeta.shortLabel,
-        moodBadgeBg: moodMeta.badgeBg,
-        moodBadgeFg: moodMeta.badgeFg,
-      });
+      if (
+        bubble.kind === "banter" &&
+        bubble.personaId !== null &&
+        bubble.mood !== null
+      ) {
+        const personaMeta = getPersonaMeta(bubble.personaId);
+        const moodMeta = getPersonaMoodMeta(bubble.mood);
+        items.push({
+          bubble,
+          anchor,
+          speakerName: seatInfo.nickname.trim() || personaMeta.name,
+          accentHex: personaMeta.accentHex,
+          moodShortLabel: moodMeta.shortLabel,
+          moodBadgeBg: moodMeta.badgeBg,
+          moodBadgeFg: moodMeta.badgeFg,
+        });
+      } else {
+        const emoteMeta = bubble.emote ? getQuickEmoteMeta(bubble.emote) : null;
+        items.push({
+          bubble,
+          anchor,
+          speakerName: seatInfo.nickname.trim() || "玩家",
+          accentHex: emoteMeta?.accentHex ?? "#F5BE58",
+          moodShortLabel: "快捷互动",
+          moodBadgeBg: emoteMeta?.accentHex ?? "#F5BE58",
+          moodBadgeFg: "#181A20",
+        });
+      }
     }
     return items;
   });
@@ -77,14 +98,14 @@
 
 {#if tableLayout && renderedBubbles.length > 0}
   <div class="banter-bubbles-layer" aria-label="牌桌台词气泡" aria-live="polite">
-    {#each renderedBubbles as item (`${item.bubble.seat}-${item.bubble.eventSeq}-${item.bubble.text}`)}
+    {#each renderedBubbles as item (item.bubble.bubbleId)}
       <div
         class="banter-anchor"
         class:banter-anchor-right={item.anchor.alignRight}
         class:banter-anchor-bottom={item.anchor.alignBottom}
         style="{anchorStyle(tableLayout, item.anchor)} --banter-accent: {item.accentHex};"
         data-seat={item.bubble.seat}
-        data-mood={item.bubble.mood}
+        data-mood={item.bubble.mood ?? "QuickEmote"}
       >
         <div
           class="comic-bubble tail-{item.anchor.tail}"

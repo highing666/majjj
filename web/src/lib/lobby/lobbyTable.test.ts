@@ -40,6 +40,7 @@ function makeLobbySnapshot(
       ...configOverrides,
     },
     pace: "Standard",
+    slow_think_nudge_enabled: true,
     seats: makeSeats(),
     your_seat: null,
     seat_token: "token-1",

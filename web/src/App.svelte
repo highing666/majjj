@@ -464,6 +464,10 @@
               snapshot !== null &&
               snapshot.your_seat !== null &&
               snapshot.pending_destructive_op === null}
+            canSendQuickEmote={!actionsDisabled &&
+              snapshot !== null &&
+              snapshot.your_seat !== null &&
+              snapshot.phase === "InMatch"}
             shouldSuppressEscape={() =>
               viewportDisplay.shouldSuppressActionBarEscape()}
             onToggleFullscreen={() => void viewportDisplay.toggleFullscreen()}
@@ -473,6 +477,7 @@
             onDisband={() => client.requestDisbandMatch()}
             onToggleAiAssist={(seat, enabled) => client.toggleAiAssist(seat, enabled)}
             onAction={handleActionBar}
+            onSendQuickEmote={(emote) => client.sendQuickEmote(emote)}
           >
             {#snippet floatingBanners()}
               {@render statusBanners(true)}
@@ -651,6 +656,10 @@
     canEditPace={snapshot !== null &&
       !actionsDisabled &&
       snapshot.your_seat !== null}
+    slowThinkNudgeEnabled={snapshot?.slow_think_nudge_enabled ??
+      presentedSnapshot?.slow_think_nudge_enabled ??
+      true}
+    onChangeSlowThinkNudge={(enabled) => client.setSlowThinkNudge(enabled)}
     serverVersion={snapshot?.server_version ?? null}
     tableId={snapshot?.table_id ?? null}
     {connectionStatusText}
@@ -672,6 +681,10 @@
     onRequestClear={() => historyController.requestClear()}
     onCancelClear={() => historyController.cancelClear()}
     onConfirmClear={() => void historyController.confirmClear()}
+    onRefreshPersonaMemory={() => void historyController.refreshPersonaMemory()}
+    onRequestClearMemory={() => historyController.requestClearMemory()}
+    onCancelClearMemory={() => historyController.cancelClearMemory()}
+    onConfirmClearMemory={() => void historyController.confirmClearMemory()}
   />
 
   <AudioResumeCapsule
