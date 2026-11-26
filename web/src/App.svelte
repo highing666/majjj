@@ -2,6 +2,11 @@
   import { createAudioEventRouter } from "./lib/audio/audioRouter";
   import type { AudioStatus } from "./lib/audio/audioTypes";
   import {
+    createHistoryController,
+    type HistoryState,
+  } from "./lib/history/historyClient";
+  import HistoryModal from "./lib/history/HistoryModal.svelte";
+  import {
     createShutdownController,
     type ShutdownState,
   } from "./lib/lifecycle/shutdownController";
@@ -67,8 +72,10 @@
   const shutdownController = createShutdownController({
     onShutdownSuccess: () => client.dispose(),
   });
+  const historyController = createHistoryController();
   let sessionState = $state<SessionState>(client.getState());
   let shutdownState = $state<ShutdownState>(shutdownController.getState());
+  let historyState = $state<HistoryState>(historyController.getState());
   let presentationState = $state<PresentationState>(
     presentationQueue.getState(),
   );
@@ -89,6 +96,9 @@
     });
     const unsubscribeShutdown = shutdownController.subscribe((next) => {
       shutdownState = next;
+    });
+    const unsubscribeHistory = historyController.subscribe((next) => {
+      historyState = next;
     });
     const unsubscribePrefs = preferencesStore.subscribe((next) => {
       devicePrefs = next;
@@ -118,6 +128,7 @@
       unsubscribePresentation();
       unsubscribeRenderQuality();
       unsubscribePrefs();
+      unsubscribeHistory();
       unsubscribeShutdown();
       unsubscribeClient();
       wakeLock.dispose();
@@ -178,6 +189,7 @@
   );
   const hasModalOpen = $derived(
     settingsOpen ||
+      historyState.open ||
       takeOverTarget !== null ||
       shutdownState.phase === "confirming" ||
       shutdownState.phase === "submitting" ||
@@ -321,6 +333,7 @@
       onUpdateConfig={(config) => client.updateLobbyConfig(config)}
       onStartMatch={() => client.startMatch()}
       onOpenSettings={() => (settingsOpen = true)}
+      onOpenHistory={() => void historyController.open()}
       onTakeOverSeat={(seatInfo) => openTakeOverModal(seatInfo, "offline_human")}
     />
   {:else if presentedSnapshot.phase === "InMatch"}
@@ -532,6 +545,7 @@
       onUpdateConfig={(config) => client.updateLobbyConfig(config)}
       onStartMatch={() => client.startMatch()}
       onReturnToLobby={() => client.returnToLobby()}
+      onOpenHistory={() => void historyController.open()}
     />
   {:else}
     <section class="card placeholder-card">
@@ -575,6 +589,16 @@
     onResetPreferences={() => preferencesStore.reset()}
     onChangePace={handleSettingsPaceChange}
     onClose={() => (settingsOpen = false)}
+  />
+
+  <HistoryModal
+    state={historyState}
+    onClose={() => historyController.close()}
+    onRefresh={() => void historyController.refresh()}
+    onExport={() => void historyController.requestExport()}
+    onRequestClear={() => historyController.requestClear()}
+    onCancelClear={() => historyController.cancelClear()}
+    onConfirmClear={() => void historyController.confirmClear()}
   />
 
   <AudioResumeCapsule
