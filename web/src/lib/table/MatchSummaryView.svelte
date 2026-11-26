@@ -24,6 +24,7 @@
     onUpdateConfig: (config: LobbyConfig) => void;
     onStartMatch: () => void;
     onReturnToLobby: () => void;
+    onOpenHistory?: () => void;
   }
 
   let {
@@ -36,6 +37,7 @@
     onUpdateConfig,
     onStartMatch,
     onReturnToLobby,
+    onOpenHistory,
   }: Props = $props();
 
   const standings = $derived(buildMatchStandings(summary, seats));
@@ -51,7 +53,18 @@
         {modeLabel} · 共完成 {summary.hands_played} 小局
       </p>
     </div>
-    <span class="tag tag-online">已完赛</span>
+    <div class="summary-head-actions">
+      <span class="tag tag-online">已完赛</span>
+      {#if onOpenHistory}
+        <button
+          class="btn btn-subtle history-trigger"
+          type="button"
+          onclick={onOpenHistory}
+        >
+          战绩
+        </button>
+      {/if}
+    </div>
   </header>
 
   <div class="standings-table-wrap">
@@ -186,6 +199,18 @@
     justify-content: space-between;
     align-items: flex-start;
     gap: 10px;
+  }
+
+  .summary-head-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .history-trigger {
+    padding: 5px 10px;
+    font-size: 12px;
   }
 
   h1 {

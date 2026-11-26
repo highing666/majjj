@@ -17,6 +17,7 @@
     onUpdateConfig: (config: LobbyConfig) => void;
     onStartMatch: () => void;
     onOpenSettings?: () => void;
+    onOpenHistory?: () => void;
     onTakeOverSeat?: (seatInfo: SeatInfo) => void;
   }
 
@@ -30,6 +31,7 @@
     onUpdateConfig,
     onStartMatch,
     onOpenSettings,
+    onOpenHistory,
     onTakeOverSeat,
   }: Props = $props();
 
@@ -180,6 +182,15 @@
           <span class="tag">
             已入座 {humanCount} 人 · 空位将补 {aiFillCount} 名 AI
           </span>
+          {#if onOpenHistory}
+            <button
+              class="btn btn-subtle settings-trigger"
+              type="button"
+              onclick={onOpenHistory}
+            >
+              战绩
+            </button>
+          {/if}
           {#if onOpenSettings}
             <button
               class="btn btn-subtle settings-trigger"
