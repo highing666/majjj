@@ -173,9 +173,19 @@ pub async fn recv_msg(ws: &mut WsClient) -> ServerMessage {
 }
 
 #[allow(dead_code)]
-pub async fn recv_snapshot(ws: &mut WsClient) -> TableSnapshot {
+pub async fn recv_non_ping_msg(ws: &mut WsClient) -> ServerMessage {
     loop {
         match recv_msg(ws).await {
+            ServerMessage::ServerPing { .. } => continue,
+            other => return other,
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub async fn recv_snapshot(ws: &mut WsClient) -> TableSnapshot {
+    loop {
+        match recv_non_ping_msg(ws).await {
             ServerMessage::TableSnapshot(snap) => return snap,
             ServerMessage::LobbyUpdated { .. } => continue,
             other => panic!("expected TableSnapshot, got {other:?}"),
@@ -188,7 +198,7 @@ pub async fn recv_event_batch(
     ws: &mut WsClient,
 ) -> (u64, u64, Vec<PlayerEvent>, Vec<PlayerAction>) {
     loop {
-        match recv_msg(ws).await {
+        match recv_non_ping_msg(ws).await {
             ServerMessage::EventBatch {
                 from_seq,
                 to_seq,

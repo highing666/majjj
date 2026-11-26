@@ -28,6 +28,7 @@ async fn spawn_humanized_server(
         port: 0,
         static_dir: None,
         ai_threads: 2,
+        ..ServerConfig::default()
     }
     .spawn_with_options(TableOptions::with_wall_factory(seed, factory))
     .await
@@ -315,6 +316,7 @@ async fn real_ws_ai_only_all_pass_alignment_and_realtime_overlapped_thinking() {
         port: 0,
         static_dir: None,
         ai_threads: 2,
+        ..ServerConfig::default()
     }
     .spawn_with_options(
         TableOptions::with_wall_factory(101, factory).with_ai_budget(DecisionBudget::Realtime {

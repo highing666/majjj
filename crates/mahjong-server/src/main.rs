@@ -54,6 +54,7 @@ impl From<Cli> for ServerConfig {
             port: cli.port,
             static_dir: cli.static_dir,
             ai_threads: cli.ai_threads,
+            ..Self::default()
         }
     }
 }
