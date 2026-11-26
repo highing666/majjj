@@ -13,7 +13,7 @@ use mahjong_core::{
 };
 use rand_chacha::ChaCha8Rng;
 use rand_core::{RngCore, SeedableRng};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, watch, Mutex};
 use uuid::Uuid;
 
 use crate::ai_pool::{
@@ -274,6 +274,7 @@ pub struct TableSession {
     next_conn_id: u64,
     port: u16,
     local_hostname: Option<String>,
+    phase_tx: watch::Sender<TablePhase>,
 }
 
 impl TableSession {
@@ -287,6 +288,7 @@ impl TableSession {
     #[must_use]
     pub fn with_options(port: u16, local_hostname: Option<String>, options: TableOptions) -> Self {
         let base_seed = options.rng_seed.unwrap_or_else(random_u64);
+        let (phase_tx, _) = watch::channel(TablePhase::Lobby);
         Self {
             table_id: Uuid::new_v4().to_string(),
             phase: TablePhase::Lobby,
@@ -308,7 +310,20 @@ impl TableSession {
             next_conn_id: 1,
             port,
             local_hostname,
+            phase_tx,
         }
+    }
+
+    fn set_phase(&mut self, phase: TablePhase) {
+        self.phase = phase;
+        self.phase_tx.send_if_modified(|current| {
+            if *current != phase {
+                *current = phase;
+                true
+            } else {
+                false
+            }
+        });
     }
 
     fn bump_release_generation(&mut self) -> u64 {
@@ -776,7 +791,7 @@ impl TableSession {
         let _ = self.bump_release_generation();
         self.bump_all_seat_generations();
         self.seq = game.seq();
-        self.phase = TablePhase::InMatch;
+        self.set_phase(TablePhase::InMatch);
         self.pending_destructive_op = None;
         self.in_flight_ai.clear();
         let hand_attribution = HandAttribution::from_seats(&self.seats);
@@ -1122,7 +1137,7 @@ impl TableSession {
 
         match public_phase {
             PublicPhase::MatchFinished => {
-                self.phase = TablePhase::Finished;
+                self.set_phase(TablePhase::Finished);
                 self.pending_destructive_op = None;
                 self.in_flight_ai.clear();
                 self.broadcast_all_snapshots();
@@ -1367,7 +1382,7 @@ impl TableSession {
     fn reset_match_to_lobby(&mut self) {
         let _ = self.bump_release_generation();
         self.bump_all_seat_generations();
-        self.phase = TablePhase::Lobby;
+        self.set_phase(TablePhase::Lobby);
         self.active_match = None;
         self.in_flight_ai.clear();
         self.pending_destructive_op = None;
@@ -1612,6 +1627,12 @@ impl TableRuntime {
     pub async fn health_snapshot(&self) -> (TablePhase, u8) {
         let session = self.inner.lock().await;
         (session.phase(), session.online_humans())
+    }
+
+    /// Subscribes to table phase updates for lifecycle monitors.
+    pub async fn subscribe_phase(&self) -> watch::Receiver<TablePhase> {
+        let session = self.inner.lock().await;
+        session.phase_tx.subscribe()
     }
 
     /// Parses and handles one raw JSON text frame from `conn_id`.

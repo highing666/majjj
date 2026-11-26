@@ -12,7 +12,7 @@ endif
 fmt:
 	cargo fmt --all -- --check
 
-clippy:
+clippy: web-build
 	cargo clippy --workspace --all-targets -- -D warnings
 
 test: web-build

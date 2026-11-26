@@ -1,11 +1,16 @@
 //! CLI entry point for `mahjong-server`.
 
-use std::net::IpAddr;
+use std::io::ErrorKind;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use clap::Parser;
-use mahjong_server::{default_ai_threads, ServerConfig};
+use mahjong_server::protocol::HealthResponse;
+use mahjong_server::{default_ai_threads, ServerConfig, ServerError};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 
 fn parse_ai_threads(raw: &str) -> Result<usize, String> {
     let parsed: usize = raw
@@ -45,6 +50,14 @@ struct Cli {
         value_parser = parse_ai_threads
     )]
     ai_threads: usize,
+
+    /// Skip automatically opening the browser on startup (desktop lifecycle remains enabled).
+    #[arg(long, env = "MAJJJ_NO_OPEN", default_value_t = false)]
+    no_open: bool,
+
+    /// Run in 7x24 headless mode (implies `--no-open`; disables idle auto-exit and `/api/shutdown`).
+    #[arg(long, env = "MAJJJ_HEADLESS", default_value_t = false)]
+    headless: bool,
 }
 
 impl From<Cli> for ServerConfig {
@@ -54,18 +67,121 @@ impl From<Cli> for ServerConfig {
             port: cli.port,
             static_dir: cli.static_dir,
             ai_threads: cli.ai_threads,
+            no_open: cli.no_open || cli.headless,
+            headless: cli.headless,
             ..Self::default()
         }
     }
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
-    let cli = Cli::parse();
-    let config = ServerConfig::from(cli);
+fn open_browser_url(url: &str) {
+    #[cfg(target_os = "macos")]
+    let res = std::process::Command::new("open").arg(url).spawn();
+    #[cfg(target_os = "linux")]
+    let res = std::process::Command::new("xdg-open").arg(url).spawn();
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    let res: std::io::Result<std::process::Child> = Err(std::io::Error::new(
+        ErrorKind::Unsupported,
+        "automatic browser launch is only supported on macOS and Linux",
+    ));
 
-    let handle = match config.spawn().await {
+    if let Err(err) = res {
+        eprintln!("warning: failed to open browser at {url}: {err}");
+    }
+}
+
+async fn probe_existing_majjj_health(port: u16) -> Option<HealthResponse> {
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+    let mut stream = tokio::time::timeout(Duration::from_secs(2), TcpStream::connect(addr))
+        .await
+        .ok()?
+        .ok()?;
+    let request =
+        format!("GET /api/health HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+    tokio::time::timeout(Duration::from_secs(2), stream.write_all(request.as_bytes()))
+        .await
+        .ok()?
+        .ok()?;
+
+    let mut raw = Vec::new();
+    let mut buf = [0_u8; 4096];
+    let _ = tokio::time::timeout(Duration::from_secs(2), async {
+        while raw.len() < 32 * 1024 {
+            match stream.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => raw.extend_from_slice(&buf[..n]),
+            }
+        }
+    })
+    .await;
+
+    parse_http_health_response(&raw)
+}
+
+fn parse_http_health_response(raw: &[u8]) -> Option<HealthResponse> {
+    let text = std::str::from_utf8(raw).ok()?;
+    let (head, body) = text
+        .split_once("\r\n\r\n")
+        .or_else(|| text.split_once("\n\n"))?;
+    let status_line = head.lines().next()?;
+    if !status_line.contains(" 200 ") {
+        return None;
+    }
+    let is_chunked = head.lines().any(|line| {
+        line.to_ascii_lowercase()
+            .contains("transfer-encoding: chunked")
+    });
+    let json_body = if is_chunked {
+        decode_chunked_body(body)?
+    } else {
+        body.to_string()
+    };
+    let parsed: HealthResponse = serde_json::from_str(json_body.trim()).ok()?;
+    (parsed.app == "majjj").then_some(parsed)
+}
+
+fn decode_chunked_body(raw: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut rest = raw;
+    loop {
+        let line_end = rest.find("\r\n")?;
+        let size_hex = rest[..line_end].split(';').next()?.trim();
+        let size = usize::from_str_radix(size_hex, 16).ok()?;
+        rest = &rest[line_end + 2..];
+        if size == 0 {
+            return Some(out);
+        }
+        if rest.len() < size + 2 {
+            return None;
+        }
+        out.push_str(&rest[..size]);
+        rest = &rest[size + 2..];
+    }
+}
+
+async fn run_cli(config: ServerConfig) -> ExitCode {
+    let port = config.port;
+    let no_open = config.no_open;
+    let headless = config.headless;
+
+    let mut handle = match config.spawn().await {
         Ok(handle) => handle,
+        Err(ServerError::Bind { source, .. })
+            if source.kind() == ErrorKind::AddrInUse && !headless =>
+        {
+            if let Some(health) = probe_existing_majjj_health(port).await {
+                let url = format!("http://127.0.0.1:{}", health.port);
+                println!("majjj is already running at {url}");
+                if !no_open {
+                    open_browser_url(&url);
+                }
+                return ExitCode::SUCCESS;
+            }
+            eprintln!(
+                "error: port {port} is already in use by another process (127.0.0.1:{port}/api/health did not confirm majjj)"
+            );
+            return ExitCode::FAILURE;
+        }
         Err(err) => {
             eprintln!("error: {err}");
             return ExitCode::FAILURE;
@@ -73,12 +189,33 @@ async fn main() -> ExitCode {
     };
 
     println!("majjj listening on http://{}", handle.addr());
-
-    if let Err(err) = tokio::signal::ctrl_c().await {
-        eprintln!("warning: signal listener error: {err}");
+    if !no_open {
+        let url = format!("http://127.0.0.1:{}", handle.addr().port());
+        open_browser_url(&url);
     }
-    handle.shutdown().await;
+
+    tokio::select! {
+        res = handle.wait() => {
+            if let Err(err) = res {
+                eprintln!("error: server exited with error: {err}");
+                return ExitCode::FAILURE;
+            }
+        }
+        res = tokio::signal::ctrl_c() => {
+            if let Err(err) = res {
+                eprintln!("warning: signal listener error: {err}");
+            }
+            handle.shutdown().await;
+        }
+    }
     ExitCode::SUCCESS
+}
+
+#[tokio::main]
+async fn main() -> ExitCode {
+    let cli = Cli::parse();
+    let config = ServerConfig::from(cli);
+    run_cli(config).await
 }
 
 #[cfg(test)]
@@ -88,9 +225,10 @@ mod tests {
     use std::sync::Mutex;
 
     use clap::Parser;
+    use mahjong_server::protocol::TablePhase;
     use mahjong_server::{default_ai_threads, ServerConfig};
 
-    use super::Cli;
+    use super::{parse_http_health_response, Cli};
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -99,12 +237,16 @@ mod tests {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var("MAJJJ_PORT");
         std::env::remove_var("MAJJJ_AI_THREADS");
+        std::env::remove_var("MAJJJ_NO_OPEN");
+        std::env::remove_var("MAJJJ_HEADLESS");
         let default_cli = Cli::try_parse_from(["mahjong-server"]).expect("parse defaults");
         let default_cfg = ServerConfig::from(default_cli);
         assert_eq!(default_cfg.bind, IpAddr::V4(Ipv4Addr::UNSPECIFIED));
         assert_eq!(default_cfg.port, 8789);
         assert_eq!(default_cfg.static_dir, None);
         assert_eq!(default_cfg.ai_threads, default_ai_threads());
+        assert!(!default_cfg.no_open);
+        assert!(!default_cfg.headless);
 
         std::env::set_var("MAJJJ_PORT", "9876");
         let env_cli = Cli::try_parse_from(["mahjong-server"]).expect("parse with MAJJJ_PORT");
@@ -181,5 +323,57 @@ mod tests {
             zero_env_msg.contains("at least 1") || zero_env_msg.contains("0"),
             "unexpected error for MAJJJ_AI_THREADS=0: {zero_env_msg}"
         );
+    }
+
+    #[test]
+    fn cli_accepts_no_open_and_headless_flags_and_headless_implies_no_open() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var("MAJJJ_NO_OPEN");
+        std::env::remove_var("MAJJJ_HEADLESS");
+
+        let no_open_cli =
+            Cli::try_parse_from(["mahjong-server", "--no-open"]).expect("parse --no-open");
+        let no_open_cfg = ServerConfig::from(no_open_cli);
+        assert!(no_open_cfg.no_open);
+        assert!(!no_open_cfg.headless);
+
+        let headless_cli =
+            Cli::try_parse_from(["mahjong-server", "--headless"]).expect("parse --headless");
+        let headless_cfg = ServerConfig::from(headless_cli);
+        assert!(headless_cfg.headless);
+        assert!(headless_cfg.no_open, "--headless must imply no_open = true");
+
+        std::env::set_var("MAJJJ_HEADLESS", "true");
+        let env_headless_cli =
+            Cli::try_parse_from(["mahjong-server"]).expect("parse MAJJJ_HEADLESS=true");
+        std::env::remove_var("MAJJJ_HEADLESS");
+        let env_headless_cfg = ServerConfig::from(env_headless_cli);
+        assert!(env_headless_cfg.headless);
+        assert!(env_headless_cfg.no_open);
+    }
+
+    #[test]
+    fn parse_http_health_response_validates_majjj_app_and_rejects_other_services() {
+        let ok_raw = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"app\":\"majjj\",\"version\":\"0.1.0\",\"phase\":\"Lobby\",\"online_humans\":0,\"port\":8789}";
+        let health = parse_http_health_response(ok_raw).expect("valid majjj health");
+        assert_eq!(health.app, "majjj");
+        assert_eq!(health.port, 8789);
+        assert_eq!(health.phase, TablePhase::Lobby);
+
+        let body = "{\"app\":\"majjj\",\"version\":\"0.1.0\",\"phase\":\"InMatch\",\"online_humans\":2,\"port\":8789}";
+        let chunked = format!(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{body}\r\n0\r\n\r\n",
+            body.len()
+        );
+        let chunked_health =
+            parse_http_health_response(chunked.as_bytes()).expect("chunked majjj health");
+        assert_eq!(chunked_health.phase, TablePhase::InMatch);
+        assert_eq!(chunked_health.online_humans, 2);
+
+        let other_app = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"app\":\"other\",\"version\":\"1.0.0\",\"phase\":\"Lobby\",\"online_humans\":0,\"port\":8789}";
+        assert!(parse_http_health_response(other_app).is_none());
+
+        let not_found = b"HTTP/1.1 404 Not Found\r\n\r\n";
+        assert!(parse_http_health_response(not_found).is_none());
     }
 }

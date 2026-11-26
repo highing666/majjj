@@ -10,21 +10,24 @@ use axum::extract::{ConnectInfo, State, WebSocketUpgrade};
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, HOST};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use thiserror::Error;
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, MissedTickBehavior};
 
 use crate::ai_pool::default_ai_threads;
 use crate::lan::read_local_hostname;
+use crate::lifecycle::{
+    is_loopback_peer, spawn_idle_shutdown_monitor, IdleTimeouts, WsConnectionTracker,
+};
 use crate::protocol::{HealthResponse, ServerMessage};
 use crate::session::{OutboundSignal, TableOptions, TableRuntime};
 use crate::static_assets::{
-    DiskStaticAssets, NoopStaticAssets, StaticAssetError, StaticAssetSource,
+    DiskStaticAssets, EmbeddedStaticAssets, StaticAssetError, StaticAssetSource,
 };
 
 const DEFAULT_PING_INTERVAL: Duration = Duration::from_secs(10);
@@ -62,6 +65,12 @@ pub struct ServerConfig {
     pub ai_threads: usize,
     /// WebSocket application-layer ping interval and inbound activity timeout.
     pub heartbeat: HeartbeatConfig,
+    /// Skip opening the local browser automatically on startup (desktop mode).
+    pub no_open: bool,
+    /// Run in 7x24 headless mode (implies `no_open`, disables `POST /api/shutdown` and idle auto-exit).
+    pub headless: bool,
+    /// Split idle auto-exit thresholds for desktop mode (`!headless`).
+    pub idle_timeouts: IdleTimeouts,
 }
 
 impl Default for ServerConfig {
@@ -72,6 +81,9 @@ impl Default for ServerConfig {
             static_dir: None,
             ai_threads: default_ai_threads(),
             heartbeat: HeartbeatConfig::default(),
+            no_open: false,
+            headless: false,
+            idle_timeouts: IdleTimeouts::default(),
         }
     }
 }
@@ -104,8 +116,8 @@ pub enum ServerError {
 /// Running server handle returned by [`ServerConfig::spawn`].
 pub struct ServerHandle {
     addr: SocketAddr,
-    shutdown_tx: Option<oneshot::Sender<()>>,
-    join_handle: JoinHandle<Result<(), std::io::Error>>,
+    shutdown_tx: watch::Sender<bool>,
+    join_handle: Option<JoinHandle<Result<(), std::io::Error>>>,
 }
 
 impl std::fmt::Debug for ServerHandle {
@@ -123,21 +135,41 @@ impl ServerHandle {
         self.addr
     }
 
+    /// Waits until the server stops on its own (e.g. via `POST /api/shutdown` or idle auto-exit).
+    ///
+    /// # Errors
+    ///
+    /// Returns any I/O error reported by `axum::serve` or the spawned server task.
+    pub async fn wait(&mut self) -> Result<(), std::io::Error> {
+        let Some(jh) = self.join_handle.as_mut() else {
+            return Ok(());
+        };
+        let joined = jh.await;
+        self.join_handle = None;
+        match joined {
+            Ok(res) => res,
+            Err(err) => Err(std::io::Error::other(err)),
+        }
+    }
+
     /// Gracefully shuts down the running server and awaits task completion.
     pub async fn shutdown(mut self) {
-        if let Some(tx) = self.shutdown_tx.take() {
-            let _ = tx.send(());
+        let _ = self.shutdown_tx.send(true);
+        if let Some(jh) = self.join_handle.take() {
+            let _ = jh.await;
         }
-        let _ = self.join_handle.await;
     }
 }
 
 #[derive(Clone)]
 struct AppState {
     port: u16,
+    headless: bool,
     session: TableRuntime,
     static_assets: Arc<dyn StaticAssetSource>,
     heartbeat: HeartbeatConfig,
+    shutdown_tx: watch::Sender<bool>,
+    ws_tracker: WsConnectionTracker,
 }
 
 impl ServerConfig {
@@ -184,7 +216,7 @@ impl ServerConfig {
                         source,
                     }
                 })?),
-                None => Arc::new(NoopStaticAssets),
+                None => Arc::new(EmbeddedStaticAssets),
             };
 
         let bind_addr = SocketAddr::new(self.bind, self.port);
@@ -210,30 +242,50 @@ impl ServerConfig {
             options,
             self.ai_threads,
         )?;
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        let ws_tracker = WsConnectionTracker::new();
+        let monitor_handle = if self.headless {
+            None
+        } else {
+            let phase_rx = session.subscribe_phase().await;
+            Some(spawn_idle_shutdown_monitor(
+                self.idle_timeouts,
+                ws_tracker.subscribe(),
+                phase_rx,
+                shutdown_tx.clone(),
+            ))
+        };
+
         let state = AppState {
             port: local_addr.port(),
+            headless: self.headless,
             session,
             static_assets,
             heartbeat: self.heartbeat,
+            shutdown_tx: shutdown_tx.clone(),
+            ws_tracker,
         };
         let router = build_router(state);
 
-        let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let join_handle = tokio::spawn(async move {
-            axum::serve(
+            let serve_res = axum::serve(
                 listener,
                 router.into_make_service_with_connect_info::<SocketAddr>(),
             )
             .with_graceful_shutdown(async move {
-                let _ = shutdown_rx.await;
+                let _ = shutdown_rx.wait_for(|&stopped| stopped).await;
             })
-            .await
+            .await;
+            if let Some(monitor) = monitor_handle {
+                let _ = monitor.await;
+            }
+            serve_res
         });
 
         Ok(ServerHandle {
             addr: local_addr,
-            shutdown_tx: Some(shutdown_tx),
-            join_handle,
+            shutdown_tx,
+            join_handle: Some(join_handle),
         })
     }
 }
@@ -241,11 +293,32 @@ impl ServerConfig {
 fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/api/health", get(health_handler))
-        .route("/api/{*rest}", get(api_not_found))
-        .route("/api", get(api_not_found))
+        .route("/api/shutdown", post(shutdown_handler))
+        .route("/api/{*rest}", any(api_not_found))
+        .route("/api", any(api_not_found))
         .route("/ws", get(ws_handler))
         .fallback(get(static_asset_handler))
         .with_state(state)
+}
+
+async fn shutdown_handler(
+    extensions: axum::http::Extensions,
+    State(state): State<AppState>,
+) -> Response {
+    let peer = extensions
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ConnectInfo(addr)| *addr);
+    let status = if state.headless || !is_loopback_peer(peer) {
+        StatusCode::FORBIDDEN
+    } else {
+        let _ = state.shutdown_tx.send(true);
+        StatusCode::OK
+    };
+    let mut response = status.into_response();
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 async fn health_handler(State(state): State<AppState>) -> Response {
@@ -278,7 +351,18 @@ async fn ws_handler(
     let host_is_loopback = compute_host_is_loopback(Some(peer), &headers);
     let runtime = state.session.clone();
     let heartbeat = state.heartbeat;
-    ws.on_upgrade(move |socket| handle_ws_connection(socket, runtime, host_is_loopback, heartbeat))
+    let ws_tracker = state.ws_tracker.clone();
+    let shutdown_rx = state.shutdown_tx.subscribe();
+    ws.on_upgrade(move |socket| {
+        handle_ws_connection(
+            socket,
+            runtime,
+            host_is_loopback,
+            heartbeat,
+            ws_tracker,
+            shutdown_rx,
+        )
+    })
 }
 
 async fn handle_ws_connection(
@@ -286,7 +370,10 @@ async fn handle_ws_connection(
     runtime: TableRuntime,
     host_is_loopback: bool,
     heartbeat: HeartbeatConfig,
+    ws_tracker: WsConnectionTracker,
+    mut shutdown_rx: watch::Receiver<bool>,
 ) {
+    let _ws_guard = ws_tracker.enter();
     let conn_id = runtime.allocate_conn_id().await;
     let (tx, mut rx) = mpsc::unbounded_channel::<OutboundSignal>();
     let (mut ws_tx, mut ws_rx) = socket.split();
@@ -299,8 +386,20 @@ async fn handle_ws_connection(
     tokio::pin!(timeout_sleep);
 
     loop {
+        if *shutdown_rx.borrow_and_update() {
+            let _ = ws_tx.send(WsMessage::Close(None)).await;
+            let _ = ws_tx.close().await;
+            break;
+        }
         tokio::select! {
             biased;
+            res = shutdown_rx.changed() => {
+                if res.is_err() || *shutdown_rx.borrow() {
+                    let _ = ws_tx.send(WsMessage::Close(None)).await;
+                    let _ = ws_tx.close().await;
+                    break;
+                }
+            }
             outbound = rx.recv() => {
                 match outbound {
                     Some(OutboundSignal::Message(msg)) => {
@@ -397,8 +496,7 @@ async fn send_server_message(
 }
 
 fn compute_host_is_loopback(peer: Option<SocketAddr>, headers: &HeaderMap) -> bool {
-    let peer_loopback = peer.is_some_and(|addr| addr.ip().to_canonical().is_loopback());
-    if !peer_loopback {
+    if !is_loopback_peer(peer) {
         return false;
     }
     if let Some(host_val) = headers.get(HOST).and_then(|v| v.to_str().ok()) {
@@ -442,5 +540,128 @@ async fn static_asset_handler(State(state): State<AppState>, uri: Uri) -> Respon
         Ok(Err(StaticAssetError::Io(_))) | Err(_) => {
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+    use std::sync::Arc;
+
+    use axum::extract::{ConnectInfo, State};
+    use axum::http::header::CACHE_CONTROL;
+    use axum::http::{Extensions, StatusCode};
+    use tokio::sync::watch;
+
+    use super::{shutdown_handler, AppState, HeartbeatConfig};
+    use crate::lifecycle::WsConnectionTracker;
+    use crate::session::TableRuntime;
+    use crate::static_assets::NoopStaticAssets;
+
+    fn extensions_with_peer(peer: Option<SocketAddr>) -> Extensions {
+        let mut ext = Extensions::new();
+        if let Some(addr) = peer {
+            ext.insert(ConnectInfo(addr));
+        }
+        ext
+    }
+
+    fn test_state(headless: bool) -> (AppState, watch::Receiver<bool>) {
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let state = AppState {
+            port: 8789,
+            headless,
+            session: TableRuntime::new(8789),
+            static_assets: Arc::new(NoopStaticAssets),
+            heartbeat: HeartbeatConfig::default(),
+            shutdown_tx,
+            ws_tracker: WsConnectionTracker::new(),
+        };
+        (state, shutdown_rx)
+    }
+
+    #[tokio::test]
+    async fn shutdown_handler_allows_loopback_and_rejects_non_loopback_and_headless() {
+        // Non-loopback IPv4 -> 403 + no-store + does not shut down
+        let (state, rx) = test_state(false);
+        let resp = shutdown_handler(
+            extensions_with_peer(Some(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50)),
+                44444,
+            ))),
+            State(state),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            resp.headers()
+                .get(CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok()),
+            Some("no-store")
+        );
+        assert!(!*rx.borrow());
+
+        // Non-loopback IPv4-mapped IPv6 -> 403 + no-store
+        let (state, rx) = test_state(false);
+        let resp = shutdown_handler(
+            extensions_with_peer(Some(SocketAddr::new(
+                IpAddr::V6(Ipv4Addr::new(10, 0, 0, 9).to_ipv6_mapped()),
+                44444,
+            ))),
+            State(state),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            resp.headers()
+                .get(CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok()),
+            Some("no-store")
+        );
+        assert!(!*rx.borrow());
+
+        // Missing ConnectInfo -> 403 + no-store
+        let (state, rx) = test_state(false);
+        let resp = shutdown_handler(extensions_with_peer(None), State(state)).await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert!(!*rx.borrow());
+
+        // Headless mode -> 403 + no-store even for 127.0.0.1
+        let (state, rx) = test_state(true);
+        let resp = shutdown_handler(
+            extensions_with_peer(Some(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                44444,
+            ))),
+            State(state),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            resp.headers()
+                .get(CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok()),
+            Some("no-store")
+        );
+        assert!(!*rx.borrow());
+
+        // IPv6 loopback ::1 -> 200 + no-store + shutdown triggered
+        let (state, rx) = test_state(false);
+        let resp = shutdown_handler(
+            extensions_with_peer(Some(SocketAddr::new(
+                IpAddr::V6(Ipv6Addr::LOCALHOST),
+                44444,
+            ))),
+            State(state),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get(CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok()),
+            Some("no-store")
+        );
+        assert!(*rx.borrow());
     }
 }

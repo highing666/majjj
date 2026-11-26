@@ -95,6 +95,22 @@ pub async fn spawn_with_wall_factory(seed: u64, factory: WallProviderFactory) ->
 
 #[allow(dead_code)]
 pub async fn http_get(addr: SocketAddr, uri_path: &str) -> (StatusCode, hyper::HeaderMap, Vec<u8>) {
+    http_request("GET", addr, uri_path).await
+}
+
+#[allow(dead_code)]
+pub async fn http_post(
+    addr: SocketAddr,
+    uri_path: &str,
+) -> (StatusCode, hyper::HeaderMap, Vec<u8>) {
+    http_request("POST", addr, uri_path).await
+}
+
+async fn http_request(
+    method: &str,
+    addr: SocketAddr,
+    uri_path: &str,
+) -> (StatusCode, hyper::HeaderMap, Vec<u8>) {
     let stream = TcpStream::connect(addr).await.expect("connect to server");
     let io = TokioIo::new(stream);
     let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
@@ -105,7 +121,7 @@ pub async fn http_get(addr: SocketAddr, uri_path: &str) -> (StatusCode, hyper::H
     });
 
     let req = Request::builder()
-        .method("GET")
+        .method(method)
         .uri(uri_path)
         .header("Host", addr.to_string())
         .body(http_body_util::Empty::<hyper::body::Bytes>::new())
