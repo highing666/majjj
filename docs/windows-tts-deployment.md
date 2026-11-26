@@ -210,3 +210,27 @@ pwsh -File E:\majjj-tts\start-tts-server.ps1 -RootDir E:\majjj-tts -Backend qwen
 | 10–26 字中文台词端到端耗时 | avg `≤ 1,000 ms` / p95 `≤ 1,350 ms` | `avg TBD ms / p95 TBD ms` | `[ ]` |
 | 5 位`牌友角色`音色辨识度盲听 | 5 角色一耳可辨、音色无漂移 | `TBD` | `[ ]` |
 | 6 档`牌友情绪`盲听区分度 | `Smug / Mocking / Tilted / Nervous / Plotting / Deadpan` 张力达标 | `TBD` | `[ ]` |
+
+---
+
+## 8. 离线 1.7B `角色语音包`（`VoicePack`）批量重录
+
+仓库已内置一套在 macOS 本地生成的 7 套可播放单声道 `.m4a` `角色语音包`（`web/public/assets/vo/<pack_id>/`）。在 `BENDER` 临时停止 `llama-server` 释放全部 12 GB 显存后，可随时幂等运行离线 1.7B 批处理管线进行棚录级替换，并同步导出 5 位 AI `牌友角色`的 24 kHz 参考音频（`voices/<pack_id>_ref.wav`）供在线克隆备选后端复用：
+
+```powershell
+# 1. 临时停止 llama-server 与在线 TTS，确保 RTX 3060 12GB 显存全部可用
+pwsh -File E:\majjj-llm\stop-llama-server.ps1
+pwsh -File E:\majjj-tts\stop-tts-server.ps1
+
+# 2. 全量重录 7 套角色语音包（5 AI 走 1.7B-CustomVoice，2 人类走 1.7B-VoiceDesign）
+E:\majjj-tts\.venv\Scripts\python.exe .\scripts\windows-tts\generate_voice_packs.py `
+  --output-dir .\web\public\assets\vo `
+  --voices-dir E:\majjj-tts\voices `
+  --bitrate 24000
+
+# 仅按需重录单个语音包（幂等覆盖）
+E:\majjj-tts\.venv\Scripts\python.exe .\scripts\windows-tts\generate_voice_packs.py `
+  --packs quick_hothead human_female
+```
+
+生成的 `sprite.m4a` 与 `manifest.json` 覆写回 `web/public/assets/vo/<pack_id>/` 后，执行 `npm --prefix web run build` 与 `./scripts/check-web-safeguards.sh` 即可无代码改动完成单二进制重新内嵌。

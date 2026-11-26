@@ -7,6 +7,7 @@ cd "$repo_root"
 node -e '
 const fs = require("fs");
 const path = require("path");
+const { execFileSync } = require("child_process");
 
 const cwd = process.cwd();
 const webRoot = path.join(cwd, "web");
@@ -253,7 +254,152 @@ for (const file of m4aFiles) {
   }
 }
 
-// 5. PWA manifest integrity (web/public/manifest.webmanifest + icons + web/dist parity)
+// 5. Offline 7-pack VoicePack AudioSprite gate (web/public/assets/vo & web/dist/assets/vo)
+const VOICE_PACK_IDS = [
+  "quick_hothead",
+  "tea_sarcasm",
+  "stubborn_blamer",
+  "chaos_instigator",
+  "tilted_master",
+  "human_male",
+  "human_female",
+];
+const CANONICAL_VOICE_SLOTS = [
+  "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9",
+  "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9",
+  "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9",
+  "z1", "z2", "z3", "z4", "z5", "z6", "z7",
+  "pong", "kong", "concealed_kong", "zimo", "ron", "rob_kong",
+  "emote_is_that_it", "emote_hurry_up", "emote_spare_me",
+  "emote_nice_play", "emote_dealer_rigged", "emote_going_big",
+];
+const MAX_VOICE_PACK_TOTAL_BYTES = 2 * 1024 * 1024; // 2.0 MiB single-binary budget ceiling
+const hasAfinfo = process.platform === "darwin" && fs.existsSync("/usr/bin/afinfo");
+
+function validateVoicePackRoot(voRoot) {
+  const relRoot = path.relative(cwd, voRoot);
+  if (!fs.existsSync(voRoot)) {
+    failures.push(`${relRoot}: missing VoicePack directory`);
+    return;
+  }
+
+  let totalBytes = 0;
+  for (const packId of VOICE_PACK_IDS) {
+    const packDir = path.join(voRoot, packId);
+    const manifestPath = path.join(packDir, "manifest.json");
+    const spritePath = path.join(packDir, "sprite.m4a");
+    if (!fs.existsSync(manifestPath)) {
+      failures.push(`${relRoot}/${packId}: missing manifest.json`);
+      continue;
+    }
+    if (!fs.existsSync(spritePath)) {
+      failures.push(`${relRoot}/${packId}: missing sprite.m4a`);
+      continue;
+    }
+
+    try {
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+      if (manifest.pack_id !== packId) {
+        failures.push(`${relRoot}/${packId}/manifest.json: pack_id "${manifest.pack_id}" != "${packId}"`);
+      }
+      if (manifest.audio !== "sprite.m4a") {
+        failures.push(`${relRoot}/${packId}/manifest.json: audio "${manifest.audio}" != "sprite.m4a"`);
+      }
+      if (!(typeof manifest.duration === "number" && manifest.duration > 0)) {
+        failures.push(`${relRoot}/${packId}/manifest.json: invalid duration ${manifest.duration}`);
+      }
+      const sprites = manifest.sprites;
+      if (!sprites || typeof sprites !== "object" || Array.isArray(sprites)) {
+        failures.push(`${relRoot}/${packId}/manifest.json: missing sprites object`);
+        continue;
+      }
+
+      const keys = Object.keys(sprites);
+      const keySet = new Set(keys);
+      const missingSlots = CANONICAL_VOICE_SLOTS.filter((s) => !keySet.has(s));
+      const extraSlots = keys.filter((k) => !CANONICAL_VOICE_SLOTS.includes(k));
+      if (missingSlots.length > 0) {
+        failures.push(`${relRoot}/${packId}/manifest.json: missing canonical slots: ${missingSlots.join(", ")}`);
+      }
+      if (extraSlots.length > 0) {
+        failures.push(`${relRoot}/${packId}/manifest.json: unexpected extra slots: ${extraSlots.join(", ")}`);
+      }
+
+      const bytes = fs.statSync(spritePath).size;
+      if (bytes <= 1024) {
+        failures.push(`${relRoot}/${packId}/sprite.m4a: file too small (${bytes} bytes)`);
+      }
+      totalBytes += bytes;
+
+      const mvhdSec = readM4aDurationSeconds(spritePath);
+      if (!(mvhdSec > 0)) {
+        failures.push(`${relRoot}/${packId}/sprite.m4a: invalid mvhd duration ${mvhdSec}`);
+      }
+      let durationBoundSec = mvhdSec;
+      if (hasAfinfo) {
+        const out = execFileSync("/usr/bin/afinfo", [spritePath], { encoding: "utf8" });
+        const m = out.match(/estimated duration:\s*([0-9.]+)\s*sec/);
+        if (!m || !(Number(m[1]) > 0)) {
+          failures.push(`${relRoot}/${packId}/sprite.m4a: afinfo reported invalid duration`);
+        } else {
+          durationBoundSec = Math.min(durationBoundSec, Number(m[1]));
+        }
+      }
+
+      const ordered = CANONICAL_VOICE_SLOTS.filter((s) => Array.isArray(sprites[s])).map((s) => ({
+        slot: s,
+        start: sprites[s][0],
+        dur: sprites[s][1],
+      })).sort((a, b) => a.start - b.start);
+
+      for (let i = 0; i < ordered.length; i += 1) {
+        const cur = ordered[i];
+        if (
+          typeof cur.start !== "number" ||
+          typeof cur.dur !== "number" ||
+          !Number.isFinite(cur.start) ||
+          !Number.isFinite(cur.dur) ||
+          cur.start < 0 ||
+          cur.dur <= 0
+        ) {
+          failures.push(`${relRoot}/${packId}/manifest.json: invalid slice for ${cur.slot}`);
+          continue;
+        }
+        if (cur.start + cur.dur > manifest.duration + 0.001) {
+          failures.push(
+            `${relRoot}/${packId}/manifest.json: ${cur.slot} end ${(cur.start + cur.dur).toFixed(4)}s > manifest.duration ${manifest.duration}s`,
+          );
+        }
+        if (cur.start + cur.dur > durationBoundSec + 0.05) {
+          failures.push(
+            `${relRoot}/${packId}/manifest.json: ${cur.slot} end ${(cur.start + cur.dur).toFixed(4)}s > audio duration ${durationBoundSec.toFixed(4)}s`,
+          );
+        }
+        if (i > 0) {
+          const prev = ordered[i - 1];
+          if (cur.start < prev.start + prev.dur - 1e-6) {
+            failures.push(`${relRoot}/${packId}/manifest.json: slot ${cur.slot} overlaps ${prev.slot}`);
+          }
+        }
+      }
+    } catch (err) {
+      failures.push(`${relRoot}/${packId}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  if (totalBytes > MAX_VOICE_PACK_TOTAL_BYTES) {
+    failures.push(
+      `${relRoot}: total VoicePack .m4a size ${totalBytes} bytes exceeds ${MAX_VOICE_PACK_TOTAL_BYTES} bytes (2.0 MiB)`,
+    );
+  }
+}
+
+validateVoicePackRoot(path.join(publicDir, "assets", "vo"));
+if (fs.existsSync(distDir)) {
+  validateVoicePackRoot(path.join(distAssetsDir, "vo"));
+}
+
+// 6. PWA manifest integrity (web/public/manifest.webmanifest + icons + web/dist parity)
 const publicManifestPath = path.join(publicDir, "manifest.webmanifest");
 if (!fs.existsSync(publicManifestPath)) {
   failures.push("missing web/public/manifest.webmanifest");
