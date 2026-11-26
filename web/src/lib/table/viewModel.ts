@@ -17,7 +17,6 @@ import {
   seatRelativeRole,
   seatRelativeShortRole,
   seatRelativeSlot,
-  seatShortWind,
   type RelativeRole,
   type RelativeRoleShort,
   type RelativeSeats,
@@ -69,7 +68,7 @@ export interface CanvasSize {
 }
 
 export interface SeatBadgeModel {
-  wind: string;
+  role: RelativeRole;
   isDealer: boolean;
   isActive: boolean;
   isOffline: boolean;
@@ -491,7 +490,7 @@ export function buildSeatBadgeModel(
   const rawName = seatInfo.nickname || (seatInfo.kind === "Ai" ? "AI" : role);
   const name = rawName.length > 7 ? `${rawName.slice(0, 6)}…` : rawName;
   return {
-    wind: seatShortWind(seat),
+    role,
     isDealer: dealer === seat,
     isActive: activeSeat === seat,
     isOffline: seatInfo.kind === "Human" && !seatInfo.connected,
