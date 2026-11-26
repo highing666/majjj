@@ -607,7 +607,7 @@ describe("table viewModel helpers", () => {
     ).toBeNull();
   });
 
-  it("builds corner seat badge view models with dealer, active, offline, and score tags", () => {
+  it("builds corner seat badge view models with 2-char relative role, dealer, active, offline, and score tags", () => {
     const model = buildSeatBadgeModel(
       "South",
       {
@@ -634,7 +634,7 @@ describe("table viewModel helpers", () => {
     );
 
     expect(model).toEqual({
-      wind: "南",
+      role: "下家",
       isDealer: true,
       isActive: true,
       isOffline: true,
@@ -642,6 +642,7 @@ describe("table viewModel helpers", () => {
       name: "小红",
       scoreText: "+8",
     });
+    expect("wind" in model).toBe(false);
 
     const assistedModel = buildSeatBadgeModel(
       "South",
@@ -668,5 +669,56 @@ describe("table viewModel helpers", () => {
       "South",
     );
     expect(assistedModel.isAiAssisted).toBe(true);
+    expect(assistedModel.isOffline).toBe(true);
+    expect(assistedModel.role).toBe("下家");
+  });
+
+  it("assigns full 2-char counter-clockwise relative roles with zero wind characters across all 4 viewer perspectives", () => {
+    const seats: Seat[] = ["East", "South", "West", "North"];
+    const expectedByViewer: Record<Seat, Record<Seat, string>> = {
+      East: { East: "自家", South: "下家", West: "对门", North: "上家" },
+      South: { South: "自家", West: "下家", North: "对门", East: "上家" },
+      West: { West: "自家", North: "下家", East: "对门", South: "上家" },
+      North: { North: "自家", East: "下家", South: "对门", West: "上家" },
+    };
+
+    for (const viewer of seats) {
+      for (const seat of seats) {
+        const badge = buildSeatBadgeModel(
+          seat,
+          {
+            seat,
+            score: -4,
+            hand_count: 13,
+            river: [],
+            melds: [],
+            last_draw_or_meld_seq: 0,
+          },
+          {
+            seat,
+            kind: "Ai",
+            nickname: "",
+            connected: true,
+            ai_assisted: false,
+            ai_difficulty: "Strong",
+            ai_style: "Balanced",
+            voice_pack_id: null,
+          },
+          viewer,
+          "East",
+          "West",
+        );
+
+        expect(badge.role).toBe(expectedByViewer[viewer][seat]);
+        expect(badge.role).toHaveLength(2);
+        expect(badge.role).not.toMatch(/[东南西北]/);
+        expect(badge.isDealer).toBe(seat === "East");
+        expect(badge.isActive).toBe(seat === "West");
+        expect(badge.isOffline).toBe(false);
+        expect(badge.isAiAssisted).toBe(false);
+        expect(badge.name).toBe("AI");
+        expect(badge.scoreText).toBe("-4");
+      }
+    }
   });
 });
