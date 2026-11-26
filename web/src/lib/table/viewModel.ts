@@ -57,6 +57,7 @@ export interface SeatBadgeModel {
   isDealer: boolean;
   isActive: boolean;
   isOffline: boolean;
+  isAiAssisted: boolean;
   name: string;
   scoreText: string;
 }
@@ -518,6 +519,7 @@ export function buildSeatBadgeModel(
     isDealer: dealer === seat,
     isActive: activeSeat === seat,
     isOffline: seatInfo.kind === "Human" && !seatInfo.connected,
+    isAiAssisted: seatInfo.kind === "Human" && seatInfo.ai_assisted,
     name,
     scoreText: formatScoreDelta(seatView.score),
   };

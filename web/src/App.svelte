@@ -15,8 +15,11 @@
     type PresentationState,
   } from "./lib/presentation/presentationQueue";
   import type { PlayerAction } from "./lib/protocol/generated/PlayerAction";
+  import type { Seat } from "./lib/protocol/generated/Seat";
+  import type { SeatInfo } from "./lib/protocol/generated/SeatInfo";
   import type { TablePace } from "./lib/protocol/generated/TablePace";
   import type { Tile } from "./lib/protocol/generated/Tile";
+  import { seatIndex } from "./lib/protocol/seats";
   import { createTableClient } from "./lib/session/client";
   import type { SessionState } from "./lib/session/reducer";
   import ActionBar from "./lib/table/ActionBar.svelte";
@@ -26,8 +29,15 @@
     createRenderQualityController,
     type RenderQualityState,
   } from "./lib/table/renderQuality";
+  import {
+    buildOfflinePauseBanner,
+    buildTakeOverSeatItems,
+    type TakeOverKind,
+  } from "./lib/table/seatControl";
+  import SeatControlBar from "./lib/table/SeatControlBar.svelte";
   import SettlementModal from "./lib/table/SettlementModal.svelte";
   import TableCanvas from "./lib/table/TableCanvas.svelte";
+  import TakeOverModal from "./lib/table/TakeOverModal.svelte";
   import { formatRoundTitle, seatLabel } from "./lib/table/tiles";
   import { findLegalDiscardAction } from "./lib/table/viewModel";
   import type { WebGLRecoveryState } from "./lib/table/webglRecovery";
@@ -58,6 +68,10 @@
   let webglRecoveryState = $state<WebGLRecoveryState | null>(null);
   let audioStatus = $state<AudioStatus>(audioRouter.getStatus());
   let settingsOpen = $state(false);
+  let takeOverTarget = $state<{
+    seatInfo: SeatInfo;
+    kind: TakeOverKind;
+  } | null>(null);
   const initialNickname = client.getIdentity().nickname;
 
   $effect(() => {
@@ -128,8 +142,15 @@
     sessionState.replacedByNewTab ||
       sessionState.connectionStatus !== "connected",
   );
+  const yourSeatAiAssisted = $derived(
+    snapshot !== null &&
+      snapshot.your_seat !== null &&
+      snapshot.seats[seatIndex(snapshot.your_seat)].ai_assisted,
+  );
   const inputLocked = $derived(
-    actionsDisabled || sessionState.pendingActionId !== null,
+    actionsDisabled ||
+      sessionState.pendingActionId !== null ||
+      yourSeatAiAssisted,
   );
   const settlementVisible = $derived(
     presentedSnapshot !== null &&
@@ -140,6 +161,7 @@
   );
   const hasModalOpen = $derived(
     settingsOpen ||
+      takeOverTarget !== null ||
       (snapshot !== null &&
         (snapshot.pending_destructive_op !== null || settlementVisible)),
   );
@@ -198,6 +220,15 @@
     } else if (snapshot.config.pace !== pace) {
       client.updateLobbyConfig(patchLobbyConfig(snapshot.config, { pace }));
     }
+  }
+
+  function openTakeOverModal(seatInfo: SeatInfo, kind: TakeOverKind): void {
+    takeOverTarget = { seatInfo, kind };
+  }
+
+  function handleConfirmTakeOver(seat: Seat): void {
+    client.takeOverSeat(seat, true);
+    takeOverTarget = null;
   }
 </script>
 
@@ -260,6 +291,7 @@
       onUpdateConfig={(config) => client.updateLobbyConfig(config)}
       onStartMatch={() => client.startMatch()}
       onOpenSettings={() => (settingsOpen = true)}
+      onTakeOverSeat={(seatInfo) => openTakeOverModal(seatInfo, "offline_human")}
     />
   {:else if presentedSnapshot.phase === "InMatch"}
     <section class="match-shell">
@@ -327,6 +359,12 @@
       </header>
 
       {#if presentedSnapshot && presentedPlayerView}
+        <SeatControlBar
+          snapshot={snapshot ?? presentedSnapshot}
+          disabled={actionsDisabled}
+          onToggleAiAssist={(seat, enabled) => client.toggleAiAssist(seat, enabled)}
+        />
+
         <div
           class="table-stage"
           class:stage-shaking={presentationState.activeImpact?.dampedShake ??
@@ -394,11 +432,52 @@
           />
         {/if}
       {:else}
+        {@const activeSnap = snapshot ?? presentedSnapshot}
+        {@const offlineNotice = buildOfflinePauseBanner(activeSnap)}
+        {@const takeOverItems = buildTakeOverSeatItems(activeSnap)}
+        {#if offlineNotice !== null}
+          <div class="banner banner-warn" role="status">
+            <span>{offlineNotice}</span>
+          </div>
+        {/if}
         <section class="card placeholder-card">
           <h1>对局进行中</h1>
           <p class="placeholder-note">
-            当前本机未入座，正在观摩实时牌桌。待本场对局结束后可返回开桌大厅入座。
+            当前本机未入座。你可以直接接管 AI 座位立即加入本小局，或经确认后接管已离线人类座位继续对局。
           </p>
+          <div class="observer-seats-grid">
+            {#each takeOverItems as item (item.seatInfo.seat)}
+              <article class="observer-seat-card">
+                <div class="observer-seat-head">
+                  <strong>{item.displayName}</strong>
+                  <span
+                    class="tag"
+                    class:tag-offline={item.takeOverKind === "offline_human"}
+                    class:tag-online={item.takeOverKind === null && item.seatInfo.kind === "Human"}
+                  >
+                    {item.statusLabel}
+                  </span>
+                </div>
+                {#if item.takeOverKind !== null && item.actionLabel !== null}
+                  {@const kind = item.takeOverKind}
+                  <button
+                    class="btn"
+                    class:btn-jade={kind === "ai"}
+                    class:btn-primary={kind === "offline_human"}
+                    type="button"
+                    disabled={actionsDisabled}
+                    onclick={() => openTakeOverModal(item.seatInfo, kind)}
+                  >
+                    {item.actionLabel}
+                  </button>
+                {:else}
+                  <button class="btn" type="button" disabled>
+                    不可接管
+                  </button>
+                {/if}
+              </article>
+            {/each}
+          </div>
         </section>
       {/if}
 
@@ -473,6 +552,16 @@
     onResume={() => audioRouter.unlockFromGesture()}
   />
 
+  {#if takeOverTarget !== null}
+    <TakeOverModal
+      seatInfo={takeOverTarget.seatInfo}
+      kind={takeOverTarget.kind}
+      disabled={actionsDisabled}
+      onConfirm={handleConfirmTakeOver}
+      onCancel={() => (takeOverTarget = null)}
+    />
+  {/if}
+
   <footer class="footer-bar">
     <span>
       {#if snapshot}
@@ -522,6 +611,29 @@
     display: flex;
     flex-wrap: wrap;
     gap: 10px;
+  }
+
+  .observer-seats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 12px;
+  }
+
+  .observer-seat-card {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    background: var(--bg-muted);
+  }
+
+  .observer-seat-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
   }
 
   .match-shell {

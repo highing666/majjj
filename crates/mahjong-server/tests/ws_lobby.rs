@@ -396,7 +396,7 @@ async fn reserved_and_unwired_messages_and_invalid_json_return_error_notice_with
         ServerMessage::ErrorNotice { .. }
     ));
 
-    // Reserved Slice 5 messages
+    // Slice 5 hot-swap messages rejected in unseated Lobby state
     for msg in [
         ClientMessage::ToggleAiAssist {
             seat: Seat::East,

@@ -85,6 +85,8 @@ export interface TableClient {
   requestSnapshot(): boolean;
   sendPing(tsMs?: number): boolean;
   submitAction(action: PlayerAction): boolean;
+  toggleAiAssist(seat: Seat, enabled: boolean): boolean;
+  takeOverSeat(seat: Seat, confirm: boolean): boolean;
   requestEndFreeTable(): boolean;
   requestDisbandMatch(): boolean;
   confirmDestructiveOp(op_id: string, accept: boolean): boolean;
@@ -552,6 +554,14 @@ export function createTableClient(
         });
       }
       return sent;
+    },
+
+    toggleAiAssist(seat: Seat, enabled: boolean): boolean {
+      return sendRaw({ ToggleAiAssist: { seat, enabled } });
+    },
+
+    takeOverSeat(seat: Seat, confirm: boolean): boolean {
+      return sendRaw({ TakeOverSeat: { seat, confirm } });
     },
 
     requestEndFreeTable(): boolean {
