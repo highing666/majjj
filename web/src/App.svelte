@@ -165,6 +165,13 @@
   const snapshot = $derived(sessionState.snapshot);
 
   $effect(() => {
+    const seats = snapshot?.seats;
+    if (seats) {
+      audioRouter.preloadVoicePacks(seats.map((entry) => entry.voice_pack_id));
+    }
+  });
+
+  $effect(() => {
     shutdownController.syncHostIsLoopback(snapshot?.host_is_loopback === true);
   });
 
@@ -405,6 +412,7 @@
       onLeaveSeat={() => client.leaveSeat()}
       onUpdateConfig={(config) => client.updateLobbyConfig(config)}
       onSetSeatPersona={(seat, personaId) => client.setSeatPersona(seat, personaId)}
+      onSetSeatVoicePack={(voicePackId) => client.setSeatVoicePack(voicePackId)}
       onStartMatch={() => client.startMatch()}
       onOpenSettings={() => (settingsOpen = true)}
       onOpenHistory={() => void historyController.open()}

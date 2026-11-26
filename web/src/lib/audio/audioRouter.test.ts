@@ -3,11 +3,13 @@ import { defaultDevicePreferences } from "../preferences/devicePreferences";
 import {
   mapLocalUiActionToSemanticEvent,
   mapPlayerEventToSemanticEvent,
+  mapQuickEmoteBroadcastToSemanticEvent,
   type SemanticMappingContext,
 } from "../presentation/semanticEvents";
 import type { PlayerEvent } from "../protocol/generated/PlayerEvent";
 import type { RevealedHand } from "../protocol/generated/RevealedHand";
 import type { SeatInfo } from "../protocol/generated/SeatInfo";
+import { QUICK_EMOTE_IDS } from "../protocol/personas";
 import { ALL_SEATS } from "../protocol/seats";
 import { createAudioEventRouter } from "./audioRouter";
 import type {
@@ -27,8 +29,11 @@ import type {
   SfxPlaybackReceipt,
   SfxSlotId,
   StereoPannerNodeLike,
-  VoManifest,
+  VoicePackManifest,
+  VoiceSlotId,
+  VoiceSpriteSlice,
 } from "./audioTypes";
+import { ALL_VOICE_SLOTS } from "./voicePackSchema";
 
 function makeFakeParam(initial = 0): AudioParamLike {
   const param: AudioParamLike = {
@@ -564,14 +569,22 @@ describe("AudioEventRouter", () => {
     router.dispose();
   });
 
-  it("passes SeatInfo.voice_pack_id to v2 VO pipeline and ducks sfxGain to 0.45 when triggered", async () => {
+  it("routes all 46 VoicePack slots (34 tiles, 6 actions, 6 quick emotes) with single-decode slicing, relative panning, and 30ms ducking", async () => {
     const env = createFakeAudioEnv("running");
+    const sprites: Partial<Record<VoiceSlotId, VoiceSpriteSlice>> = {};
+    ALL_VOICE_SLOTS.forEach((slot, idx) => {
+      sprites[slot] = [idx * 0.75, 0.45];
+    });
     const fetchFn: FetchLike = vi.fn(async (url: string) => {
-      if (url === "/assets/vo/piltover-vi/manifest.json") {
-        const manifest: VoManifest = {
-          pack_id: "piltover-vi",
-          version: 2,
-          clips: { Hu: ["vi_hu.m4a"] },
+      const match = url.match(/^\/assets\/vo\/([^/]+)\/manifest\.json$/);
+      if (match) {
+        const manifest: VoicePackManifest = {
+          pack_id: match[1]!,
+          version: 1,
+          audio: "sprite.m4a",
+          sample_rate: 24000,
+          duration: ALL_VOICE_SLOTS.length * 0.75,
+          sprites,
         };
         return {
           ok: true,
@@ -580,12 +593,12 @@ describe("AudioEventRouter", () => {
           arrayBuffer: async () => new ArrayBuffer(0),
         };
       }
-      if (url === "/assets/vo/piltover-vi/vi_hu.m4a") {
+      if (url.endsWith("/sprite.m4a")) {
         return {
           ok: true,
           status: 200,
           json: async () => ({}),
-          arrayBuffer: async () => new ArrayBuffer(12),
+          arrayBuffer: async () => new ArrayBuffer(24),
         };
       }
       return {
@@ -596,36 +609,266 @@ describe("AudioEventRouter", () => {
       };
     });
 
+    const fakeSfxBackend = {
+      getMode: () => "procedural" as const,
+      ensureLoaded: vi.fn(async () => "procedural" as const),
+      play: vi.fn(() => ({
+        backend: "procedural" as const,
+        slot: "discard_light" as const,
+        variantIndex: 0,
+        playbackRate: 1,
+        pan: 0,
+      })),
+      dispose: vi.fn(),
+    };
+
     const router = createAudioEventRouter({
       initialPreferences: { ...defaultDevicePreferences(false), sfx_volume: 1 },
       createAudioContext: () => env.ctx,
+      sfxBackend: fakeSfxBackend,
       fetchFn,
+      documentTarget: env.docTarget,
+      getVisibilityState: env.getVisibilityState,
+    });
+    router.preloadVoicePacks(["human_male", "quick_hothead"]);
+    router.unlockFromGesture();
+
+    // Wait for preloaded packs to finish decoding once each
+    await vi.waitFor(() => {
+      expect(env.ctx.decodeAudioData).toHaveBeenCalledTimes(2);
+    });
+
+    const seats = makeSeats("human_male");
+    seats[1] = { ...seats[1], voice_pack_id: "quick_hothead" };
+    seats[2] = { ...seats[2], voice_pack_id: "tea_sarcasm" };
+    seats[3] = { ...seats[3], voice_pack_id: "stubborn_blamer" };
+    const ctx: SemanticMappingContext = {
+      viewer: "East",
+      seats,
+      wallRemaining: 30,
+    };
+
+    const finishLatestSource = () => {
+      env.bufferSources.at(-1)?.node.onended?.();
+    };
+
+    // 1. All 34 discard tiles map to m1..z7 in order
+    for (let tile = 0; tile < 34; tile += 1) {
+      const countBefore = env.bufferSources.length;
+      router.handleSemanticEvent(
+        mapPlayerEventToSemanticEvent(
+          {
+            seq: 100 + tile,
+            kind: { TileDiscarded: { seat: "East", tile, is_tsumogiri: true } },
+          },
+          ctx,
+        ),
+      );
+      await vi.waitFor(() => {
+        expect(env.bufferSources.length).toBe(countBefore + 1);
+      });
+      const expectedSlot = ALL_VOICE_SLOTS[tile]!;
+      expect(env.bufferSources.at(-1)!.startArgs[0]).toEqual([
+        5.0,
+        sprites[expectedSlot]![0],
+        sprites[expectedSlot]![1],
+      ]);
+      finishLatestSource();
+    }
+
+    // 2. All 6 meld/win action calls + relative panning (South 下家 +0.35, North 上家 -0.35)
+    const actionChecks: Array<{
+      event: PlayerEvent;
+      expectedSlot: VoiceSlotId;
+      expectedPan: number;
+    }> = [
+      {
+        event: {
+          seq: 201,
+          kind: {
+            MeldDeclared: {
+              seat: "South",
+              meld: { Pon: { tile: 0, from_seat: "East", seq: 201 } },
+              kong_score_deltas: null,
+            },
+          },
+        },
+        expectedSlot: "pong",
+        expectedPan: 0.35,
+      },
+      {
+        event: {
+          seq: 202,
+          kind: {
+            MeldDeclared: {
+              seat: "North",
+              meld: { ExposedKong: { tile: 1, from_seat: "East", seq: 202 } },
+              kong_score_deltas: null,
+            },
+          },
+        },
+        expectedSlot: "kong",
+        expectedPan: -0.35,
+      },
+      {
+        event: {
+          seq: 203,
+          kind: {
+            MeldDeclared: {
+              seat: "South",
+              meld: { AddedKong: { tile: 2, from_seat: "East", seq: 203 } },
+              kong_score_deltas: null,
+            },
+          },
+        },
+        expectedSlot: "kong",
+        expectedPan: 0.35,
+      },
+      {
+        event: {
+          seq: 204,
+          kind: {
+            MeldDeclared: {
+              seat: "East",
+              meld: { ConcealedKong: { tile: 3, seq: 204 } },
+              kong_score_deltas: null,
+            },
+          },
+        },
+        expectedSlot: "concealed_kong",
+        expectedPan: 0,
+      },
+      {
+        event: makeHandSettledEvent(205, {
+          Win: {
+            winners: [{ seat: "East", win_kind: "Tsumo", total_fan: 2 }],
+            discarder: null,
+            winning_tile: 0,
+          },
+        }),
+        expectedSlot: "zimo",
+        expectedPan: 0,
+      },
+      {
+        event: makeHandSettledEvent(206, {
+          Win: {
+            winners: [{ seat: "South", win_kind: "Ron", total_fan: 1 }],
+            discarder: "East",
+            winning_tile: 0,
+          },
+        }),
+        expectedSlot: "ron",
+        expectedPan: 0.35,
+      },
+      {
+        event: makeHandSettledEvent(207, {
+          Win: {
+            winners: [{ seat: "North", win_kind: "RobKongHu", total_fan: 2 }],
+            discarder: "East",
+            winning_tile: 0,
+          },
+        }),
+        expectedSlot: "rob_kong",
+        expectedPan: -0.35,
+      },
+    ];
+
+    for (const check of actionChecks) {
+      const countBefore = env.bufferSources.length;
+      const pannersBefore = env.panners.length;
+      router.handleSemanticEvent(mapPlayerEventToSemanticEvent(check.event, ctx));
+      await vi.waitFor(() => {
+        expect(env.bufferSources.length).toBe(countBefore + 1);
+      });
+      expect(env.bufferSources.at(-1)!.startArgs[0]).toEqual([
+        5.0,
+        sprites[check.expectedSlot]![0],
+        sprites[check.expectedSlot]![1],
+      ]);
+      if (check.expectedPan !== 0) {
+        expect(env.panners.length).toBe(pannersBefore + 1);
+        expect(env.panners.at(-1)!.pan.value).toBeCloseTo(check.expectedPan, 5);
+      }
+      // Verify sfxGain ducked to 0.45 while active
+      const sfxGainNode = env.gainNodes[1]!.node;
+      expect(sfxGainNode.gain.value).toBeCloseTo(0.45, 5);
+      finishLatestSource();
+    }
+
+    // 3. All 6 QuickEmotes trigger their canonical emote_* slots
+    const expectedEmoteSlots: VoiceSlotId[] = [
+      "emote_is_that_it",
+      "emote_hurry_up",
+      "emote_spare_me",
+      "emote_nice_play",
+      "emote_dealer_rigged",
+      "emote_going_big",
+    ];
+    for (let i = 0; i < QUICK_EMOTE_IDS.length; i += 1) {
+      const countBefore = env.bufferSources.length;
+      router.handleSemanticEvent(
+        mapQuickEmoteBroadcastToSemanticEvent(
+          { seat: "East", emote: QUICK_EMOTE_IDS[i]!, text: "互动" },
+          ctx,
+        ),
+      );
+      await vi.waitFor(() => {
+        expect(env.bufferSources.length).toBe(countBefore + 1);
+      });
+      const expectedSlot = expectedEmoteSlots[i]!;
+      expect(env.bufferSources.at(-1)!.startArgs[0]).toEqual([
+        5.0,
+        sprites[expectedSlot]![0],
+        sprites[expectedSlot]![1],
+      ]);
+      finishLatestSource();
+    }
+
+    router.dispose();
+  });
+
+  it("degrades silently when VoicePack returns 404 while keeping SFX playback intact", async () => {
+    const env = createFakeAudioEnv("running");
+    const fetch404: FetchLike = vi.fn(async () => ({
+      ok: false,
+      status: 404,
+      json: async () => ({}),
+      arrayBuffer: async () => new ArrayBuffer(0),
+    }));
+    const sfxPlay = vi.fn(() => ({
+      backend: "procedural" as const,
+      slot: "discard_heavy" as const,
+      variantIndex: 0,
+      playbackRate: 1,
+      pan: 0,
+    }));
+    const router = createAudioEventRouter({
+      initialPreferences: { ...defaultDevicePreferences(false), sfx_volume: 1 },
+      createAudioContext: () => env.ctx,
+      sfxBackend: {
+        getMode: () => "procedural" as const,
+        ensureLoaded: vi.fn(async () => "procedural" as const),
+        play: sfxPlay,
+        dispose: vi.fn(),
+      },
+      fetchFn: fetch404,
       documentTarget: env.docTarget,
       getVisibilityState: env.getVisibilityState,
     });
     router.unlockFromGesture();
 
-    const winWithVoicePack = makeHandSettledEvent(1, {
-      Win: {
-        winners: [{ seat: "East", win_kind: "Tsumo", total_fan: 4 }],
-        discarder: null,
-        winning_tile: 0,
-      },
-    });
-
     router.handleSemanticEvent(
       mapPlayerEventToSemanticEvent(
-        winWithVoicePack,
-        makeContext(20, "piltover-vi"),
+        { seq: 1, kind: { TileDiscarded: { seat: "East", tile: 0, is_tsumogiri: false } } },
+        makeContext(30, "human_male"),
       ),
     );
 
-    // Wait for async VO pack load + playback trigger
     await vi.waitFor(() => {
-      const sfxGainNode = env.gainNodes[1]!.node;
-      expect(sfxGainNode.gain.value).toBeCloseTo(0.45, 5);
+      expect(fetch404).toHaveBeenCalledWith("/assets/vo/human_male/manifest.json");
     });
-
+    expect(sfxPlay).toHaveBeenCalledTimes(1);
+    expect(env.gainNodes[1]!.node.gain.value).toBe(1);
     router.dispose();
   });
 

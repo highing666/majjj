@@ -100,7 +100,7 @@ pub struct SeatInfo {
     pub persona_id: Option<PersonaId>,
     /// Current facial/emotional mood (`牌友情绪`) for an active AI seat.
     pub mood: Option<PersonaMood>,
-    /// Reserved v2 voice pack identifier placeholder (`None` in v1).
+    /// Active offline `VoicePack` (`角色语音包`) identifier for this seat (`None` for unassigned empty seat).
     pub voice_pack_id: Option<String>,
 }
 
@@ -269,6 +269,8 @@ pub enum ClientMessage {
         seat: Seat,
         persona_id: Option<PersonaId>,
     },
+    /// Select a human `VoicePack` (`角色语音包`: `"human_male"` or `"human_female"`) for the caller's own seat.
+    SetSeatVoicePack { voice_pack_id: String },
     /// Start a match from `Lobby` or rematch from `Finished`.
     StartMatch,
     /// Return from `Finished` back to `Lobby`, resetting AI seats to `Empty`.

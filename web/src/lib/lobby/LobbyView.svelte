@@ -1,5 +1,9 @@
 <script lang="ts">
   import QRCode from "qrcode";
+  import {
+    HUMAN_VOICE_PACK_LIST,
+    type HumanVoicePackId,
+  } from "../audio/voicePackSchema";
   import { createHistoryClient } from "../history/historyClient";
   import PersonaAvatar from "../personas/PersonaAvatar.svelte";
   import type { LobbyConfig } from "../protocol/generated/LobbyConfig";
@@ -19,6 +23,7 @@
     onLeaveSeat: () => void;
     onUpdateConfig: (config: LobbyConfig) => void;
     onSetSeatPersona?: (seat: Seat, personaId: PersonaId | null) => void;
+    onSetSeatVoicePack?: (voicePackId: HumanVoicePackId) => void;
     onStartMatch: () => void;
     onOpenSettings?: () => void;
     onOpenHistory?: () => void;
@@ -34,6 +39,7 @@
     onLeaveSeat,
     onUpdateConfig,
     onSetSeatPersona,
+    onSetSeatVoicePack,
     onStartMatch,
     onOpenSettings,
     onOpenHistory,
@@ -304,7 +310,27 @@
     </div>
 
     {#if seatInfo.kind === "Human"}
-      <p class="seat-occupant">{describeSeatStatus(seatInfo)}</p>
+      <div class="human-seat-body">
+        <p class="seat-occupant">{describeSeatStatus(seatInfo)}</p>
+        {#if slot.isMine && onSetSeatVoicePack}
+          <div class="voice-pack-picker" role="group" aria-label="选择角色语音包">
+            {#each HUMAN_VOICE_PACK_LIST as pack (pack.id)}
+              <button
+                class="voice-pack-chip"
+                class:voice-pack-chip-active={seatInfo.voice_pack_id === pack.id}
+                type="button"
+                aria-pressed={seatInfo.voice_pack_id === pack.id}
+                {disabled}
+                onclick={() => onSetSeatVoicePack(pack.id)}
+              >
+                {pack.label}
+              </button>
+            {/each}
+          </div>
+        {:else if slot.humanVoicePackMeta !== null}
+          <span class="voice-pack-badge">{slot.humanVoicePackMeta.label}</span>
+        {/if}
+      </div>
     {:else}
       <div class="persona-preview">
         {#if slot.personaMeta !== null}
@@ -914,6 +940,45 @@
     font-size: 14px;
     color: var(--ink);
     min-height: 20px;
+  }
+
+  .human-seat-body {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .voice-pack-picker {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .voice-pack-chip {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 4px 8px;
+    font-size: 12px;
+    font-weight: 600;
+    background: var(--bg-muted);
+    color: var(--ink);
+    cursor: pointer;
+  }
+
+  .voice-pack-chip-active {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: #fff;
+  }
+
+  .voice-pack-badge {
+    align-self: flex-start;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 2px 8px;
+    font-size: 11px;
+    color: var(--ink-muted);
+    background: var(--bg-muted);
   }
 
   .tag-persona-style {

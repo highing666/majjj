@@ -223,7 +223,7 @@ fn frozen_server_protocol_types_roundtrip_serde_json_without_loss() {
             ai_style: None,
             persona_id: None,
             mood: None,
-            voice_pack_id: Some("default".to_string()),
+            voice_pack_id: Some("human_male".to_string()),
         },
         SeatInfo {
             seat: Seat::South,
@@ -235,7 +235,7 @@ fn frozen_server_protocol_types_roundtrip_serde_json_without_loss() {
             ai_style: Some(AiStyle::AggressiveFast),
             persona_id: Some(PersonaId::QuickHothead),
             mood: Some(PersonaMood::Smug),
-            voice_pack_id: None,
+            voice_pack_id: Some("quick_hothead".to_string()),
         },
         SeatInfo {
             seat: Seat::West,
@@ -303,6 +303,9 @@ fn frozen_server_protocol_types_roundtrip_serde_json_without_loss() {
         ClientMessage::SetSeatPersona {
             seat: Seat::South,
             persona_id: None,
+        },
+        ClientMessage::SetSeatVoicePack {
+            voice_pack_id: "human_female".to_string(),
         },
         ClientMessage::StartMatch,
         ClientMessage::ReturnToLobby,

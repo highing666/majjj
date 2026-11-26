@@ -47,6 +47,6 @@ persona_id: PersonaId | null,
  */
 mood: PersonaMood | null, 
 /**
- * Reserved v2 voice pack identifier placeholder (`None` in v1).
+ * Active offline `VoicePack` (`角色语音包`) identifier for this seat (`None` for unassigned empty seat).
  */
 voice_pack_id: string | null, };

@@ -7,9 +7,11 @@ import type {
   FetchLike,
   GainNodeLike,
   VoActionCategory,
-  VoManifest,
+  VoicePackManifest,
+  VoiceSpriteSlice,
   VoTriggerRequest,
 } from "./audioTypes";
+import { voicePackManifestUrl } from "./voicePackSchema";
 
 export const VO_MAX_CACHED_PACKS = 4;
 export const VO_DUCK_FACTOR = 0.45;
@@ -20,18 +22,19 @@ const VO_PRIORITY: Record<VoActionCategory, number> = {
   RobKong: 5,
   Kong: 4,
   Pon: 3,
+  QuickEmote: 2,
   Chi: 2,
   Discard: 1,
 };
 
 export interface VoManagerOptions {
   readonly fetchFn?: FetchLike;
-  readonly random?: () => number;
 }
 
 export interface VoManager {
   getCachedPackIds(): string[];
   isDucking(): boolean;
+  preloadPack(ctx: AudioContextLike, packId: string): Promise<boolean>;
   triggerVo(
     ctx: AudioContextLike,
     voGain: GainNodeLike,
@@ -54,8 +57,8 @@ export interface VoManager {
 }
 
 interface CachedPack {
-  readonly manifest: VoManifest;
-  readonly clips: Map<string, AudioBufferLike>;
+  readonly manifest: VoicePackManifest;
+  readonly buffer: AudioBufferLike;
 }
 
 interface ActiveVo {
@@ -72,11 +75,24 @@ function defaultFetch(): FetchLike | null {
   return (input: string) => globalThis.fetch(input);
 }
 
-function resolveClipUrl(packId: string, clipPath: string): string {
-  if (clipPath.startsWith("/") || /^https?:\/\//.test(clipPath)) {
-    return clipPath;
+function resolveSpriteAudioUrl(packId: string, audioPath: string): string {
+  if (audioPath.startsWith("/") || /^https?:\/\//.test(audioPath)) {
+    return audioPath;
   }
-  return `/assets/vo/${encodeURIComponent(packId)}/${clipPath}`;
+  return `/assets/vo/${encodeURIComponent(packId)}/${audioPath}`;
+}
+
+function isValidSlice(slice: unknown): slice is VoiceSpriteSlice {
+  return (
+    Array.isArray(slice) &&
+    slice.length === 2 &&
+    typeof slice[0] === "number" &&
+    typeof slice[1] === "number" &&
+    Number.isFinite(slice[0]) &&
+    Number.isFinite(slice[1]) &&
+    slice[0] >= 0 &&
+    slice[1] > 0
+  );
 }
 
 function canPreempt(
@@ -86,6 +102,10 @@ function canPreempt(
 ): boolean {
   if (active === null) {
     return true;
+  }
+  // Tile discard calls never interrupt any currently playing voice.
+  if (incomingCategory === "Discard") {
+    return false;
   }
   if (active.seat === incomingSeat) {
     return true;
@@ -105,13 +125,13 @@ function rampSfxGain(
 }
 
 /**
- * Manages v2 character VO packs (`/assets/vo/<pack_id>/manifest.json`),
- * 4-pack LRU decoded buffer cache, same-seat interruption, cross-seat priority
- * (`Hu > RobKong > Kong > Pon > Chi > Discard`), and 30ms `sfxGain` ducking.
+ * Manages offline static `VoicePack` (`角色语音包`) AudioSprites
+ * (`/assets/vo/<pack_id>/manifest.json` + single mono `.m4a`), 4-pack LRU decoded
+ * buffer cache, zero-delay slice playback, priority arbitration, relative stereo
+ * panning, and 30ms `sfxGain` ducking.
  */
 export function createVoManager(options: VoManagerOptions = {}): VoManager {
   const fetchFn = options.fetchFn ?? defaultFetch();
-  const random = options.random ?? (() => Math.random());
 
   // Map preserves insertion order: oldest = first key, newest = last key.
   const packCache = new Map<string, CachedPack>();
@@ -135,7 +155,10 @@ export function createVoManager(options: VoManagerOptions = {}): VoManager {
     }
   }
 
-  async function loadPack(packId: string): Promise<CachedPack | null> {
+  async function loadPack(
+    ctx: AudioContextLike,
+    packId: string,
+  ): Promise<CachedPack | null> {
     const existing = packCache.get(packId);
     if (existing) {
       touchLru(packId, existing);
@@ -147,33 +170,58 @@ export function createVoManager(options: VoManagerOptions = {}): VoManager {
       return inflight;
     }
 
-    if (!fetchFn) {
+    if (!fetchFn || disposed) {
       return null;
     }
 
     const promise = (async (): Promise<CachedPack | null> => {
       try {
-        const manifestUrl = `/assets/vo/${encodeURIComponent(packId)}/manifest.json`;
-        const response = await fetchFn(manifestUrl);
-        if (!response.ok) {
+        const manifestResponse = await fetchFn(voicePackManifestUrl(packId));
+        if (!manifestResponse.ok || disposed) {
           return null;
         }
-        const parsed = (await response.json()) as Partial<VoManifest> | null;
+        const parsed = (await manifestResponse.json()) as Partial<VoicePackManifest> | null;
         if (
           !parsed ||
           typeof parsed !== "object" ||
-          typeof parsed.clips !== "object" ||
-          parsed.clips === null
+          typeof parsed.audio !== "string" ||
+          parsed.audio.trim().length === 0 ||
+          typeof parsed.sprites !== "object" ||
+          parsed.sprites === null
         ) {
           return null;
         }
+
+        const audioUrl = resolveSpriteAudioUrl(packId, parsed.audio.trim());
+        const audioResponse = await fetchFn(audioUrl);
+        if (!audioResponse.ok || disposed) {
+          return null;
+        }
+        const bytes = await audioResponse.arrayBuffer();
+        if (disposed) {
+          return null;
+        }
+        const buffer = await ctx.decodeAudioData(bytes);
+        if (disposed) {
+          return null;
+        }
+
         const entry: CachedPack = {
           manifest: {
             pack_id: parsed.pack_id ?? packId,
-            version: typeof parsed.version === "number" ? parsed.version : 2,
-            clips: parsed.clips,
+            version: typeof parsed.version === "number" ? parsed.version : 1,
+            audio: parsed.audio.trim(),
+            sample_rate:
+              typeof parsed.sample_rate === "number"
+                ? parsed.sample_rate
+                : buffer.sampleRate,
+            duration:
+              typeof parsed.duration === "number"
+                ? parsed.duration
+                : buffer.duration,
+            sprites: parsed.sprites,
           },
-          clips: new Map<string, AudioBufferLike>(),
+          buffer,
         };
         touchLru(packId, entry);
         return entry;
@@ -188,39 +236,82 @@ export function createVoManager(options: VoManagerOptions = {}): VoManager {
     return promise;
   }
 
-  async function loadClipBuffer(
-    ctx: AudioContextLike,
-    pack: CachedPack,
-    packId: string,
-    clipPath: string,
-  ): Promise<AudioBufferLike | null> {
-    const cached = pack.clips.get(clipPath);
-    if (cached) {
-      return cached;
-    }
-    if (!fetchFn) {
-      return null;
-    }
-    try {
-      const response = await fetchFn(resolveClipUrl(packId, clipPath));
-      if (!response.ok) {
-        return null;
-      }
-      const bytes = await response.arrayBuffer();
-      const buffer = await ctx.decodeAudioData(bytes);
-      pack.clips.set(clipPath, buffer);
-      return buffer;
-    } catch {
-      return null;
-    }
-  }
-
   function stopSourceQuietly(vo: ActiveVo): void {
     vo.source.onended = null;
     try {
       vo.source.stop();
     } catch {
       // Ignore already-stopped source errors.
+    }
+  }
+
+  function playSlice(
+    ctx: AudioContextLike,
+    voGain: GainNodeLike,
+    sfxGain: GainNodeLike,
+    pack: CachedPack,
+    request: VoTriggerRequest,
+    pan: number,
+  ): boolean {
+    const slice = pack.manifest.sprites[request.slot];
+    if (!isValidSlice(slice)) {
+      return false;
+    }
+    if (!canPreempt(activeVo, request.seat, request.category)) {
+      return false;
+    }
+
+    const [startSec, durationSec] = slice;
+    const wasDucking = activeVo !== null;
+    if (activeVo !== null) {
+      stopSourceQuietly(activeVo);
+      activeVo = null;
+    }
+
+    let target: AudioNodeLike = voGain;
+    if (pan !== 0 && typeof ctx.createStereoPanner === "function") {
+      const panner = ctx.createStereoPanner();
+      panner.pan.value = Math.max(-1, Math.min(1, pan));
+      panner.connect(voGain);
+      target = panner;
+    }
+
+    const token = nextToken++;
+    const source = ctx.createBufferSource();
+    source.buffer = pack.buffer;
+    source.connect(target);
+
+    const entry: ActiveVo = {
+      token,
+      seat: request.seat,
+      category: request.category,
+      source,
+    };
+    activeVo = entry;
+
+    if (!wasDucking) {
+      rampSfxGain(ctx, sfxGain, currentBaseSfxVolume * VO_DUCK_FACTOR);
+    }
+
+    source.onended = () => {
+      if (activeVo?.token !== token) {
+        return;
+      }
+      activeVo = null;
+      if (!disposed) {
+        rampSfxGain(ctx, sfxGain, currentBaseSfxVolume);
+      }
+    };
+
+    try {
+      source.start(ctx.currentTime, startSec, durationSec);
+      return true;
+    } catch {
+      activeVo = null;
+      if (!wasDucking) {
+        rampSfxGain(ctx, sfxGain, currentBaseSfxVolume);
+      }
+      return false;
     }
   }
 
@@ -231,6 +322,14 @@ export function createVoManager(options: VoManagerOptions = {}): VoManager {
 
     isDucking(): boolean {
       return activeVo !== null;
+    },
+
+    async preloadPack(ctx: AudioContextLike, packId: string): Promise<boolean> {
+      if (disposed || !packId) {
+        return false;
+      }
+      const pack = await loadPack(ctx, packId);
+      return pack !== null;
     },
 
     async triggerVo(
@@ -249,78 +348,20 @@ export function createVoManager(options: VoManagerOptions = {}): VoManager {
         return false;
       }
 
+      const cached = packCache.get(request.packId);
+      if (cached) {
+        touchLru(request.packId, cached);
+        return playSlice(ctx, voGain, sfxGain, cached, request, pan);
+      }
+
       const mySeatSeq = (seatRequestSeq[request.seat] ?? 0) + 1;
       seatRequestSeq[request.seat] = mySeatSeq;
-      const pack = await loadPack(request.packId);
+      const pack = await loadPack(ctx, request.packId);
       if (disposed || !pack || seatRequestSeq[request.seat] !== mySeatSeq) {
         return false;
       }
 
-      const candidates = pack.manifest.clips[request.category];
-      if (!Array.isArray(candidates) || candidates.length === 0) {
-        return false;
-      }
-      const idx = Math.min(
-        candidates.length - 1,
-        Math.max(0, Math.floor(random() * candidates.length)),
-      );
-      const clipPath = candidates[idx];
-      if (!clipPath) {
-        return false;
-      }
-
-      const buffer = await loadClipBuffer(ctx, pack, request.packId, clipPath);
-      if (disposed || !buffer || seatRequestSeq[request.seat] !== mySeatSeq) {
-        return false;
-      }
-
-      if (!canPreempt(activeVo, request.seat, request.category)) {
-        return false;
-      }
-
-      const wasDucking = activeVo !== null;
-      if (activeVo !== null) {
-        stopSourceQuietly(activeVo);
-        activeVo = null;
-      }
-
-      let target: AudioNodeLike = voGain;
-      if (pan !== 0 && typeof ctx.createStereoPanner === "function") {
-        const panner = ctx.createStereoPanner();
-        panner.pan.value = Math.max(-1, Math.min(1, pan));
-        panner.connect(voGain);
-        target = panner;
-      }
-
-      const token = nextToken++;
-      const source = ctx.createBufferSource();
-      source.buffer = buffer;
-      source.connect(target);
-
-      const entry: ActiveVo = {
-        token,
-        seat: request.seat,
-        category: request.category,
-        source,
-      };
-      activeVo = entry;
-
-      if (!wasDucking) {
-        rampSfxGain(ctx, sfxGain, currentBaseSfxVolume * VO_DUCK_FACTOR);
-      }
-
-      source.onended = () => {
-        if (activeVo?.token !== token) {
-          return;
-        }
-        activeVo = null;
-        if (!disposed) {
-          rampSfxGain(ctx, sfxGain, currentBaseSfxVolume);
-        }
-      };
-
-      source.start(ctx.currentTime);
-      return true;
+      return playSlice(ctx, voGain, sfxGain, pack, request, pan);
     },
 
     updateSfxBaseVolume(
