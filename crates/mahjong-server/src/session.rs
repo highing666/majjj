@@ -18,7 +18,8 @@ use tokio::sync::{mpsc, watch, Mutex};
 use uuid::Uuid;
 
 use crate::ai_pool::{
-    build_ai_pool, default_ai_threads, spawn_scheduled_work, AiJobKey, PendingAiJob, ScheduledWork,
+    build_ai_pool, default_ai_threads, spawn_scheduled_work, spawn_tts_health_probe, AiJobKey,
+    PendingAiJob, ScheduledWork,
 };
 use crate::banter::{
     initialize_seat_hand_facts, is_seat_off_cooldown, plan_banter_for_events, plan_chain_followup,
@@ -27,6 +28,7 @@ use crate::banter::{
     PendingBanterJob, SlowThinkTicket, BANTER_CHAIN_REPLY_DELAY, HIGHLIGHT_SYNC_CAP,
     SEAT_BANTER_COOLDOWN,
 };
+use crate::banter_audio::{BanterAudioCache, PendingTtsJob, TtsGuard, TtsSessionState};
 use crate::history_dto::{
     ClearHistoryResponse, HandRecord, HandSeatRecord, HistoryExportResponse, MatchRecord,
     MatchSeatRecord, PreferencesData, StatsResponse, HISTORY_SCHEMA_VERSION,
@@ -51,6 +53,10 @@ use crate::protocol::{
 use crate::seat_control::HandAttribution;
 use crate::server::ServerError;
 use crate::storage::{current_unix_ms, normalize_nickname, HistoryStore};
+use crate::tts::{
+    TtsAudioOutput, TtsClient, TtsError, TtsSynthesisRequest, TTS_IN_HAND_DEADLINE_MS,
+    TTS_SETTLEMENT_DEADLINE_MS,
+};
 
 /// `Send`-safe wrapper around a boxed [`WallProvider`] for injecting deterministic walls in tests.
 pub struct BoxedWallProvider(pub Box<dyn WallProvider + Send>);
@@ -68,7 +74,7 @@ impl WallProvider for BoxedWallProvider {
 /// Factory returning a fresh [`BoxedWallProvider`] whenever a new match starts.
 pub type WallProviderFactory = Arc<dyn Fn() -> BoxedWallProvider + Send + Sync>;
 
-/// Injectable configuration hooks for deterministic testing of walls, seating, pacing, AI RNG, and LLM.
+/// Injectable configuration hooks for deterministic testing of walls, seating, pacing, AI RNG, LLM, and TTS.
 #[derive(Clone)]
 pub struct TableOptions {
     wall_factory: WallProviderFactory,
@@ -77,6 +83,9 @@ pub struct TableOptions {
     pacing: PacingMode,
     data_dir: Option<PathBuf>,
     llm_client: Option<Arc<dyn LlmClient>>,
+    tts_client: Option<Arc<dyn TtsClient>>,
+    tts_startup_error: Option<String>,
+    banter_audio_cache: Option<Arc<std::sync::Mutex<BanterAudioCache>>>,
     banter_sync_cap: Duration,
 }
 
@@ -88,6 +97,7 @@ impl std::fmt::Debug for TableOptions {
             .field("pacing", &self.pacing)
             .field("data_dir", &self.data_dir)
             .field("has_llm_client", &self.llm_client.is_some())
+            .field("has_tts_client", &self.tts_client.is_some())
             .field("banter_sync_cap", &self.banter_sync_cap)
             .finish_non_exhaustive()
     }
@@ -104,6 +114,9 @@ impl Default for TableOptions {
             pacing: PacingMode::Humanized,
             data_dir: None,
             llm_client: None,
+            tts_client: None,
+            tts_startup_error: None,
+            banter_audio_cache: None,
             banter_sync_cap: HIGHLIGHT_SYNC_CAP,
         }
     }
@@ -125,6 +138,9 @@ impl TableOptions {
             pacing: PacingMode::Humanized,
             data_dir: None,
             llm_client: None,
+            tts_client: None,
+            tts_startup_error: None,
+            banter_audio_cache: None,
             banter_sync_cap: HIGHLIGHT_SYNC_CAP,
         }
     }
@@ -139,6 +155,9 @@ impl TableOptions {
             pacing: PacingMode::Humanized,
             data_dir: None,
             llm_client: None,
+            tts_client: None,
+            tts_startup_error: None,
+            banter_audio_cache: None,
             banter_sync_cap: HIGHLIGHT_SYNC_CAP,
         }
     }
@@ -171,6 +190,28 @@ impl TableOptions {
         self
     }
 
+    /// Configures the optional [`TtsClient`] driving `BanterVoice` WAV synthesis for this table runtime.
+    #[must_use]
+    pub fn with_tts_client(mut self, tts_client: Arc<dyn TtsClient>) -> Self {
+        self.tts_client = Some(tts_client);
+        self
+    }
+
+    /// Injects a custom [`BanterAudioCache`] instance (primarily for bounded-cache tests).
+    #[must_use]
+    pub fn with_banter_audio_cache(
+        mut self,
+        cache: Arc<std::sync::Mutex<BanterAudioCache>>,
+    ) -> Self {
+        self.banter_audio_cache = Some(cache);
+        self
+    }
+
+    pub(crate) fn with_tts_startup_error(mut self, message: String) -> Self {
+        self.tts_startup_error = Some(message);
+        self
+    }
+
     /// Overrides the bounded short-sync timeout for major highlight banter (defaults to `1500ms`).
     #[must_use]
     pub fn with_banter_sync_cap(mut self, cap: Duration) -> Self {
@@ -194,6 +235,12 @@ impl TableOptions {
     #[must_use]
     pub fn llm_client(&self) -> Option<&Arc<dyn LlmClient>> {
         self.llm_client.as_ref()
+    }
+
+    /// Returns the configured [`TtsClient`], if any.
+    #[must_use]
+    pub fn tts_client(&self) -> Option<&Arc<dyn TtsClient>> {
+        self.tts_client.as_ref()
     }
 }
 
@@ -416,6 +463,8 @@ pub struct TableSession {
     pub(crate) persona_memory: PersonaMemoryStore,
     phase_tx: watch::Sender<TablePhase>,
     banter: BanterSessionState,
+    tts: TtsSessionState,
+    banter_audio_cache: Arc<std::sync::Mutex<BanterAudioCache>>,
 }
 
 impl TableSession {
@@ -464,6 +513,14 @@ impl TableSession {
         let slow_think_nudge_enabled = history.preferences().slow_think_nudge_enabled;
         let base_seed = options.rng_seed.unwrap_or_else(random_u64);
         let (phase_tx, _) = watch::channel(TablePhase::Lobby);
+        let tts = match &options.tts_startup_error {
+            Some(err) => TtsSessionState::with_startup_error(err),
+            None => TtsSessionState::new(options.tts_client.is_some()),
+        };
+        let banter_audio_cache = options
+            .banter_audio_cache
+            .clone()
+            .unwrap_or_else(|| Arc::new(std::sync::Mutex::new(BanterAudioCache::new())));
         Ok(Self {
             table_id: Uuid::new_v4().to_string(),
             phase: TablePhase::Lobby,
@@ -489,6 +546,8 @@ impl TableSession {
             persona_memory,
             phase_tx,
             banter: BanterSessionState::new(slow_think_nudge_enabled),
+            tts,
+            banter_audio_cache,
         })
     }
 
@@ -764,6 +823,9 @@ impl TableSession {
 
         Self::send_to(tx, ServerMessage::TableSnapshot(snapshot));
         if let Some(notice) = self.banter.current_outage_notice() {
+            Self::send_to(tx, notice);
+        }
+        if let Some(notice) = self.tts.current_outage_notice() {
             Self::send_to(tx, notice);
         }
         if lobby_changed {
@@ -1185,6 +1247,7 @@ impl TableSession {
         self.pending_destructive_op = None;
         self.in_flight_ai.clear();
         self.banter.reset_for_match_transition();
+        self.tts.bump_all_seat_banter_generations();
         let hand_attribution = HandAttribution::from_seats(&self.seats);
         let initial_seat_infos = self.seat_infos();
         let initial_hand_facts = initialize_seat_hand_facts(&game, &initial_seat_infos);
@@ -2038,7 +2101,7 @@ impl TableSession {
         guard: BanterGuard,
         chain: Option<BanterChainContext>,
         result: Result<BanterOutput, LlmError>,
-    ) -> Option<PendingBanterJob> {
+    ) -> BanterCommitOutcome {
         let phase_ok = self.phase == TablePhase::InMatch
             || (guard.allow_finished_phase && self.phase == TablePhase::Finished);
         let match_ok = self
@@ -2053,7 +2116,7 @@ impl TableSession {
                         self.broadcast_all(notice);
                     }
                 }
-                None
+                BanterCommitOutcome::default()
             }
             Ok(output) => {
                 if let Some(notice) = self.banter.record_llm_recovery() {
@@ -2061,7 +2124,7 @@ impl TableSession {
                 }
 
                 if !self.is_banter_guard_fresh(&guard) {
-                    return None;
+                    return BanterCommitOutcome::default();
                 }
 
                 let now = tokio::time::Instant::now();
@@ -2069,8 +2132,10 @@ impl TableSession {
                     active.seat_last_banter_at[guard.seat.index()] = Some(now);
                 }
 
+                let (banter_id, seat_banter_generation) = self.tts.allocate_banter_id(guard.seat);
                 self.seats[guard.seat.index()].info.mood = Some(output.mood);
                 self.broadcast_all(ServerMessage::TableBanter {
+                    banter_id: banter_id.clone(),
                     seat: guard.seat,
                     persona_id: guard.persona_id,
                     mood: output.mood,
@@ -2079,31 +2144,142 @@ impl TableSession {
                     reply_to_seat: guard.reply_to_seat,
                 });
 
-                let chain = chain?;
-                let seat_infos = self.seat_infos();
-                let active_ref = self.active_match.as_ref()?;
-                let ctx = Self::build_banter_plan_context(
-                    active_ref,
-                    &seat_infos,
-                    &self.seat_generation,
-                    self.options.banter_sync_cap,
-                    now,
-                    &self.persona_memory,
-                );
-                let prev = ChainPrevLine {
-                    guard,
-                    mood: output.mood,
-                    text: &output.text,
-                };
-                plan_chain_followup(
-                    &ctx,
-                    &prev,
-                    chain,
-                    &active_ref.seat_hand_facts,
-                    BANTER_CHAIN_REPLY_DELAY,
-                )
+                let tts_job = self.tts.should_dispatch(now).then(|| {
+                    let deadline_ms = if guard.allow_finished_phase {
+                        TTS_SETTLEMENT_DEADLINE_MS
+                    } else {
+                        TTS_IN_HAND_DEADLINE_MS
+                    };
+                    PendingTtsJob {
+                        guard: TtsGuard {
+                            banter_id: banter_id.clone(),
+                            match_id: guard.match_id,
+                            hand_generation: guard.hand_generation,
+                            seat: guard.seat,
+                            seat_generation: guard.seat_generation,
+                            seat_banter_generation,
+                            persona_id: guard.persona_id,
+                            allow_finished_phase: guard.allow_finished_phase,
+                        },
+                        request: TtsSynthesisRequest::new(
+                            banter_id,
+                            guard.persona_id,
+                            output.mood,
+                            output.text.clone(),
+                            deadline_ms,
+                        ),
+                        dispatched_at: now,
+                        deadline_ms,
+                    }
+                });
+
+                let followup = chain.and_then(|chain| {
+                    let seat_infos = self.seat_infos();
+                    let active_ref = self.active_match.as_ref()?;
+                    let ctx = Self::build_banter_plan_context(
+                        active_ref,
+                        &seat_infos,
+                        &self.seat_generation,
+                        self.options.banter_sync_cap,
+                        now,
+                        &self.persona_memory,
+                    );
+                    let prev = ChainPrevLine {
+                        guard,
+                        mood: output.mood,
+                        text: &output.text,
+                    };
+                    plan_chain_followup(
+                        &ctx,
+                        &prev,
+                        chain,
+                        &active_ref.seat_hand_facts,
+                        BANTER_CHAIN_REPLY_DELAY,
+                    )
+                });
+
+                BanterCommitOutcome { followup, tts_job }
             }
         }
+    }
+
+    fn is_tts_guard_fresh(&self, guard: &TtsGuard) -> bool {
+        let phase_ok = self.phase == TablePhase::InMatch
+            || (guard.allow_finished_phase && self.phase == TablePhase::Finished);
+        if !phase_ok {
+            return false;
+        }
+        let seat_slot = &self.seats[guard.seat.index()];
+        if seat_slot.info.kind != SeatKind::Ai
+            || seat_slot.info.persona_id != Some(guard.persona_id)
+            || self.seat_generation[guard.seat.index()] != guard.seat_generation
+            || self.tts.seat_banter_generation(guard.seat) != guard.seat_banter_generation
+        {
+            return false;
+        }
+        self.active_match.as_ref().is_some_and(|active| {
+            active.match_id == guard.match_id && active.hand_generation == guard.hand_generation
+        })
+    }
+
+    pub(crate) fn commit_tts_result(
+        &mut self,
+        guard: TtsGuard,
+        dispatched_at: tokio::time::Instant,
+        deadline_ms: u32,
+        result: Result<TtsAudioOutput, TtsError>,
+    ) -> Option<tokio::time::Instant> {
+        let now = tokio::time::Instant::now();
+        match result {
+            Err(err) => {
+                eprintln!(
+                    "warning: TTS synthesis failed for {}: {err}",
+                    guard.banter_id
+                );
+                let (notice, probe_at) = self.tts.record_synthesis_failure(&err.to_string(), now);
+                if let Some(notice) = notice {
+                    self.broadcast_all(notice);
+                }
+                probe_at
+            }
+            Ok(audio) => {
+                self.tts.record_synthesis_success();
+                let within_deadline = now.saturating_duration_since(dispatched_at)
+                    <= Duration::from_millis(u64::from(deadline_ms));
+                if !within_deadline || !self.is_tts_guard_fresh(&guard) {
+                    return None;
+                }
+                let inserted = self
+                    .banter_audio_cache
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(guard.banter_id.clone(), audio.wav_bytes, now);
+                if inserted {
+                    self.broadcast_all(ServerMessage::TableBanterAudioReady {
+                        audio_url: format!("/api/banter-audio/{}", guard.banter_id),
+                        banter_id: guard.banter_id,
+                        seat: guard.seat,
+                        duration_ms: audio.duration_ms,
+                    });
+                }
+                None
+            }
+        }
+    }
+
+    pub(crate) fn commit_tts_health_probe(
+        &mut self,
+        result: Result<(), String>,
+    ) -> Option<tokio::time::Instant> {
+        if let Err(ref err) = result {
+            eprintln!("warning: LAN TTS /health probe failed: {err}");
+        }
+        let now = tokio::time::Instant::now();
+        let (notice, next_probe_at) = self.tts.record_health_probe_result(result, now);
+        if let Some(notice) = notice {
+            self.broadcast_all(notice);
+        }
+        next_probe_at
     }
 
     pub(crate) fn cancel_ai_job(&mut self, key: AiJobKey) {
@@ -2208,6 +2384,7 @@ impl TableSession {
         self.active_match = None;
         self.in_flight_ai.clear();
         self.banter.reset_for_match_transition();
+        self.tts.bump_all_seat_banter_generations();
         self.pending_destructive_op = None;
         self.seq = 0;
         for slot in &mut self.seats {
@@ -2379,6 +2556,12 @@ impl TableSession {
     }
 }
 
+#[derive(Default)]
+pub(crate) struct BanterCommitOutcome {
+    pub followup: Option<PendingBanterJob>,
+    pub tts_job: Option<PendingTtsJob>,
+}
+
 struct HelloParams {
     client_id: String,
     nickname: String,
@@ -2392,6 +2575,8 @@ pub struct TableRuntime {
     inner: Arc<Mutex<TableSession>>,
     ai_pool: Arc<rayon::ThreadPool>,
     llm_client: Option<Arc<dyn LlmClient>>,
+    tts_client: Option<Arc<dyn TtsClient>>,
+    banter_audio_cache: Arc<std::sync::Mutex<BanterAudioCache>>,
 }
 
 impl TableRuntime {
@@ -2434,12 +2619,31 @@ impl TableRuntime {
     ) -> Result<Self, ServerError> {
         let ai_pool = build_ai_pool(ai_threads)?;
         let llm_client = options.llm_client().cloned();
+        let tts_client = options.tts_client().cloned();
         let session = TableSession::try_with_options(port, local_hostname, options)?;
+        let banter_audio_cache = Arc::clone(&session.banter_audio_cache);
+        let inner = Arc::new(Mutex::new(session));
+        if let Some(tts) = tts_client.clone() {
+            if tokio::runtime::Handle::try_current().is_ok() {
+                spawn_tts_health_probe(Arc::downgrade(&inner), tts, None);
+            }
+        }
         Ok(Self {
-            inner: Arc::new(Mutex::new(session)),
+            inner,
             ai_pool,
             llm_client,
+            tts_client,
+            banter_audio_cache,
         })
+    }
+
+    /// Looks up cached synthesized `BanterVoice` WAV bytes by `banter_id` (touching LRU recency).
+    #[must_use]
+    pub fn get_banter_audio(&self, banter_id: &str) -> Option<Vec<u8>> {
+        self.banter_audio_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(banter_id, tokio::time::Instant::now())
     }
 
     /// Allocates a unique internal connection ID for a new WebSocket connection.
@@ -2663,6 +2867,7 @@ impl TableRuntime {
                 Arc::clone(&self.inner),
                 Arc::clone(&self.ai_pool),
                 self.llm_client.clone(),
+                self.tts_client.clone(),
                 scheduled_work,
             );
         }

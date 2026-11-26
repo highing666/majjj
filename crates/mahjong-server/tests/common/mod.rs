@@ -278,7 +278,9 @@ impl VirtualClient {
                     ServerMessage::TableSnapshot(snap) => return snap,
                     ServerMessage::LobbyUpdated { .. }
                     | ServerMessage::TableBanter { .. }
-                    | ServerMessage::LlmStatusNotice { .. } => continue,
+                    | ServerMessage::TableBanterAudioReady { .. }
+                    | ServerMessage::LlmStatusNotice { .. }
+                    | ServerMessage::TtsStatusNotice { .. } => continue,
                     other => panic!("expected TableSnapshot, got {other:?}"),
                 },
                 OutboundSignal::ReplaceAndClose => panic!("unexpected SessionReplaced"),
@@ -378,6 +380,7 @@ pub async fn spawn_server(static_dir: Option<PathBuf>) -> ServerHandle {
         .with_port(0)
         .with_static_dir(static_dir)
         .with_llm_client(stub_llm_client())
+        .with_no_tts(true)
         .spawn()
         .await
         .expect("spawn server")
@@ -390,6 +393,7 @@ pub async fn spawn_seeded_server(seed: u64, static_dir: Option<PathBuf>) -> Serv
         .with_port(0)
         .with_static_dir(static_dir)
         .with_llm_client(stub_llm_client())
+        .with_no_tts(true)
         .spawn_with_options(TableOptions::seeded(seed).with_pacing(PacingMode::Immediate))
         .await
         .expect("spawn seeded server")
@@ -401,6 +405,7 @@ pub async fn spawn_with_wall_factory(seed: u64, factory: WallProviderFactory) ->
         .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
         .with_port(0)
         .with_llm_client(stub_llm_client())
+        .with_no_tts(true)
         .spawn_with_options(
             TableOptions::with_wall_factory(seed, factory).with_pacing(PacingMode::Immediate),
         )
@@ -523,7 +528,9 @@ pub async fn recv_non_ping_msg(ws: &mut WsClient) -> ServerMessage {
         match recv_msg(ws).await {
             ServerMessage::ServerPing { .. }
             | ServerMessage::TableBanter { .. }
-            | ServerMessage::LlmStatusNotice { .. } => continue,
+            | ServerMessage::TableBanterAudioReady { .. }
+            | ServerMessage::LlmStatusNotice { .. }
+            | ServerMessage::TtsStatusNotice { .. } => continue,
             other => return other,
         }
     }
@@ -536,7 +543,9 @@ pub async fn recv_snapshot(ws: &mut WsClient) -> TableSnapshot {
             ServerMessage::TableSnapshot(snap) => return snap,
             ServerMessage::LobbyUpdated { .. }
             | ServerMessage::TableBanter { .. }
-            | ServerMessage::LlmStatusNotice { .. } => continue,
+            | ServerMessage::TableBanterAudioReady { .. }
+            | ServerMessage::LlmStatusNotice { .. }
+            | ServerMessage::TtsStatusNotice { .. } => continue,
             other => panic!("expected TableSnapshot, got {other:?}"),
         }
     }
@@ -556,7 +565,9 @@ pub async fn recv_event_batch(
             } => return (from_seq, to_seq, events, updated_legal_actions),
             ServerMessage::LobbyUpdated { .. }
             | ServerMessage::TableBanter { .. }
-            | ServerMessage::LlmStatusNotice { .. } => continue,
+            | ServerMessage::TableBanterAudioReady { .. }
+            | ServerMessage::LlmStatusNotice { .. }
+            | ServerMessage::TtsStatusNotice { .. } => continue,
             other => panic!("expected EventBatch, got {other:?}"),
         }
     }

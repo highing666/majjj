@@ -809,6 +809,7 @@ describe("PresentationQueue", () => {
     // 1. First banter on South sets bubble and updates live seat mood to Tilted
     queue.enqueueServerMessage({
       TableBanter: {
+        banter_id: "b-1",
         seat: "South",
         persona_id: "QuickHothead",
         mood: "Tilted",
@@ -827,6 +828,7 @@ describe("PresentationQueue", () => {
     // 2. Second banter on South overwrites first bubble and cancels its timer
     queue.enqueueServerMessage({
       TableBanter: {
+        banter_id: "b-2",
         seat: "South",
         persona_id: "QuickHothead",
         mood: "Smug",
@@ -843,6 +845,7 @@ describe("PresentationQueue", () => {
     // 3. West speaks concurrently without disturbing South's bubble
     queue.enqueueServerMessage({
       TableBanter: {
+        banter_id: "b-3",
         seat: "West",
         persona_id: "TeaSarcasm",
         mood: "Mocking",
@@ -886,6 +889,7 @@ describe("PresentationQueue", () => {
     // 6. Returning to Lobby clears all active bubbles
     queue.enqueueServerMessage({
       TableBanter: {
+        banter_id: "b-4",
         seat: "South",
         persona_id: "QuickHothead",
         mood: "Plotting",
@@ -1035,6 +1039,7 @@ describe("PresentationQueue", () => {
     });
     queue.enqueueServerMessage({
       TableBanter: {
+        banter_id: "b-5",
         seat: "South",
         persona_id: "QuickHothead",
         mood: "Tilted",
@@ -1050,6 +1055,7 @@ describe("PresentationQueue", () => {
     // 2. Follow-up reply arrives while SettlementModal is open.
     queue.enqueueServerMessage({
       TableBanter: {
+        banter_id: "b-6",
         seat: "West",
         persona_id: "TeaSarcasm",
         mood: "Mocking",
@@ -1094,6 +1100,7 @@ describe("PresentationQueue", () => {
     // 4. Final-hand MatchFinished + TableSnapshot(Finished) preserves existing bubbles AND accepts post-Finished banter!
     queue.enqueueServerMessage({
       TableBanter: {
+        banter_id: "b-7",
         seat: "South",
         persona_id: "QuickHothead",
         mood: "Tilted",
@@ -1120,6 +1127,7 @@ describe("PresentationQueue", () => {
     // Post-Finished follow-up reply arrives for MatchSummaryView.
     queue.enqueueServerMessage({
       TableBanter: {
+        banter_id: "b-8",
         seat: "West",
         persona_id: "TeaSarcasm",
         mood: "Smug",

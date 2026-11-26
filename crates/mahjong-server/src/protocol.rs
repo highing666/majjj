@@ -354,6 +354,7 @@ pub enum ServerMessage {
     ErrorNotice { message: String },
     /// Comic speech bubble banter line emitted by an AI table persona (`牌桌台词`).
     TableBanter {
+        banter_id: String,
         seat: Seat,
         persona_id: PersonaId,
         mood: PersonaMood,
@@ -361,6 +362,13 @@ pub enum ServerMessage {
         #[ts(type = "number")]
         event_seq: u64,
         reply_to_seat: Option<Seat>,
+    },
+    /// Lightweight notification that synthesized `BanterVoice` WAV audio is ready for same-origin fetch.
+    TableBanterAudioReady {
+        banter_id: String,
+        seat: Seat,
+        audio_url: String,
+        duration_ms: u32,
     },
     /// Broadcast human quick-emote comic bubble (`快捷互动`) to all connected clients.
     QuickEmoteBroadcast {
@@ -370,4 +378,6 @@ pub enum ServerMessage {
     },
     /// Status notice emitted when the mandatory LAN LLM service disconnects, times out, or recovers.
     LlmStatusNotice { available: bool, message: String },
+    /// Status notice emitted when the optional LAN TTS service is unavailable, backs off, or recovers.
+    TtsStatusNotice { available: bool, message: String },
 }

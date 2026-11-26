@@ -37,6 +37,10 @@ default_pace: TablePace,
  */
 llm_base_url: string | null, 
 /**
+ * Optional persisted base URL for the optional LAN emotional TTS service endpoint.
+ */
+tts_base_url: string | null, 
+/**
  * Whether AI personas gently nudge a human player after 15–20 seconds of thinking.
  */
 slow_think_nudge_enabled: boolean, };

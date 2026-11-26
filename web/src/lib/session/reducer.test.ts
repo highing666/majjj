@@ -1177,6 +1177,7 @@ describe("session reducer — TableBanter and LlmStatusNotice", () => {
     // Matching AI seat updates mood to Tilted
     const updated = reduceServerMessage(inMatch, {
       TableBanter: {
+        banter_id: "b-1",
         seat: "South",
         persona_id: "QuickHothead",
         mood: "Tilted",
@@ -1190,6 +1191,7 @@ describe("session reducer — TableBanter and LlmStatusNotice", () => {
     // Human seat banter is ignored (no mood leaked onto human seat)
     const ignoredHuman = reduceServerMessage(updated, {
       TableBanter: {
+        banter_id: "b-2",
         seat: "East",
         persona_id: "TeaSarcasm",
         mood: "Mocking",
