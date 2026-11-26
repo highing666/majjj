@@ -49,7 +49,8 @@
   import SettlementModal from "./lib/table/SettlementModal.svelte";
   import TableCanvas from "./lib/table/TableCanvas.svelte";
   import TakeOverModal from "./lib/table/TakeOverModal.svelte";
-  import { formatRoundTitle, seatLabel } from "./lib/table/tiles";
+  import { formatRelativeSeatParen } from "./lib/protocol/seats";
+  import { formatRoundTitle } from "./lib/table/tiles";
   import { findLegalDiscardAction } from "./lib/table/viewModel";
   import type { WebGLRecoveryState } from "./lib/table/webglRecovery";
   import AudioResumeCapsule from "./lib/ui/AudioResumeCapsule.svelte";
@@ -353,7 +354,13 @@
             {:else if presentedPlayerView.phase === "Playing" && presentedPlayerView.turn.active_seat === presentedSnapshot.your_seat}
               <span class="tag tag-turn">轮到你行动</span>
             {:else if presentedPlayerView.phase === "Playing" && presentedPlayerView.turn.active_seat !== null}
-              <span class="tag">等待{seatLabel(presentedPlayerView.turn.active_seat)}</span>
+              <span class="tag">
+                等待{formatRelativeSeatParen(
+                  presentedPlayerView.turn.active_seat,
+                  presentedSnapshot.your_seat,
+                  presentedSnapshot.seats,
+                )}
+              </span>
             {/if}
           {/if}
         </div>

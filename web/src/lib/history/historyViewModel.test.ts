@@ -151,17 +151,18 @@ describe("historyViewModel", () => {
     expect(rows[0].modeLabel).toBe("东风战");
     expect(rows[0].handsPlayed).toBe(4);
     expect(rows[0].assistedByAi).toBe(true);
-    expect(rows[0].seats[0]).toMatchObject({
-      seatLabel: "东座",
+    expect(rows[0].seats[0]).toEqual({
+      seat: "East",
       nickname: "阿东",
       isAi: false,
       assistedByAi: false,
       finalScore: 124,
+      netDelta: 24,
       netDeltaText: "+24",
       netTone: "pos",
     });
     expect(rows[0].seats[1]).toMatchObject({
-      seatLabel: "南座",
+      seat: "South",
       nickname: "阿南",
       assistedByAi: true,
       netDeltaText: "-8",
@@ -169,8 +170,29 @@ describe("historyViewModel", () => {
     });
     expect(rows[0].seats[2]).toMatchObject({
       isAi: true,
+      nickname: "AI 3",
       netDeltaText: "-16",
     });
+
+    const fallbackRows = buildMatchHistoryRows([
+      {
+        ...matches[0],
+        match_id: "m-fallback",
+        seats: [
+          { seat: "East", nickname: "  ", seat_kind: "Human", assisted_by_ai: false, final_score: 100, net_delta: 0 },
+          { seat: "South", nickname: "", seat_kind: "Ai", assisted_by_ai: false, final_score: 100, net_delta: 0 },
+          { seat: "West", nickname: "", seat_kind: "Human", assisted_by_ai: false, final_score: 100, net_delta: 0 },
+          { seat: "North", nickname: "AI北", seat_kind: "Ai", assisted_by_ai: false, final_score: 100, net_delta: 0 },
+        ],
+      },
+    ]);
+    expect(fallbackRows[0].seats.map((s) => s.nickname)).toEqual([
+      "1号位",
+      "AI 2",
+      "3号位",
+      "AI北",
+    ]);
+    expect(JSON.stringify(fallbackRows)).not.toMatch(/东座|南座|西座|北座/);
   });
 
   it("maps hand records with fan breakdown, kong transfers, AI assist, takeover, and aborted flags", () => {
@@ -310,11 +332,11 @@ describe("historyViewModel", () => {
     expect(winRow.assistedByAi).toBe(true);
     expect(winRow.outcomeLabel).toBe("抢杠胡");
     expect(winRow.winningTileLabel).toBe("一万");
-    expect(winRow.discarderLabel).toBe("南座 · 阿南");
+    expect(winRow.discarderLabel).toBe("阿南");
     expect(winRow.winners).toEqual([
       {
         seat: "East",
-        displayName: "东座 · 阿东",
+        displayName: "阿东",
         winKindLabel: "抢杠胡",
         totalFan: 3,
         fanItems: [
@@ -326,22 +348,67 @@ describe("historyViewModel", () => {
     expect(winRow.kongTransfers).toEqual([
       {
         kindLabel: "暗杠",
-        actorLabel: "东座 · 阿东",
+        actorLabel: "阿东",
         fromLabel: null,
         tileLabel: "中",
         actorDeltaText: "+6",
       },
     ]);
-    expect(winRow.seatDeltas[0]).toMatchObject({
+    expect(winRow.seatDeltas[0]).toEqual({
+      seat: "East",
+      nickname: "阿东",
+      isAi: false,
       assistedByAi: true,
+      tookOverAi: false,
+      delta: 30,
       deltaText: "+30",
       tone: "pos",
     });
     expect(winRow.seatDeltas[1]).toMatchObject({
+      nickname: "阿南",
       tookOverAi: true,
       deltaText: "-26",
       tone: "neg",
     });
+
+    const fallbackHandRows = buildHandHistoryRows([
+      {
+        ...hands[0],
+        match_id: "m-hand-fallback",
+        seats: [
+          { seat: "East", nickname: "", seat_kind: "Human", assisted_by_ai: false, took_over_ai: false },
+          { seat: "South", nickname: " ", seat_kind: "Human", assisted_by_ai: false, took_over_ai: false },
+          { seat: "West", nickname: "", seat_kind: "Ai", assisted_by_ai: false, took_over_ai: false },
+          { seat: "North", nickname: "AI 4", seat_kind: "Ai", assisted_by_ai: false, took_over_ai: false },
+        ],
+        settlement: {
+          ...hands[0].settlement,
+          kong_transfers: [
+            {
+              kind: "ExposedKong",
+              actor: "West",
+              from_seat: "East",
+              tile: 31,
+              score_deltas: [-3, 0, 3, 0],
+            },
+          ],
+        },
+      },
+    ]);
+    expect(fallbackHandRows[0].discarderLabel).toBe("2号位");
+    expect(fallbackHandRows[0].winners[0].displayName).toBe("1号位");
+    expect(fallbackHandRows[0].kongTransfers[0]).toMatchObject({
+      actorLabel: "AI 3",
+      fromLabel: "1号位",
+    });
+    expect(fallbackHandRows[0].seatDeltas.map((s) => s.nickname)).toEqual([
+      "1号位",
+      "2号位",
+      "AI 3",
+      "AI 4",
+    ]);
+    expect(JSON.stringify(rows)).not.toMatch(/东座|南座|西座|北座/);
+    expect(JSON.stringify(fallbackHandRows)).not.toMatch(/东座|南座|西座|北座/);
 
     const drawRow = rows[1];
     expect(drawRow.modeLabel).toBe("自由桌");

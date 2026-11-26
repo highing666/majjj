@@ -1,7 +1,7 @@
 import type { Seat } from "../protocol/generated/Seat";
 import type { WinKind } from "../protocol/generated/WinKind";
 import type { MeldKind } from "../protocol/melds";
-import { seatIndex, seatLabel } from "../protocol/seats";
+import { seatIndex, seatNumberLabel } from "../protocol/seats";
 import { getTileLabel } from "../table/tiles";
 import type { SemanticGameEvent } from "./semanticEvents";
 
@@ -113,8 +113,12 @@ function formatActorSublabel(
   extra?: string,
 ): string {
   const parts: string[] = [];
-  if (event.seat !== null) {
-    parts.push(seatLabel(event.seat));
+  const actorText =
+    event.actorLabel ??
+    event.relativeRole ??
+    (event.seat !== null ? seatNumberLabel(event.seat) : null);
+  if (actorText) {
+    parts.push(actorText);
   }
   if (event.tile !== null) {
     parts.push(getTileLabel(event.tile));
@@ -219,7 +223,12 @@ export function buildPiltoverImpactFrame(
       : WIN_KIND_SPEC.Ron;
     const subParts: string[] = [];
     if (primary) {
-      subParts.push(seatLabel(primary.seat));
+      const winnerText =
+        primary.displayName ||
+        event.actorLabel ||
+        primary.relativeRole ||
+        seatNumberLabel(primary.seat);
+      subParts.push(winnerText);
       subParts.push(`${primary.totalFan} 番`);
     }
     if (event.tile !== null) {

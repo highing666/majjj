@@ -2,10 +2,10 @@
   import type { Seat } from "../protocol/generated/Seat";
   import type { SeatInfo } from "../protocol/generated/SeatInfo";
   import {
-    formatSeatDisplayName,
+    formatRelativeSeatDisplay,
     seatRelativeSlot,
     type RelativeSlot,
-  } from "../table/viewModel";
+  } from "../protocol/seats";
   import type { PiltoverImpactFrame } from "./effectsBus";
 
   interface Props {
@@ -53,7 +53,7 @@
     return impact.seats.map((seat) => ({
       seat,
       slot: seatRelativeSlot(baseSeat, seat),
-      title: formatSeatDisplayName(seat, seats),
+      title: formatRelativeSeatDisplay(seat, viewerSeat, seats),
     }));
   });
 

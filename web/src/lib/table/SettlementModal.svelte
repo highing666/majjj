@@ -5,9 +5,11 @@
   import type { SeatInfo } from "../protocol/generated/SeatInfo";
   import {
     ALL_SEATS,
+    formatRelativeSeatDisplay,
+    formatSeatlessDisplay,
+    getRelativeSeats,
     seatIndex,
-    seatLabel,
-    seatShortWind,
+    seatRelativeShortRole,
   } from "../protocol/seats";
   import { kongKindLabel, winKindLabel } from "../protocol/settlements";
   import TileBadge from "./TileBadge.svelte";
@@ -15,7 +17,6 @@
   import {
     buildRevealedMeldItems,
     formatScoreDelta,
-    formatSeatDisplayName,
   } from "./viewModel";
 
   interface Props {
@@ -47,8 +48,25 @@
   }: Props = $props();
 
   function seatName(seat: Seat): string {
-    return formatSeatDisplayName(seat, seats);
+    return formatRelativeSeatDisplay(seat, yourSeat, seats);
   }
+
+  const kongDeltaSeats = $derived.by(() => {
+    if (yourSeat !== null) {
+      const rel = getRelativeSeats(yourSeat);
+      const ordered: Seat[] = [rel.bottom, rel.right, rel.top, rel.left];
+      return ordered.map((s) => ({
+        seat: s,
+        index: seatIndex(s),
+        label: seatRelativeShortRole(yourSeat, s),
+      }));
+    }
+    return ALL_SEATS.map((s, index) => ({
+      seat: s,
+      index,
+      label: formatSeatlessDisplay(s, seats),
+    }));
+  });
 
   const outcomeBadge = $derived.by(() => {
     if (settlement.outcome === "DrawGame") {
@@ -142,11 +160,11 @@
           {#each settlement.kong_transfers as kt, idx (`${kt.actor}:${kt.tile}:${idx}`)}
             <li>
               <span class="kong-head">
-                {kongKindLabel(kt.kind)} · {getTileLabel(kt.tile)}（{seatName(kt.actor)}{kt.from_seat ? ` ← ${seatLabel(kt.from_seat)}` : ""}）
+                {kongKindLabel(kt.kind)} · {getTileLabel(kt.tile)}（{seatName(kt.actor)}{kt.from_seat ? ` ← ${seatName(kt.from_seat)}` : ""}）
               </span>
               <span class="kong-deltas">
-                {#each ALL_SEATS as s, i (s)}
-                  <span>{seatShortWind(s)}{formatScoreDelta(kt.score_deltas[i])}</span>
+                {#each kongDeltaSeats as item (item.seat)}
+                  <span>{item.label}{yourSeat === null ? " " : ""}{formatScoreDelta(kt.score_deltas[item.index])}</span>
                 {/each}
               </span>
             </li>
