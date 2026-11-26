@@ -556,5 +556,6 @@ resolve_python3() {
 
 python3_bin="$(resolve_python3)" || fail "no working python3 interpreter found for windows-tts unit tests"
 "$python3_bin" -B -m unittest discover -s "$repo_root/scripts/windows-tts/server" -p "test_*.py" -v
+"$python3_bin" -B -m unittest "$repo_root/scripts/windows-tts/test_voice_pack_pipeline.py" -v
 
 echo "test-dist-scripts: OK"

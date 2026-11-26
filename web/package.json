@@ -9,6 +9,7 @@
     "build:assets": "node scripts/build-atlas.mjs && node scripts/build-personas-atlas.mjs",
     "build:personas": "node scripts/build-personas-atlas.mjs",
     "build:audio": "node scripts/build-sfx-sprite.mjs",
+    "build:vo-mac": "node scripts/build-voice-packs-mac.mjs",
     "preview": "vite preview",
     "typecheck": "svelte-check --tsconfig ./tsconfig.json && tsc --noEmit",
     "test": "vitest run"
