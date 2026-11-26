@@ -29,6 +29,7 @@ use crate::pacing::{
     apply_discard_to_view, compute_ai_turn_trigger, discard_release_delay, target_ai_delay,
     AiTurnTrigger, PacingMode, ReleaseTicket,
 };
+use crate::persona::PersonaId;
 use crate::protocol::{
     ClientMessage, DestructiveOpKind, LanUrlInfo, LobbyConfig, PendingDestructiveOp, SeatInfo,
     SeatKind, SeatingRule, ServerMessage, TablePhase, TableSnapshot,
@@ -176,6 +177,67 @@ fn shuffle_slice<T>(slice: &mut [T], rng: &mut ChaCha8Rng) {
     }
 }
 
+fn assign_ai_personas(
+    ai_target_seats: &[Seat],
+    previous_seat_personas: &[Option<PersonaId>; 4],
+    keep_lobby_seats: bool,
+    rng: &mut ChaCha8Rng,
+) -> Vec<(Seat, PersonaId)> {
+    let mut assigned: Vec<(Seat, Option<PersonaId>)> = ai_target_seats
+        .iter()
+        .copied()
+        .map(|seat| (seat, None))
+        .collect();
+    let mut used = HashSet::new();
+
+    // 1. Preserve exact-seat manual persona picks first.
+    for (seat, slot_persona) in &mut assigned {
+        if let Some(pid) = previous_seat_personas[seat.index()] {
+            if used.insert(pid) {
+                *slot_persona = Some(pid);
+            }
+        }
+    }
+
+    // 2. When seating rules remap seats, carry over remaining manual lobby picks.
+    if !keep_lobby_seats {
+        let remaining_manual: Vec<PersonaId> = previous_seat_personas
+            .iter()
+            .flatten()
+            .copied()
+            .filter(|pid| used.insert(*pid))
+            .collect();
+        let mut manual_iter = remaining_manual.into_iter();
+        for (_, slot_persona) in &mut assigned {
+            if slot_persona.is_none() {
+                if let Some(pid) = manual_iter.next() {
+                    *slot_persona = Some(pid);
+                }
+            }
+        }
+    }
+
+    // 3. Randomly backfill any remaining unspecified AI seats without duplicates.
+    let mut available: Vec<PersonaId> = PersonaId::ALL
+        .into_iter()
+        .filter(|pid| !used.contains(pid))
+        .collect();
+    shuffle_slice(&mut available, rng);
+    let mut avail_iter = available.into_iter();
+
+    assigned
+        .into_iter()
+        .map(|(seat, maybe_pid)| {
+            let pid = maybe_pid.unwrap_or_else(|| {
+                avail_iter
+                    .next()
+                    .expect("5 built-in personas always suffice for up to 3 AI seats")
+            });
+            (seat, pid)
+        })
+        .collect()
+}
+
 /// Runtime wrapper keeping type compatibility with `Match` for Slice 2 match driving.
 pub(crate) type ActiveMatch = Match<AnyRuleset, BoxedWallProvider>;
 
@@ -215,6 +277,8 @@ impl SeatRecord {
                 ai_assisted: false,
                 ai_difficulty: None,
                 ai_style: None,
+                persona_id: None,
+                mood: None,
                 voice_pack_id: None,
             },
             client_id: None,
@@ -686,6 +750,8 @@ impl TableSession {
         slot.info.ai_assisted = false;
         slot.info.ai_difficulty = None;
         slot.info.ai_style = None;
+        slot.info.persona_id = None;
+        slot.info.mood = None;
         slot.info.voice_pack_id = None;
         slot.client_id = Some(existing_conn.client_id.clone());
         slot.seat_token = Some(existing_conn.seat_token.clone());
@@ -748,6 +814,54 @@ impl TableSession {
         self.broadcast_lobby_updated(None);
     }
 
+    pub(crate) fn handle_set_seat_persona(
+        &mut self,
+        conn_id: u64,
+        seat: Seat,
+        persona_id: Option<PersonaId>,
+    ) {
+        let Some((_, tx)) = self.require_seated_human(conn_id, "assigning a seat persona") else {
+            return;
+        };
+        if self.phase == TablePhase::InMatch {
+            Self::send_error(
+                &tx,
+                "cannot change seat persona while a match is in progress",
+            );
+            return;
+        }
+        if self.seats[seat.index()].info.kind == SeatKind::Human {
+            Self::send_error(&tx, "cannot assign a persona to a human seat");
+            return;
+        }
+        if let Some(pid) = persona_id {
+            let duplicate = self.seats.iter().any(|slot| {
+                slot.info.seat != seat
+                    && slot.info.kind != SeatKind::Human
+                    && slot.info.persona_id == Some(pid)
+            });
+            if duplicate {
+                Self::send_error(&tx, "persona is already assigned to another seat");
+                return;
+            }
+        }
+
+        let slot = &mut self.seats[seat.index()];
+        slot.info.persona_id = persona_id;
+        if slot.info.kind == SeatKind::Ai {
+            if let Some(pid) = persona_id {
+                slot.info.nickname = pid.display_name().to_string();
+                slot.info.ai_style = Some(pid.default_style());
+                slot.info.mood = Some(pid.initial_mood());
+            } else {
+                slot.info.mood = None;
+            }
+        } else {
+            slot.info.mood = None;
+        }
+        self.broadcast_lobby_updated(None);
+    }
+
     fn handle_set_pace(&mut self, conn_id: u64, pace: crate::protocol::TablePace) {
         if self
             .require_seated_human(conn_id, "changing table pace")
@@ -793,12 +907,14 @@ impl TableSession {
             }
         };
 
-        let mut styles = [
-            AiStyle::AggressiveFast,
-            AiStyle::Balanced,
-            AiStyle::DefensiveBigHand,
-        ];
-        shuffle_slice(&mut styles, &mut self.rng);
+        let previous_seat_personas: [Option<PersonaId>; 4] = Seat::ALL.map(|seat| {
+            let info = &self.seats[seat.index()].info;
+            if info.kind == SeatKind::Human {
+                None
+            } else {
+                info.persona_id
+            }
+        });
 
         let mut new_seats = Seat::ALL.map(SeatRecord::empty);
         let seat_order: Option<[Seat; 4]> = match self.config.seating {
@@ -833,17 +949,24 @@ impl TableSession {
                 order[human_count..].to_vec()
             }
         };
-        for (ai_idx, target_seat) in ai_target_seats.into_iter().enumerate() {
-            let style = styles[ai_idx % styles.len()];
+        let assigned_personas = assign_ai_personas(
+            &ai_target_seats,
+            &previous_seat_personas,
+            self.config.seating == SeatingRule::KeepLobbySeats,
+            &mut self.rng,
+        );
+        for (target_seat, persona) in assigned_personas {
             new_seats[target_seat.index()] = SeatRecord {
                 info: SeatInfo {
                     seat: target_seat,
                     kind: SeatKind::Ai,
-                    nickname: format!("AI {}", ai_idx + 1),
+                    nickname: persona.display_name().to_string(),
                     connected: true,
                     ai_assisted: false,
                     ai_difficulty: Some(self.config.ai_difficulty),
-                    ai_style: Some(style),
+                    ai_style: Some(persona.default_style()),
+                    persona_id: Some(persona),
+                    mood: Some(persona.initial_mood()),
                     voice_pack_id: None,
                 },
                 client_id: None,
@@ -1902,6 +2025,9 @@ impl TableRuntime {
                                     pace,
                                 },
                             );
+                        }
+                        ClientMessage::SetSeatPersona { seat, persona_id } => {
+                            session.handle_set_seat_persona(conn_id, seat, persona_id);
                         }
                         ClientMessage::SetPace { pace } => {
                             session.handle_set_pace(conn_id, pace);

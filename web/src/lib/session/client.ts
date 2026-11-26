@@ -1,5 +1,6 @@
 import type { ClientMessage } from "../protocol/generated/ClientMessage";
 import type { LobbyConfig } from "../protocol/generated/LobbyConfig";
+import type { PersonaId } from "../protocol/generated/PersonaId";
 import type { PlayerAction } from "../protocol/generated/PlayerAction";
 import type { Seat } from "../protocol/generated/Seat";
 import type { ServerMessage } from "../protocol/generated/ServerMessage";
@@ -79,6 +80,7 @@ export interface TableClient {
   joinSeat(seat: Seat | null): boolean;
   leaveSeat(): boolean;
   updateLobbyConfig(config: LobbyConfig): boolean;
+  setSeatPersona(seat: Seat, personaId: PersonaId | null): boolean;
   setPace(pace: TablePace): boolean;
   startMatch(): boolean;
   returnToLobby(): boolean;
@@ -503,6 +505,12 @@ export function createTableClient(
 
     updateLobbyConfig(config: LobbyConfig): boolean {
       return sendRaw({ UpdateLobbyConfig: config });
+    },
+
+    setSeatPersona(seat: Seat, personaId: PersonaId | null): boolean {
+      return sendRaw({
+        SetSeatPersona: { seat, persona_id: personaId },
+      });
     },
 
     setPace(pace: TablePace): boolean {

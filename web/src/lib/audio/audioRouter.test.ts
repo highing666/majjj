@@ -249,6 +249,8 @@ function makeSeats(voicePackSeatEast: string | null = null): [SeatInfo, SeatInfo
     ai_assisted: false,
     ai_difficulty: idx === 0 ? null : "Strong",
     ai_style: idx === 0 ? null : "Balanced",
+    persona_id: null,
+    mood: null,
     voice_pack_id: idx === 0 ? voicePackSeatEast : null,
   })) as [SeatInfo, SeatInfo, SeatInfo, SeatInfo];
 }

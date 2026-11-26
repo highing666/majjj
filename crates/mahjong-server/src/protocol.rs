@@ -5,6 +5,8 @@ use mahjong_core::{MatchMode, PlayerAction, PlayerEvent, PlayerView, Seat};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::persona::{PersonaId, PersonaMood};
+
 /// Top-level lifecycle phase of a single active `TableSession`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, TS)]
 pub enum TablePhase {
@@ -94,6 +96,10 @@ pub struct SeatInfo {
     pub ai_difficulty: Option<AiDifficulty>,
     /// AI play style if occupied by an AI or AI-assisted seat.
     pub ai_style: Option<AiStyle>,
+    /// Assigned table persona (`牌友角色`) for an AI or lobby-configured empty seat.
+    pub persona_id: Option<PersonaId>,
+    /// Current facial/emotional mood (`牌友情绪`) for an active AI seat.
+    pub mood: Option<PersonaMood>,
     /// Reserved v2 voice pack identifier placeholder (`None` in v1).
     pub voice_pack_id: Option<String>,
 }
@@ -200,6 +206,11 @@ pub enum ClientMessage {
         seating: SeatingRule,
         ai_difficulty: AiDifficulty,
         pace: TablePace,
+    },
+    /// Assign or clear (`None` = random backfill) a table persona for a non-human seat.
+    SetSeatPersona {
+        seat: Seat,
+        persona_id: Option<PersonaId>,
     },
     /// Start a match from `Lobby` or rematch from `Finished`.
     StartMatch,

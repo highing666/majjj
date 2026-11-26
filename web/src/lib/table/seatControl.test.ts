@@ -24,6 +24,8 @@ function makeSeat(
     ai_assisted: false,
     ai_difficulty: "Strong",
     ai_style: "Balanced",
+    persona_id: null,
+    mood: null,
     voice_pack_id: null,
     ...overrides,
   };

@@ -248,6 +248,8 @@ impl TableSession {
         slot.info.ai_assisted = false;
         slot.info.ai_difficulty = None;
         slot.info.ai_style = None;
+        slot.info.persona_id = None;
+        slot.info.mood = None;
         if slot.info.nickname.trim().is_empty() {
             slot.info.nickname = effective_nickname(caller.nickname, seat);
         }
@@ -282,6 +284,8 @@ impl TableSession {
         slot.info.ai_assisted = false;
         slot.info.ai_difficulty = None;
         slot.info.ai_style = None;
+        slot.info.persona_id = None;
+        slot.info.mood = None;
         slot.client_id = Some(caller.client_id.to_string());
         slot.seat_token = Some(caller.seat_token.to_string());
 
@@ -408,12 +412,18 @@ mod tests {
         let job = &work.ai_jobs[0];
         assert_eq!(job.key.seat, Seat::South);
 
-        // Unseated c2 takes over South AI seat -> increments seat_generation[South].
+        // Before takeover, South AI carries a bound persona and initial mood.
+        assert!(session.seats[Seat::South.index()].info.persona_id.is_some());
+        assert!(session.seats[Seat::South.index()].info.mood.is_some());
+
+        // Unseated c2 takes over South AI seat -> increments seat_generation[South] and clears persona/mood.
         session.handle_take_over_seat(c2, Seat::South, true);
         assert_eq!(
             session.seats[Seat::South.index()].info.kind,
             SeatKind::Human
         );
+        assert_eq!(session.seats[Seat::South.index()].info.persona_id, None);
+        assert_eq!(session.seats[Seat::South.index()].info.mood, None);
 
         // Stale Rayon job arriving at plan_ai_action_delay is dropped (returns None).
         let stale_delay = session.plan_ai_action_delay(

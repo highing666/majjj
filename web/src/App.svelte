@@ -13,6 +13,7 @@
   import ShutdownControl from "./lib/lifecycle/ShutdownControl.svelte";
   import { patchLobbyConfig } from "./lib/lobby/lobbyConfig";
   import LobbyView from "./lib/lobby/LobbyView.svelte";
+  import PersonaAvatar from "./lib/personas/PersonaAvatar.svelte";
   import {
     getBrowserDevicePreferencesStore,
     type DevicePreferences,
@@ -397,6 +398,7 @@
       onJoinSeat={(seat) => client.joinSeat(seat)}
       onLeaveSeat={() => client.leaveSeat()}
       onUpdateConfig={(config) => client.updateLobbyConfig(config)}
+      onSetSeatPersona={(seat, personaId) => client.setSeatPersona(seat, personaId)}
       onStartMatch={() => client.startMatch()}
       onOpenSettings={() => (settingsOpen = true)}
       onOpenHistory={() => void historyController.open()}
@@ -519,7 +521,16 @@
             {#each takeOverItems as item (item.seatInfo.seat)}
               <article class="observer-seat-card">
                 <div class="observer-seat-head">
-                  <strong>{item.displayName}</strong>
+                  <div class="observer-seat-identity">
+                    {#if item.seatInfo.kind === "Ai" && item.seatInfo.persona_id !== null}
+                      <PersonaAvatar
+                        personaId={item.seatInfo.persona_id}
+                        mood={item.seatInfo.mood}
+                        size={32}
+                      />
+                    {/if}
+                    <strong>{item.displayName}</strong>
+                  </div>
                   <span
                     class="tag"
                     class:tag-offline={item.takeOverKind === "offline_human"}
@@ -753,6 +764,13 @@
     align-items: center;
     justify-content: space-between;
     gap: 8px;
+  }
+
+  .observer-seat-identity {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
   }
 
   .match-shell {

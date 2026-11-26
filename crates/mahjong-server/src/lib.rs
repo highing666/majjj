@@ -8,6 +8,7 @@ pub mod history_dto;
 pub mod lan;
 pub mod lifecycle;
 pub mod pacing;
+pub mod persona;
 pub mod protocol;
 mod seat_control;
 pub mod server;
