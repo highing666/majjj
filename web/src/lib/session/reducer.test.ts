@@ -1138,3 +1138,91 @@ describe("session reducer — EventBatch folding, gap recovery, and ActionReject
   });
 });
 
+describe("session reducer — TableBanter and LlmStatusNotice", () => {
+  it("updates AI seat mood live on TableBanter and ignores non-AI or mismatched persona seats", () => {
+    const seats = makeLobbySeats();
+    seats[0] = {
+      ...seats[0],
+      kind: "Human",
+      nickname: "房主",
+      connected: true,
+    };
+    seats[1] = {
+      ...seats[1],
+      kind: "Ai",
+      nickname: "急眼快攻哥",
+      connected: true,
+      ai_difficulty: "Strong",
+      ai_style: "AggressiveFast",
+      persona_id: "QuickHothead",
+      mood: "Smug",
+    };
+
+    const inMatch = reduceServerMessage(createInitialSessionState(), {
+      TableSnapshot: makeSnapshot({
+        phase: "InMatch",
+        your_seat: "East",
+        seats,
+        player_view: makePlayerView(),
+        seq: 4,
+      }),
+    }).state;
+
+    // Matching AI seat updates mood to Tilted
+    const updated = reduceServerMessage(inMatch, {
+      TableBanter: {
+        seat: "South",
+        persona_id: "QuickHothead",
+        mood: "Tilted",
+        text: "谁让你碰我牌的，急眼了！",
+        event_seq: 5,
+        reply_to_seat: null,
+      },
+    }).state;
+    expect(updated.snapshot?.seats[1].mood).toBe("Tilted");
+
+    // Human seat banter is ignored (no mood leaked onto human seat)
+    const ignoredHuman = reduceServerMessage(updated, {
+      TableBanter: {
+        seat: "East",
+        persona_id: "TeaSarcasm",
+        mood: "Mocking",
+        text: "不该写入人类座位",
+        event_seq: 6,
+        reply_to_seat: null,
+      },
+    }).state;
+    expect(ignoredHuman.snapshot?.seats[0].mood).toBeNull();
+  });
+
+  it("tracks LlmStatusNotice outage and recovery cleanly without clearing snapshot", () => {
+    const base = reduceServerMessage(createInitialSessionState(), {
+      TableSnapshot: makeSnapshot({ phase: "InMatch", your_seat: "East" }),
+    }).state;
+
+    const degraded = reduceServerMessage(base, {
+      LlmStatusNotice: {
+        available: false,
+        message: "局域网推理服务异常：请求超时",
+      },
+    }).state;
+    expect(degraded.llmStatusNotice).toEqual({
+      available: false,
+      message: "局域网推理服务异常：请求超时",
+    });
+    expect(degraded.snapshot?.phase).toBe("InMatch");
+
+    const recovered = reduceServerMessage(degraded, {
+      LlmStatusNotice: {
+        available: true,
+        message: "局域网推理服务已恢复连接",
+      },
+    }).state;
+    expect(recovered.llmStatusNotice).toEqual({
+      available: true,
+      message: "局域网推理服务已恢复连接",
+    });
+  });
+});
+
+

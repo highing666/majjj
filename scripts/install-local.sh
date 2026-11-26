@@ -137,7 +137,8 @@ show_alert() {
   msg="$1"
   printf '%s\n' "$msg" >&2
   if command -v osascript >/dev/null 2>&1; then
-    osascript -e "display alert \"Majjj 启动提示\" message \"${msg}\" as critical buttons {\"好\"} default button \"好\"" >/dev/null 2>&1 || true
+    escaped_msg="$(printf '%s' "$msg" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr '\n' ' ')"
+    osascript -e "display alert \"Majjj 启动提示\" message \"${escaped_msg}\" as critical buttons {\"好\"} default button \"好\"" >/dev/null 2>&1 || true
   fi
 }
 
@@ -207,7 +208,18 @@ while [ "$i" -lt "$WAIT_TICKS" ]; do
 done
 
 if [ "$ready" -ne 1 ]; then
-  show_alert "Majjj 服务启动超时或失败，请查看日志：${LOG_FILE}"
+  err_detail=""
+  if [ -s "$LOG_FILE" ]; then
+    err_detail="$(grep -E '^error:' "$LOG_FILE" | tail -n 1 | sed 's/^error:[[:space:]]*//' || true)"
+    if [ -z "$err_detail" ]; then
+      err_detail="$(tail -n 1 "$LOG_FILE" || true)"
+    fi
+  fi
+  if [ -n "$err_detail" ]; then
+    show_alert "Majjj 服务启动失败：${err_detail}（日志：${LOG_FILE}）"
+  else
+    show_alert "Majjj 服务启动超时或失败，请查看日志：${LOG_FILE}"
+  fi
   exit 1
 fi
 

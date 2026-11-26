@@ -8,6 +8,9 @@ license.workspace = true
 axum = { version = "0.8", features = ["ws"] }
 clap = { version = "4", features = ["derive", "env"] }
 futures-util = "0.3"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 if-addrs = "0.13"
 mahjong-ai = { path = "../mahjong-ai" }
 mahjong-core = { path = "../mahjong-core" }
@@ -23,9 +26,6 @@ ts-rs.workspace = true
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
-http-body-util = "0.1"
-hyper = { version = "1", features = ["client", "http1"] }
-hyper-util = { version = "0.1", features = ["tokio"] }
 tokio = { version = "1", features = ["test-util"] }
 tokio-tungstenite = "0.26"
 

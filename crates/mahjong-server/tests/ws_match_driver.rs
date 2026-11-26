@@ -1656,6 +1656,7 @@ async fn bounded_rayon_pool_drives_one_player_matches_with_deterministic_budget_
         .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
         .with_port(0)
         .with_ai_threads(1)
+        .with_llm_client(common::stub_llm_client())
         .spawn_with_options(options)
         .await
         .expect("spawn server with 1 bounded AI thread");
@@ -1927,6 +1928,7 @@ async fn bounded_rayon_pool_drives_two_player_east_only_and_free_table_with_dete
         .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
         .with_port(0)
         .with_ai_threads(2)
+        .with_llm_client(common::stub_llm_client())
         .spawn_with_options(options)
         .await
         .expect("spawn server with 2 bounded AI threads");
@@ -2214,6 +2216,7 @@ async fn bounded_rayon_pool_one_thread_handles_concurrent_multi_ai_reaction_wind
         .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
         .with_port(0)
         .with_ai_threads(1)
+        .with_llm_client(common::stub_llm_client())
         .spawn_with_options(
             TableOptions::with_wall_factory(88, factory).with_pacing(PacingMode::Immediate),
         )
@@ -2363,6 +2366,7 @@ async fn realtime_budget_drives_strong_ai_east_only_and_intermediate_ai_free_tab
     let server = default_cfg
         .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
         .with_port(0)
+        .with_llm_client(common::stub_llm_client())
         .spawn_with_options(TableOptions::seeded(777).with_pacing(PacingMode::Immediate))
         .await
         .expect("spawn server with default bounded AI threads and Realtime budget");

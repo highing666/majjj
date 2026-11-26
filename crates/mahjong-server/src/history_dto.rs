@@ -25,6 +25,9 @@ pub struct PreferencesData {
     pub default_ai_difficulty: AiDifficulty,
     /// Default table-wide animation and AI pacing tier.
     pub default_pace: TablePace,
+    /// Optional persisted base URL for the LAN `llama-server` endpoint.
+    #[serde(default)]
+    pub llm_base_url: Option<String>,
 }
 
 impl Default for PreferencesData {
@@ -37,6 +40,7 @@ impl Default for PreferencesData {
             default_seating: lobby.seating,
             default_ai_difficulty: lobby.ai_difficulty,
             default_pace: lobby.pace,
+            llm_base_url: None,
         }
     }
 }
