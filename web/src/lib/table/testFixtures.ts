@@ -108,6 +108,7 @@ export function makeTableSnapshot(
     phase: "InMatch",
     config: makeLobbyConfig(),
     pace: "Standard",
+    slow_think_nudge_enabled: true,
     seats: [
       makeSeatInfo("East", "阿东"),
       makeSeatInfo("South", "小南"),

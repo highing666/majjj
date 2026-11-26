@@ -2,6 +2,7 @@ import type { PersonaId } from "../protocol/generated/PersonaId";
 import type { PersonaMood } from "../protocol/generated/PersonaMood";
 import type { PlayerAction } from "../protocol/generated/PlayerAction";
 import type { PlayerEvent } from "../protocol/generated/PlayerEvent";
+import type { QuickEmote } from "../protocol/generated/QuickEmote";
 import type { Seat } from "../protocol/generated/Seat";
 import type { ServerMessage } from "../protocol/generated/ServerMessage";
 import type { TablePace } from "../protocol/generated/TablePace";
@@ -35,9 +36,12 @@ export interface PresentationScheduler {
 }
 
 export interface ActiveBanterBubble {
+  kind: "banter" | "quick_emote";
+  bubbleId: number;
   seat: Seat;
-  personaId: PersonaId;
-  mood: PersonaMood;
+  personaId: PersonaId | null;
+  mood: PersonaMood | null;
+  emote: QuickEmote | null;
   text: string;
   eventSeq: number;
   replyToSeat: Seat | null;
@@ -174,6 +178,7 @@ export function createPresentationQueue(
   let activeImpact: PiltoverImpactFrame | null = null;
   let activeBubbles: ActiveBanterMap = createEmptyBanterMap();
   const bubbleTimers: Partial<Record<Seat, unknown>> = {};
+  let nextBubbleId = 1;
   let settlementVisible = false;
   let pace: TablePace = "Standard";
   let activeTimer: unknown | null = null;
@@ -235,7 +240,14 @@ export function createPresentationQueue(
 
   function pruneBubblesForSeats(seats: TableSnapshot["seats"]): void {
     for (const info of seats) {
-      if (info.kind !== "Ai" && activeBubbles[info.seat] !== null) {
+      const bubble = activeBubbles[info.seat];
+      if (bubble === null) {
+        continue;
+      }
+      if (
+        (bubble.kind === "banter" && info.kind !== "Ai") ||
+        (bubble.kind === "quick_emote" && info.kind !== "Human")
+      ) {
         clearSeatBubble(info.seat);
       }
     }
@@ -464,6 +476,28 @@ export function createPresentationQueue(
     emitState();
   }
 
+  function scheduleSeatBubble(bubble: ActiveBanterBubble): void {
+    const seat = bubble.seat;
+    clearSeatBubble(seat);
+    activeBubbles = {
+      ...activeBubbles,
+      [seat]: bubble,
+    };
+    const effectiveDurationMs = Math.max(
+      1,
+      Math.round(banterDurationMs * (pace === "Fast" ? 0.78 : 1.0)),
+    );
+    const id = bubble.bubbleId;
+    bubbleTimers[seat] = scheduler.setTimeout(() => {
+      delete bubbleTimers[seat];
+      if (!disposed && activeBubbles[seat]?.bubbleId === id) {
+        activeBubbles = { ...activeBubbles, [seat]: null };
+        emitState();
+      }
+    }, effectiveDurationMs);
+    emitState();
+  }
+
   function handleTableBanter(
     message: Extract<ServerMessage, { TableBanter: unknown }>,
   ): void {
@@ -484,30 +518,49 @@ export function createPresentationQueue(
     const reduced = reduceServerMessage(sessionState, message);
     sessionState = reduced.state;
 
-    clearSeatBubble(seat);
-    activeBubbles = {
-      ...activeBubbles,
-      [seat]: {
-        seat,
-        personaId: persona_id,
-        mood,
-        text: trimmed,
-        eventSeq: event_seq,
-        replyToSeat: reply_to_seat,
-      },
-    };
-    const effectiveDurationMs = Math.max(
-      1,
-      Math.round(banterDurationMs * (pace === "Fast" ? 0.78 : 1.0)),
-    );
-    bubbleTimers[seat] = scheduler.setTimeout(() => {
-      delete bubbleTimers[seat];
-      if (!disposed && activeBubbles[seat]?.eventSeq === event_seq) {
-        activeBubbles = { ...activeBubbles, [seat]: null };
-        emitState();
+    scheduleSeatBubble({
+      kind: "banter",
+      bubbleId: nextBubbleId++,
+      seat,
+      personaId: persona_id,
+      mood,
+      emote: null,
+      text: trimmed,
+      eventSeq: event_seq,
+      replyToSeat: reply_to_seat,
+    });
+  }
+
+  function handleQuickEmoteBroadcast(
+    message: Extract<ServerMessage, { QuickEmoteBroadcast: unknown }>,
+  ): void {
+    const { seat, emote, text } = message.QuickEmoteBroadcast;
+    const trimmed = text.trim();
+    if (trimmed.length === 0) {
+      return;
+    }
+    const snap = sessionState.snapshot;
+    if (snap !== null) {
+      const seatInfo = snap.seats.find((entry) => entry.seat === seat);
+      if (seatInfo && seatInfo.kind !== "Human") {
+        return;
       }
-    }, effectiveDurationMs);
-    emitState();
+    }
+
+    const reduced = reduceServerMessage(sessionState, message);
+    sessionState = reduced.state;
+
+    scheduleSeatBubble({
+      kind: "quick_emote",
+      bubbleId: nextBubbleId++,
+      seat,
+      personaId: null,
+      mood: null,
+      emote,
+      text: trimmed,
+      eventSeq: snap?.seq ?? 0,
+      replyToSeat: null,
+    });
   }
 
   function handleEventBatch(
@@ -575,6 +628,10 @@ export function createPresentationQueue(
       }
       if ("TableBanter" in message) {
         handleTableBanter(message);
+        return;
+      }
+      if ("QuickEmoteBroadcast" in message) {
+        handleQuickEmoteBroadcast(message);
       }
     },
 

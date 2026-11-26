@@ -12,7 +12,7 @@ use mahjong_core::{
 use crate::llm::BanterGenerationRequest;
 use crate::persona::PersonaId;
 use crate::persona_memory::PersonaMemoryStore;
-use crate::protocol::{SeatInfo, SeatKind};
+use crate::protocol::{QuickEmote, SeatInfo, SeatKind};
 use crate::session::ActiveMatch;
 
 /// Hard synchronization cap for major highlight events (`MeldDeclared`, `HandSettled`)
@@ -21,6 +21,12 @@ pub const HIGHLIGHT_SYNC_CAP: Duration = Duration::from_millis(1500);
 
 /// Hard timeout for non-blocking background highlight banter (`HandStarted`, `AddedKongAttempted`).
 pub const ASYNC_BANTER_TIMEOUT: Duration = Duration::from_millis(6000);
+
+/// Minimum per-seat cooldown between consecutive human `QuickEmote` triggers.
+pub const QUICK_EMOTE_COOLDOWN: Duration = Duration::from_secs(4);
+
+/// Waiting threshold before a single playful AI slow-think nudge fires (`15–20s` per Spec #63).
+pub const SLOW_THINK_NUDGE_DELAY: Duration = Duration::from_secs(16);
 
 /// Monotonic validity guard attached to every in-flight LLM banter task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +47,22 @@ pub(crate) struct BanterGuard {
     pub max_seq_drift: Option<u64>,
     /// Whether this banter may still commit after `TablePhase::Finished` (for final-hand settlement).
     pub allow_finished_phase: bool,
+    /// Optional target seat this banter line is replying to or nudging.
+    pub reply_to_seat: Option<Seat>,
+    /// If `true`, drop the line if `slow_think_nudge_enabled` was toggled off while in-flight.
+    pub require_nudge_enabled: bool,
+}
+
+/// Scheduled virtual-clock-friendly timer ticket for a single human turn's slow-think nudge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SlowThinkTicket {
+    pub match_id: u64,
+    pub hand_generation: u64,
+    pub seq: u64,
+    pub target_seat: Seat,
+    pub target_seat_generation: u64,
+    pub timer_generation: u64,
+    pub fire_at: tokio::time::Instant,
 }
 
 /// Scheduled LLM banter job ready for asynchronous or bounded-sync execution.
@@ -512,6 +534,138 @@ pub(crate) fn plan_initial_hand_banter(ctx: &BanterPlanContext<'_>) -> Option<Pe
             hand_generation: ctx.hand_generation,
             max_seq_drift: Some(6),
             allow_finished_phase: false,
+            reply_to_seat: None,
+            require_nudge_enabled: false,
+        },
+        request,
+        sync_cap: None,
+    })
+}
+
+fn build_quick_emote_reply_prompt(
+    seats: &[SeatInfo; 4],
+    speaker: Seat,
+    sender: Seat,
+    emote: QuickEmote,
+    view: &PlayerView,
+) -> String {
+    let sender_label = seat_label(seats, speaker, sender);
+    let scores = format_scores_line(
+        seats,
+        speaker,
+        &[
+            view.seats[0].score,
+            view.seats[1].score,
+            view.seats[2].score,
+            view.seats[3].score,
+        ],
+    );
+    let emote_text = emote.label();
+    format!(
+        "【快捷互动回应】{sender_label} 刚向全桌发了快捷互动：「{emote_text}」。\n\
+当前牌墙剩余 {wall} 张，积分：{scores}。\n\
+你的自家手牌：{own_hand}（严禁臆测他家暗牌）。\n\
+请立刻顺着 {sender_label} 这句「{emote_text}」用你的人设接话回喷或调侃。",
+        wall = view.wall_remaining,
+        own_hand = format_own_hand(view),
+    )
+}
+
+fn build_slow_think_nudge_prompt(
+    seats: &[SeatInfo; 4],
+    speaker: Seat,
+    target_seat: Seat,
+    view: &PlayerView,
+) -> String {
+    let target_label = seat_label(seats, speaker, target_seat);
+    format!(
+        "【慢思考催牌调侃】{target_label} 这一手已经想了快二十秒还没操作，牌墙剩余 {wall} 张。\n\
+你的自家手牌：{own_hand}（严禁臆测他家暗牌）。\n\
+请用你的人设来一句俏皮温和的催牌调侃（带点损友玩笑催一催，别太凶也别催命）。",
+        wall = view.wall_remaining,
+        own_hand = format_own_hand(view),
+    )
+}
+
+/// Plans 1–2 immediate asynchronous AI banter replies reacting to a human `QuickEmote`.
+pub(crate) fn plan_quick_emote_replies(
+    ctx: &BanterPlanContext<'_>,
+    sender: Seat,
+    emote: QuickEmote,
+) -> Vec<PendingBanterJob> {
+    let ai_seats = ai_persona_seats(ctx.seats);
+    if ai_seats.is_empty() {
+        return Vec::new();
+    }
+    let reply_count = ai_seats.len().min(2);
+    let seq = ctx.game.seq();
+    let start_idx = (ctx
+        .match_id
+        .wrapping_mul(17)
+        .wrapping_add(seq)
+        .wrapping_add(emote.index() as u64) as usize)
+        % ai_seats.len();
+
+    let mut jobs = Vec::with_capacity(reply_count);
+    for offset in 0..reply_count {
+        let (speaker, persona_id) = ai_seats[(start_idx + offset) % ai_seats.len()];
+        let view = ctx.game.project_view(speaker);
+        let user_prompt = append_memory_context(
+            build_quick_emote_reply_prompt(ctx.seats, speaker, sender, emote, &view),
+            ctx.persona_memory,
+            persona_id,
+            ctx.seats,
+        );
+        let request = BanterGenerationRequest::new(build_system_prompt(persona_id), user_prompt);
+        jobs.push(PendingBanterJob {
+            guard: BanterGuard {
+                match_id: ctx.match_id,
+                seat: speaker,
+                seat_generation: ctx.seat_generation[speaker.index()],
+                persona_id,
+                event_seq: seq,
+                hand_generation: ctx.hand_generation,
+                max_seq_drift: Some(8),
+                allow_finished_phase: false,
+                reply_to_seat: Some(sender),
+                require_nudge_enabled: false,
+            },
+            request,
+            sync_cap: None,
+        });
+    }
+    jobs
+}
+
+/// Plans one playful asynchronous AI nudge banter line when a human thinks past the threshold.
+pub(crate) fn plan_slow_think_nudge(
+    ctx: &BanterPlanContext<'_>,
+    target_seat: Seat,
+    random_pick: u64,
+) -> Option<PendingBanterJob> {
+    let ai_seats = ai_persona_seats(ctx.seats);
+    let (speaker, persona_id) = pick_deterministic_ai(&ai_seats, random_pick)?;
+    let seq = ctx.game.seq();
+    let view = ctx.game.project_view(speaker);
+    let user_prompt = append_memory_context(
+        build_slow_think_nudge_prompt(ctx.seats, speaker, target_seat, &view),
+        ctx.persona_memory,
+        persona_id,
+        ctx.seats,
+    );
+    let request = BanterGenerationRequest::new(build_system_prompt(persona_id), user_prompt);
+    Some(PendingBanterJob {
+        guard: BanterGuard {
+            match_id: ctx.match_id,
+            seat: speaker,
+            seat_generation: ctx.seat_generation[speaker.index()],
+            persona_id,
+            event_seq: seq,
+            hand_generation: ctx.hand_generation,
+            max_seq_drift: Some(0),
+            allow_finished_phase: false,
+            reply_to_seat: Some(target_seat),
+            require_nudge_enabled: true,
         },
         request,
         sync_cap: None,
@@ -559,6 +713,8 @@ pub(crate) fn plan_highlight_banter_for_events(
                         hand_generation: ctx.hand_generation,
                         max_seq_drift: None,
                         allow_finished_phase: true,
+                        reply_to_seat: None,
+                        require_nudge_enabled: false,
                     },
                     request,
                     sync_cap: Some(ctx.sync_cap),
@@ -597,6 +753,8 @@ pub(crate) fn plan_highlight_banter_for_events(
                         hand_generation: ctx.hand_generation,
                         max_seq_drift: Some(6),
                         allow_finished_phase: false,
+                        reply_to_seat: None,
+                        require_nudge_enabled: false,
                     },
                     request,
                     sync_cap: None,
@@ -644,6 +802,8 @@ pub(crate) fn plan_highlight_banter_for_events(
                         hand_generation: ctx.hand_generation,
                         max_seq_drift: Some(4),
                         allow_finished_phase: false,
+                        reply_to_seat: None,
+                        require_nudge_enabled: false,
                     },
                     request,
                     sync_cap: Some(ctx.sync_cap),
@@ -679,6 +839,8 @@ pub(crate) fn plan_highlight_banter_for_events(
                         hand_generation: ctx.hand_generation,
                         max_seq_drift: Some(4),
                         allow_finished_phase: false,
+                        reply_to_seat: None,
+                        require_nudge_enabled: false,
                     },
                     request,
                     sync_cap: None,

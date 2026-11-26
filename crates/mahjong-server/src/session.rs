@@ -21,8 +21,9 @@ use crate::ai_pool::{
     build_ai_pool, default_ai_threads, spawn_scheduled_work, AiJobKey, PendingAiJob, ScheduledWork,
 };
 use crate::banter::{
-    plan_highlight_banter_for_events, plan_initial_hand_banter, BanterGuard, BanterPlanContext,
-    PendingBanterJob, HIGHLIGHT_SYNC_CAP,
+    plan_highlight_banter_for_events, plan_initial_hand_banter, plan_quick_emote_replies,
+    plan_slow_think_nudge, BanterGuard, BanterPlanContext, PendingBanterJob, SlowThinkTicket,
+    HIGHLIGHT_SYNC_CAP, QUICK_EMOTE_COOLDOWN, SLOW_THINK_NUDGE_DELAY,
 };
 use crate::history_dto::{
     ClearHistoryResponse, HandRecord, HandSeatRecord, HistoryExportResponse, MatchRecord,
@@ -40,8 +41,8 @@ use crate::persona_memory::{
     MemoryNoteJob, PersonaMemoryNoteTrigger, PersonaMemoryResponse, PersonaMemoryStore,
 };
 use crate::protocol::{
-    ClientMessage, DestructiveOpKind, LanUrlInfo, LobbyConfig, PendingDestructiveOp, SeatInfo,
-    SeatKind, SeatingRule, ServerMessage, TablePhase, TableSnapshot,
+    ClientMessage, DestructiveOpKind, LanUrlInfo, LobbyConfig, PendingDestructiveOp, QuickEmote,
+    SeatInfo, SeatKind, SeatingRule, ServerMessage, TablePhase, TableSnapshot,
 };
 use crate::seat_control::HandAttribution;
 use crate::server::ServerError;
@@ -413,6 +414,11 @@ pub struct TableSession {
     pending_memory_notes: Vec<MemoryNoteJob>,
     llm_available: bool,
     last_llm_error: Option<String>,
+    slow_think_nudge_enabled: bool,
+    quick_emote_last_sent: [Option<tokio::time::Instant>; 4],
+    active_slow_think_nudge: Option<SlowThinkTicket>,
+    last_nudged_turn: Option<(u64, u64, u64, Seat)>,
+    next_nudge_generation: u64,
 }
 
 impl TableSession {
@@ -458,6 +464,7 @@ impl TableSession {
             None => PersonaMemoryStore::in_memory(),
         };
         let config = LobbyConfig::from(history.preferences());
+        let slow_think_nudge_enabled = history.preferences().slow_think_nudge_enabled;
         let base_seed = options.rng_seed.unwrap_or_else(random_u64);
         let (phase_tx, _) = watch::channel(TablePhase::Lobby);
         Ok(Self {
@@ -489,6 +496,11 @@ impl TableSession {
             pending_memory_notes: Vec::new(),
             llm_available: true,
             last_llm_error: None,
+            slow_think_nudge_enabled,
+            quick_emote_last_sent: [None; 4],
+            active_slow_think_nudge: None,
+            last_nudged_turn: None,
+            next_nudge_generation: 1,
         })
     }
 
@@ -578,6 +590,7 @@ impl TableSession {
             phase: self.phase,
             config: self.config,
             pace: self.config.pace,
+            slow_think_nudge_enabled: self.slow_think_nudge_enabled,
             seats: self.seat_infos(),
             your_seat: conn.seat,
             seat_token: Some(conn.seat_token.clone()),
@@ -609,6 +622,7 @@ impl TableSession {
             phase: self.phase,
             config: self.config,
             seats: self.seat_infos(),
+            slow_think_nudge_enabled: self.slow_think_nudge_enabled,
         };
         for (&id, conn) in &self.connections {
             if exclude_conn_id == Some(id) {
@@ -944,6 +958,65 @@ impl TableSession {
         self.broadcast_lobby_updated(None);
     }
 
+    fn handle_set_slow_think_nudge(&mut self, conn_id: u64, enabled: bool) {
+        if self
+            .require_seated_human(conn_id, "updating slow-think nudge setting")
+            .is_none()
+        {
+            return;
+        }
+        self.slow_think_nudge_enabled = enabled;
+        self.history.record_slow_think_nudge(enabled);
+        if !enabled {
+            self.active_slow_think_nudge = None;
+        }
+        self.broadcast_lobby_updated(None);
+    }
+
+    fn handle_send_quick_emote(&mut self, conn_id: u64, emote: QuickEmote) {
+        let Some((seat, tx)) = self.require_seated_human(conn_id, "sending a quick emote") else {
+            return;
+        };
+        if self.phase != TablePhase::InMatch {
+            Self::send_action_rejected(&tx, "仅可在对局进行中发送快捷互动", self.seq);
+            return;
+        }
+        let Some(active) = self.active_match.as_ref() else {
+            Self::send_action_rejected(&tx, "当前没有进行中的对局", self.seq);
+            return;
+        };
+        let current_seq = active.public_seq();
+        let now = tokio::time::Instant::now();
+        if self.quick_emote_last_sent[seat.index()]
+            .is_some_and(|last| now.saturating_duration_since(last) < QUICK_EMOTE_COOLDOWN)
+        {
+            Self::send_action_rejected(&tx, "快捷互动冷却中，请稍后再试", current_seq);
+            return;
+        }
+        self.quick_emote_last_sent[seat.index()] = Some(now);
+
+        self.broadcast_all(ServerMessage::QuickEmoteBroadcast {
+            seat,
+            emote,
+            text: emote.label().to_string(),
+        });
+
+        if self.options.llm_client.is_some() {
+            let seat_infos = self.seat_infos();
+            let ctx = BanterPlanContext {
+                match_id: active.match_id,
+                hand_generation: active.hand_generation,
+                game: &active.game,
+                seats: &seat_infos,
+                seat_generation: &self.seat_generation,
+                sync_cap: self.options.banter_sync_cap,
+                persona_memory: &self.persona_memory,
+            };
+            let mut reply_jobs = plan_quick_emote_replies(&ctx, seat, emote);
+            self.pending_async_banter.append(&mut reply_jobs);
+        }
+    }
+
     pub(crate) fn handle_start_match(&mut self, conn_id: u64) {
         let Some((_, conn_tx)) = self.require_seated_human(conn_id, "starting a match") else {
             return;
@@ -1066,6 +1139,9 @@ impl TableSession {
         self.in_flight_ai.clear();
         self.pending_sync_banter.clear();
         self.pending_async_banter.clear();
+        self.quick_emote_last_sent = [None; 4];
+        self.active_slow_think_nudge = None;
+        self.last_nudged_turn = None;
         let hand_attribution = HandAttribution::from_seats(&self.seats);
         self.active_match = Some(ActiveMatchState {
             match_id,
@@ -1675,17 +1751,177 @@ impl TableSession {
         jobs
     }
 
+    fn find_waiting_human_seat(&self, active: &ActiveMatchState) -> Option<Seat> {
+        let sample_view = active.game.project_view(Seat::East);
+        if sample_view.phase != PublicPhase::Playing {
+            return None;
+        }
+        let mut waiting = Vec::new();
+        for seat in Seat::ALL {
+            let info = &self.seats[seat.index()].info;
+            if info.kind == SeatKind::Human
+                && !info.ai_assisted
+                && info.connected
+                && !active.game.project_view(seat).legal_actions.is_empty()
+            {
+                waiting.push(seat);
+            }
+        }
+        if waiting.is_empty() {
+            return None;
+        }
+        if let Some(active_seat) = sample_view.turn.active_seat {
+            if waiting.contains(&active_seat) {
+                return Some(active_seat);
+            }
+        }
+        waiting.first().copied()
+    }
+
+    fn collect_slow_think_nudge(&mut self) -> Option<SlowThinkTicket> {
+        if self.phase != TablePhase::InMatch
+            || !self.slow_think_nudge_enabled
+            || self.options.llm_client.is_none()
+        {
+            self.active_slow_think_nudge = None;
+            return None;
+        }
+        let has_ai_persona = self
+            .seats
+            .iter()
+            .any(|slot| slot.info.kind == SeatKind::Ai && slot.info.persona_id.is_some());
+        if !has_ai_persona {
+            self.active_slow_think_nudge = None;
+            return None;
+        }
+        let Some(active) = self.active_match.as_ref() else {
+            self.active_slow_think_nudge = None;
+            return None;
+        };
+        if active.pending_release.is_some() {
+            self.active_slow_think_nudge = None;
+            return None;
+        }
+        let Some(target_seat) = self.find_waiting_human_seat(active) else {
+            self.active_slow_think_nudge = None;
+            return None;
+        };
+
+        let match_id = active.match_id;
+        let hand_generation = active.hand_generation;
+        let seq = active.game.seq();
+        let target_seat_generation = self.seat_generation[target_seat.index()];
+
+        if self.last_nudged_turn == Some((match_id, hand_generation, seq, target_seat)) {
+            self.active_slow_think_nudge = None;
+            return None;
+        }
+        if self.active_slow_think_nudge.is_some_and(|existing| {
+            existing.match_id == match_id
+                && existing.hand_generation == hand_generation
+                && existing.seq == seq
+                && existing.target_seat == target_seat
+                && existing.target_seat_generation == target_seat_generation
+        }) {
+            return None;
+        }
+
+        let timer_generation = self.next_nudge_generation;
+        self.next_nudge_generation += 1;
+        let ticket = SlowThinkTicket {
+            match_id,
+            hand_generation,
+            seq,
+            target_seat,
+            target_seat_generation,
+            timer_generation,
+            fire_at: tokio::time::Instant::now() + SLOW_THINK_NUDGE_DELAY,
+        };
+        self.active_slow_think_nudge = Some(ticket);
+        Some(ticket)
+    }
+
+    pub(crate) fn fire_slow_think_nudge(
+        &mut self,
+        ticket: SlowThinkTicket,
+    ) -> Option<PendingBanterJob> {
+        if self.active_slow_think_nudge != Some(ticket) {
+            return None;
+        }
+        self.active_slow_think_nudge = None;
+
+        if self.phase != TablePhase::InMatch
+            || !self.slow_think_nudge_enabled
+            || self.options.llm_client.is_none()
+        {
+            return None;
+        }
+        let target_slot = &self.seats[ticket.target_seat.index()];
+        if target_slot.info.kind != SeatKind::Human
+            || target_slot.info.ai_assisted
+            || !target_slot.info.connected
+            || self.seat_generation[ticket.target_seat.index()] != ticket.target_seat_generation
+        {
+            return None;
+        }
+        if self.last_nudged_turn
+            == Some((
+                ticket.match_id,
+                ticket.hand_generation,
+                ticket.seq,
+                ticket.target_seat,
+            ))
+        {
+            return None;
+        }
+
+        let random_pick = self.rng.next_u64();
+        let seat_infos = self.seat_infos();
+        let active = self.active_match.as_ref()?;
+        if active.match_id != ticket.match_id
+            || active.hand_generation != ticket.hand_generation
+            || active.game.seq() != ticket.seq
+            || active.pending_release.is_some()
+        {
+            return None;
+        }
+        let target_view = active.game.project_view(ticket.target_seat);
+        if target_view.phase != PublicPhase::Playing || target_view.legal_actions.is_empty() {
+            return None;
+        }
+
+        let ctx = BanterPlanContext {
+            match_id: active.match_id,
+            hand_generation: active.hand_generation,
+            game: &active.game,
+            seats: &seat_infos,
+            seat_generation: &self.seat_generation,
+            sync_cap: self.options.banter_sync_cap,
+            persona_memory: &self.persona_memory,
+        };
+        let job = plan_slow_think_nudge(&ctx, ticket.target_seat, random_pick)?;
+        self.last_nudged_turn = Some((
+            ticket.match_id,
+            ticket.hand_generation,
+            ticket.seq,
+            ticket.target_seat,
+        ));
+        Some(job)
+    }
+
     fn collect_scheduled_work(&mut self) -> ScheduledWork {
         let pending_release = self.take_unscheduled_pending_release();
         let ai_jobs = self.collect_pending_ai_jobs();
         let sync_banter = std::mem::take(&mut self.pending_sync_banter);
         let async_banter = std::mem::take(&mut self.pending_async_banter);
+        let slow_think_nudge = self.collect_slow_think_nudge();
         let memory_notes = std::mem::take(&mut self.pending_memory_notes);
         ScheduledWork {
             ai_jobs,
             pending_release,
             sync_banter,
             async_banter,
+            slow_think_nudge,
             memory_notes,
         }
     }
@@ -1758,7 +1994,7 @@ impl TableSession {
                     });
                 }
 
-                if !phase_ok {
+                if !phase_ok || (guard.require_nudge_enabled && !self.slow_think_nudge_enabled) {
                     return;
                 }
                 let seat_slot = &self.seats[guard.seat.index()];
@@ -1786,7 +2022,7 @@ impl TableSession {
                     mood: output.mood,
                     text: output.text,
                     event_seq: guard.event_seq,
-                    reply_to_seat: None,
+                    reply_to_seat: guard.reply_to_seat,
                 });
             }
         }
@@ -1895,6 +2131,9 @@ impl TableSession {
         self.in_flight_ai.clear();
         self.pending_sync_banter.clear();
         self.pending_async_banter.clear();
+        self.quick_emote_last_sent = [None; 4];
+        self.active_slow_think_nudge = None;
+        self.last_nudged_turn = None;
         self.pending_destructive_op = None;
         self.seq = 0;
         for slot in &mut self.seats {
@@ -2057,6 +2296,12 @@ impl TableSession {
                     && slot.info.connected
                 {
                     slot.info.connected = false;
+                    if self
+                        .active_slow_think_nudge
+                        .is_some_and(|ticket| ticket.target_seat == seat)
+                    {
+                        self.active_slow_think_nudge = None;
+                    }
                     self.broadcast_lobby_updated(None);
                     self.reconcile_pending_destructive_op_on_disconnect();
                 }
@@ -2281,6 +2526,12 @@ impl TableRuntime {
                         }
                         ClientMessage::SetPace { pace } => {
                             session.handle_set_pace(conn_id, pace);
+                        }
+                        ClientMessage::SendQuickEmote { emote } => {
+                            session.handle_send_quick_emote(conn_id, emote);
+                        }
+                        ClientMessage::SetSlowThinkNudge { enabled } => {
+                            session.handle_set_slow_think_nudge(conn_id, enabled);
                         }
                         ClientMessage::RequestSnapshot => {
                             let snapshot = session.build_snapshot(&conn);

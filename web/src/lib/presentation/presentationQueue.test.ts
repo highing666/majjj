@@ -101,6 +101,7 @@ function makeSnapshot(
     phase: "InMatch",
     config: makeLobbyConfig(pace),
     pace,
+    slow_think_nudge_enabled: true,
     your_seat: "East",
     seat_token: "tok-east",
     seats: makeSeats(),
@@ -217,6 +218,7 @@ describe("PresentationQueue", () => {
         phase: "InMatch",
         config: makeLobbyConfig("Fast"),
         seats: makeSeats(),
+        slow_think_nudge_enabled: true,
       },
     });
     expect(queue.getState().pace).toBe("Fast");
@@ -876,6 +878,7 @@ describe("PresentationQueue", () => {
         phase: "InMatch",
         config: snap.config,
         seats: takeoverSeats,
+        slow_think_nudge_enabled: true,
       },
     });
     expect(queue.getState().activeBubbles.West).toBeNull();
@@ -902,6 +905,83 @@ describe("PresentationQueue", () => {
     });
     expect(queue.getState().activeBubbles.South).toBeNull();
     expect(scheduled.size).toBe(0);
+
+    queue.dispose();
+  });
+
+  it("displays QuickEmoteBroadcast human bubbles, overwrites same seat, survives LobbyUpdated while Human, and auto-fades", () => {
+    const scheduled = new Map<number, { cb: () => void; delayMs: number }>();
+    let nextTimerId = 1;
+    const clearedIds: number[] = [];
+
+    const queue = createPresentationQueue({
+      banterDurationMs: 4000,
+      scheduler: {
+        setTimeout(cb, delayMs) {
+          const id = nextTimerId++;
+          scheduled.set(id, { cb, delayMs });
+          return id;
+        },
+        clearTimeout(handle) {
+          const id = handle as number;
+          clearedIds.push(id);
+          scheduled.delete(id);
+        },
+      },
+    });
+
+    const snap = makeSnapshot(3, "Standard");
+    queue.enqueueServerMessage({ TableSnapshot: snap });
+
+    // Human East sends QuickEmote -> displays quick_emote bubble on East.
+    queue.enqueueServerMessage({
+      QuickEmoteBroadcast: {
+        seat: "East",
+        emote: "IsThatIt",
+        text: "就这？",
+      },
+    });
+    const firstBubble = queue.getState().activeBubbles.East;
+    expect(firstBubble).toMatchObject({
+      kind: "quick_emote",
+      seat: "East",
+      emote: "IsThatIt",
+      text: "就这？",
+    });
+    const firstTimerId = [...scheduled.keys()][0]!;
+
+    // LobbyUpdated (e.g., toggling slow_think_nudge_enabled) preserves East's active human bubble!
+    queue.enqueueServerMessage({
+      LobbyUpdated: {
+        phase: "InMatch",
+        config: snap.config,
+        seats: snap.seats,
+        slow_think_nudge_enabled: false,
+      },
+    });
+    expect(queue.getState().snapshot?.slow_think_nudge_enabled).toBe(false);
+    expect(queue.getState().activeBubbles.East?.text).toBe("就这？");
+
+    // Second QuickEmote on East overwrites first and cancels old timer.
+    queue.enqueueServerMessage({
+      QuickEmoteBroadcast: {
+        seat: "East",
+        emote: "GoingBig",
+        text: "这把我要胡大的",
+      },
+    });
+    expect(clearedIds).toContain(firstTimerId);
+    expect(queue.getState().activeBubbles.East).toMatchObject({
+      kind: "quick_emote",
+      emote: "GoingBig",
+      text: "这把我要胡大的",
+    });
+
+    // Firing fade timer clears East's bubble cleanly.
+    const [secondTimerId] = [...scheduled.keys()];
+    scheduled.get(secondTimerId!)?.cb();
+    scheduled.delete(secondTimerId!);
+    expect(queue.getState().activeBubbles.East).toBeNull();
 
     queue.dispose();
   });

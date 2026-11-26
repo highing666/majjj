@@ -820,6 +820,7 @@ describe("table viewModel helpers", () => {
         import("../protocol/generated/SeatInfo").SeatInfo,
       ],
       your_seat: "South" as const,
+      slow_think_nudge_enabled: true,
       seat_token: "tok",
       player_view: view,
       pending_destructive_op: null,

@@ -17,8 +17,8 @@ use mahjong_server::persona_memory::{
 };
 use mahjong_server::protocol::{
     ClientMessage, DestructiveOpKind, HealthResponse, LanUrlInfo, LobbyConfig,
-    PendingDestructiveOp, SeatInfo, SeatKind, SeatingRule, ServerMessage, TablePace, TablePhase,
-    TableSnapshot,
+    PendingDestructiveOp, QuickEmote, SeatInfo, SeatKind, SeatingRule, ServerMessage, TablePace,
+    TablePhase, TableSnapshot,
 };
 use ts_rs::TS;
 
@@ -143,6 +143,7 @@ fn server_and_core_ts_bindings_match_committed_files_with_zero_drift() {
             "PreferencesData.ts",
             "PublicPhase.ts",
             "PublicSeatView.ts",
+            "QuickEmote.ts",
             "RevealedHand.ts",
             "RevealedMeld.ts",
             "RuleProfile.ts",
@@ -164,7 +165,7 @@ fn server_and_core_ts_bindings_match_committed_files_with_zero_drift() {
             "Wind.ts",
             "WinnerSettlement.ts",
         ],
-        "exact set of 63 exported server, history, persona memory, AI, persona, and core TypeScript files"
+        "exact set of 64 exported server, history, persona memory, AI, persona, and core TypeScript files"
     );
 
     for (name, contents) in &expected_files {
@@ -316,6 +317,13 @@ fn frozen_server_protocol_types_roundtrip_serde_json_without_loss() {
         ClientMessage::SetPace {
             pace: TablePace::Fast,
         },
+        ClientMessage::SendQuickEmote {
+            emote: QuickEmote::IsThatIt,
+        },
+        ClientMessage::SendQuickEmote {
+            emote: QuickEmote::GoingBig,
+        },
+        ClientMessage::SetSlowThinkNudge { enabled: false },
         ClientMessage::ToggleAiAssist {
             seat: Seat::East,
             enabled: true,
@@ -347,6 +355,7 @@ fn frozen_server_protocol_types_roundtrip_serde_json_without_loss() {
         phase: TablePhase::Lobby,
         config,
         pace: TablePace::Fast,
+        slow_think_nudge_enabled: true,
         seats: seats.clone(),
         your_seat: Some(Seat::East),
         seat_token: Some("token-1".to_string()),
@@ -370,6 +379,7 @@ fn frozen_server_protocol_types_roundtrip_serde_json_without_loss() {
             phase: TablePhase::Lobby,
             config,
             seats,
+            slow_think_nudge_enabled: false,
         },
         ServerMessage::ActionRejected {
             reason: "stale seq".to_string(),
@@ -388,6 +398,11 @@ fn frozen_server_protocol_types_roundtrip_serde_json_without_loss() {
             text: "五巡就胡，你们太慢了！".to_string(),
             event_seq: 18,
             reply_to_seat: Some(Seat::East),
+        },
+        ServerMessage::QuickEmoteBroadcast {
+            seat: Seat::East,
+            emote: QuickEmote::DealerRigged,
+            text: QuickEmote::DealerRigged.label().to_string(),
         },
         ServerMessage::LlmStatusNotice {
             available: false,
