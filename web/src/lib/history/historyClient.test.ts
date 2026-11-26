@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ClearHistoryResponse } from "../protocol/generated/ClearHistoryResponse";
 import type { HistoryExportResponse } from "../protocol/generated/HistoryExportResponse";
+import type { PreferencesData } from "../protocol/generated/PreferencesData";
 import type { StatsResponse } from "../protocol/generated/StatsResponse";
 import {
   buildHistoryExportDownload,
@@ -78,6 +79,30 @@ describe("historyClient", () => {
     expect(stats).toEqual(expected);
     expect(fetchFn).toHaveBeenCalledTimes(1);
     expect(fetchFn).toHaveBeenCalledWith("/api/stats", {
+      method: "GET",
+      cache: "no-store",
+    });
+  });
+
+  it("fetches preferences from GET /api/preferences with no-store cache policy", async () => {
+    const expected: PreferencesData = {
+      schema_version: 1,
+      recent_nicknames: ["阿东", "阿南"],
+      default_mode: "EastOnly",
+      default_seating: "Random",
+      default_ai_difficulty: "Strong",
+      default_pace: "Standard",
+    };
+    const fetchFn = vi
+      .fn<HistoryFetch>()
+      .mockResolvedValue(jsonResponse(200, expected));
+    const client = createHistoryClient(fetchFn);
+
+    const prefs = await client.fetchPreferences();
+
+    expect(prefs).toEqual(expected);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(fetchFn).toHaveBeenCalledWith("/api/preferences", {
       method: "GET",
       cache: "no-store",
     });

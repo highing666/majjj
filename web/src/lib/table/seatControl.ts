@@ -134,46 +134,68 @@ export function buildTakeOverSeatItems(
     return [];
   }
 
-  return snapshot.seats.map((seatInfo) => {
-    const displayName = formatSeatDisplayName(seatInfo.seat, snapshot.seats);
-    if (seatInfo.kind === "Human") {
-      if (!seatInfo.connected) {
-        return {
-          seatInfo,
-          displayName,
-          takeOverKind: "offline_human",
-          statusLabel: seatInfo.ai_assisted ? "已离线 · AI 托管中" : "已离线",
-          actionLabel: "接管离线座位",
-        };
-      }
+  return snapshot.seats.map((seatInfo) => toTakeOverSeatItem(seatInfo, snapshot.seats, snapshot.phase));
+}
+
+/**
+ * Returns offline human seats eligible for cross-device takeover when `yourSeat === null`
+ * (used in `Finished` summary view where AI seat takeover does not apply).
+ */
+export function getOfflineHumanTakeOverSeats(
+  seats: readonly [SeatInfo, SeatInfo, SeatInfo, SeatInfo],
+  yourSeat: Seat | null,
+): TakeOverSeatItem[] {
+  if (yourSeat !== null) {
+    return [];
+  }
+  return seats
+    .filter((seatInfo) => seatInfo.kind === "Human" && !seatInfo.connected)
+    .map((seatInfo) => toTakeOverSeatItem(seatInfo, seats, "Finished"));
+}
+
+function toTakeOverSeatItem(
+  seatInfo: SeatInfo,
+  seats: readonly [SeatInfo, SeatInfo, SeatInfo, SeatInfo],
+  phase: TableSnapshot["phase"],
+): TakeOverSeatItem {
+  const displayName = formatSeatDisplayName(seatInfo.seat, seats);
+  if (seatInfo.kind === "Human") {
+    if (!seatInfo.connected) {
       return {
         seatInfo,
         displayName,
-        takeOverKind: null,
-        statusLabel: seatInfo.ai_assisted ? "在线 · AI 托管中" : "在线人类",
-        actionLabel: null,
+        takeOverKind: "offline_human",
+        statusLabel: seatInfo.ai_assisted ? "已离线 · AI 托管中" : "已离线",
+        actionLabel: "接管离线座位",
       };
     }
-
-    if (seatInfo.kind === "Ai") {
-      const canTakeOver = snapshot.phase === "InMatch";
-      return {
-        seatInfo,
-        displayName,
-        takeOverKind: canTakeOver ? "ai" : null,
-        statusLabel: canTakeOver ? "AI 对局中" : "AI 座位",
-        actionLabel: canTakeOver ? "接管入座" : null,
-      };
-    }
-
     return {
       seatInfo,
       displayName,
       takeOverKind: null,
-      statusLabel: "空座",
+      statusLabel: seatInfo.ai_assisted ? "在线 · AI 托管中" : "在线人类",
       actionLabel: null,
     };
-  });
+  }
+
+  if (seatInfo.kind === "Ai") {
+    const canTakeOver = phase === "InMatch";
+    return {
+      seatInfo,
+      displayName,
+      takeOverKind: canTakeOver ? "ai" : null,
+      statusLabel: canTakeOver ? "AI 对局中" : "AI 座位",
+      actionLabel: canTakeOver ? "接管入座" : null,
+    };
+  }
+
+  return {
+    seatInfo,
+    displayName,
+    takeOverKind: null,
+    statusLabel: "空座",
+    actionLabel: null,
+  };
 }
 
 /**

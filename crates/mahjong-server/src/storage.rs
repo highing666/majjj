@@ -1,6 +1,6 @@
 //! Pure Rust JSONL history and atomic `preferences.json` persistence (`std::fs` + `serde_json`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
@@ -350,8 +350,11 @@ impl HistoryStore {
         }
 
         let mut by_nickname: BTreeMap<String, Accumulator> = BTreeMap::new();
+        let mut matches_with_hands: HashSet<&str> = HashSet::new();
+        let mut per_match_seat_player_net: HashMap<(&str, usize, String), i64> = HashMap::new();
 
         for hand in &self.hands {
+            matches_with_hands.insert(hand.match_id.as_str());
             let discarder = match &hand.settlement.outcome {
                 HandOutcome::Win { discarder, .. } => *discarder,
                 HandOutcome::DrawGame => None,
@@ -364,6 +367,10 @@ impl HistoryStore {
                 if norm.is_empty() {
                     continue;
                 }
+                let delta = i64::from(hand.settlement.score_deltas[idx]);
+                *per_match_seat_player_net
+                    .entry((hand.match_id.as_str(), idx, norm.clone()))
+                    .or_default() += delta;
                 let acc = by_nickname.entry(norm).or_default();
                 acc.settled_hands += 1;
                 if hand.aborted {
@@ -372,7 +379,7 @@ impl HistoryStore {
                 if seat_rec.assisted_by_ai {
                     acc.ai_assisted_hands += 1;
                 }
-                acc.cumulative_net_score += i64::from(hand.settlement.score_deltas[idx]);
+                acc.cumulative_net_score += delta;
 
                 if let HandOutcome::Win { winners, .. } = &hand.settlement.outcome {
                     for winner in winners {
@@ -391,6 +398,7 @@ impl HistoryStore {
         }
 
         for m in &self.matches {
+            let has_hand_records = matches_with_hands.contains(m.match_id.as_str());
             for seat_rec in &m.seats {
                 if seat_rec.seat_kind != SeatKind::Human {
                     continue;
@@ -399,9 +407,17 @@ impl HistoryStore {
                 if norm.is_empty() {
                     continue;
                 }
+                let match_net = if has_hand_records {
+                    per_match_seat_player_net
+                        .get(&(m.match_id.as_str(), seat_rec.seat.index(), norm.clone()))
+                        .copied()
+                        .unwrap_or(0)
+                } else {
+                    i64::from(seat_rec.net_delta)
+                };
                 let acc = by_nickname.entry(norm).or_default();
                 acc.completed_matches += 1;
-                acc.completed_match_net_score += i64::from(seat_rec.net_delta);
+                acc.completed_match_net_score += match_net;
             }
         }
 
@@ -926,6 +942,8 @@ mod tests {
         assert_eq!(bob.wins, 1);
         assert_eq!(bob.tsumo_wins, 0);
         assert_eq!(bob.cumulative_net_score, 4);
+        assert!((bob.average_net_score - 4.0).abs() < 1e-6);
+        assert!((bob.average_hand_net_score - 4.0).abs() < 1e-6);
 
         let aborted_row = stats
             .recent_hands

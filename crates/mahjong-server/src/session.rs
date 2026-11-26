@@ -18,11 +18,11 @@ use tokio::sync::{mpsc, watch, Mutex};
 use uuid::Uuid;
 
 use crate::ai_pool::{
-    build_ai_pool, default_ai_threads, spawn_scheduled_work, PendingAiJob, ScheduledWork,
+    build_ai_pool, default_ai_threads, spawn_scheduled_work, AiJobKey, PendingAiJob, ScheduledWork,
 };
 use crate::history_dto::{
     ClearHistoryResponse, HandRecord, HandSeatRecord, HistoryExportResponse, MatchRecord,
-    MatchSeatRecord, StatsResponse, HISTORY_SCHEMA_VERSION,
+    MatchSeatRecord, PreferencesData, StatsResponse, HISTORY_SCHEMA_VERSION,
 };
 use crate::lan::{discover_lan_urls, read_local_hostname, read_system_interfaces};
 use crate::pacing::{
@@ -291,7 +291,7 @@ pub struct TableSession {
     pub(crate) active_match: Option<ActiveMatchState>,
     next_match_id: u64,
     next_release_generation: u64,
-    pub(crate) in_flight_ai: HashSet<(u64, u64, Seat, u64)>,
+    pub(crate) in_flight_ai: HashSet<AiJobKey>,
     options: TableOptions,
     rng: ChaCha8Rng,
     ai_base_seed: u64,
@@ -1202,7 +1202,7 @@ impl TableSession {
         let new_seq = active_mut.game.seq();
         self.seq = new_seq;
         self.in_flight_ai
-            .retain(|&(m_id, seq, _, _)| m_id == match_id && seq == new_seq);
+            .retain(|k| k.match_id == match_id && k.seq == new_seq);
 
         let active_ref = self.active_match.as_ref().expect("active match exists");
         self.broadcast_event_batch(&active_ref.game, &emitted);
@@ -1394,18 +1394,17 @@ impl TableSession {
             if view.legal_actions.is_empty() {
                 continue;
             }
-            let seat_generation = self.seat_generation[seat.index()];
-            if !self
-                .in_flight_ai
-                .insert((match_id, seq, seat, seat_generation))
-            {
-                continue;
-            }
-            jobs.push(PendingAiJob {
+            let key = AiJobKey {
                 match_id,
                 seq,
                 seat,
-                seat_generation,
+                seat_generation: self.seat_generation[seat.index()],
+            };
+            if !self.in_flight_ai.insert(key) {
+                continue;
+            }
+            jobs.push(PendingAiJob {
+                key,
                 view,
                 ctx: self.ai_decision_context(seat),
                 step_seed: derive_ai_step_seed(self.ai_base_seed, match_id, seq, seat),
@@ -1425,42 +1424,28 @@ impl TableSession {
         }
     }
 
-    pub(crate) fn cancel_ai_job(
-        &mut self,
-        match_id: u64,
-        expected_seq: u64,
-        seat: Seat,
-        seat_generation: u64,
-    ) {
-        self.in_flight_ai
-            .remove(&(match_id, expected_seq, seat, seat_generation));
+    pub(crate) fn cancel_ai_job(&mut self, key: AiJobKey) {
+        self.in_flight_ai.remove(&key);
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn plan_ai_action_delay(
         &mut self,
-        match_id: u64,
-        expected_seq: u64,
-        seat: Seat,
-        seat_generation: u64,
+        key: AiJobKey,
         action: PlayerAction,
         trigger: AiTurnTrigger,
         step_seed: u64,
     ) -> Option<Duration> {
         let is_valid = self.phase == TablePhase::InMatch
-            && self.is_ai_controlled(seat)
-            && self.seat_generation[seat.index()] == seat_generation
+            && self.is_ai_controlled(key.seat)
+            && self.seat_generation[key.seat.index()] == key.seat_generation
             && self.active_match.as_ref().is_some_and(|active| {
-                active.match_id == match_id
+                active.match_id == key.match_id
                     && active.pending_release.is_none()
-                    && active.game.seq() == expected_seq
-                    && self
-                        .in_flight_ai
-                        .contains(&(match_id, expected_seq, seat, seat_generation))
+                    && active.game.seq() == key.seq
+                    && self.in_flight_ai.contains(&key)
             });
         if !is_valid {
-            self.in_flight_ai
-                .remove(&(match_id, expected_seq, seat, seat_generation));
+            self.in_flight_ai.remove(&key);
             return None;
         }
         Some(target_ai_delay(
@@ -1494,32 +1479,26 @@ impl TableSession {
         self.collect_scheduled_work()
     }
 
-    pub(crate) fn complete_ai_job(
-        &mut self,
-        match_id: u64,
-        expected_seq: u64,
-        seat: Seat,
-        seat_generation: u64,
-        action: PlayerAction,
-    ) -> ScheduledWork {
-        self.in_flight_ai
-            .remove(&(match_id, expected_seq, seat, seat_generation));
+    pub(crate) fn complete_ai_job(&mut self, key: AiJobKey, action: PlayerAction) -> ScheduledWork {
+        self.in_flight_ai.remove(&key);
         if self.phase != TablePhase::InMatch {
             return ScheduledWork::default();
         }
-        if !self.is_ai_controlled(seat) || self.seat_generation[seat.index()] != seat_generation {
+        if !self.is_ai_controlled(key.seat)
+            || self.seat_generation[key.seat.index()] != key.seat_generation
+        {
             return ScheduledWork::default();
         }
         let matches_state = self.active_match.as_ref().is_some_and(|active| {
-            active.match_id == match_id
+            active.match_id == key.match_id
                 && active.pending_release.is_none()
-                && active.game.seq() == expected_seq
+                && active.game.seq() == key.seq
         });
         if !matches_state {
             return ScheduledWork::default();
         }
 
-        self.apply_match_step(seat, action, None);
+        self.apply_match_step(key.seat, action, None);
         self.collect_scheduled_work()
     }
 
@@ -1798,6 +1777,12 @@ impl TableRuntime {
     pub async fn history_stats(&self) -> StatsResponse {
         let session = self.inner.lock().await;
         session.history.stats()
+    }
+
+    /// Returns persisted table defaults and recent nicknames for `GET /api/preferences`.
+    pub async fn history_preferences(&self) -> PreferencesData {
+        let session = self.inner.lock().await;
+        session.history.preferences().clone()
     }
 
     /// Exports full preferences, matches, and hands JSON backup for `GET /api/history/export`.

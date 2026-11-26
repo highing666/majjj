@@ -1,15 +1,13 @@
 import { matchModeLabel } from "../lobby/lobbyConfig";
 import type { HandRecord } from "../protocol/generated/HandRecord";
-import type { HandSeatRecord } from "../protocol/generated/HandSeatRecord";
-import type { KongKind } from "../protocol/generated/KongKind";
 import type { MatchRecord } from "../protocol/generated/MatchRecord";
 import type { PlayerStats } from "../protocol/generated/PlayerStats";
 import type { ScoreItem } from "../protocol/generated/ScoreItem";
 import type { Seat } from "../protocol/generated/Seat";
-import type { WinKind } from "../protocol/generated/WinKind";
 import { seatIndex, seatLabel } from "../protocol/seats";
+import { kongKindLabel, winKindLabel } from "../protocol/settlements";
 import { formatRoundTitle, getTileLabel } from "../table/tiles";
-import { formatScoreDelta } from "../table/viewModel";
+import { formatScoreDelta, formatSeatDisplayName } from "../table/viewModel";
 
 export type DeltaTone = "pos" | "neg" | "zero";
 
@@ -136,44 +134,6 @@ export function formatAverageScore(value: number): string {
   return value > 0 ? `+${fixed}` : fixed;
 }
 
-function winKindLabel(kind: WinKind): string {
-  switch (kind) {
-    case "Tsumo":
-      return "自摸";
-    case "Ron":
-      return "点炮";
-    case "RobKongHu":
-      return "抢杠胡";
-  }
-}
-
-function kongKindLabel(kind: KongKind): string {
-  switch (kind) {
-    case "ExposedKong":
-      return "明杠";
-    case "AddedKong":
-      return "补杠";
-    case "ConcealedKong":
-      return "暗杠";
-  }
-}
-
-function formatHandSeatDisplayName(
-  seat: Seat,
-  seats: readonly [
-    HandSeatRecord,
-    HandSeatRecord,
-    HandSeatRecord,
-    HandSeatRecord,
-  ],
-): string {
-  const idx = seatIndex(seat);
-  const record = seats[idx];
-  const name =
-    record?.nickname || (record?.seat_kind === "Ai" ? `AI ${idx + 1}` : "");
-  return name ? `${seatLabel(seat)} · ${name}` : seatLabel(seat);
-}
-
 /**
  * Maps `PlayerStats[]` into formatted summary cards per normalized nickname.
  */
@@ -250,7 +210,7 @@ export function buildHandHistoryRows(
       winningTileLabel = getTileLabel(win.winning_tile);
       discarderLabel =
         win.discarder !== null
-          ? formatHandSeatDisplayName(win.discarder, hand.seats)
+          ? formatSeatDisplayName(win.discarder, hand.seats)
           : null;
       if (win.winners.length > 1) {
         outcomeLabel = "一炮多响";
@@ -261,7 +221,7 @@ export function buildHandHistoryRows(
       }
       winners = win.winners.map((w) => ({
         seat: w.seat,
-        displayName: formatHandSeatDisplayName(w.seat, hand.seats),
+        displayName: formatSeatDisplayName(w.seat, hand.seats),
         winKindLabel: winKindLabel(w.win_kind),
         totalFan: w.total_fan,
         fanItems: w.items,
@@ -271,10 +231,10 @@ export function buildHandHistoryRows(
     const kongTransfers: HandKongTransferSummary[] =
       settlement.kong_transfers.map((kt) => ({
         kindLabel: kongKindLabel(kt.kind),
-        actorLabel: formatHandSeatDisplayName(kt.actor, hand.seats),
+        actorLabel: formatSeatDisplayName(kt.actor, hand.seats),
         fromLabel:
           kt.from_seat !== null
-            ? formatHandSeatDisplayName(kt.from_seat, hand.seats)
+            ? formatSeatDisplayName(kt.from_seat, hand.seats)
             : null,
         tileLabel: getTileLabel(kt.tile),
         actorDeltaText: formatScoreDelta(

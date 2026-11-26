@@ -4,7 +4,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::{connect_and_hello, no_reaction_wall, recv_msg, send_msg, tile};
+use common::{connect_and_hello, no_reaction_wall, recv_msg, recv_snapshot, send_msg, tile};
 use futures_util::{SinkExt, StreamExt};
 use mahjong_ai::AiDifficulty;
 use mahjong_core::{MatchMode, PlayerAction, PresetWallProvider, Seat};
@@ -59,8 +59,8 @@ async fn heartbeat_timeout_disconnects_silent_client_and_reconciles_pending_dest
     .await;
 
     // Drain join snapshots.
-    let _ = recv_until_snapshot(&mut east).await;
-    let _ = recv_until_snapshot(&mut south).await;
+    let _ = recv_snapshot(&mut east).await;
+    let _ = recv_snapshot(&mut south).await;
 
     send_msg(
         &mut east,
@@ -74,14 +74,14 @@ async fn heartbeat_timeout_disconnects_silent_client_and_reconciles_pending_dest
     .await;
     send_msg(&mut east, &ClientMessage::StartMatch).await;
 
-    let east_start = recv_until_snapshot(&mut east).await;
+    let east_start = recv_snapshot(&mut east).await;
     assert_eq!(east_start.phase, TablePhase::InMatch);
-    let south_start = recv_until_snapshot(&mut south).await;
+    let south_start = recv_snapshot(&mut south).await;
     assert_eq!(south_start.phase, TablePhase::InMatch);
 
     // East requests DisbandMatch while South is still online -> pending op requires [East, South].
     send_msg(&mut east, &ClientMessage::RequestDisbandMatch).await;
-    let pending_snap = recv_until_snapshot(&mut east).await;
+    let pending_snap = recv_snapshot(&mut east).await;
     let op = pending_snap
         .pending_destructive_op
         .expect("pending disband op while South is connected");
@@ -193,7 +193,7 @@ async fn valid_inbound_frames_refresh_liveness_while_invalid_frames_do_not() {
         },
     )
     .await;
-    let _ = recv_until_snapshot(&mut east).await;
+    let _ = recv_snapshot(&mut east).await;
 
     send_msg(
         &mut east,
@@ -206,7 +206,7 @@ async fn valid_inbound_frames_refresh_liveness_while_invalid_frames_do_not() {
     )
     .await;
     send_msg(&mut east, &ClientMessage::StartMatch).await;
-    let snap = recv_until_snapshot(&mut east).await;
+    let snap = recv_snapshot(&mut east).await;
     assert_eq!(snap.phase, TablePhase::InMatch);
 
     // Total elapsed > 2x activity_timeout (120ms): keep alive via ClientPing, WS Pong, and SubmitAction.
@@ -275,16 +275,6 @@ async fn valid_inbound_frames_refresh_liveness_while_invalid_frames_do_not() {
     assert!(closed_timely);
 
     server.shutdown().await;
-}
-
-async fn recv_until_snapshot(ws: &mut common::WsClient) -> mahjong_server::protocol::TableSnapshot {
-    loop {
-        match recv_msg(ws).await {
-            ServerMessage::TableSnapshot(snap) => return snap,
-            ServerMessage::LobbyUpdated { .. } | ServerMessage::ServerPing { .. } => continue,
-            other => panic!("expected TableSnapshot, got {other:?}"),
-        }
-    }
 }
 
 #[test]

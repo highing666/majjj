@@ -475,10 +475,11 @@ EOF
   assert_file_contains "$root/logs/calls.log" "shutdown_requested" "rollback must gracefully stop healthy remote server"
   cmp -s "$root/bin-v1" "$remote_bin_dir/majjj" || fail "rollback must restore v1 from majjj.prev"
 
-  # 5f. --sync-app standalone syncs Majjj.app bundle without overwriting binary
+  # 5f. --sync-app without --bin still deploys default binary (MAJJJ_BIN) AND syncs Majjj.app
   : > "$root/logs/calls.log"
   PATH="$root/bin:$PATH" \
     MAJJJ_DEPLOY_CONFIG="$root/deploy.local" \
+    MAJJJ_BIN="$root/bin-v2" \
     STUB_CURL_MODE="healthy" \
     "$repo_root/scripts/deploy-partner.sh" --sync-app
 
@@ -486,9 +487,20 @@ EOF
   [ -x "$remote_app/Contents/MacOS/Majjj" ] || fail "--sync-app must deploy executable Majjj launcher"
   [ -f "$remote_app/Contents/Info.plist" ] || fail "--sync-app must deploy Info.plist"
   [ -f "$remote_app/Contents/Resources/Majjj.icns" ] || fail "--sync-app must deploy Majjj.icns"
-  cmp -s "$root/bin-v1" "$remote_bin_dir/majjj" || fail "standalone --sync-app must not overwrite binary"
+  cmp -s "$root/bin-v2" "$remote_bin_dir/majjj" || fail "--sync-app without --bin must deploy default binary"
+  cmp -s "$root/bin-v1" "$remote_bin_dir/majjj.prev" || fail "--sync-app without --bin must backup previous binary"
 
-  # 5g. --bin combined with --sync-app pushes binary AND syncs Majjj.app
+  # 5g. --rollback combined with --sync-app rolls back binary AND syncs Majjj.app
+  rm -rf "$remote_app"
+  : > "$root/logs/calls.log"
+  PATH="$root/bin:$PATH" \
+    MAJJJ_DEPLOY_CONFIG="$root/deploy.local" \
+    STUB_CURL_MODE="healthy" \
+    "$repo_root/scripts/deploy-partner.sh" --rollback --sync-app
+  cmp -s "$root/bin-v1" "$remote_bin_dir/majjj" || fail "--rollback --sync-app must restore v1"
+  [ -x "$remote_app/Contents/MacOS/Majjj" ] || fail "--rollback --sync-app must also sync Majjj.app"
+
+  # 5h. --bin combined with --sync-app pushes explicit binary AND syncs Majjj.app
   : > "$root/logs/calls.log"
   PATH="$root/bin:$PATH" \
     MAJJJ_DEPLOY_CONFIG="$root/deploy.local" \

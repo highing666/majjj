@@ -7,7 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use http_body_util::BodyExt;
+use http_body_util::{BodyExt, Full};
+use hyper::body::Bytes;
 use hyper::header::{CACHE_CONTROL, CONTENT_TYPE};
 use hyper::{Request, StatusCode};
 use hyper_util::rt::TokioIo;
@@ -95,7 +96,7 @@ pub async fn spawn_with_wall_factory(seed: u64, factory: WallProviderFactory) ->
 
 #[allow(dead_code)]
 pub async fn http_get(addr: SocketAddr, uri_path: &str) -> (StatusCode, hyper::HeaderMap, Vec<u8>) {
-    http_request("GET", addr, uri_path).await
+    http_request_with_body("GET", addr, uri_path, None).await
 }
 
 #[allow(dead_code)]
@@ -103,13 +104,24 @@ pub async fn http_post(
     addr: SocketAddr,
     uri_path: &str,
 ) -> (StatusCode, hyper::HeaderMap, Vec<u8>) {
-    http_request("POST", addr, uri_path).await
+    http_request_with_body("POST", addr, uri_path, None).await
 }
 
-async fn http_request(
+#[allow(dead_code)]
+pub async fn http_post_raw(
+    addr: SocketAddr,
+    uri_path: &str,
+    body: Option<&[u8]>,
+) -> (StatusCode, hyper::HeaderMap, Vec<u8>) {
+    http_request_with_body("POST", addr, uri_path, body).await
+}
+
+#[allow(dead_code)]
+pub async fn http_request_with_body(
     method: &str,
     addr: SocketAddr,
     uri_path: &str,
+    body: Option<&[u8]>,
 ) -> (StatusCode, hyper::HeaderMap, Vec<u8>) {
     let stream = TcpStream::connect(addr).await.expect("connect to server");
     let io = TokioIo::new(stream);
@@ -120,12 +132,15 @@ async fn http_request(
         let _ = conn.await;
     });
 
-    let req = Request::builder()
+    let payload = body.map(Bytes::copy_from_slice).unwrap_or_default();
+    let mut builder = Request::builder()
         .method(method)
         .uri(uri_path)
-        .header("Host", addr.to_string())
-        .body(http_body_util::Empty::<hyper::body::Bytes>::new())
-        .expect("build request");
+        .header("Host", addr.to_string());
+    if body.is_some() {
+        builder = builder.header(CONTENT_TYPE, "application/json");
+    }
+    let req = builder.body(Full::new(payload)).expect("build request");
     let res = sender.send_request(req).await.expect("send request");
     let status = res.status();
     let headers = res.headers().clone();
