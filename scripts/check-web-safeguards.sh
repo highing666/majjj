@@ -176,17 +176,29 @@ for (const dir of pngDirs) {
   }
 }
 
-// Check tiles@2x.json meta.size matches tiles@2x.png and <= 2048x2048
-const atlasPngPath = path.join(srcAssetsDir, "atlas", "tiles@2x.png");
-const atlasJsonPath = path.join(srcAssetsDir, "atlas", "tiles@2x.json");
-if (!fs.existsSync(atlasPngPath) || !fs.existsSync(atlasJsonPath)) {
-  failures.push("missing web/src/assets/atlas/tiles@2x.{png,json}");
-} else {
+// Check every @2x spritesheet JSON under web/src/assets/atlas/ matches its paired PNG and <= 2048x2048
+const atlasDir = path.join(srcAssetsDir, "atlas");
+const requiredAtlases = ["tiles@2x", "personas@2x"];
+for (const atlasBase of requiredAtlases) {
+  if (
+    !fs.existsSync(path.join(atlasDir, `${atlasBase}.png`)) ||
+    !fs.existsSync(path.join(atlasDir, `${atlasBase}.json`))
+  ) {
+    failures.push(`missing web/src/assets/atlas/${atlasBase}.{png,json}`);
+  }
+}
+for (const atlasJsonPath of collectFiles(atlasDir).filter((f) => /@2x\.json$/i.test(f))) {
+  const atlasPngPath = atlasJsonPath.replace(/\.json$/i, ".png");
+  const relJson = path.relative(cwd, atlasJsonPath);
+  if (!fs.existsSync(atlasPngPath)) {
+    failures.push(`${relJson}: missing paired PNG ${path.relative(cwd, atlasPngPath)}`);
+    continue;
+  }
   try {
     const pngDims = readPngIhdrDimensions(atlasPngPath);
     const meta = JSON.parse(fs.readFileSync(atlasJsonPath, "utf8")).meta;
     if (!meta || !meta.size || typeof meta.size.w !== "number" || typeof meta.size.h !== "number") {
-      failures.push("web/src/assets/atlas/tiles@2x.json: missing meta.size.{w,h}");
+      failures.push(`${relJson}: missing meta.size.{w,h}`);
     } else if (
       meta.size.w !== pngDims.width ||
       meta.size.h !== pngDims.height ||
@@ -194,11 +206,11 @@ if (!fs.existsSync(atlasPngPath) || !fs.existsSync(atlasJsonPath)) {
       meta.size.h > MAX_TEX_DIM
     ) {
       failures.push(
-        `web/src/assets/atlas/tiles@2x.json: meta.size (${meta.size.w}x${meta.size.h}) invalid or mismatches PNG (${pngDims.width}x${pngDims.height})`,
+        `${relJson}: meta.size (${meta.size.w}x${meta.size.h}) invalid or mismatches PNG (${pngDims.width}x${pngDims.height})`,
       );
     }
   } catch (err) {
-    failures.push(`web/src/assets/atlas/tiles@2x.json: ${err instanceof Error ? err.message : String(err)}`);
+    failures.push(`${relJson}: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -273,24 +285,30 @@ if (!fs.existsSync(publicManifestPath)) {
   }
 }
 
-// 6. Zero-Pixi boundary in pure table helpers & TileBadge
+// 6. Zero-Pixi boundary in pure table & persona modules (inverted allowlist: protect new files by default)
 const pixiImportRegex = /\bfrom\s+["\x27]pixi\.js["\x27]|import\s+["\x27]pixi\.js["\x27]|require\(\s*["\x27]pixi\.js["\x27]\s*\)/;
-const pureTableFiles = [
-  "web/src/lib/table/layout.ts",
-  "web/src/lib/table/viewModel.ts",
-  "web/src/lib/table/tileBadgeAtlas.ts",
-  "web/src/lib/table/atlasConstants.ts",
-  "web/src/lib/table/TileBadge.svelte",
-];
-for (const relFile of pureTableFiles) {
-  const fullPath = path.join(cwd, relFile);
-  if (!fs.existsSync(fullPath)) {
-    failures.push(`missing expected pure table file: ${relFile}`);
-    continue;
-  }
-  const clean = stripCommentsPreservingLineNumbers(fs.readFileSync(fullPath, "utf8"));
-  if (pixiImportRegex.test(clean)) {
-    failures.push(`${relFile}: prohibited pixi.js import in pure/non-canvas module`);
+const pixiAllowedFiles = new Set([
+  "web/src/lib/table/TableCanvas.svelte",
+  "web/src/lib/table/feltBackdrop.ts",
+  "web/src/lib/table/paperGrainFilter.ts",
+  "web/src/lib/table/tableRenderer.ts",
+  "web/src/lib/table/testFixtures.ts",
+  "web/src/lib/table/tileAtlas.ts",
+]);
+for (const dir of [path.join(srcRoot, "lib", "table"), path.join(srcRoot, "lib", "personas")]) {
+  for (const fullPath of collectFiles(dir)) {
+    const base = path.basename(fullPath);
+    if (/\.test\.[cm]?[jt]s$/.test(base) || !/\.(ts|js|svelte)$/.test(base)) {
+      continue;
+    }
+    const relFile = path.relative(cwd, fullPath).split(path.sep).join("/");
+    if (pixiAllowedFiles.has(relFile)) {
+      continue;
+    }
+    const clean = stripCommentsPreservingLineNumbers(fs.readFileSync(fullPath, "utf8"));
+    if (pixiImportRegex.test(clean)) {
+      failures.push(`${relFile}: prohibited pixi.js import in pure/non-canvas module`);
+    }
   }
 }
 

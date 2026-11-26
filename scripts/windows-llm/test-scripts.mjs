@@ -400,27 +400,3 @@ test('docs/windows-llm-deployment.md documents all scripts, model swap, troubles
     assert.ok(doc.includes(marker), `docs/windows-llm-deployment.md missing expected benchmark/ops detail: ${marker}`);
   }
 });
-
-test('all scripts/windows-llm/ files and docs/windows-llm-deployment.md are free of GLOSSARY.md forbidden synonyms', () => {
-  const glossaryCheckScript = fs.readFileSync(path.join(repoRoot, 'scripts', 'check-glossary.sh'), 'utf8');
-  const zhMatch = glossaryCheckScript.match(/^forbidden_zh='([^']+)'/m);
-  const robMatch = glossaryCheckScript.match(/^forbidden_rob='([^']+)'/m);
-  assert.ok(zhMatch, 'failed to extract forbidden_zh from scripts/check-glossary.sh');
-  assert.ok(robMatch, 'failed to extract forbidden_rob from scripts/check-glossary.sh');
-
-  const combinedRe = new RegExp(`${zhMatch[1]}|${robMatch[1]}`, 'g');
-  const filesToCheck = [
-    ...EXPECTED_PS_SCRIPTS.map((name) => path.join(windowsLlmDir, name)),
-    deploymentDocPath,
-  ];
-
-  for (const filePath of filesToCheck) {
-    const content = fs.readFileSync(filePath, 'utf8');
-    const matches = content.match(combinedRe);
-    assert.equal(
-      matches,
-      null,
-      `Forbidden GLOSSARY.md synonym(s) found in ${path.relative(repoRoot, filePath)}: ${JSON.stringify(matches)}`,
-    );
-  }
-});
