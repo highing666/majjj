@@ -729,14 +729,14 @@ mod tests {
         hand_index: u32,
         mode: MatchMode,
         settlement: mahjong_core::HandSettlement,
-        east_name: &str,
-        south_kind: crate::protocol::SeatKind,
-        south_name: &str,
-        east_assisted: bool,
+        east: (&str, bool),
+        south: (crate::protocol::SeatKind, &str),
     ) -> crate::history_dto::HandRecord {
         use crate::history_dto::{HandRecord, HandSeatRecord};
         use crate::protocol::SeatKind;
         use mahjong_core::Seat;
+        let (east_name, east_assisted) = east;
+        let (south_kind, south_name) = south;
         HandRecord {
             schema_version: HISTORY_SCHEMA_VERSION,
             match_id: match_id.to_string(),
@@ -806,10 +806,8 @@ mod tests {
                 [6, -2, -2, -2],
                 [6, -2, -2, -2],
             ),
-            "  Alice  ",
-            SeatKind::Ai,
-            "AI 1",
-            true,
+            ("  Alice  ", true),
+            (SeatKind::Ai, "AI 1"),
         );
         store.append_hand(h1);
 
@@ -824,10 +822,8 @@ mod tests {
                 [-4, 4, 0, 0],
                 [2, 2, -2, -2],
             ),
-            "Alice",
-            SeatKind::Human,
-            " Bob ",
-            false,
+            ("Alice", false),
+            (SeatKind::Human, " Bob "),
         );
         store.append_hand(h2);
 
@@ -882,10 +878,8 @@ mod tests {
             1,
             MatchMode::EastOnly,
             sample_settlement(None, None, [0, 0, 0, 0], [0, 0, 0, 0]),
-            "Alice",
-            SeatKind::Ai,
-            "AI 1",
-            false,
+            ("Alice", false),
+            (SeatKind::Ai, "AI 1"),
         );
         store.append_hand(h_abort);
         store.mark_match_aborted("match-2");

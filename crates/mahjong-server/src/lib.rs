@@ -6,6 +6,7 @@ pub use mahjong_core;
 pub mod ai_pool;
 pub mod history_dto;
 pub mod lan;
+pub mod lifecycle;
 pub mod pacing;
 pub mod protocol;
 mod seat_control;
@@ -15,6 +16,7 @@ pub mod static_assets;
 pub mod storage;
 
 pub use ai_pool::default_ai_threads;
+pub use lifecycle::IdleTimeouts;
 pub use pacing::PacingMode;
 pub use server::{HeartbeatConfig, ServerConfig, ServerError, ServerHandle};
 pub use session::{BoxedWallProvider, TableOptions, WallProviderFactory};

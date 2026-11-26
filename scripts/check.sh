@@ -31,13 +31,14 @@ if [ "$(uname -s)" = "Darwin" ] && [ -z "${DEVELOPER_DIR:-}" ] && [ -d "/Library
 fi
 
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
 
 if [ ! -d "web/node_modules" ]; then
   echo "ERROR: web/node_modules not found. Run 'make web-install' (or 'npm ci --prefix web') first." >&2
   exit 1
 fi
 (cd web && npm run typecheck && npm test && npm run build)
+
+cargo clippy --workspace --all-targets -- -D warnings
 
 if [ "$sandbox_mode" -eq 1 ]; then
   cargo test -p mahjong-core -p mahjong-ai
