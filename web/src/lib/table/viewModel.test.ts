@@ -1,13 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { DiscardEntry } from "../protocol/generated/DiscardEntry";
 import type { MeldView } from "../protocol/generated/MeldView";
-import type { PlayerView } from "../protocol/generated/PlayerView";
-import type { PublicSeatView } from "../protocol/generated/PublicSeatView";
 import type { Seat } from "../protocol/generated/Seat";
 import {
   matchModeLabel,
   patchLobbyConfig,
 } from "../lobby/lobbyConfig";
+import { makePlayerView } from "./testFixtures";
 import {
   formatCompactRoundTitle,
   formatRoundTitle,
@@ -34,58 +33,6 @@ import {
   resolveActionBarShortcut,
   seatRelativeSlot,
 } from "./viewModel";
-
-function makePlayerView(overrides: Partial<PlayerView> = {}): PlayerView {
-  const emptySeat = (seat: Seat): PublicSeatView => ({
-    seat,
-    score: 0,
-    hand_count: 13,
-    river: [],
-    melds: [],
-    last_draw_or_meld_seq: 0,
-  });
-
-  return {
-    viewer: "East",
-    mode: "EastOnly",
-    rule_profile: {
-      name: "推倒胡",
-      allow_chi: false,
-      allow_four_of_kind_seven_pairs: true,
-      allow_multi_ron: true,
-      fan_cap: 8,
-      wall_size: 136,
-      dead_wall_size: 14,
-      starting_scores_east_only: [0, 0, 0, 0],
-      starting_scores_free_table: [0, 0, 0, 0],
-    },
-    phase: "Playing",
-    hand: {
-      closed_tiles: [0, 1, 2, 9, 10, 11, 18, 19, 20, 27, 27, 31, 31],
-      drawn_tile: 5,
-    },
-    seats: [
-      { ...emptySeat("East"), hand_count: 14 },
-      emptySeat("South"),
-      emptySeat("West"),
-      emptySeat("North"),
-    ],
-    wall_remaining: 69,
-    turn: {
-      wind_round: "East",
-      hand_number: 1,
-      dealer_streak: 0,
-      dealer: "East",
-      active_seat: "East",
-    },
-    legal_actions: [],
-    last_settlement: null,
-    ready_seats: null,
-    match_summary: null,
-    seq: 2,
-    ...overrides,
-  };
-}
 
 describe("tile metadata helpers", () => {
   it("maps all 34 tiles (0..33) to suit, rank, and canonical labels", () => {

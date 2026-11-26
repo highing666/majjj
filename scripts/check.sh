@@ -2,12 +2,13 @@
 set -euo pipefail
 
 usage() {
-  echo "Usage: $0 [--sandbox] [--staged]" >&2
+  echo "Usage: $0 [--sandbox] [--staged | --since <ref>]" >&2
   exit 1
 }
 
 sandbox_mode=0
 staged_mode=0
+since_ref=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --sandbox)
@@ -15,6 +16,14 @@ while [ "$#" -gt 0 ]; do
       ;;
     --staged)
       staged_mode=1
+      ;;
+    --since)
+      if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+        echo "ERROR: --since requires a git ref" >&2
+        usage
+      fi
+      since_ref="$2"
+      shift
       ;;
     -h|--help)
       usage
@@ -26,6 +35,11 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
+
+if [ "$staged_mode" -eq 1 ] && [ -n "$since_ref" ]; then
+  echo "ERROR: --staged and --since are mutually exclusive" >&2
+  usage
+fi
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo_root"
@@ -39,23 +53,43 @@ run_rust=1
 run_ai_heavy=1
 run_dist_scripts=1
 
+changed_files=""
+filter_by_changes=0
 if [ "$staged_mode" -eq 1 ]; then
-  staged_files="$(git diff --cached --name-only --diff-filter=ACMRD || true)"
+  filter_by_changes=1
+  changed_files="$(git diff --cached --name-only --diff-filter=ACMRD || true)"
+elif [ -n "$since_ref" ]; then
+  git rev-parse --verify "${since_ref}^{commit}" >/dev/null 2>&1 || {
+    echo "ERROR: invalid --since git ref: $since_ref" >&2
+    exit 1
+  }
+  filter_by_changes=1
+  changed_files="$(
+    {
+      git diff --name-only --diff-filter=ACMRD "${since_ref}...HEAD" || true
+      git diff --name-only --diff-filter=ACMRD || true
+      git diff --cached --name-only --diff-filter=ACMRD || true
+      git ls-files --others --exclude-standard || true
+    } | sort -u
+  )"
+fi
+
+if [ "$filter_by_changes" -eq 1 ]; then
   run_web=0
   run_rust=0
   run_ai_heavy=0
   run_dist_scripts=0
 
-  if printf '%s\n' "$staged_files" | grep -qE '^(web/|scripts/check-web-safeguards\.sh$)'; then
+  if printf '%s\n' "$changed_files" | grep -qE '^(web/|scripts/check-web-safeguards\.sh$)'; then
     run_web=1
   fi
-  if printf '%s\n' "$staged_files" | grep -qE '^(crates/|Cargo\.(toml|lock)$|scripts/check-core-boundaries\.sh$)'; then
+  if printf '%s\n' "$changed_files" | grep -qE '^(crates/|Cargo\.(toml|lock)$|scripts/check-core-boundaries\.sh$)'; then
     run_rust=1
   fi
-  if printf '%s\n' "$staged_files" | grep -qE '^crates/(mahjong-ai|mahjong-core)/'; then
+  if printf '%s\n' "$changed_files" | grep -qE '^crates/(mahjong-ai|mahjong-core)/'; then
     run_ai_heavy=1
   fi
-  if printf '%s\n' "$staged_files" | grep -qE '^(scripts/|packaging/|Makefile$)'; then
+  if printf '%s\n' "$changed_files" | grep -qE '^(scripts/|packaging/|Makefile$)'; then
     run_dist_scripts=1
   fi
 fi

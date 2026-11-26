@@ -1,163 +1,21 @@
-import { Container, type FederatedPointerEvent, Graphics, Text, Texture } from "pixi.js";
+import { Container, Graphics, Text, Texture } from "pixi.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Seat } from "../protocol/generated/Seat";
-import type { SeatInfo } from "../protocol/generated/SeatInfo";
 import type { TableSnapshot } from "../protocol/generated/TableSnapshot";
-import type { Tile } from "../protocol/generated/Tile";
 import { computeBottomRiverSlotPoint, computeTableLayout } from "./layout";
 import { TableSceneRenderer } from "./tableRenderer";
-import type { TileAtlas, TileBodyKind } from "./tileAtlas";
-
-function installCanvasDocumentStub(): () => void {
-  const prevDocument = globalThis.document;
-  const prevCtx2D = (globalThis as { CanvasRenderingContext2D?: unknown })
-    .CanvasRenderingContext2D;
-  const noop = () => {};
-  const fakeCtx = {
-    save: noop,
-    restore: noop,
-    scale: noop,
-    translate: noop,
-    beginPath: noop,
-    closePath: noop,
-    rect: noop,
-    fill: noop,
-    stroke: noop,
-    clearRect: noop,
-    fillRect: noop,
-    fillText: noop,
-    strokeText: noop,
-    setTransform: noop,
-    getImageData: () => ({ data: new Uint8ClampedArray(4) }),
-    measureText: (text: string) => ({
-      width: Math.max(8, text.length * 8),
-      actualBoundingBoxAscent: 8,
-      actualBoundingBoxDescent: 2,
-      fontBoundingBoxAscent: 9,
-      fontBoundingBoxDescent: 3,
-      actualBoundingBoxLeft: 0,
-      actualBoundingBoxRight: Math.max(8, text.length * 8),
-    }),
-    fillStyle: "",
-    strokeStyle: "",
-    lineWidth: 1,
-    font: "",
-    textAlign: "left",
-    textBaseline: "alphabetic",
-  };
-  (globalThis as { CanvasRenderingContext2D?: unknown }).CanvasRenderingContext2D =
-    function CanvasRenderingContext2D() {};
-  (globalThis as unknown as { document: unknown }).document = {
-    createElement: () => ({
-      width: 256,
-      height: 256,
-      style: {},
-      getContext: () => fakeCtx,
-    }),
-  };
-  return () => {
-    if (prevDocument === undefined) {
-      delete (globalThis as { document?: Document }).document;
-    } else {
-      globalThis.document = prevDocument;
-    }
-    if (prevCtx2D === undefined) {
-      delete (globalThis as { CanvasRenderingContext2D?: unknown })
-        .CanvasRenderingContext2D;
-    } else {
-      (globalThis as { CanvasRenderingContext2D?: unknown }).CanvasRenderingContext2D =
-        prevCtx2D;
-    }
-  };
-}
-
-function createSpyAtlas() {
-  const standingTextures = new Map<Tile, Texture>();
-  const laidTextures = new Map<Tile, Texture>();
-  const backTexture = new Texture();
-  const laidBackTexture = new Texture();
-  const shadowTexture = new Texture();
-  const feltImpastoTexture = new Texture();
-  const feltBrushTexture = new Texture();
-  const calls: Array<{ tile: Tile; body: TileBodyKind | undefined }> = [];
-
-  for (let t = 0; t < 34; t += 1) {
-    standingTextures.set(t, new Texture());
-    laidTextures.set(t, new Texture());
-  }
-
-  const atlas: TileAtlas = {
-    width: 1440,
-    height: 1536,
-    backTexture,
-    laidBackTexture,
-    shadowTexture,
-    feltImpastoTexture,
-    feltBrushTexture,
-    getTileTexture(tile: Tile, body?: TileBodyKind): Texture {
-      calls.push({ tile, body });
-      if (body === "laid") {
-        return laidTextures.get(tile) ?? laidBackTexture;
-      }
-      return standingTextures.get(tile) ?? backTexture;
-    },
-    destroy() {
-      for (const tex of standingTextures.values()) tex.destroy(false);
-      for (const tex of laidTextures.values()) tex.destroy(false);
-      backTexture.destroy(false);
-      laidBackTexture.destroy(false);
-      shadowTexture.destroy(false);
-      feltImpastoTexture.destroy(false);
-      feltBrushTexture.destroy(false);
-    },
-  };
-
-  return {
-    atlas,
-    calls,
-    standingTextures,
-    laidTextures,
-    backTexture,
-    laidBackTexture,
-  };
-}
-
-function makePointerEvent(x = 0, y = 0): FederatedPointerEvent {
-  return {
-    global: { x, y },
-    stopPropagation: () => {},
-  } as unknown as FederatedPointerEvent;
-}
-
-function makeSeatInfo(
-  seat: Seat,
-  nickname: string,
-  overrides: Partial<SeatInfo> = {},
-): SeatInfo {
-  return {
-    seat,
-    kind: seat === "East" ? "Human" : "Ai",
-    nickname,
-    connected: true,
-    ai_assisted: false,
-    ai_difficulty: null,
-    ai_style: null,
-    voice_pack_id: null,
-    ...overrides,
-  };
-}
+import {
+  createSpyTileAtlas,
+  installCanvasDocumentStub,
+  makePlayerView,
+  makePointerEvent,
+  makePublicSeatView,
+  makeSeatInfo,
+  makeTableSnapshot,
+} from "./testFixtures";
 
 function makeSnapshot(overrides: Partial<TableSnapshot> = {}): TableSnapshot {
-  return {
+  return makeTableSnapshot({
     table_id: "tbl-72",
-    phase: "InMatch",
-    config: {
-      mode: "EastOnly",
-      seating: "KeepLobbySeats",
-      ai_difficulty: "Intermediate",
-      pace: "Standard",
-    },
-    pace: "Standard",
     seats: [
       makeSeatInfo("East", "阿东"),
       makeSeatInfo("South", "小南"),
@@ -168,39 +26,10 @@ function makeSnapshot(overrides: Partial<TableSnapshot> = {}): TableSnapshot {
       }),
       makeSeatInfo("North", "北北"),
     ],
-    your_seat: "East",
-    seat_token: "tok-east",
-    pending_destructive_op: null,
     seq: 70,
-    server_version: "0.1.0",
-    lan_urls: {
-      preferred_ipv4_url: null,
-      ipv4_urls: [],
-      local_hostname_url: null,
-    },
-    host_is_loopback: true,
-    player_view: {
-      viewer: "East",
-      mode: "EastOnly",
-      rule_profile: {
-        name: "推倒胡",
-        allow_chi: false,
-        allow_four_of_kind_seven_pairs: true,
-        allow_multi_ron: true,
-        fan_cap: 8,
-        wall_size: 136,
-        dead_wall_size: 14,
-        starting_scores_east_only: [0, 0, 0, 0],
-        starting_scores_free_table: [0, 0, 0, 0],
-      },
-      phase: "Playing",
-      hand: {
-        closed_tiles: [0, 1, 2, 9, 10, 11, 18, 19, 20, 27, 27, 31, 31],
-        drawn_tile: 5,
-      },
+    player_view: makePlayerView({
       seats: [
-        {
-          seat: "East",
+        makePublicSeatView("East", {
           score: 12,
           hand_count: 14,
           river: Array.from({ length: 12 }, (_, idx) => ({
@@ -214,24 +43,19 @@ function makeSnapshot(overrides: Partial<TableSnapshot> = {}): TableSnapshot {
             { ConcealedKong: { tile: 31, seq: 21 } },
           ],
           last_draw_or_meld_seq: 22,
-        },
-        {
-          seat: "South",
+        }),
+        makePublicSeatView("South", {
           score: -4,
-          hand_count: 13,
           river: Array.from({ length: 5 }, (_, idx) => ({
             tile: 9 + idx,
             is_tsumogiri: false,
             claimed_by: null,
             seq: 30 + idx,
           })),
-          melds: [],
           last_draw_or_meld_seq: 30,
-        },
-        {
-          seat: "West",
+        }),
+        makePublicSeatView("West", {
           score: -8,
-          hand_count: 13,
           river: Array.from({ length: 11 }, (_, idx) => ({
             tile: 18 + (idx % 9),
             is_tsumogiri: false,
@@ -240,20 +64,17 @@ function makeSnapshot(overrides: Partial<TableSnapshot> = {}): TableSnapshot {
           })),
           melds: [{ ConcealedKong: { tile: null, seq: 55 } }],
           last_draw_or_meld_seq: 40,
-        },
-        {
-          seat: "North",
+        }),
+        makePublicSeatView("North", {
           score: 0,
-          hand_count: 13,
           river: Array.from({ length: 6 }, (_, idx) => ({
             tile: idx,
             is_tsumogiri: true,
             claimed_by: null,
             seq: 60 + idx,
           })),
-          melds: [],
           last_draw_or_meld_seq: 60,
-        },
+        }),
       ],
       wall_remaining: 42,
       turn: {
@@ -267,13 +88,10 @@ function makeSnapshot(overrides: Partial<TableSnapshot> = {}): TableSnapshot {
         { Discard: { tile: 5, from_drawn: true } },
         { Discard: { tile: 0, from_drawn: false } },
       ],
-      last_settlement: null,
-      ready_seats: null,
-      match_summary: null,
       seq: 70,
-    },
+    }),
     ...overrides,
-  };
+  });
 }
 
 function collectTexts(container: Container): string[] {
@@ -312,7 +130,7 @@ describe("TableSceneRenderer standing vs laid bodies & Scheme B integration", ()
   });
 
   it("renders viewer hand with standing textures, rivers and melds with laid textures, and opponent concealed kongs with laidBackTexture", () => {
-    const spy = createSpyAtlas();
+    const spy = createSpyTileAtlas();
     const stage = new Container();
     const renderer = new TableSceneRenderer(stage, spy.atlas, {
       onDiscard: () => {},
@@ -372,7 +190,7 @@ describe("TableSceneRenderer standing vs laid bodies & Scheme B integration", ()
   });
 
   it("renders Scheme B theater layout, ultra-flat pill center seal, and wind-free relative badges", () => {
-    const spy = createSpyAtlas();
+    const spy = createSpyTileAtlas();
     const stage = new Container();
     const onDiscard = vi.fn();
     const renderer = new TableSceneRenderer(stage, spy.atlas, {
@@ -407,7 +225,7 @@ describe("TableSceneRenderer standing vs laid bodies & Scheme B integration", ()
   });
 
   it("aligns discard ghost preview with 10-per-row bottom river slot and commits desktop click discard", () => {
-    const spy = createSpyAtlas();
+    const spy = createSpyTileAtlas();
     const stage = new Container();
     const onDiscard = vi.fn();
     const renderer = new TableSceneRenderer(stage, spy.atlas, {
@@ -458,7 +276,7 @@ describe("TableSceneRenderer standing vs laid bodies & Scheme B integration", ()
   });
 
   it("supports touch tap-twice, swipe-up cancel snap-back, and narrow portrait fallback", () => {
-    const spy = createSpyAtlas();
+    const spy = createSpyTileAtlas();
     const stage = new Container();
     const onDiscard = vi.fn();
     const renderer = new TableSceneRenderer(stage, spy.atlas, {
@@ -508,7 +326,7 @@ describe("TableSceneRenderer standing vs laid bodies & Scheme B integration", ()
   });
 
   it("renders 4-layer turn cues: drawn lift/caret vs post-pon 13-tile highlight, hand dimming, reducedEffects static glow, and onLayoutChange", () => {
-    const spy = createSpyAtlas();
+    const spy = createSpyTileAtlas();
     const stage = new Container();
     const onLayoutChange = vi.fn();
     const renderer = new TableSceneRenderer(stage, spy.atlas, {

@@ -149,14 +149,15 @@ for (const dir of threeXDirs) {
   }
 }
 
-// 3. PNG IHDR dimensions <= 2048x2048 under web/src/assets/ and web/dist/assets/
+// 3. PNG IHDR dimensions <= 2048x2048 under web/src/assets/, web/public/, and web/dist/
 const MAX_TEX_DIM = 2048;
 const srcAssetsDir = path.join(srcRoot, "assets");
+const publicDir = path.join(webRoot, "public");
 const distDir = path.join(webRoot, "dist");
 const distAssetsDir = path.join(distDir, "assets");
-const pngDirs = [srcAssetsDir];
+const pngDirs = [srcAssetsDir, publicDir];
 if (fs.existsSync(distDir)) {
-  pngDirs.push(distAssetsDir);
+  pngDirs.push(distDir);
 }
 
 for (const dir of pngDirs) {
@@ -233,6 +234,63 @@ for (const file of m4aFiles) {
     }
   } catch (err) {
     failures.push(`${path.relative(cwd, file)}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+// 5. PWA manifest integrity (web/public/manifest.webmanifest + icons + web/dist parity)
+const publicManifestPath = path.join(publicDir, "manifest.webmanifest");
+if (!fs.existsSync(publicManifestPath)) {
+  failures.push("missing web/public/manifest.webmanifest");
+} else {
+  try {
+    const manifest = JSON.parse(fs.readFileSync(publicManifestPath, "utf8"));
+    if (!Array.isArray(manifest.icons) || manifest.icons.length === 0) {
+      failures.push("web/public/manifest.webmanifest: icons must be a non-empty array");
+    } else {
+      for (const icon of manifest.icons) {
+        if (!icon || typeof icon.src !== "string" || icon.src.trim().length === 0) {
+          failures.push("web/public/manifest.webmanifest: icon entry missing src");
+          continue;
+        }
+        const relIcon = icon.src.replace(/^\/+/, "");
+        const pubIcon = path.join(publicDir, relIcon);
+        if (!fs.existsSync(pubIcon)) {
+          failures.push(`web/public/manifest.webmanifest: missing public icon ${path.relative(cwd, pubIcon)}`);
+        }
+        if (fs.existsSync(distDir)) {
+          const distIcon = path.join(distDir, relIcon);
+          if (!fs.existsSync(distIcon)) {
+            failures.push(`web/dist: missing built PWA icon ${path.relative(cwd, distIcon)}`);
+          }
+        }
+      }
+    }
+    if (fs.existsSync(distDir) && !fs.existsSync(path.join(distDir, "manifest.webmanifest"))) {
+      failures.push("web/dist: missing built manifest.webmanifest");
+    }
+  } catch (err) {
+    failures.push(`web/public/manifest.webmanifest: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+// 6. Zero-Pixi boundary in pure table helpers & TileBadge
+const pixiImportRegex = /\bfrom\s+["\x27]pixi\.js["\x27]|import\s+["\x27]pixi\.js["\x27]|require\(\s*["\x27]pixi\.js["\x27]\s*\)/;
+const pureTableFiles = [
+  "web/src/lib/table/layout.ts",
+  "web/src/lib/table/viewModel.ts",
+  "web/src/lib/table/tileBadgeAtlas.ts",
+  "web/src/lib/table/atlasConstants.ts",
+  "web/src/lib/table/TileBadge.svelte",
+];
+for (const relFile of pureTableFiles) {
+  const fullPath = path.join(cwd, relFile);
+  if (!fs.existsSync(fullPath)) {
+    failures.push(`missing expected pure table file: ${relFile}`);
+    continue;
+  }
+  const clean = stripCommentsPreservingLineNumbers(fs.readFileSync(fullPath, "utf8"));
+  if (pixiImportRegex.test(clean)) {
+    failures.push(`${relFile}: prohibited pixi.js import in pure/non-canvas module`);
   }
 }
 
