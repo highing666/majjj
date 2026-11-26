@@ -1,4 +1,5 @@
 import type { IosAudioSessionMode } from "../preferences/devicePreferences";
+import type { RelativeRole } from "../presentation/semanticEvents";
 import type { Seat } from "../protocol/generated/Seat";
 import type {
   VoicePackManifest,
@@ -165,6 +166,26 @@ export interface VoTriggerRequest {
   readonly category: VoActionCategory;
   readonly slot: VoiceSlotId;
 }
+
+export type BanterVoicePriority = "highlight" | "normal";
+
+export interface BanterVoiceRequest {
+  readonly banterId: string;
+  readonly seat: Seat;
+  readonly audioUrl: string;
+  readonly durationMs: number;
+  readonly priority: BanterVoicePriority;
+  readonly relativeRole: RelativeRole | null;
+}
+
+export interface ActiveBanterVoiceState {
+  readonly seat: Seat;
+  readonly banterId: string;
+}
+
+export type BanterVoiceStateListener = (
+  active: ActiveBanterVoiceState | null,
+) => void;
 
 export type SfxBackendMode = "uninitialized" | "sprite" | "procedural";
 

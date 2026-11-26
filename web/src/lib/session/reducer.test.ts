@@ -1232,6 +1232,49 @@ describe("session reducer — TableBanter and LlmStatusNotice", () => {
     });
   });
 
+  it("tracks TtsStatusNotice outage and recovery without clearing snapshot, and passes through TableBanterAudioReady", () => {
+    const base = reduceServerMessage(createInitialSessionState(), {
+      TableSnapshot: makeSnapshot({ phase: "InMatch", your_seat: "East" }),
+    }).state;
+    expect(base.ttsStatusNotice).toBeNull();
+
+    const degraded = reduceServerMessage(base, {
+      TtsStatusNotice: {
+        available: false,
+        message: "局域网台词语音服务暂不可用，已切换为离线语音包与文字气泡",
+      },
+    });
+    expect(degraded.state.ttsStatusNotice).toEqual({
+      available: false,
+      message: "局域网台词语音服务暂不可用，已切换为离线语音包与文字气泡",
+    });
+    expect(degraded.state.snapshot?.phase).toBe("InMatch");
+    expect(degraded.effects).toEqual([]);
+
+    const afterAudioReady = reduceServerMessage(degraded.state, {
+      TableBanterAudioReady: {
+        banter_id: "b-1",
+        seat: "South",
+        audio_url: "/api/banter-audio/b-1",
+        duration_ms: 1450,
+      },
+    });
+    expect(afterAudioReady.state).toEqual(degraded.state);
+    expect(afterAudioReady.effects).toEqual([]);
+
+    const recovered = reduceServerMessage(degraded.state, {
+      TtsStatusNotice: {
+        available: true,
+        message: "局域网台词语音服务已恢复连接",
+      },
+    });
+    expect(recovered.state.ttsStatusNotice).toEqual({
+      available: true,
+      message: "局域网台词语音服务已恢复连接",
+    });
+    expect(recovered.effects).toEqual([]);
+  });
+
   it("handles QuickEmoteBroadcast cleanly and clears stale cooldown rejection when viewer sends successfully", () => {
     const base: SessionState = {
       ...reduceServerMessage(createInitialSessionState(), {

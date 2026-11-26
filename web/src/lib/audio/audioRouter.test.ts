@@ -13,6 +13,7 @@ import { QUICK_EMOTE_IDS } from "../protocol/personas";
 import { ALL_SEATS } from "../protocol/seats";
 import { createAudioEventRouter } from "./audioRouter";
 import type {
+  ActiveBanterVoiceState,
   AudioBufferLike,
   AudioBufferSourceNodeLike,
   AudioContextLike,
@@ -964,6 +965,375 @@ describe("AudioEventRouter", () => {
     expect(gestureTarget.listenerCount("touchend")).toBe(0);
     expect(gestureTarget.listenerCount("click")).toBe(0);
     expect(gestureTarget.listenerCount("keydown")).toBe(0);
+
+    router.dispose();
+  });
+
+  it("enforces unified dual-track arbitration: discard yields during BanterVoice, action calls & QuickEmote fire immediately, and shared ducking holds until both tracks finish", async () => {
+    const env = createFakeAudioEnv("running");
+    const createAudioContext = vi.fn(() => env.ctx);
+    const sprites: Partial<Record<VoiceSlotId, VoiceSpriteSlice>> = {};
+    ALL_VOICE_SLOTS.forEach((slot, idx) => {
+      sprites[slot] = [idx * 0.75, 0.45];
+    });
+    const fetchFn: FetchLike = vi.fn(async (url: string) => {
+      const match = url.match(/^\/assets\/vo\/([^/]+)\/manifest\.json$/);
+      if (match) {
+        const manifest: VoicePackManifest = {
+          pack_id: match[1]!,
+          version: 1,
+          audio: "sprite.m4a",
+          sample_rate: 24000,
+          duration: ALL_VOICE_SLOTS.length * 0.75,
+          sprites,
+        };
+        return {
+          ok: true,
+          status: 200,
+          json: async () => manifest,
+          arrayBuffer: async () => new ArrayBuffer(0),
+        };
+      }
+      if (url.endsWith("/sprite.m4a") || url.startsWith("/api/banter-audio/")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({}),
+          arrayBuffer: async () => new ArrayBuffer(48),
+        };
+      }
+      return {
+        ok: false,
+        status: 404,
+        json: async () => ({}),
+        arrayBuffer: async () => new ArrayBuffer(0),
+      };
+    });
+    const fakeSfxBackend = {
+      getMode: () => "procedural" as const,
+      ensureLoaded: vi.fn(async () => "procedural" as const),
+      play: vi.fn(() => ({
+        backend: "procedural" as const,
+        slot: "discard_light" as const,
+        variantIndex: 0,
+        playbackRate: 1,
+        pan: 0,
+      })),
+      dispose: vi.fn(),
+    };
+
+    const router = createAudioEventRouter({
+      initialPreferences: { ...defaultDevicePreferences(false), sfx_volume: 0.8 },
+      createAudioContext,
+      sfxBackend: fakeSfxBackend,
+      fetchFn,
+      documentTarget: env.docTarget,
+      getVisibilityState: env.getVisibilityState,
+    });
+    router.preloadVoicePacks(["human_male", "quick_hothead"]);
+    router.unlockFromGesture();
+    await vi.waitFor(() => {
+      expect(env.ctx.decodeAudioData).toHaveBeenCalledTimes(2);
+    });
+
+    const seats = makeSeats("human_male");
+    seats[1] = { ...seats[1], voice_pack_id: "quick_hothead" };
+    const ctx: SemanticMappingContext = { viewer: "East", seats, wallRemaining: 30 };
+
+    const speakingHistory: Array<ActiveBanterVoiceState | null> = [];
+    router.onBanterVoiceStateChange((active) => speakingHistory.push(active));
+    expect(speakingHistory).toEqual([null]);
+
+    // 1. Start BanterVoice on South (下家 -> pan +0.35)
+    router.enqueueBanterVoice({
+      banterId: "b-1",
+      seat: "South",
+      audioUrl: "/api/banter-audio/b-1",
+      durationMs: 1400,
+      priority: "normal",
+      relativeRole: "下家",
+    });
+    await vi.waitFor(() => {
+      expect(env.bufferSources).toHaveLength(1);
+    });
+    const banterSource = env.bufferSources[0]!.node;
+    expect(createAudioContext).toHaveBeenCalledTimes(1);
+    expect(env.panners.at(-1)!.pan.value).toBeCloseTo(0.35, 5);
+    expect(router.getActiveBanterVoice()).toEqual({ seat: "South", banterId: "b-1" });
+    expect(speakingHistory.at(-1)).toEqual({ seat: "South", banterId: "b-1" });
+    const sfxGainNode = env.gainNodes[1]!.node;
+    expect(sfxGainNode.gain.value).toBeCloseTo(0.8 * 0.45, 5);
+
+    // 2. Discard tile call arrives during BanterVoice -> MUST silently yield (SFX still fires, no new VO source!)
+    const sfxCallsBefore = fakeSfxBackend.play.mock.calls.length;
+    router.handleSemanticEvent(
+      mapPlayerEventToSemanticEvent(
+        { seq: 10, kind: { TileDiscarded: { seat: "East", tile: 0, is_tsumogiri: true } } },
+        ctx,
+      ),
+    );
+    await Promise.resolve();
+    expect(fakeSfxBackend.play.mock.calls.length).toBe(sfxCallsBefore + 1);
+    expect(env.bufferSources).toHaveLength(1);
+    expect(banterSource.stop).not.toHaveBeenCalled();
+
+    // 3. Action call (Pon) arrives during BanterVoice -> fires IMMEDIATELY without waiting for BanterVoice!
+    router.handleSemanticEvent(
+      mapPlayerEventToSemanticEvent(
+        {
+          seq: 11,
+          kind: {
+            MeldDeclared: {
+              seat: "South",
+              meld: { Pon: { tile: 0, from_seat: "East", seq: 10 } },
+              kong_score_deltas: null,
+            },
+          },
+        },
+        ctx,
+      ),
+    );
+    await vi.waitFor(() => {
+      expect(env.bufferSources).toHaveLength(2);
+    });
+    const ponSource = env.bufferSources[1]!.node;
+    expect(banterSource.stop).not.toHaveBeenCalled();
+
+    // 4. Pon finishes while BanterVoice is STILL playing -> sfxGain stays ducked at 0.8 * 0.45!
+    ponSource.onended?.();
+    expect(sfxGainNode.gain.value).toBeCloseTo(0.8 * 0.45, 5);
+
+    // 5. Human QuickEmote arrives during BanterVoice -> fires IMMEDIATELY!
+    router.handleSemanticEvent(
+      mapQuickEmoteBroadcastToSemanticEvent(
+        { seat: "East", emote: "IsThatIt", text: "就这？" },
+        ctx,
+      ),
+    );
+    await vi.waitFor(() => {
+      expect(env.bufferSources).toHaveLength(3);
+    });
+    const emoteSource = env.bufferSources[2]!.node;
+
+    // 6. BanterVoice finishes while QuickEmote is STILL playing -> sfxGain stays ducked until QuickEmote ends!
+    banterSource.onended?.();
+    expect(router.getActiveBanterVoice()).toBeNull();
+    expect(sfxGainNode.gain.value).toBeCloseTo(0.8 * 0.45, 5);
+
+    // 7. QuickEmote finishes -> BOTH tracks idle -> sfxGain restores cleanly to 0.8!
+    emoteSource.onended?.();
+    expect(sfxGainNode.gain.value).toBeCloseTo(0.8, 5);
+
+    router.dispose();
+  });
+
+  it("flushes BanterVoice and restores sfxGain on HandStarted semantic event and flushBanterVoices()", async () => {
+    const env = createFakeAudioEnv("running");
+    const fetchFn: FetchLike = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({}),
+      arrayBuffer: async () => new ArrayBuffer(32),
+    }));
+    const router = createAudioEventRouter({
+      initialPreferences: { ...defaultDevicePreferences(false), sfx_volume: 1.0 },
+      createAudioContext: () => env.ctx,
+      fetchFn,
+      documentTarget: env.docTarget,
+      getVisibilityState: env.getVisibilityState,
+    });
+    router.unlockFromGesture();
+
+    // Enqueue 2 banters (1 active + 1 queued)
+    router.enqueueBanterVoice({
+      banterId: "b-settle-1",
+      seat: "South",
+      audioUrl: "/api/banter-audio/b-settle-1",
+      durationMs: 2000,
+      priority: "highlight",
+      relativeRole: "下家",
+    });
+    router.enqueueBanterVoice({
+      banterId: "b-settle-2",
+      seat: "North",
+      audioUrl: "/api/banter-audio/b-settle-2",
+      durationMs: 2000,
+      priority: "highlight",
+      relativeRole: "上家",
+    });
+    await vi.waitFor(() => expect(env.bufferSources).toHaveLength(1));
+    const sfxGainNode = env.gainNodes[1]!.node;
+    expect(sfxGainNode.gain.value).toBeCloseTo(0.45, 5);
+    expect(router.getActiveBanterVoice()).toEqual({
+      seat: "South",
+      banterId: "b-settle-1",
+    });
+
+    // HandStarted semantic event stops active banter, clears queue, and restores sfxGain!
+    router.handleSemanticEvent(
+      mapPlayerEventToSemanticEvent(
+        {
+          seq: 20,
+          kind: {
+            HandStarted: {
+              wind_round: "East",
+              hand_number: 2,
+              dealer_streak: 0,
+              dealer: "South",
+              hand: { closed_tiles: [0, 1, 2], drawn_tile: null },
+              wall_remaining: 70,
+              scores: [0, 0, 0, 0],
+            },
+          },
+        },
+        makeContext(70),
+      ),
+    );
+    expect(env.bufferSources[0]!.node.stop).toHaveBeenCalledTimes(1);
+    expect(router.getActiveBanterVoice()).toBeNull();
+    expect(sfxGainNode.gain.value).toBeCloseTo(1.0, 5);
+    // Queued b-settle-2 must NOT have started
+    await Promise.resolve();
+    expect(env.bufferSources).toHaveLength(1);
+
+    // Direct flushBanterVoices() also stops active banter & restores sfxGain
+    router.enqueueBanterVoice({
+      banterId: "b-lobby-1",
+      seat: "West",
+      audioUrl: "/api/banter-audio/b-lobby-1",
+      durationMs: 1200,
+      priority: "normal",
+      relativeRole: "对门",
+    });
+    await vi.waitFor(() => expect(env.bufferSources).toHaveLength(2));
+    expect(sfxGainNode.gain.value).toBeCloseTo(0.45, 5);
+
+    router.flushBanterVoices();
+    expect(env.bufferSources[1]!.node.stop).toHaveBeenCalledTimes(1);
+    expect(router.getActiveBanterVoice()).toBeNull();
+    expect(sfxGainNode.gain.value).toBeCloseTo(1.0, 5);
+
+    router.dispose();
+  });
+
+  it("supports runtime voice controls (setVoiceVolume, setTileCallVoiceEnabled, setBanterVoiceEnabled) for #87", async () => {
+    const env = createFakeAudioEnv("running");
+    const sprites: Partial<Record<VoiceSlotId, VoiceSpriteSlice>> = {};
+    ALL_VOICE_SLOTS.forEach((slot, idx) => {
+      sprites[slot] = [idx * 0.75, 0.45];
+    });
+    const fetchFn: FetchLike = vi.fn(async (url: string) => {
+      if (url.endsWith("/manifest.json")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            pack_id: "human_male",
+            version: 1,
+            audio: "sprite.m4a",
+            sample_rate: 24000,
+            duration: ALL_VOICE_SLOTS.length * 0.75,
+            sprites,
+          }),
+          arrayBuffer: async () => new ArrayBuffer(0),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({}),
+        arrayBuffer: async () => new ArrayBuffer(32),
+      };
+    });
+
+    const router = createAudioEventRouter({
+      initialPreferences: { ...defaultDevicePreferences(false), sfx_volume: 0.9 },
+      createAudioContext: () => env.ctx,
+      sfxBackend: {
+        getMode: () => "procedural" as const,
+        ensureLoaded: vi.fn(async () => "procedural" as const),
+        play: vi.fn(() => ({
+          backend: "procedural" as const,
+          slot: "discard_light" as const,
+          variantIndex: 0,
+          playbackRate: 1,
+          pan: 0,
+        })),
+        dispose: vi.fn(),
+      },
+      fetchFn,
+      documentTarget: env.docTarget,
+      getVisibilityState: env.getVisibilityState,
+    });
+    router.preloadVoicePacks(["human_male"]);
+    router.unlockFromGesture();
+    await vi.waitFor(() => expect(env.ctx.decodeAudioData).toHaveBeenCalledTimes(1));
+
+    // 1. setVoiceVolume updates voGain without changing sfxGain
+    const sfxGainNode = env.gainNodes[1]!.node;
+    const voGainNode = env.gainNodes[2]!.node;
+    router.setVoiceVolume(0.4);
+    expect(voGainNode.gain.value).toBeCloseTo(0.4, 5);
+    expect(sfxGainNode.gain.value).toBeCloseTo(0.9, 5);
+
+    // 2. setTileCallVoiceEnabled(false) skips Discard VO only (Pon still plays!)
+    const ctx = makeContext(30, "human_male");
+    router.setTileCallVoiceEnabled(false);
+    router.handleSemanticEvent(
+      mapPlayerEventToSemanticEvent(
+        { seq: 1, kind: { TileDiscarded: { seat: "East", tile: 0, is_tsumogiri: true } } },
+        ctx,
+      ),
+    );
+    await Promise.resolve();
+    expect(env.bufferSources).toHaveLength(0);
+
+    router.handleSemanticEvent(
+      mapPlayerEventToSemanticEvent(
+        {
+          seq: 2,
+          kind: {
+            MeldDeclared: {
+              seat: "East",
+              meld: { Pon: { tile: 0, from_seat: "South", seq: 1 } },
+              kong_score_deltas: null,
+            },
+          },
+        },
+        ctx,
+      ),
+    );
+    await vi.waitFor(() => expect(env.bufferSources).toHaveLength(1));
+    env.bufferSources[0]!.node.onended?.();
+
+    // 3. setBanterVoiceEnabled(false) stops active banter immediately and skips new banter fetches
+    router.enqueueBanterVoice({
+      banterId: "b-toggle-1",
+      seat: "South",
+      audioUrl: "/api/banter-audio/b-toggle-1",
+      durationMs: 1000,
+      priority: "normal",
+      relativeRole: "下家",
+    });
+    await vi.waitFor(() => expect(env.bufferSources).toHaveLength(2));
+
+    router.setBanterVoiceEnabled(false);
+    expect(env.bufferSources[1]!.node.stop).toHaveBeenCalledTimes(1);
+    expect(router.getActiveBanterVoice()).toBeNull();
+
+    const fetchCountAfterDisable = (fetchFn as ReturnType<typeof vi.fn>).mock.calls.length;
+    router.enqueueBanterVoice({
+      banterId: "b-toggle-2",
+      seat: "West",
+      audioUrl: "/api/banter-audio/b-toggle-2",
+      durationMs: 1000,
+      priority: "highlight",
+      relativeRole: "对门",
+    });
+    await Promise.resolve();
+    expect((fetchFn as ReturnType<typeof vi.fn>).mock.calls.length).toBe(
+      fetchCountAfterDisable,
+    );
 
     router.dispose();
   });

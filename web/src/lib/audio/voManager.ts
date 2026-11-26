@@ -32,6 +32,12 @@ const VO_PRIORITY: Record<VoActionCategory, number> = {
 
 export interface VoManagerOptions {
   readonly fetchFn?: FetchLike;
+  /**
+   * Optional predicate indicating whether the realtime `BanterVoice` track is
+   * currently playing. When `true`, `Discard` tile calls yield silently and
+   * `sfxGain` ducking remains held until both tracks finish.
+   */
+  readonly isExternalVoiceActive?: () => boolean;
 }
 
 export interface VoManager {
@@ -102,13 +108,14 @@ function canPreempt(
   active: ActiveVo | null,
   incomingSeat: Seat,
   incomingCategory: VoActionCategory,
+  externalVoiceActive: boolean,
 ): boolean {
+  // Tile discard calls never interrupt any currently playing voice (static or BanterVoice).
+  if (incomingCategory === "Discard") {
+    return active === null && !externalVoiceActive;
+  }
   if (active === null) {
     return true;
-  }
-  // Tile discard calls never interrupt any currently playing voice.
-  if (incomingCategory === "Discard") {
-    return false;
   }
   if (active.seat === incomingSeat) {
     return true;
@@ -116,7 +123,7 @@ function canPreempt(
   return VO_PRIORITY[incomingCategory] > VO_PRIORITY[active.category];
 }
 
-function rampSfxGain(
+export function rampSfxGain(
   ctx: AudioContextLike,
   sfxGain: GainNodeLike,
   targetValue: number,
@@ -135,6 +142,7 @@ function rampSfxGain(
  */
 export function createVoManager(options: VoManagerOptions = {}): VoManager {
   const fetchFn = options.fetchFn ?? defaultFetch();
+  const isExternalVoiceActive = options.isExternalVoiceActive ?? (() => false);
 
   // Map preserves insertion order: oldest = first key, newest = last key.
   const packCache = new Map<string, CachedPack>();
@@ -240,12 +248,13 @@ export function createVoManager(options: VoManagerOptions = {}): VoManager {
     if (!isValidSlice(slice)) {
       return false;
     }
-    if (!canPreempt(activeVo, request.seat, request.category)) {
+    const externalActive = isExternalVoiceActive();
+    if (!canPreempt(activeVo, request.seat, request.category, externalActive)) {
       return false;
     }
 
     const [startSec, durationSec] = slice;
-    const wasDucking = activeVo !== null;
+    const wasDucking = activeVo !== null || externalActive;
     if (activeVo !== null) {
       stopSourceQuietly(activeVo);
       activeVo = null;
@@ -281,7 +290,7 @@ export function createVoManager(options: VoManagerOptions = {}): VoManager {
         return;
       }
       activeVo = null;
-      if (!disposed) {
+      if (!disposed && !isExternalVoiceActive()) {
         rampSfxGain(ctx, sfxGain, currentBaseSfxVolume);
       }
     };
@@ -291,7 +300,7 @@ export function createVoManager(options: VoManagerOptions = {}): VoManager {
       return true;
     } catch {
       activeVo = null;
-      if (!wasDucking) {
+      if (!wasDucking && !isExternalVoiceActive()) {
         rampSfxGain(ctx, sfxGain, currentBaseSfxVolume);
       }
       return false;
@@ -327,7 +336,14 @@ export function createVoManager(options: VoManagerOptions = {}): VoManager {
         return false;
       }
       currentBaseSfxVolume = baseSfxVolume;
-      if (!canPreempt(activeVo, request.seat, request.category)) {
+      if (
+        !canPreempt(
+          activeVo,
+          request.seat,
+          request.category,
+          isExternalVoiceActive(),
+        )
+      ) {
         return false;
       }
 
@@ -353,8 +369,8 @@ export function createVoManager(options: VoManagerOptions = {}): VoManager {
       baseSfxVolume: number,
     ): void {
       currentBaseSfxVolume = baseSfxVolume;
-      const target =
-        activeVo !== null ? baseSfxVolume * VO_DUCK_FACTOR : baseSfxVolume;
+      const ducked = activeVo !== null || isExternalVoiceActive();
+      const target = ducked ? baseSfxVolume * VO_DUCK_FACTOR : baseSfxVolume;
       sfxGain.gain.setTargetAtTime(target, ctx.currentTime, 0.015);
     },
 
@@ -366,7 +382,7 @@ export function createVoManager(options: VoManagerOptions = {}): VoManager {
       if (activeVo !== null) {
         stopSourceQuietly(activeVo);
         activeVo = null;
-        if (ctx && sfxGain) {
+        if (ctx && sfxGain && !isExternalVoiceActive()) {
           rampSfxGain(ctx, sfxGain, baseSfxVolume);
         }
       }
