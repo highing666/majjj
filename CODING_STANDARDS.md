@@ -17,5 +17,5 @@ Judgement-call standards for code review across the workspace. Mechanical checks
 
 - Encapsulate per-seat mutations (discarding, claiming, consuming tiles, declaring melds, recording over-water locks) as methods on `SeatState` rather than mutating fields across engine modules.
 - Share reaction-window pipelines (`AwaitingDiscardReactions`, `AwaitingRobKong`) rather than duplicating phase extraction and resolution boilerplate.
-- Keep seat/tile/meld/settlement/config metadata (`web/src/lib/protocol/` — `seats.ts`, `melds.ts`, `settlements.ts`) and layout margins single-sourced in `web/src/lib/` rather than duplicating switch tables or geometry formulas across components and canvas renderers.
+- Keep seat/tile/meld/settlement/config metadata (`web/src/lib/protocol/` — `seats.ts`, `melds.ts`, `settlements.ts`), layout margins, and inner canvas widget metrics (badge pill/name budgets, compass ring radii) single-sourced in `web/src/lib/` rather than duplicating switch tables or geometry formulas across components and canvas renderers.
 - Write tests strictly against public seams (`Match`, `Ruleset`, `WallProvider`, `decide`, HTTP/WS endpoints, `ts-rs` export, and pure TS session reducer) with independent spec-derived expectations, sharing crate-local test boilerplate in `tests/common/mod.rs`.
