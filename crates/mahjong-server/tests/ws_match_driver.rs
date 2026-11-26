@@ -1611,16 +1611,13 @@ fn assert_no_event_leakage(viewer: Seat, events: &[PlayerEvent]) {
 
 #[tokio::test]
 async fn zero_ai_threads_returns_invalid_ai_threads_error() {
-    let err = ServerConfig {
-        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
-        port: 0,
-        static_dir: None,
-        ai_threads: 0,
-        ..ServerConfig::default()
-    }
-    .spawn()
-    .await
-    .expect_err("ai_threads == 0 must fail");
+    let err = ServerConfig::default()
+        .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
+        .with_port(0)
+        .with_ai_threads(0)
+        .spawn()
+        .await
+        .expect_err("ai_threads == 0 must fail");
     assert!(matches!(err, ServerError::InvalidAiThreads(0)));
 
     let runtime_err =
@@ -1636,16 +1633,13 @@ async fn bounded_rayon_pool_drives_one_player_matches_with_deterministic_budget_
     let options = TableOptions::seeded(999)
         .with_ai_budget(DecisionBudget::Deterministic { max_samples: 16 })
         .with_pacing(PacingMode::Immediate);
-    let server = ServerConfig {
-        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
-        port: 0,
-        static_dir: None,
-        ai_threads: 1,
-        ..ServerConfig::default()
-    }
-    .spawn_with_options(options)
-    .await
-    .expect("spawn server with 1 bounded AI thread");
+    let server = ServerConfig::default()
+        .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
+        .with_port(0)
+        .with_ai_threads(1)
+        .spawn_with_options(options)
+        .await
+        .expect("spawn server with 1 bounded AI thread");
     let addr = server.addr();
 
     let mut human = connect_and_hello(addr, "rayon-1p", "Alice").await;
@@ -1910,16 +1904,13 @@ async fn bounded_rayon_pool_drives_two_player_east_only_and_free_table_with_dete
     let options = TableOptions::seeded(2026)
         .with_ai_budget(DecisionBudget::Deterministic { max_samples: 16 })
         .with_pacing(PacingMode::Immediate);
-    let server = ServerConfig {
-        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
-        port: 0,
-        static_dir: None,
-        ai_threads: 2,
-        ..ServerConfig::default()
-    }
-    .spawn_with_options(options)
-    .await
-    .expect("spawn server with 2 bounded AI threads");
+    let server = ServerConfig::default()
+        .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
+        .with_port(0)
+        .with_ai_threads(2)
+        .spawn_with_options(options)
+        .await
+        .expect("spawn server with 2 bounded AI threads");
     let addr = server.addr();
 
     let mut p1 = connect_and_hello(addr, "r2p-1", "Alice").await;
@@ -2200,18 +2191,15 @@ async fn bounded_rayon_pool_one_thread_handles_concurrent_multi_ai_reaction_wind
         )))
     });
     // ai_threads: 1 with default Realtime budget (TableOptions::ai_budget == None).
-    let server = ServerConfig {
-        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
-        port: 0,
-        static_dir: None,
-        ai_threads: 1,
-        ..ServerConfig::default()
-    }
-    .spawn_with_options(
-        TableOptions::with_wall_factory(88, factory).with_pacing(PacingMode::Immediate),
-    )
-    .await
-    .expect("spawn server with 1 AI thread and Realtime budget");
+    let server = ServerConfig::default()
+        .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
+        .with_port(0)
+        .with_ai_threads(1)
+        .spawn_with_options(
+            TableOptions::with_wall_factory(88, factory).with_pacing(PacingMode::Immediate),
+        )
+        .await
+        .expect("spawn server with 1 AI thread and Realtime budget");
     let addr = server.addr();
 
     let mut human = connect_and_hello(addr, "rt-1", "EastHuman").await;
@@ -2353,15 +2341,12 @@ async fn realtime_budget_drives_strong_ai_east_only_and_intermediate_ai_free_tab
     );
 
     // Default TableOptions::seeded(777) leaves ai_budget == None -> Realtime { 128, 120, 180 }.
-    let server = ServerConfig {
-        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
-        port: 0,
-        static_dir: None,
-        ..default_cfg
-    }
-    .spawn_with_options(TableOptions::seeded(777).with_pacing(PacingMode::Immediate))
-    .await
-    .expect("spawn server with default bounded AI threads and Realtime budget");
+    let server = default_cfg
+        .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
+        .with_port(0)
+        .spawn_with_options(TableOptions::seeded(777).with_pacing(PacingMode::Immediate))
+        .await
+        .expect("spawn server with default bounded AI threads and Realtime budget");
     let addr = server.addr();
 
     let mut human = connect_and_hello(addr, "rt-full-1", "Alice").await;

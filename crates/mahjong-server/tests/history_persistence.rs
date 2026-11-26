@@ -35,17 +35,15 @@ async fn spawn_history_server(
     let factory = Arc::new(move || {
         BoxedWallProvider(Box::new(PresetWallProvider::new(Seat::East, walls.clone())))
     });
-    ServerConfig {
-        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
-        port: 0,
-        data_dir: Some(data_dir),
-        ..ServerConfig::default()
-    }
-    .spawn_with_options(
-        TableOptions::with_wall_factory(seed, factory).with_pacing(PacingMode::Immediate),
-    )
-    .await
-    .expect("spawn history server")
+    ServerConfig::default()
+        .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
+        .with_port(0)
+        .with_data_dir(data_dir)
+        .spawn_with_options(
+            TableOptions::with_wall_factory(seed, factory).with_pacing(PacingMode::Immediate),
+        )
+        .await
+        .expect("spawn history server")
 }
 
 fn east_tsumo_wall() -> Vec<mahjong_core::Tile> {

@@ -24,20 +24,18 @@ async fn heartbeat_timeout_disconnects_silent_client_and_reconciles_pending_dest
             wall.clone(),
         )))
     });
-    let server = ServerConfig {
-        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
-        port: 0,
-        ..ServerConfig::default()
-    }
-    .with_heartbeat(HeartbeatConfig {
-        ping_interval: Duration::from_millis(40),
-        activity_timeout: Duration::from_millis(160),
-    })
-    .spawn_with_options(
-        TableOptions::with_wall_factory(48, factory).with_pacing(PacingMode::Immediate),
-    )
-    .await
-    .expect("spawn server with heartbeat");
+    let server = ServerConfig::default()
+        .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
+        .with_port(0)
+        .with_heartbeat(HeartbeatConfig {
+            ping_interval: Duration::from_millis(40),
+            activity_timeout: Duration::from_millis(160),
+        })
+        .spawn_with_options(
+            TableOptions::with_wall_factory(48, factory).with_pacing(PacingMode::Immediate),
+        )
+        .await
+        .expect("spawn server with heartbeat");
     let addr = server.addr();
 
     let mut east = connect_and_hello(addr, "hb-east", "East").await;
@@ -169,20 +167,18 @@ async fn valid_inbound_frames_refresh_liveness_while_invalid_frames_do_not() {
             wall.clone(),
         )))
     });
-    let server = ServerConfig {
-        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
-        port: 0,
-        ..ServerConfig::default()
-    }
-    .with_heartbeat(HeartbeatConfig {
-        ping_interval: Duration::from_millis(35),
-        activity_timeout: Duration::from_millis(120),
-    })
-    .spawn_with_options(
-        TableOptions::with_wall_factory(49, factory).with_pacing(PacingMode::Immediate),
-    )
-    .await
-    .expect("spawn server");
+    let server = ServerConfig::default()
+        .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
+        .with_port(0)
+        .with_heartbeat(HeartbeatConfig {
+            ping_interval: Duration::from_millis(35),
+            activity_timeout: Duration::from_millis(120),
+        })
+        .spawn_with_options(
+            TableOptions::with_wall_factory(49, factory).with_pacing(PacingMode::Immediate),
+        )
+        .await
+        .expect("spawn server");
     let addr = server.addr();
 
     let mut east = connect_and_hello(addr, "hb-active", "East").await;

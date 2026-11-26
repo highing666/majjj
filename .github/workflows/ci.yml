@@ -23,3 +23,8 @@ jobs:
           cache-dependency-path: 'web/package-lock.json'
       - run: npm ci --prefix web
       - run: make check
+      - name: Verify release embedded binary
+        run: |
+          cargo build --release -p mahjong-server
+          cargo test --release -p mahjong-server --lib static_assets::tests
+          cargo test --release -p mahjong-server --test lifecycle_and_embed default_server_serves_embedded_assets_with_cache_headers_and_guards

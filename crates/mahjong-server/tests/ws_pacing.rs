@@ -23,16 +23,13 @@ async fn spawn_humanized_server(
     seed: u64,
     factory: WallProviderFactory,
 ) -> mahjong_server::ServerHandle {
-    ServerConfig {
-        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
-        port: 0,
-        static_dir: None,
-        ai_threads: 2,
-        ..ServerConfig::default()
-    }
-    .spawn_with_options(TableOptions::with_wall_factory(seed, factory))
-    .await
-    .expect("spawn humanized server")
+    ServerConfig::default()
+        .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
+        .with_port(0)
+        .with_ai_threads(2)
+        .spawn_with_options(TableOptions::with_wall_factory(seed, factory))
+        .await
+        .expect("spawn humanized server")
 }
 
 #[tokio::test]
@@ -311,22 +308,21 @@ async fn real_ws_ai_only_all_pass_alignment_and_realtime_overlapped_thinking() {
         )))
     });
     // Explicitly test default Realtime budget + Humanized pacing over real WebSocket.
-    let server = ServerConfig {
-        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
-        port: 0,
-        static_dir: None,
-        ai_threads: 2,
-        ..ServerConfig::default()
-    }
-    .spawn_with_options(
-        TableOptions::with_wall_factory(101, factory).with_ai_budget(DecisionBudget::Realtime {
-            max_samples: 128,
-            soft_ms: 120,
-            hard_ms: 180,
-        }),
-    )
-    .await
-    .expect("spawn realtime humanized server");
+    let server = ServerConfig::default()
+        .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
+        .with_port(0)
+        .with_ai_threads(2)
+        .spawn_with_options(
+            TableOptions::with_wall_factory(101, factory).with_ai_budget(
+                DecisionBudget::Realtime {
+                    max_samples: 128,
+                    soft_ms: 120,
+                    hard_ms: 180,
+                },
+            ),
+        )
+        .await
+        .expect("spawn realtime humanized server");
     let addr = server.addr();
 
     let mut east = connect_and_hello(addr, "rt-e", "East").await;

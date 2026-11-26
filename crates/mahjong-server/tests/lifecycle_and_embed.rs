@@ -89,20 +89,17 @@ async fn post_api_shutdown_on_loopback_stops_server_even_with_active_ws_client()
 
 #[tokio::test]
 async fn headless_mode_disables_post_shutdown_and_idle_auto_exit() {
-    let server = ServerConfig {
-        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
-        port: 0,
-        headless: true,
-        no_open: true,
-        idle_timeouts: IdleTimeouts {
+    let server = ServerConfig::default()
+        .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
+        .with_port(0)
+        .with_headless(true)
+        .with_idle_timeouts(IdleTimeouts {
             lobby_or_finished: Duration::from_millis(60),
             in_match: Duration::from_millis(60),
-        },
-        ..ServerConfig::default()
-    }
-    .spawn()
-    .await
-    .expect("spawn headless server");
+        })
+        .spawn()
+        .await
+        .expect("spawn headless server");
     let addr = server.addr();
 
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -125,19 +122,17 @@ async fn headless_mode_disables_post_shutdown_and_idle_auto_exit() {
 
 #[tokio::test]
 async fn desktop_lobby_idle_auto_exit_fires_when_no_ws_connects() {
-    let mut server = ServerConfig {
-        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
-        port: 0,
-        no_open: true,
-        idle_timeouts: IdleTimeouts {
+    let mut server = ServerConfig::default()
+        .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
+        .with_port(0)
+        .with_no_open(true)
+        .with_idle_timeouts(IdleTimeouts {
             lobby_or_finished: Duration::from_millis(100),
             in_match: Duration::from_secs(10),
-        },
-        ..ServerConfig::default()
-    }
-    .spawn()
-    .await
-    .expect("spawn desktop server");
+        })
+        .spawn()
+        .await
+        .expect("spawn desktop server");
 
     tokio::time::timeout(Duration::from_secs(2), server.wait())
         .await
@@ -147,19 +142,17 @@ async fn desktop_lobby_idle_auto_exit_fires_when_no_ws_connects() {
 
 #[tokio::test]
 async fn desktop_idle_exit_keeps_unseated_observer_alive_and_uses_longer_in_match_threshold() {
-    let mut server = ServerConfig {
-        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
-        port: 0,
-        no_open: true,
-        idle_timeouts: IdleTimeouts {
+    let mut server = ServerConfig::default()
+        .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
+        .with_port(0)
+        .with_no_open(true)
+        .with_idle_timeouts(IdleTimeouts {
             lobby_or_finished: Duration::from_millis(120),
             in_match: Duration::from_millis(550),
-        },
-        ..ServerConfig::default()
-    }
-    .spawn_with_options(TableOptions::seeded(42).with_pacing(PacingMode::Immediate))
-    .await
-    .expect("spawn desktop server");
+        })
+        .spawn_with_options(TableOptions::seeded(42).with_pacing(PacingMode::Immediate))
+        .await
+        .expect("spawn desktop server");
     let addr = server.addr();
 
     // Unseated observer keeps server alive well past Lobby idle timeout (120ms).
@@ -225,15 +218,13 @@ fn cli_binary_port_conflict_probes_majjj_and_rejects_non_majjj() {
     // `--headless` exits non-zero.
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     rt.block_on(async {
-        let existing = ServerConfig {
-            bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
-            port: 0,
-            no_open: true,
-            ..ServerConfig::default()
-        }
-        .spawn()
-        .await
-        .expect("spawn existing majjj");
+        let existing = ServerConfig::default()
+            .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
+            .with_port(0)
+            .with_no_open(true)
+            .spawn()
+            .await
+            .expect("spawn existing majjj");
         let port = existing.addr().port();
 
         let reuse_out = tokio::task::spawn_blocking(move || {

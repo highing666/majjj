@@ -160,7 +160,7 @@ async fn static_hosting_enforces_cache_headers_spa_fallback_and_traversal_guard(
     let (status, _, _) = http_get(addr, "/assets/missing-999.js").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
-    // Unknown /api/* route must 404 with Cache-Control: no-store instead of SPA fallback
+    // Unknown /api/* route and method-not-allowed /api/* responses must carry Cache-Control: no-store.
     for path in ["/api/unknown", "/api"] {
         let (status, headers, _) = http_get(addr, path).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "path={path}");
@@ -170,6 +170,12 @@ async fn static_hosting_enforces_cache_headers_spa_fallback_and_traversal_guard(
             "path={path}"
         );
     }
+    let (status, headers, _) = http_get(addr, "/api/shutdown").await;
+    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(
+        headers.get(CACHE_CONTROL).and_then(|v| v.to_str().ok()),
+        Some("no-store")
+    );
 
     // SPA route fallback to index.html with no-cache
     let (status, headers, body) = http_get(addr, "/lobby/seat").await;
@@ -206,15 +212,12 @@ async fn bind_conflict_fails_explicitly_without_falling_back_to_ephemeral_port()
     let blocker = TcpListener::bind("127.0.0.1:0").expect("bind blocker port");
     let occupied_port = blocker.local_addr().unwrap().port();
 
-    let err = ServerConfig {
-        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
-        port: occupied_port,
-        static_dir: None,
-        ..ServerConfig::default()
-    }
-    .spawn()
-    .await
-    .expect_err("occupied port must return an explicit bind error");
+    let err = ServerConfig::default()
+        .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
+        .with_port(occupied_port)
+        .spawn()
+        .await
+        .expect_err("occupied port must return an explicit bind error");
 
     let msg = err.to_string();
     assert!(

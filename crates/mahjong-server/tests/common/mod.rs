@@ -55,43 +55,36 @@ impl Drop for TempDirGuard {
 
 #[allow(dead_code)]
 pub async fn spawn_server(static_dir: Option<PathBuf>) -> ServerHandle {
-    ServerConfig {
-        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
-        port: 0,
-        static_dir,
-        ..ServerConfig::default()
-    }
-    .spawn()
-    .await
-    .expect("spawn server")
+    ServerConfig::default()
+        .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
+        .with_port(0)
+        .with_static_dir(static_dir)
+        .spawn()
+        .await
+        .expect("spawn server")
 }
 
 #[allow(dead_code)]
 pub async fn spawn_seeded_server(seed: u64, static_dir: Option<PathBuf>) -> ServerHandle {
-    ServerConfig {
-        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
-        port: 0,
-        static_dir,
-        ..ServerConfig::default()
-    }
-    .spawn_with_options(TableOptions::seeded(seed).with_pacing(PacingMode::Immediate))
-    .await
-    .expect("spawn seeded server")
+    ServerConfig::default()
+        .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
+        .with_port(0)
+        .with_static_dir(static_dir)
+        .spawn_with_options(TableOptions::seeded(seed).with_pacing(PacingMode::Immediate))
+        .await
+        .expect("spawn seeded server")
 }
 
 #[allow(dead_code)]
 pub async fn spawn_with_wall_factory(seed: u64, factory: WallProviderFactory) -> ServerHandle {
-    ServerConfig {
-        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
-        port: 0,
-        static_dir: None,
-        ..ServerConfig::default()
-    }
-    .spawn_with_options(
-        TableOptions::with_wall_factory(seed, factory).with_pacing(PacingMode::Immediate),
-    )
-    .await
-    .expect("spawn server with wall factory")
+    ServerConfig::default()
+        .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
+        .with_port(0)
+        .spawn_with_options(
+            TableOptions::with_wall_factory(seed, factory).with_pacing(PacingMode::Immediate),
+        )
+        .await
+        .expect("spawn server with wall factory")
 }
 
 #[allow(dead_code)]

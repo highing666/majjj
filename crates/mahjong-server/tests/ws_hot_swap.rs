@@ -24,16 +24,13 @@ async fn spawn_test_server(
     pacing: PacingMode,
     factory: WallProviderFactory,
 ) -> ServerHandle {
-    ServerConfig {
-        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
-        port: 0,
-        static_dir: None,
-        ai_threads: 2,
-        ..ServerConfig::default()
-    }
-    .spawn_with_options(TableOptions::with_wall_factory(seed, factory).with_pacing(pacing))
-    .await
-    .expect("spawn server")
+    ServerConfig::default()
+        .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
+        .with_port(0)
+        .with_ai_threads(2)
+        .spawn_with_options(TableOptions::with_wall_factory(seed, factory).with_pacing(pacing))
+        .await
+        .expect("spawn server")
 }
 
 async fn recv_lobby_updated_matching<F>(ws: &mut WsClient, mut pred: F) -> TablePhase

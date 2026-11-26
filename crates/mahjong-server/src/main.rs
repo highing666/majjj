@@ -67,16 +67,14 @@ struct Cli {
 
 impl From<Cli> for ServerConfig {
     fn from(cli: Cli) -> Self {
-        Self {
-            bind: cli.bind,
-            port: cli.port,
-            static_dir: cli.static_dir,
-            data_dir: Some(resolve_data_dir(cli.data_dir)),
-            ai_threads: cli.ai_threads,
-            no_open: cli.no_open || cli.headless,
-            headless: cli.headless,
-            ..Self::default()
-        }
+        Self::default()
+            .with_bind(cli.bind)
+            .with_port(cli.port)
+            .with_static_dir(cli.static_dir)
+            .with_data_dir(resolve_data_dir(cli.data_dir))
+            .with_ai_threads(cli.ai_threads)
+            .with_no_open(cli.no_open || cli.headless)
+            .with_headless(cli.headless)
     }
 }
 

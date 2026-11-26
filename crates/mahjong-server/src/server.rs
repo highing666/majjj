@@ -7,9 +7,10 @@ use std::time::Duration;
 
 use axum::body::Bytes;
 use axum::extract::ws::{Message as WsMessage, WebSocket};
-use axum::extract::{ConnectInfo, State, WebSocketUpgrade};
+use axum::extract::{ConnectInfo, Request, State, WebSocketUpgrade};
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, HOST};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get, post};
 use axum::{Json, Router};
@@ -58,6 +59,7 @@ impl Default for HeartbeatConfig {
 
 /// Configuration for starting `mahjong-server`.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ServerConfig {
     /// IP address to bind (defaults to `0.0.0.0`).
     pub bind: IpAddr,
@@ -187,6 +189,27 @@ struct AppState {
 }
 
 impl ServerConfig {
+    /// Overrides the IP address to bind.
+    #[must_use]
+    pub fn with_bind(mut self, bind: IpAddr) -> Self {
+        self.bind = bind;
+        self
+    }
+
+    /// Overrides the TCP port to bind (`0` selects an ephemeral port in tests).
+    #[must_use]
+    pub fn with_port(mut self, port: u16) -> Self {
+        self.port = port;
+        self
+    }
+
+    /// Overrides the optional external static asset directory.
+    #[must_use]
+    pub fn with_static_dir(mut self, static_dir: impl Into<Option<PathBuf>>) -> Self {
+        self.static_dir = static_dir.into();
+        self
+    }
+
     /// Overrides the WebSocket heartbeat send interval and inbound activity timeout.
     #[must_use]
     pub fn with_heartbeat(mut self, heartbeat: HeartbeatConfig) -> Self {
@@ -198,6 +221,37 @@ impl ServerConfig {
     #[must_use]
     pub fn with_data_dir(mut self, data_dir: impl Into<PathBuf>) -> Self {
         self.data_dir = Some(data_dir.into());
+        self
+    }
+
+    /// Overrides the Rayon AI pool worker thread count.
+    #[must_use]
+    pub fn with_ai_threads(mut self, ai_threads: usize) -> Self {
+        self.ai_threads = ai_threads;
+        self
+    }
+
+    /// Skips automatically opening the browser on startup in desktop mode.
+    #[must_use]
+    pub fn with_no_open(mut self, no_open: bool) -> Self {
+        self.no_open = no_open;
+        self
+    }
+
+    /// Enables or disables 7x24 headless mode (`headless` also disables `/api/shutdown` and idle exit).
+    #[must_use]
+    pub fn with_headless(mut self, headless: bool) -> Self {
+        self.headless = headless;
+        if headless {
+            self.no_open = true;
+        }
+        self
+    }
+
+    /// Overrides the split desktop idle auto-exit thresholds.
+    #[must_use]
+    pub fn with_idle_timeouts(mut self, idle_timeouts: IdleTimeouts) -> Self {
+        self.idle_timeouts = idle_timeouts;
         self
     }
 
@@ -317,7 +371,7 @@ impl ServerConfig {
 }
 
 fn build_router(state: AppState) -> Router {
-    Router::new()
+    let api_router = Router::new()
         .route("/api/health", get(health_handler))
         .route("/api/stats", get(stats_handler))
         .route("/api/preferences", get(preferences_handler))
@@ -326,9 +380,21 @@ fn build_router(state: AppState) -> Router {
         .route("/api/shutdown", post(shutdown_handler))
         .route("/api/{*rest}", any(api_not_found))
         .route("/api", any(api_not_found))
+        .layer(middleware::from_fn(api_no_store_middleware));
+
+    Router::new()
+        .merge(api_router)
         .route("/ws", get(ws_handler))
         .fallback(get(static_asset_handler))
         .with_state(state)
+}
+
+async fn api_no_store_middleware(req: Request, next: Next) -> Response {
+    let mut response = next.run(req).await;
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 fn json_with_no_store<T: Serialize>(status: StatusCode, payload: &T) -> Response {
@@ -409,11 +475,7 @@ async fn history_clear_handler(State(state): State<AppState>, body: Bytes) -> Re
 }
 
 async fn api_not_found() -> Response {
-    let mut response = StatusCode::NOT_FOUND.into_response();
-    response
-        .headers_mut()
-        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    response
+    StatusCode::NOT_FOUND.into_response()
 }
 
 async fn ws_handler(
