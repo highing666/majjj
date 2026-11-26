@@ -72,6 +72,7 @@ export interface ShortcutContext {
   disabled: boolean;
   hasModalOpen: boolean;
   isInputFocused: boolean;
+  suppressEscape?: boolean;
 }
 
 export interface MatchStandingRow {
@@ -450,6 +451,9 @@ export function resolveActionBarShortcut(
     return null;
   }
   const key = rawKey.toLowerCase();
+  if (ctx.suppressEscape && key === "escape") {
+    return null;
+  }
   const candidates = items.filter((item) => item.shortcutKey === key);
   return candidates.length === 1 ? candidates[0].action : null;
 }

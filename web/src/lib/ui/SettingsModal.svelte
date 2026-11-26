@@ -1,4 +1,6 @@
 <script lang="ts">
+  import type { ShutdownState } from "../lifecycle/shutdownController";
+  import ShutdownControl from "../lifecycle/ShutdownControl.svelte";
   import { TABLE_PACE_OPTIONS } from "../lobby/lobbyConfig";
   import type {
     DevicePreferences,
@@ -11,6 +13,13 @@
     preferences: DevicePreferences;
     pace: TablePace;
     canEditPace?: boolean;
+    serverVersion?: string | null;
+    tableId?: string | null;
+    connectionStatusText?: string | null;
+    shutdownState?: ShutdownState | null;
+    onRequestShutdownConfirm?: () => void;
+    onCancelShutdown?: () => void;
+    onConfirmShutdown?: () => void;
     onUpdatePreferences: (patch: Partial<DevicePreferences>) => void;
     onResetPreferences: () => void;
     onChangePace: (pace: TablePace) => void;
@@ -22,6 +31,13 @@
     preferences,
     pace,
     canEditPace = true,
+    serverVersion = null,
+    tableId = null,
+    connectionStatusText = null,
+    shutdownState = null,
+    onRequestShutdownConfirm,
+    onCancelShutdown,
+    onConfirmShutdown,
     onUpdatePreferences,
     onResetPreferences,
     onChangePace,
@@ -243,6 +259,30 @@
         {/if}
       </div>
 
+      {#if serverVersion || tableId || connectionStatusText || shutdownState?.visible}
+        <div class="settings-service-meta">
+          <div class="service-meta-line">
+            {#if serverVersion && tableId}
+              <span>服务端版本 v{serverVersion} · 牌桌 {tableId.slice(0, 8)}</span>
+            {:else}
+              <span>等待服务端版本信息…</span>
+            {/if}
+            {#if connectionStatusText}
+              <span>连接状态：{connectionStatusText}</span>
+            {/if}
+          </div>
+          {#if shutdownState && onRequestShutdownConfirm && onCancelShutdown && onConfirmShutdown}
+            <ShutdownControl
+              state={shutdownState}
+              showDialog={false}
+              onRequestConfirm={onRequestShutdownConfirm}
+              onCancel={onCancelShutdown}
+              onConfirm={onConfirmShutdown}
+            />
+          {/if}
+        </div>
+      {/if}
+
       <footer class="settings-footer">
         <button
           class="btn btn-subtle"
@@ -425,6 +465,26 @@
     justify-content: space-between;
     align-items: center;
     gap: 10px;
+  }
+
+  .settings-service-meta {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-radius: 10px;
+    border: 1px dashed var(--border);
+    background: var(--bg-card);
+    font-size: 12px;
+    color: var(--ink-muted);
+  }
+
+  .service-meta-line {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 12px;
   }
 
   @media (max-width: 460px) {

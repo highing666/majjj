@@ -8,6 +8,7 @@
     playerView: PlayerView;
     disabled?: boolean;
     hasModalOpen?: boolean;
+    shouldSuppressEscape?: () => boolean;
     onAction: (action: PlayerAction) => void;
   }
 
@@ -15,6 +16,7 @@
     playerView,
     disabled = false,
     hasModalOpen = false,
+    shouldSuppressEscape,
     onAction,
   }: Props = $props();
 
@@ -33,6 +35,7 @@
       disabled,
       hasModalOpen,
       isInputFocused,
+      suppressEscape: shouldSuppressEscape?.() ?? false,
     });
     if (matched !== null) {
       event.preventDefault();
