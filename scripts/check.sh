@@ -65,7 +65,6 @@ fi
 
 if [ "$run_rust" -eq 1 ]; then
   cargo fmt --all -- --check
-  ./scripts/check-core-boundaries.sh
 fi
 
 if [ "$run_web" -eq 1 ]; then
@@ -81,9 +80,10 @@ if [ "$run_dist_scripts" -eq 1 ]; then
   ./scripts/test-dist-scripts.sh
 fi
 
-# 2. Heavier Rust clippy, unit/integration tests & AI smoke gate
+# 2. Heavier Rust clippy, crate boundary checks (after clippy warms cargo cache), tests & AI smoke gate
 if [ "$run_rust" -eq 1 ]; then
   cargo clippy --workspace --all-targets -- -D warnings
+  ./scripts/check-core-boundaries.sh
 
   if [ "$sandbox_mode" -eq 1 ]; then
     cargo test -p mahjong-core
