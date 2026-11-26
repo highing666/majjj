@@ -6,10 +6,13 @@ import type { SeatInfo } from "../protocol/generated/SeatInfo";
 import type { Tile } from "../protocol/generated/Tile";
 import type { WinKind } from "../protocol/generated/WinKind";
 import { parseMeld, type MeldKind } from "../protocol/melds";
-import { seatIndex } from "../protocol/seats";
-import { seatRelativeRole } from "../table/viewModel";
+import {
+  seatIndex,
+  seatRelativeRole,
+  type RelativeRole,
+} from "../protocol/seats";
 
-export type RelativeRole = "自家" | "下家" | "对家" | "上家";
+export type { RelativeRole };
 
 export type SemanticGameEventType =
   | "MatchStarted"
