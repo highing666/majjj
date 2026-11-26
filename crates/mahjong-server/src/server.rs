@@ -29,6 +29,7 @@ use crate::lifecycle::{
     is_loopback_peer, spawn_idle_shutdown_monitor, IdleTimeouts, WsConnectionTracker,
 };
 use crate::llm::{resolve_llm_base_url, LlmClient, OpenAiLlmClient};
+use crate::persona_memory::ClearPersonaMemoryRequest;
 use crate::protocol::{HealthResponse, ServerMessage};
 use crate::session::{OutboundSignal, TableOptions, TableRuntime};
 use crate::static_assets::{
@@ -445,6 +446,11 @@ fn build_router(state: AppState) -> Router {
         .route("/api/preferences", get(preferences_handler))
         .route("/api/history/export", get(history_export_handler))
         .route("/api/history/clear", post(history_clear_handler))
+        .route("/api/persona-memory", get(persona_memory_handler))
+        .route(
+            "/api/persona-memory/clear",
+            post(persona_memory_clear_handler),
+        )
         .route("/api/shutdown", post(shutdown_handler))
         .route("/api/{*rest}", any(api_not_found))
         .route("/api", any(api_not_found))
@@ -538,6 +544,33 @@ async fn history_clear_handler(State(state): State<AppState>, body: Bytes) -> Re
         Err(err) => json_with_no_store(
             StatusCode::INTERNAL_SERVER_ERROR,
             &serde_json::json!({ "error": format!("failed to clear history: {err}") }),
+        ),
+    }
+}
+
+async fn persona_memory_handler(State(state): State<AppState>) -> Response {
+    let payload = state.session.persona_memory_snapshot().await;
+    json_with_no_store(StatusCode::OK, &payload)
+}
+
+async fn persona_memory_clear_handler(State(state): State<AppState>, body: Bytes) -> Response {
+    let Ok(req) = serde_json::from_slice::<ClearPersonaMemoryRequest>(&body) else {
+        return json_with_no_store(
+            StatusCode::BAD_REQUEST,
+            &serde_json::json!({ "error": "expected JSON body { \"confirm\": true }" }),
+        );
+    };
+    if !req.confirm {
+        return json_with_no_store(
+            StatusCode::BAD_REQUEST,
+            &serde_json::json!({ "error": "confirm must be true" }),
+        );
+    }
+    match state.session.persona_memory_clear().await {
+        Ok(resp) => json_with_no_store(StatusCode::OK, &resp),
+        Err(err) => json_with_no_store(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &serde_json::json!({ "error": format!("failed to clear persona memory: {err}") }),
         ),
     }
 }

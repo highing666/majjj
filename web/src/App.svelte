@@ -672,6 +672,10 @@
     onRequestClear={() => historyController.requestClear()}
     onCancelClear={() => historyController.cancelClear()}
     onConfirmClear={() => void historyController.confirmClear()}
+    onRefreshPersonaMemory={() => void historyController.refreshPersonaMemory()}
+    onRequestClearMemory={() => historyController.requestClearMemory()}
+    onCancelClearMemory={() => historyController.cancelClearMemory()}
+    onConfirmClearMemory={() => void historyController.confirmClearMemory()}
   />
 
   <AudioResumeCapsule

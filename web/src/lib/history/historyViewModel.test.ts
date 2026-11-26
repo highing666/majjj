@@ -1,14 +1,17 @@
 import { describe, expect, it } from "vitest";
 import type { HandRecord } from "../protocol/generated/HandRecord";
 import type { MatchRecord } from "../protocol/generated/MatchRecord";
+import type { PersonaMemoryResponse } from "../protocol/generated/PersonaMemoryResponse";
 import type { PlayerStats } from "../protocol/generated/PlayerStats";
 import type { RevealedHand } from "../protocol/generated/RevealedHand";
 import type { Seat } from "../protocol/generated/Seat";
 import {
   buildHandHistoryRows,
   buildMatchHistoryRows,
+  buildPersonaMemoryCards,
   buildPlayerSummaryCards,
   formatAverageScore,
+  personaMemoryTriggerLabel,
 } from "./historyViewModel";
 
 function revealedHand(seat: Seat): RevealedHand {
@@ -417,5 +420,82 @@ describe("historyViewModel", () => {
     expect(drawRow.outcomeLabel).toBe("荒庄");
     expect(drawRow.winningTileLabel).toBeNull();
     expect(drawRow.winners).toEqual([]);
+  });
+
+  it("maps persona memory cards with ledger metrics, meld habits, and newest-first grudge notes", () => {
+    const response: PersonaMemoryResponse = {
+      schema_version: 1,
+      total_pairs: 1,
+      total_notes: 2,
+      personas: [
+        {
+          persona_id: "TeaSarcasm",
+          players: [
+            {
+              player_nickname: "小王",
+              ledger: {
+                hands_played: 5,
+                persona_wins_against_player: 2,
+                player_wins_against_persona: 3,
+                persona_dealt_into_player: 1,
+                player_dealt_into_persona: 2,
+                highest_fan_seen: 6,
+                net_score_delta: -18,
+                player_pon_count: 4,
+                player_kong_count: 2,
+              },
+              grudge_notes: [
+                {
+                  summary: "第一条较早恩怨",
+                  created_at_ms: Date.UTC(2026, 10, 26, 3, 0, 0),
+                  trigger: "HighFan",
+                },
+                {
+                  summary: "最新一条抢杠胡记仇",
+                  created_at_ms: Date.UTC(2026, 10, 26, 4, 30, 0),
+                  trigger: "RobKongHu",
+                },
+              ],
+              updated_at_ms: Date.UTC(2026, 10, 26, 4, 30, 0),
+            },
+          ],
+        },
+        {
+          persona_id: "QuickHothead",
+          players: [],
+        },
+      ],
+    };
+
+    const cards = buildPersonaMemoryCards(response);
+    expect(cards).toHaveLength(2);
+    expect(cards[0]).toMatchObject({
+      personaId: "TeaSarcasm",
+      personaName: "阴阳茶艺师",
+      styleLabel: "防守做大牌",
+      totalNotes: 2,
+    });
+    expect(cards[0].players[0]).toMatchObject({
+      playerNickname: "小王",
+      handsPlayed: 5,
+      personaWins: 2,
+      playerWins: 3,
+      personaDealtIntoPlayer: 1,
+      playerDealtIntoPersona: 2,
+      highestFanSeen: 6,
+      netScoreDelta: -18,
+      netScoreDeltaText: "-18",
+      netTone: "neg",
+      meldHabitText: "碰 4 / 杠 2",
+    });
+    expect(cards[0].players[0].grudgeNotes.map((n) => n.summary)).toEqual([
+      "最新一条抢杠胡记仇",
+      "第一条较早恩怨",
+    ]);
+    expect(cards[0].players[0].grudgeNotes[0].triggerLabel).toBe("抢杠胡");
+    expect(cards[0].players[0].grudgeNotes[1].triggerLabel).toBe("大番名场面");
+    expect(personaMemoryTriggerLabel("MultiRon")).toBe("一炮多响");
+    expect(personaMemoryTriggerLabel("MatchFinished")).toBe("终局复盘");
+    expect(cards[1].players).toEqual([]);
   });
 });

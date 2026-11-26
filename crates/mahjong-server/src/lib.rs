@@ -11,6 +11,7 @@ pub mod lifecycle;
 pub mod llm;
 pub mod pacing;
 pub mod persona;
+pub mod persona_memory;
 pub mod protocol;
 mod seat_control;
 pub mod server;
@@ -21,8 +22,8 @@ pub mod storage;
 pub use ai_pool::default_ai_threads;
 pub use lifecycle::IdleTimeouts;
 pub use llm::{
-    BanterGenerationRequest, BanterOutput, LlmClient, LlmError, LlmHealthStatus, OpenAiLlmClient,
-    DEFAULT_LLM_BASE_URL,
+    BanterGenerationRequest, BanterOutput, LlmClient, LlmError, LlmHealthStatus, MemoryNoteRequest,
+    OpenAiLlmClient, DEFAULT_LLM_BASE_URL,
 };
 pub use pacing::PacingMode;
 pub use server::{HeartbeatConfig, ServerConfig, ServerError, ServerHandle};

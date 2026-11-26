@@ -89,7 +89,7 @@ pub fn normalize_nickname(raw: &str) -> String {
     raw.trim().to_string()
 }
 
-fn atomic_write_bytes(target: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
+pub(crate) fn atomic_write_bytes(target: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
     let parent = target.parent().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
