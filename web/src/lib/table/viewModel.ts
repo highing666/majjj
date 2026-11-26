@@ -7,22 +7,27 @@ import type { PublicSeatView } from "../protocol/generated/PublicSeatView";
 import type { RevealedMeld } from "../protocol/generated/RevealedMeld";
 import type { Seat } from "../protocol/generated/Seat";
 import type { SeatInfo } from "../protocol/generated/SeatInfo";
-import type { SeatKind } from "../protocol/generated/SeatKind";
 import type { Tile } from "../protocol/generated/Tile";
 import { parseMeld, type MeldKind } from "../protocol/melds";
-import { ALL_SEATS, seatIndex, seatLabel, seatShortWind } from "../protocol/seats";
+import {
+  ALL_SEATS,
+  formatSeatlessDisplay,
+  getRelativeSeats,
+  resolveSeatNickname,
+  seatNumberLabel,
+  seatRelativeRole,
+  seatRelativeSlot,
+  type RelativeRole,
+  type RelativeSlot,
+} from "../protocol/seats";
 import type { PendingAddedKong } from "../session/reducer";
 import { getTileLabel } from "./tiles";
 
-export interface RelativeSeats {
-  bottom: Seat;
-  right: Seat;
-  top: Seat;
-  left: Seat;
-}
-
-export type RelativeSlot = keyof RelativeSeats;
-export type RelativeRole = "自家" | "下家" | "对家" | "上家";
+export {
+  getRelativeSeats,
+  seatRelativeSlot,
+  type RelativeSlot,
+};
 
 export interface MeldTileSlot {
   tile: Tile | null;
@@ -54,7 +59,7 @@ export interface CanvasSize {
 }
 
 export interface SeatBadgeModel {
-  wind: string;
+  role: RelativeRole;
   isDealer: boolean;
   isActive: boolean;
   isOffline: boolean;
@@ -78,73 +83,6 @@ export interface MatchStandingRow {
   initialScore: number;
   finalScore: number;
   netDelta: number;
-}
-
-/**
- * Maps canonical seats counter-clockwise relative to `viewer` (`bottom` -> `right` -> `top` -> `left`).
- */
-export function getRelativeSeats(viewer: Seat): RelativeSeats {
-  const idx = seatIndex(viewer);
-  return {
-    bottom: ALL_SEATS[idx],
-    right: ALL_SEATS[(idx + 1) % 4],
-    top: ALL_SEATS[(idx + 2) % 4],
-    left: ALL_SEATS[(idx + 3) % 4],
-  };
-}
-
-const SLOT_TO_ROLE: Record<RelativeSlot, RelativeRole> = {
-  bottom: "自家",
-  right: "下家",
-  top: "对家",
-  left: "上家",
-};
-
-/**
- * Maps `target` seat to its viewer-relative canvas slot (`bottom` / `right` / `top` / `left`).
- */
-export function seatRelativeSlot(viewer: Seat, target: Seat): RelativeSlot {
-  const rel = getRelativeSeats(viewer);
-  if (target === rel.bottom) {
-    return "bottom";
-  }
-  if (target === rel.right) {
-    return "right";
-  }
-  if (target === rel.top) {
-    return "top";
-  }
-  return "left";
-}
-
-/**
- * Returns the viewer-relative role label for `target`.
- */
-export function seatRelativeRole(viewer: Seat, target: Seat): RelativeRole {
-  return SLOT_TO_ROLE[seatRelativeSlot(viewer, target)];
-}
-
-export type SeatDisplayEntry =
-  | { nickname: string; kind: SeatKind }
-  | { nickname: string; seat_kind: SeatKind };
-
-/**
- * Formats a canonical seat display title (`东座 · 房主`, `南座 · AI 2`, or `西座`).
- */
-export function formatSeatDisplayName(
-  seat: Seat,
-  seats?: readonly [
-    SeatDisplayEntry,
-    SeatDisplayEntry,
-    SeatDisplayEntry,
-    SeatDisplayEntry,
-  ] | null,
-): string {
-  const idx = seatIndex(seat);
-  const info = seats?.[idx];
-  const seatKind = info ? ("kind" in info ? info.kind : info.seat_kind) : null;
-  const name = info?.nickname || (seatKind === "Ai" ? `AI ${idx + 1}` : "");
-  return name ? `${seatLabel(seat)} · ${name}` : seatLabel(seat);
 }
 
 /**
@@ -268,20 +206,25 @@ export function formatScoreDelta(delta: number): string {
 }
 
 /**
- * Builds ranked standings from `MatchSummary` and `SeatInfo[4]`.
+ * Builds ranked standings from `MatchSummary` and `SeatInfo[4]`, projecting
+ * viewer-relative roles when `viewer !== null` and seatless names otherwise.
  */
 export function buildMatchStandings(
   summary: MatchSummary,
   seats: readonly [SeatInfo, SeatInfo, SeatInfo, SeatInfo],
+  viewer: Seat | null = null,
 ): MatchStandingRow[] {
   const rows = ALL_SEATS.map((seat, idx) => {
     const info = seats[idx];
+    const seatName = viewer !== null ? seatRelativeRole(viewer, seat) : "";
     const nickname =
-      info.nickname || (info.kind === "Ai" ? `AI ${idx + 1}` : seatLabel(seat));
+      viewer !== null
+        ? resolveSeatNickname(seat, seats)
+        : formatSeatlessDisplay(seat, seats);
     return {
       rank: 1,
       seat,
-      seatName: seatLabel(seat),
+      seatName,
       nickname,
       isAi: info.kind === "Ai",
       initialScore: summary.initial_scores[idx],
@@ -523,10 +466,12 @@ export function buildSeatBadgeModel(
   activeSeat: Seat | null,
 ): SeatBadgeModel {
   const role = seatRelativeRole(viewer, seat);
-  const rawName = seatInfo.nickname || (seatInfo.kind === "Ai" ? "AI" : role);
+  const rawName =
+    seatInfo.nickname.trim() ||
+    (seatInfo.kind === "Ai" ? "AI" : seatNumberLabel(seat));
   const name = rawName.length > 7 ? `${rawName.slice(0, 6)}…` : rawName;
   return {
-    wind: seatShortWind(seat),
+    role,
     isDealer: dealer === seat,
     isActive: activeSeat === seat,
     isOffline: seatInfo.kind === "Human" && !seatInfo.connected,

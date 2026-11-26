@@ -193,6 +193,16 @@ async fn start_match_validates_human_seat_applies_seating_rules_fills_distinct_a
     let mut r1 = connect_and_hello(addr_rand, "r1", "Solo").await;
     send_msg(&mut r1, &ClientMessage::JoinSeat { seat: None }).await;
     let _ = recv_snapshot(&mut r1).await;
+    send_msg(
+        &mut r1,
+        &ClientMessage::UpdateLobbyConfig {
+            mode: MatchMode::EastOnly,
+            seating: SeatingRule::Random,
+            ai_difficulty: AiDifficulty::Strong,
+            pace: TablePace::Standard,
+        },
+    )
+    .await;
     send_msg(&mut r1, &ClientMessage::StartMatch).await;
     let snap_r1 = recv_snapshot(&mut r1).await;
     let solo_seat = snap_r1.your_seat.expect("solo human must be seated");
@@ -2607,4 +2617,272 @@ async fn realtime_budget_drives_strong_ai_east_only_and_intermediate_ai_free_tab
 
     let _ = human.close(None).await;
     server.shutdown().await;
+}
+
+#[tokio::test]
+async fn keep_lobby_seats_preserves_arbitrary_human_seats_fills_ai_and_rematches_cleanly() {
+    // 1) 1 human seated at North with default KeepLobbySeats; wall_provider chooses West as dealer independently.
+    let dealer_west_wall = build_preset_wall(
+        &tiles("111m 222m 333m 444m CC"),
+        &tiles("58m 147s 147p E S W N B"),
+        &tiles("58m 147s 147p E S W N B"),
+        &tiles("58m 147s 147p E S W N B"),
+        &[],
+        &[],
+    )
+    .expect("valid wall");
+    let factory_1p: WallProviderFactory = Arc::new(move || {
+        BoxedWallProvider(Box::new(PresetWallProvider::single(
+            Seat::West,
+            dealer_west_wall.clone(),
+        )))
+    });
+    let server_1p = spawn_with_wall_factory(401, factory_1p).await;
+    let addr_1p = server_1p.addr();
+    let mut h1 = connect_and_hello(addr_1p, "h1", "SoloNorth").await;
+    send_msg(
+        &mut h1,
+        &ClientMessage::JoinSeat {
+            seat: Some(Seat::North),
+        },
+    )
+    .await;
+    let lobby_snap = recv_snapshot(&mut h1).await;
+    assert_eq!(lobby_snap.config.seating, SeatingRule::KeepLobbySeats);
+
+    send_msg(&mut h1, &ClientMessage::StartMatch).await;
+    let match_snap_1p = loop {
+        match recv_msg(&mut h1).await {
+            ServerMessage::TableSnapshot(s) if s.phase == TablePhase::InMatch => break s,
+            ServerMessage::LobbyUpdated { .. } => continue,
+            other => panic!("unexpected msg starting 1P KeepLobbySeats: {other:?}"),
+        }
+    };
+    assert_eq!(match_snap_1p.your_seat, Some(Seat::North));
+    assert_eq!(
+        match_snap_1p.player_view.as_ref().unwrap().turn.dealer,
+        Seat::West
+    );
+    let mut styles_1p = HashSet::new();
+    for (idx, seat) in [Seat::East, Seat::South, Seat::West]
+        .into_iter()
+        .enumerate()
+    {
+        let info = &match_snap_1p.seats[seat.index()];
+        assert_eq!(info.kind, SeatKind::Ai);
+        assert_eq!(info.nickname, format!("AI {}", idx + 1));
+        assert!(styles_1p.insert(info.ai_style.expect("AI style")));
+    }
+    assert_eq!(styles_1p.len(), 3);
+    assert_eq!(
+        match_snap_1p.seats[Seat::North.index()].kind,
+        SeatKind::Human
+    );
+    let _ = h1.close(None).await;
+    server_1p.shutdown().await;
+
+    // 2) 2 humans at West & South + FreeTable -> settle Hand 1 -> end match -> Finished rematch still keeps West & South.
+    let tsumo_wall_2p = build_preset_wall(
+        &tiles("111m 222m 333m 444m CC"),
+        &tiles("58m 147s 147p E S W N B"),
+        &tiles("58m 147s 147p E S W N B"),
+        &tiles("58m 147s 147p E S W N B"),
+        &[],
+        &[],
+    )
+    .expect("valid 2p tsumo wall");
+    let factory_2p: WallProviderFactory = Arc::new(move || {
+        BoxedWallProvider(Box::new(PresetWallProvider::new(
+            Seat::West,
+            vec![tsumo_wall_2p.clone(), tsumo_wall_2p.clone()],
+        )))
+    });
+    let server_2p = spawn_with_wall_factory(402, factory_2p).await;
+    let addr_2p = server_2p.addr();
+    let mut p_west = connect_and_hello(addr_2p, "p-west", "WestHuman").await;
+    let mut p_south = connect_and_hello(addr_2p, "p-south", "SouthHuman").await;
+    send_msg(
+        &mut p_west,
+        &ClientMessage::JoinSeat {
+            seat: Some(Seat::West),
+        },
+    )
+    .await;
+    let _ = recv_snapshot(&mut p_west).await;
+    send_msg(
+        &mut p_south,
+        &ClientMessage::JoinSeat {
+            seat: Some(Seat::South),
+        },
+    )
+    .await;
+    let _ = recv_snapshot(&mut p_south).await;
+    send_msg(
+        &mut p_west,
+        &ClientMessage::UpdateLobbyConfig {
+            mode: MatchMode::FreeTable,
+            seating: SeatingRule::KeepLobbySeats,
+            ai_difficulty: AiDifficulty::Strong,
+            pace: TablePace::Fast,
+        },
+    )
+    .await;
+    send_msg(&mut p_west, &ClientMessage::StartMatch).await;
+
+    let snap_west_1 = loop {
+        match recv_msg(&mut p_west).await {
+            ServerMessage::TableSnapshot(s) if s.phase == TablePhase::InMatch => break s,
+            ServerMessage::LobbyUpdated { .. } => continue,
+            other => panic!("unexpected msg for p_west: {other:?}"),
+        }
+    };
+    let snap_south_1 = loop {
+        match recv_msg(&mut p_south).await {
+            ServerMessage::TableSnapshot(s) if s.phase == TablePhase::InMatch => break s,
+            ServerMessage::LobbyUpdated { .. } => continue,
+            other => panic!("unexpected msg for p_south: {other:?}"),
+        }
+    };
+    assert_eq!(snap_west_1.your_seat, Some(Seat::West));
+    assert_eq!(snap_south_1.your_seat, Some(Seat::South));
+    assert_eq!(snap_west_1.seats[Seat::East.index()].kind, SeatKind::Ai);
+    assert_eq!(snap_west_1.seats[Seat::East.index()].nickname, "AI 1");
+    assert_eq!(snap_west_1.seats[Seat::North.index()].kind, SeatKind::Ai);
+    assert_eq!(snap_west_1.seats[Seat::North.index()].nickname, "AI 2");
+    assert_ne!(
+        snap_west_1.seats[Seat::East.index()].ai_style,
+        snap_west_1.seats[Seat::North.index()].ai_style
+    );
+
+    // West wins Hand 1 by Tsumo -> BetweenHands -> EndFreeTable -> Finished -> rematch via StartMatch.
+    send_msg(
+        &mut p_west,
+        &ClientMessage::SubmitAction {
+            expected_seq: snap_west_1.seq,
+            client_action_id: "west-tsumo-1".to_string(),
+            action: PlayerAction::Tsumo,
+        },
+    )
+    .await;
+    for ws in [&mut p_west, &mut p_south] {
+        loop {
+            match recv_msg(ws).await {
+                ServerMessage::EventBatch { events, .. }
+                    if events
+                        .iter()
+                        .any(|e| matches!(e.kind, PlayerEventKind::HandSettled { .. })) =>
+                {
+                    break
+                }
+                _ => continue,
+            }
+        }
+    }
+
+    send_msg(&mut p_west, &ClientMessage::RequestEndFreeTable).await;
+    let op_id = loop {
+        match recv_msg(&mut p_west).await {
+            ServerMessage::TableSnapshot(s) if s.pending_destructive_op.is_some() => {
+                break s.pending_destructive_op.unwrap().op_id;
+            }
+            _ => continue,
+        }
+    };
+    send_msg(
+        &mut p_south,
+        &ClientMessage::ConfirmDestructiveOp {
+            op_id,
+            accept: true,
+        },
+    )
+    .await;
+    for ws in [&mut p_west, &mut p_south] {
+        loop {
+            match recv_msg(ws).await {
+                ServerMessage::TableSnapshot(s) if s.phase == TablePhase::Finished => break,
+                _ => continue,
+            }
+        }
+    }
+    send_msg(&mut p_west, &ClientMessage::StartMatch).await;
+    let rematch_west = loop {
+        match recv_msg(&mut p_west).await {
+            ServerMessage::TableSnapshot(s) if s.phase == TablePhase::InMatch => break s,
+            _ => continue,
+        }
+    };
+    let rematch_south = loop {
+        match recv_msg(&mut p_south).await {
+            ServerMessage::TableSnapshot(s) if s.phase == TablePhase::InMatch => break s,
+            _ => continue,
+        }
+    };
+    assert_eq!(rematch_west.your_seat, Some(Seat::West));
+    assert_eq!(rematch_south.your_seat, Some(Seat::South));
+    let _ = p_west.close(None).await;
+    let _ = p_south.close(None).await;
+    server_2p.shutdown().await;
+
+    // 3) 3 humans at South, West, North -> East filled by AI 1; 4 humans -> all 4 preserved.
+    let server_34 = spawn_seeded_server(403, None).await;
+    let addr_34 = server_34.addr();
+    let mut c_s = connect_and_hello(addr_34, "cs", "S").await;
+    let mut c_w = connect_and_hello(addr_34, "cw", "W").await;
+    let mut c_n = connect_and_hello(addr_34, "cn", "N").await;
+    for (ws, seat) in [
+        (&mut c_s, Seat::South),
+        (&mut c_w, Seat::West),
+        (&mut c_n, Seat::North),
+    ] {
+        send_msg(ws, &ClientMessage::JoinSeat { seat: Some(seat) }).await;
+        let _ = recv_snapshot(ws).await;
+    }
+    send_msg(&mut c_s, &ClientMessage::StartMatch).await;
+    for (ws, expected_seat) in [
+        (&mut c_s, Seat::South),
+        (&mut c_w, Seat::West),
+        (&mut c_n, Seat::North),
+    ] {
+        let snap = loop {
+            match recv_msg(ws).await {
+                ServerMessage::TableSnapshot(s) if s.phase == TablePhase::InMatch => break s,
+                _ => continue,
+            }
+        };
+        assert_eq!(snap.your_seat, Some(expected_seat));
+        assert_eq!(snap.seats[Seat::East.index()].kind, SeatKind::Ai);
+        assert_eq!(snap.seats[Seat::East.index()].nickname, "AI 1");
+    }
+    let _ = c_s.close(None).await;
+    let _ = c_w.close(None).await;
+    let _ = c_n.close(None).await;
+    server_34.shutdown().await;
+
+    let server_4p = spawn_seeded_server(404, None).await;
+    let addr_4p = server_4p.addr();
+    let mut p4 = Vec::new();
+    for (idx, seat) in [Seat::North, Seat::East, Seat::West, Seat::South]
+        .into_iter()
+        .enumerate()
+    {
+        let mut ws = connect_and_hello(addr_4p, &format!("p4-{idx}"), &format!("H{idx}")).await;
+        send_msg(&mut ws, &ClientMessage::JoinSeat { seat: Some(seat) }).await;
+        let _ = recv_snapshot(&mut ws).await;
+        p4.push((ws, seat));
+    }
+    send_msg(&mut p4[0].0, &ClientMessage::StartMatch).await;
+    for (ws, expected_seat) in &mut p4 {
+        let snap = loop {
+            match recv_msg(ws).await {
+                ServerMessage::TableSnapshot(s) if s.phase == TablePhase::InMatch => break s,
+                _ => continue,
+            }
+        };
+        assert_eq!(snap.your_seat, Some(*expected_seat));
+        assert!(snap.seats.iter().all(|s| s.kind == SeatKind::Human));
+    }
+    for (mut ws, _) in p4 {
+        let _ = ws.close(None).await;
+    }
+    server_4p.shutdown().await;
 }

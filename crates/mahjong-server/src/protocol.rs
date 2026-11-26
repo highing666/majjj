@@ -30,8 +30,10 @@ pub enum TablePace {
 /// Seating assignment rule applied when starting a match.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, TS)]
 pub enum SeatingRule {
-    /// Randomize all four seats at match start.
+    /// Keep each human player in their chosen lobby seat and fill empty seats with AI.
     #[default]
+    KeepLobbySeats,
+    /// Randomize all four seats at match start.
     Random,
     /// Keep two human players seated across from each other (`East` / `West`).
     FixedOpposite,
@@ -56,7 +58,7 @@ impl Default for LobbyConfig {
     fn default() -> Self {
         Self {
             mode: MatchMode::EastOnly,
-            seating: SeatingRule::Random,
+            seating: SeatingRule::KeepLobbySeats,
             ai_difficulty: AiDifficulty::Strong,
             pace: TablePace::Standard,
         }

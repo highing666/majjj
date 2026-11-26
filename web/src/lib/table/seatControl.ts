@@ -1,8 +1,13 @@
 import type { Seat } from "../protocol/generated/Seat";
 import type { SeatInfo } from "../protocol/generated/SeatInfo";
 import type { TableSnapshot } from "../protocol/generated/TableSnapshot";
-import { seatIndex, seatLabel } from "../protocol/seats";
-import { formatSeatDisplayName } from "./viewModel";
+import {
+  formatRelativeSeatDisplay,
+  formatRelativeSeatParen,
+  formatSeatEntrySeatless,
+  formatSeatlessDisplay,
+  seatIndex,
+} from "../protocol/seats";
 
 export type TakeOverKind = "ai" | "offline_human";
 
@@ -30,12 +35,6 @@ export interface TakeOverModalCopy {
   confirmLabel: string;
 }
 
-function formatSeatParenName(seatInfo: SeatInfo): string {
-  const base = seatLabel(seatInfo.seat);
-  const name = seatInfo.nickname.trim();
-  return name ? `${base}（${name}）` : base;
-}
-
 /**
  * Returns an offline/pause notice banner for `InMatch` when any human seat is disconnected,
  * distinguishing paused offline seats from seats temporarily assisted by AI.
@@ -53,12 +52,15 @@ export function buildOfflinePauseBanner(
     return null;
   }
 
+  const formatPaused = (s: SeatInfo): string =>
+    formatRelativeSeatParen(s.seat, snapshot.your_seat, snapshot.seats);
+
   const pausedNames = offlineHumans
     .filter((s) => !s.ai_assisted)
-    .map(formatSeatParenName);
+    .map(formatPaused);
   const assistedNames = offlineHumans
     .filter((s) => s.ai_assisted)
-    .map(formatSeatParenName);
+    .map(formatPaused);
 
   if (pausedNames.length > 0 && assistedNames.length === 0) {
     return `${pausedNames.join("、")} 已离线，牌桌已无限期暂停等待；可手动开启「暂由 AI 托管」或跨设备接管该座。`;
@@ -112,7 +114,11 @@ export function buildSeatControlItems(
 
     items.push({
       seat: seatInfo.seat,
-      displayName: formatSeatDisplayName(seatInfo.seat, snapshot.seats),
+      displayName: formatRelativeSeatDisplay(
+        seatInfo.seat,
+        yourSeat,
+        snapshot.seats,
+      ),
       isSelf,
       isOffline,
       aiAssisted: seatInfo.ai_assisted,
@@ -158,7 +164,7 @@ function toTakeOverSeatItem(
   seats: readonly [SeatInfo, SeatInfo, SeatInfo, SeatInfo],
   phase: TableSnapshot["phase"],
 ): TakeOverSeatItem {
-  const displayName = formatSeatDisplayName(seatInfo.seat, seats);
+  const displayName = formatSeatlessDisplay(seatInfo.seat, seats);
   if (seatInfo.kind === "Human") {
     if (!seatInfo.connected) {
       return {
@@ -205,7 +211,7 @@ export function getTakeOverModalCopy(
   seatInfo: SeatInfo,
   kind: TakeOverKind,
 ): TakeOverModalCopy {
-  const seatText = formatSeatParenName(seatInfo);
+  const seatText = formatSeatEntrySeatless(seatInfo.seat, seatInfo);
   if (kind === "ai") {
     return {
       title: "确认接管 AI 座位？",

@@ -969,4 +969,54 @@ mod tests {
         assert_eq!(after_clear.stats().total_hands, 0);
         assert_eq!(after_clear.preferences().default_mode, MatchMode::FreeTable);
     }
+
+    #[test]
+    fn default_seating_is_keep_lobby_seats_and_legacy_preferences_deserialize_cleanly() {
+        use crate::history_dto::PreferencesData;
+
+        assert_eq!(LobbyConfig::default().seating, SeatingRule::KeepLobbySeats);
+        assert_eq!(
+            PreferencesData::default().default_seating,
+            SeatingRule::KeepLobbySeats
+        );
+
+        let root = TempDir::new("majjj_storage_legacy_seating");
+        let fresh = HistoryStore::open(&root.path).expect("open fresh store");
+        assert_eq!(
+            fresh.preferences().default_seating,
+            SeatingRule::KeepLobbySeats
+        );
+        drop(fresh);
+
+        for (raw_rule, expected_rule) in [
+            ("Random", SeatingRule::Random),
+            ("FixedOpposite", SeatingRule::FixedOpposite),
+            ("FixedAdjacent", SeatingRule::FixedAdjacent),
+        ] {
+            let legacy_json = format!(
+                r#"{{
+                    "schema_version": 1,
+                    "recent_nicknames": ["Alice"],
+                    "default_mode": "EastOnly",
+                    "default_seating": "{raw_rule}",
+                    "default_ai_difficulty": "Strong",
+                    "default_pace": "Standard"
+                }}"#
+            );
+            fs::write(root.path.join("preferences.json"), legacy_json)
+                .expect("write legacy preferences");
+            let mut store =
+                HistoryStore::open(&root.path).expect("legacy preferences should load cleanly");
+            assert_eq!(store.preferences().default_seating, expected_rule);
+
+            store.record_nickname("Bob");
+            let reopened = HistoryStore::open(&root.path)
+                .expect("saved preferences after loading legacy should reopen cleanly");
+            assert_eq!(reopened.preferences().default_seating, expected_rule);
+            assert_eq!(
+                reopened.preferences().recent_nicknames,
+                vec!["Bob".to_string(), "Alice".to_string()]
+            );
+        }
+    }
 }

@@ -26,6 +26,7 @@ import {
 import {
   computeBottomRiverSlotPoint,
   computeCenterSealLayout,
+  computeCenterSealPointer,
   computeOpponentHandSlots,
   computeRiverSlotPoint,
   computeTableLayout,
@@ -38,13 +39,14 @@ import {
   type PaperGrainFilter,
 } from "./paperGrainFilter";
 import type { TileAtlas } from "./tileAtlas";
-import { seatShortWind } from "./tiles";
+import { formatCompactRoundTitle } from "./tiles";
 import {
   buildMeldRenderItems,
   buildSeatBadgeModel,
   buildVisibleRiverRows,
   findLegalDiscardAction,
   getRelativeSeats,
+  seatRelativeSlot,
 } from "./viewModel";
 
 const SEAL_BG = 0x0d1b20;
@@ -314,7 +316,7 @@ export class TableSceneRenderer {
     ).length;
 
     renderFeltBackdrop(this.feltLayer, layout, this.atlas);
-    this.drawCenterSeal(layout, view.turn, view.wall_remaining);
+    this.drawCenterSeal(layout, view.viewer, view.turn, view.wall_remaining);
     this.drawRivers(layout, relative, seatByName, findLatestRiverSeq(view.seats));
     this.drawMelds(layout, relative, seatByName, params.pendingAddedKong);
     this.drawOpponentHands(layout, relative, seatByName);
@@ -376,39 +378,71 @@ export class TableSceneRenderer {
 
   private drawCenterSeal(
     layout: TableLayout,
+    viewer: Seat,
     turn: NonNullable<TableSnapshot["player_view"]>["turn"],
     wallRemaining: number,
   ): void {
     disposeContainerChildren(this.centerSealLayer);
     const { centerSeal } = layout;
     const sealLayout = computeCenterSealLayout(centerSeal);
+    const activeSlot = turn.active_seat
+      ? seatRelativeSlot(viewer, turn.active_seat)
+      : null;
+    const pointer = computeCenterSealPointer(centerSeal, activeSlot);
     const cx = centerSeal.x + centerSeal.width / 2;
     const cy = centerSeal.y + centerSeal.height / 2;
-    const radius = centerSeal.width / 2;
+    const ringRadius = sealLayout.ringRadius;
 
     const ring = new Graphics();
     ring
-      .circle(cx, cy, radius)
-      .fill({ color: SEAL_BG, alpha: 0.88 })
-      .stroke({ width: 2, color: BRASS, alpha: 0.78 });
+      .circle(cx, cy, ringRadius)
+      .fill({ color: SEAL_BG, alpha: 0.9 })
+      .stroke({ width: 1.5, color: BRASS, alpha: 0.52 });
     ring
-      .circle(cx, cy, Math.max(4, radius - 4))
-      .stroke({ width: 1, color: BRASS, alpha: 0.28 });
+      .circle(cx, cy, Math.max(4, ringRadius - 4))
+      .stroke({ width: 1, color: BRASS, alpha: 0.22 });
     this.centerSealLayer.addChild(ring);
 
-    const activeSeat = turn.active_seat ?? turn.dealer;
-    const windText = new Text({
-      text: seatShortWind(activeSeat),
+    if (pointer) {
+      const glowArc = new Graphics();
+      glowArc
+        .arc(cx, cy, ringRadius, pointer.arcStart, pointer.arcEnd)
+        .stroke({ width: 5, color: ACTIVE_GLOW, alpha: 0.24, cap: "round" });
+      this.centerSealLayer.addChild(glowArc);
+
+      const activeArc = new Graphics();
+      activeArc
+        .arc(cx, cy, ringRadius, pointer.arcStart, pointer.arcEnd)
+        .stroke({ width: 2.5, color: ACTIVE_GLOW, alpha: 0.98, cap: "round" });
+      this.centerSealLayer.addChild(activeArc);
+
+      const arrow = new Graphics();
+      arrow
+        .poly([
+          pointer.tip.x,
+          pointer.tip.y,
+          pointer.baseLeft.x,
+          pointer.baseLeft.y,
+          pointer.baseRight.x,
+          pointer.baseRight.y,
+        ])
+        .fill({ color: ACTIVE_GLOW, alpha: 1 });
+      this.centerSealLayer.addChild(arrow);
+    }
+
+    const roundText = new Text({
+      text: formatCompactRoundTitle(turn),
       style: {
         fontFamily: SERIF_FONT,
-        fontSize: sealLayout.windFontSize,
-        fontWeight: "900",
-        fill: ACTIVE_GLOW,
+        fontSize: sealLayout.roundFontSize,
+        fontWeight: "800",
+        fill: TEXT_LIGHT,
       },
     });
-    windText.anchor.set(0.5);
-    windText.position.set(cx, sealLayout.windY);
-    this.centerSealLayer.addChild(windText);
+    roundText.anchor.set(0.5);
+    roundText.position.set(cx, sealLayout.roundY);
+    fitTextToWidth(roundText, centerSeal.width - 12);
+    this.centerSealLayer.addChild(roundText);
 
     const wallText = new Text({
       text: `余 ${wallRemaining}`,
@@ -421,7 +455,7 @@ export class TableSceneRenderer {
     });
     wallText.anchor.set(0.5);
     wallText.position.set(cx, sealLayout.wallY);
-    fitTextToWidth(wallText, centerSeal.width - 10);
+    fitTextToWidth(wallText, centerSeal.width - 12);
     this.centerSealLayer.addChild(wallText);
   }
 
@@ -689,7 +723,7 @@ export class TableSceneRenderer {
         dealer,
         activeSeat,
       );
-      const padX = layout.isWide ? 7 : 5;
+      const padX = layout.isWide ? 7 : 4;
       const box = new Graphics();
       box
         .roundRect(rect.x, rect.y, rect.width, rect.height, 8)
@@ -704,35 +738,61 @@ export class TableSceneRenderer {
         });
       this.badgeLayer.addChild(box);
 
-      const pillSize = rect.height - 8;
-      const pill = new Graphics();
-      pill
-        .roundRect(rect.x + padX, rect.y + 4, pillSize, pillSize, 5)
-        .fill({ color: model.isDealer ? DEALER_CORAL : 0x264852 });
-      this.badgeLayer.addChild(pill);
+      const pillH = rect.height - 8;
+      const pillFontSize = layout.isWide ? 11 : rect.height >= 24 ? 10 : 9;
+      const rolePillW = layout.isWide ? 34 : 24;
+      const rolePill = new Graphics();
+      rolePill
+        .roundRect(rect.x + padX, rect.y + 4, rolePillW, pillH, 5)
+        .fill({ color: model.isActive ? 0x265663 : 0x264852 });
+      this.badgeLayer.addChild(rolePill);
 
-      const windLabel = new Text({
-        text: model.isDealer ? `${model.wind}庄` : model.wind,
+      const roleLabel = new Text({
+        text: model.role,
         style: {
           fontFamily: UI_FONT,
-          fontSize: model.isDealer
-            ? layout.isWide
-              ? 10
-              : 8
-            : layout.isWide
-              ? 11
-              : 9,
+          fontSize: pillFontSize,
           fontWeight: "800",
           fill: TEXT_LIGHT,
         },
       });
-      windLabel.anchor.set(0.5);
-      windLabel.position.set(
-        rect.x + padX + pillSize / 2,
+      roleLabel.anchor.set(0.5);
+      roleLabel.position.set(
+        rect.x + padX + rolePillW / 2,
         rect.y + rect.height / 2,
       );
-      fitTextToWidth(windLabel, pillSize - 2);
-      this.badgeLayer.addChild(windLabel);
+      fitTextToWidth(roleLabel, rolePillW - 3);
+      this.badgeLayer.addChild(roleLabel);
+
+      let leftCursor = rect.x + padX + rolePillW;
+      if (model.isDealer) {
+        const dealerGap = layout.isWide ? 4 : 3;
+        const dealerPillW = layout.isWide ? 20 : 15;
+        const dealerX = leftCursor + dealerGap;
+        const dealerPill = new Graphics();
+        dealerPill
+          .roundRect(dealerX, rect.y + 4, dealerPillW, pillH, 5)
+          .fill({ color: DEALER_CORAL });
+        this.badgeLayer.addChild(dealerPill);
+
+        const dealerLabel = new Text({
+          text: "庄",
+          style: {
+            fontFamily: UI_FONT,
+            fontSize: pillFontSize,
+            fontWeight: "800",
+            fill: TEXT_LIGHT,
+          },
+        });
+        dealerLabel.anchor.set(0.5);
+        dealerLabel.position.set(
+          dealerX + dealerPillW / 2,
+          rect.y + rect.height / 2,
+        );
+        fitTextToWidth(dealerLabel, dealerPillW - 2);
+        this.badgeLayer.addChild(dealerLabel);
+        leftCursor = dealerX + dealerPillW;
+      }
 
       const scoreText = new Text({
         text: model.scoreText,
@@ -750,10 +810,11 @@ export class TableSceneRenderer {
       );
       this.badgeLayer.addChild(scoreText);
 
-      const nameStart = rect.x + padX + pillSize + 6;
+      const scoreGap = layout.isWide ? 5 : 4;
+      const nameStart = leftCursor + (layout.isWide ? 6 : 4);
       const nameMaxW = Math.max(
-        20,
-        rect.x + rect.width - padX - scoreText.width - 6 - nameStart,
+        8,
+        rect.x + rect.width - padX - scoreText.width - scoreGap - nameStart,
       );
       const statusSuffix =
         model.isOffline && model.isAiAssisted

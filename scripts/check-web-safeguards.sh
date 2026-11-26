@@ -15,6 +15,7 @@ const generatedPrefix = path.join(srcRoot, "lib", "protocol", "generated") + pat
 const banned = [
   { name: "Safari ResizeObserver pitfall", regex: /\bdevicePixelContentBoxSize\b/ },
   { name: "prohibited in-game hint UI", regex: /听牌|叫胡|荐牌/ },
+  { name: "prohibited player-facing seat wind label (ADR-0008)", regex: /东座|南座|西座|北座/ },
 ];
 
 function collectFiles(dir) {

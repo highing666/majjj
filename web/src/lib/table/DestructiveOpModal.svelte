@@ -2,7 +2,7 @@
   import type { PendingDestructiveOp } from "../protocol/generated/PendingDestructiveOp";
   import type { Seat } from "../protocol/generated/Seat";
   import type { SeatInfo } from "../protocol/generated/SeatInfo";
-  import { seatIndex, seatLabel } from "../protocol/seats";
+  import { formatRelativeSeatParen } from "../protocol/seats";
 
   interface Props {
     op: PendingDestructiveOp;
@@ -15,10 +15,7 @@
   let { op, seats, yourSeat, disabled = false, onConfirm }: Props = $props();
 
   function seatDisplayName(seat: Seat): string {
-    const info = seats[seatIndex(seat)];
-    return info?.nickname
-      ? `${seatLabel(seat)}（${info.nickname}）`
-      : seatLabel(seat);
+    return formatRelativeSeatParen(seat, yourSeat, seats);
   }
 
   const titleText = $derived(

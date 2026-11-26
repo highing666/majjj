@@ -53,6 +53,7 @@ describe("semanticEvents", () => {
       seq: 12,
       seat: "South",
       relativeRole: "下家",
+      actorLabel: "下家 · AI 1",
       voicePackId: "pack-south",
       wallRemaining: 24,
       isTsumogiri: true,
@@ -81,7 +82,8 @@ describe("semanticEvents", () => {
     expect(mappedAttempt).toMatchObject({
       type: "AddedKongAttempted",
       seat: "West",
-      relativeRole: "对家",
+      relativeRole: "对门",
+      actorLabel: "对门 · AI 2",
       voicePackId: "pack-west",
       wallRemaining: 31,
       meldKind: "AddedKong",
@@ -106,6 +108,7 @@ describe("semanticEvents", () => {
       type: "MeldDeclared",
       seat: "North",
       relativeRole: "上家",
+      actorLabel: "上家 · AI 3",
       voicePackId: null,
       meldKind: "Pon",
       tile: 8,
@@ -166,6 +169,7 @@ describe("semanticEvents", () => {
       type: "HandSettled",
       seat: "South",
       relativeRole: "下家",
+      actorLabel: "下家 · AI 1",
       voicePackId: "pack-south",
       wallRemaining: 12,
       totalFan: 4,
@@ -179,17 +183,29 @@ describe("semanticEvents", () => {
       {
         seat: "South",
         relativeRole: "下家",
+        displayName: "下家 · AI 1",
         winKind: "Ron",
         totalFan: 2,
         voicePackId: "pack-south",
       },
       {
         seat: "West",
-        relativeRole: "对家",
+        relativeRole: "对门",
+        displayName: "对门 · AI 2",
         winKind: "Ron",
         totalFan: 4,
         voicePackId: "pack-west",
       },
+    ]);
+
+    const viewerlessWin = mapPlayerEventToSemanticEvent(
+      multiRon,
+      makeContext(null, 12),
+    );
+    expect(viewerlessWin.actorLabel).toBe("AI 1");
+    expect(viewerlessWin.winners.map((w) => w.displayName)).toEqual([
+      "AI 1",
+      "AI 2",
     ]);
 
     const drawGame: PlayerEvent = {
@@ -223,6 +239,7 @@ describe("semanticEvents", () => {
       type: "HandSettled",
       seat: null,
       relativeRole: null,
+      actorLabel: null,
       wallRemaining: 0,
       totalFan: null,
       winKind: null,

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   computeBottomRiverSlotPoint,
   computeCenterSealLayout,
+  computeCenterSealPointer,
   computeOpponentHandSlots,
   computeRiverSlotPoint,
   computeTableLayout,
@@ -28,12 +29,17 @@ function expectInsideBounds(rect: Rect, width: number, height: number): void {
 describe("Scheme C four-corner minimal computeTableLayout", () => {
   it.each([
     { name: "Mac wide 1440x900", width: 1440, height: 900, minHandW: 54, minRiverW: 28 },
+    { name: "Mac wide 1440x860", width: 1440, height: 860, minHandW: 54, minRiverW: 28 },
     { name: "Mac laptop 1280x720", width: 1280, height: 720, minHandW: 48, minRiverW: 26 },
     { name: "desktop 1040x660", width: 1040, height: 660, minHandW: 44, minRiverW: 24 },
+    { name: "desktop 1024x720", width: 1024, height: 720, minHandW: 44, minRiverW: 24 },
     { name: "iPhone portrait 390x844", width: 390, height: 844, minHandW: 24, minRiverW: 16 },
+    { name: "iPhone portrait 390x780", width: 390, height: 780, minHandW: 24, minRiverW: 16 },
     { name: "compact portrait 375x560", width: 375, height: 560, minHandW: 23, minRiverW: 15 },
+    { name: "SE portrait 320x568", width: 320, height: 568, minHandW: 20, minRiverW: 15 },
     { name: "iPhone landscape 844x390", width: 844, height: 390, minHandW: 34, minRiverW: 18 },
     { name: "compact landscape 760x340", width: 760, height: 340, minHandW: 29, minRiverW: 15 },
+    { name: "SE landscape 568x320", width: 568, height: 320, minHandW: 28, minRiverW: 15 },
   ])(
     "produces zero-overlap, in-bounds four-corner layout on $name ($width x $height)",
     ({ width, height, minHandW, minRiverW }) => {
@@ -45,20 +51,30 @@ describe("Scheme C four-corner minimal computeTableLayout", () => {
       expect(layout.riverTileW).toBeGreaterThanOrEqual(minRiverW);
       expect(layout.riverTileH).toBeGreaterThan(layout.riverTileW);
 
-      // Compact center wind + wall seal (replaces bulky compass box)
+      // Compact center compass seal (round + wall remaining)
       expect(layout.centerSeal.width).toBeLessThanOrEqual(76);
       expect(layout.centerSeal.height).toBeLessThanOrEqual(76);
       expectInsideBounds(layout.centerSeal, width, height);
 
       const sealLayout = computeCenterSealLayout(layout.centerSeal);
-      expect(sealLayout.windY - sealLayout.windFontSize / 2).toBeGreaterThanOrEqual(
+      expect("windY" in sealLayout).toBe(false);
+      expect("windFontSize" in sealLayout).toBe(false);
+      expect(sealLayout.outerRadius).toBe(
+        Math.min(layout.centerSeal.width, layout.centerSeal.height) / 2,
+      );
+      expect(sealLayout.ringInset).toBeGreaterThanOrEqual(4);
+      expect(sealLayout.ringRadius).toBeGreaterThan(0);
+      expect(sealLayout.ringRadius).toBeLessThan(sealLayout.outerRadius);
+      expect(sealLayout.roundFontSize).toBeGreaterThan(0);
+      expect(sealLayout.wallFontSize).toBeGreaterThan(0);
+      expect(sealLayout.roundY - sealLayout.roundFontSize / 2).toBeGreaterThanOrEqual(
         layout.centerSeal.y,
       );
       expect(sealLayout.wallY + sealLayout.wallFontSize / 2).toBeLessThanOrEqual(
         layout.centerSeal.y + layout.centerSeal.height,
       );
-      expect(sealLayout.wallY - sealLayout.windY).toBeGreaterThanOrEqual(
-        (sealLayout.windFontSize + sealLayout.wallFontSize) * 0.45,
+      expect(sealLayout.wallY - sealLayout.roundY).toBeGreaterThanOrEqual(
+        (sealLayout.roundFontSize + sealLayout.wallFontSize) * 0.45,
       );
 
       // Viewer 13+1 hand inside bounds
@@ -76,13 +92,18 @@ describe("Scheme C four-corner minimal computeTableLayout", () => {
       expectInsideBounds(layout.oppHands.left, width, height);
       expectInsideBounds(layout.oppHands.right, width, height);
 
-      // Four-corner seat/score badges (TL / TR / BL / BR)
+      // Four-corner seat/score badges (TL / TR / BL / BR) sized for 2-char role + optional dealer pill
       const tl = layout.badges.top;
       const tr = layout.badges.right;
       const bl = layout.badges.left;
       const br = layout.badges.bottom;
+      const expectedMinBadgeW = layout.isWide ? 140 : 114;
       for (const badge of [tl, tr, bl, br]) {
         expectInsideBounds(badge, width, height);
+        expect(badge.width).toBeGreaterThanOrEqual(expectedMinBadgeW);
+      }
+      if (!layout.isWide && width >= 390) {
+        expect(tl.width).toBeGreaterThanOrEqual(132);
       }
       expect(tl.x + tl.width / 2).toBeLessThan(width / 2);
       expect(tl.y + tl.height / 2).toBeLessThan(height / 2);
@@ -230,5 +251,57 @@ describe("Scheme C four-corner minimal computeTableLayout", () => {
     const thirteenHand = computeViewerHandSlots(layout, 13, false);
     expect(thirteenHand.closed).toHaveLength(13);
     expect(thirteenHand.drawn).toBeNull();
+  });
+
+  it("computes four-way directional center seal pointer geometry bounded within centerSeal", () => {
+    const layout = computeTableLayout(1440, 860);
+    const seal = layout.centerSeal;
+    const cx = seal.x + seal.width / 2;
+    const cy = seal.y + seal.height / 2;
+
+    expect(computeCenterSealPointer(seal, null)).toBeNull();
+
+    const bottom = computeCenterSealPointer(seal, "bottom")!;
+    expect(bottom).not.toBeNull();
+    expect(bottom.slot).toBe("bottom");
+    expect(bottom.tip.y).toBeGreaterThan(cy);
+    expect(bottom.tip.y).toBeGreaterThan(bottom.baseLeft.y);
+    expect(bottom.tip.y).toBeGreaterThan(bottom.baseRight.y);
+    expect(Math.abs(bottom.tip.x - cx)).toBeLessThan(0.01);
+
+    const right = computeCenterSealPointer(seal, "right")!;
+    expect(right.slot).toBe("right");
+    expect(right.tip.x).toBeGreaterThan(cx);
+    expect(right.tip.x).toBeGreaterThan(right.baseLeft.x);
+    expect(right.tip.x).toBeGreaterThan(right.baseRight.x);
+    expect(Math.abs(right.tip.y - cy)).toBeLessThan(0.01);
+
+    const top = computeCenterSealPointer(seal, "top")!;
+    expect(top.slot).toBe("top");
+    expect(top.tip.y).toBeLessThan(cy);
+    expect(top.tip.y).toBeLessThan(top.baseLeft.y);
+    expect(top.tip.y).toBeLessThan(top.baseRight.y);
+    expect(Math.abs(top.tip.x - cx)).toBeLessThan(0.01);
+
+    const left = computeCenterSealPointer(seal, "left")!;
+    expect(left.slot).toBe("left");
+    expect(left.tip.x).toBeLessThan(cx);
+    expect(left.tip.x).toBeLessThan(left.baseLeft.x);
+    expect(left.tip.x).toBeLessThan(left.baseRight.x);
+    expect(Math.abs(left.tip.y - cy)).toBeLessThan(0.01);
+
+    const sealLayout = computeCenterSealLayout(seal);
+    for (const ptr of [bottom, right, top, left]) {
+      expect(ptr.arcRadius).toBe(sealLayout.ringRadius);
+      expect(ptr.arcRadius).toBeGreaterThan(0);
+      expect(ptr.arcRadius).toBeLessThan(Math.min(seal.width, seal.height) / 2);
+      expect(ptr.arcEnd).toBeGreaterThan(ptr.arcStart);
+      for (const pt of [ptr.tip, ptr.baseLeft, ptr.baseRight]) {
+        expect(pt.x).toBeGreaterThanOrEqual(seal.x);
+        expect(pt.x).toBeLessThanOrEqual(seal.x + seal.width);
+        expect(pt.y).toBeGreaterThanOrEqual(seal.y);
+        expect(pt.y).toBeLessThanOrEqual(seal.y + seal.height);
+      }
+    }
   });
 });

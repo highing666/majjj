@@ -37,10 +37,24 @@ export interface ViewerHandGeometry {
 }
 
 export interface CenterSealLayout {
-  windFontSize: number;
+  outerRadius: number;
+  ringInset: number;
+  ringRadius: number;
+  roundFontSize: number;
   wallFontSize: number;
-  windY: number;
+  roundY: number;
   wallY: number;
+}
+
+export interface CenterSealPointer {
+  slot: RelativeSlot;
+  angle: number;
+  arcStart: number;
+  arcEnd: number;
+  arcRadius: number;
+  tip: Point;
+  baseLeft: Point;
+  baseRight: Point;
 }
 
 const OPP_HAND_GAP = 1;
@@ -123,7 +137,7 @@ export function computeTableLayout(
   );
   const handTileW = clamp(
     Math.min(maxHandWByWidth, Math.round(height * 0.105)),
-    23,
+    Math.min(23, maxHandWByWidth),
     62,
   );
   const handTileH = Math.round(handTileW * 1.36);
@@ -139,8 +153,8 @@ export function computeTableLayout(
   // Compact four-corner seat/score badges (TL=top, TR=right, BL=left, BR=bottom)
   const badgePad = isWide ? 18 : 8;
   const badgeW = isWide
-    ? clamp(Math.round(width * 0.14), 124, 156)
-    : clamp(Math.round(width * 0.27), 94, 114);
+    ? clamp(Math.round(width * 0.16), 140, 178)
+    : clamp(Math.round(width * 0.34), 114, 134);
   const badgeH = height >= 500 ? 28 : 22;
 
   const tlBadge: Rect = {
@@ -382,16 +396,97 @@ export function computeTableLayout(
 }
 
 /**
- * Computes strictly bounded inner wind and wall-remaining coordinates for the compact center seal.
+ * Computes strictly bounded inner ring, compact-round, and wall-remaining coordinates for the center seal.
  */
 export function computeCenterSealLayout(seal: Rect): CenterSealLayout {
-  const windFontSize = seal.height >= 58 ? 20 : 16;
+  const outerRadius = Math.min(seal.width, seal.height) / 2;
+  const ringInset = Math.max(4, Math.round(outerRadius * 0.16));
+  const ringRadius = Math.max(4, outerRadius - ringInset);
+  const roundFontSize = seal.height >= 58 ? 14 : 11;
   const wallFontSize = seal.height >= 58 ? 11 : 10;
   return {
-    windFontSize,
+    outerRadius,
+    ringInset,
+    ringRadius,
+    roundFontSize,
     wallFontSize,
-    windY: Math.round(seal.y + seal.height * 0.37),
-    wallY: Math.round(seal.y + seal.height * 0.74),
+    roundY: Math.round(seal.y + seal.height * 0.38),
+    wallY: Math.round(seal.y + seal.height * 0.69),
+  };
+}
+
+const POINTER_DIRECTIONS: Record<
+  RelativeSlot,
+  { angle: number; arcStart: number; arcEnd: number; dx: number; dy: number }
+> = {
+  right: {
+    angle: 0,
+    arcStart: -Math.PI / 4,
+    arcEnd: Math.PI / 4,
+    dx: 1,
+    dy: 0,
+  },
+  bottom: {
+    angle: Math.PI / 2,
+    arcStart: Math.PI / 4,
+    arcEnd: (3 * Math.PI) / 4,
+    dx: 0,
+    dy: 1,
+  },
+  left: {
+    angle: Math.PI,
+    arcStart: (3 * Math.PI) / 4,
+    arcEnd: (5 * Math.PI) / 4,
+    dx: -1,
+    dy: 0,
+  },
+  top: {
+    angle: -Math.PI / 2,
+    arcStart: (-3 * Math.PI) / 4,
+    arcEnd: -Math.PI / 4,
+    dx: 0,
+    dy: -1,
+  },
+};
+
+/**
+ * Computes four-way directional compass arc angles and pointer triangle coordinates
+ * strictly bounded inside `seal` for the active relative slot (or `null` when idle).
+ */
+export function computeCenterSealPointer(
+  seal: Rect,
+  activeSlot: RelativeSlot | null,
+): CenterSealPointer | null {
+  if (activeSlot === null) {
+    return null;
+  }
+  const dir = POINTER_DIRECTIONS[activeSlot];
+  const cx = seal.x + seal.width / 2;
+  const cy = seal.y + seal.height / 2;
+  const { outerRadius, ringRadius: arcRadius } = computeCenterSealLayout(seal);
+  const baseRadius = arcRadius - 0.5;
+  const halfBase = Math.max(4, Math.round(outerRadius * 0.22));
+  const px = -dir.dy;
+  const py = dir.dx;
+
+  return {
+    slot: activeSlot,
+    angle: dir.angle,
+    arcStart: dir.arcStart,
+    arcEnd: dir.arcEnd,
+    arcRadius,
+    tip: {
+      x: cx + dir.dx * outerRadius,
+      y: cy + dir.dy * outerRadius,
+    },
+    baseLeft: {
+      x: cx + dir.dx * baseRadius + px * halfBase,
+      y: cy + dir.dy * baseRadius + py * halfBase,
+    },
+    baseRight: {
+      x: cx + dir.dx * baseRadius - px * halfBase,
+      y: cy + dir.dy * baseRadius - py * halfBase,
+    },
   };
 }
 

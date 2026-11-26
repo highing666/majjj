@@ -322,7 +322,7 @@
                       {#each row.seats as seat (seat.seat)}
                         <div class="seat-delta-item">
                           <div class="seat-delta-name">
-                            <span>{seat.seatLabel} · {seat.nickname}</span>
+                            <span>{seat.nickname}</span>
                             {#if seat.isAi}
                               <span class="tag mini-tag">AI</span>
                             {/if}
@@ -408,7 +408,7 @@
                       {#each row.seatDeltas as sd (sd.seat)}
                         <div class="seat-delta-item">
                           <div class="seat-delta-name">
-                            <span>{sd.seatLabel} · {sd.nickname}</span>
+                            <span>{sd.nickname}</span>
                             {#if sd.isAi}
                               <span class="tag mini-tag">AI</span>
                             {/if}

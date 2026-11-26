@@ -2,15 +2,19 @@
 set -euo pipefail
 
 usage() {
-  echo "Usage: $0 [--sandbox]" >&2
+  echo "Usage: $0 [--sandbox] [--staged]" >&2
   exit 1
 }
 
 sandbox_mode=0
+staged_mode=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --sandbox)
       sandbox_mode=1
+      ;;
+    --staged)
+      staged_mode=1
       ;;
     -h|--help)
       usage
@@ -30,26 +34,68 @@ if [ "$(uname -s)" = "Darwin" ] && [ -z "${DEVELOPER_DIR:-}" ] && [ -d "/Library
   export DEVELOPER_DIR="/Library/Developer/CommandLineTools"
 fi
 
-cargo fmt --all -- --check
+run_web=1
+run_rust=1
+run_ai_heavy=1
+run_dist_scripts=1
 
-if [ ! -d "web/node_modules" ]; then
-  echo "ERROR: web/node_modules not found. Run 'make web-install' (or 'npm ci --prefix web') first." >&2
-  exit 1
+if [ "$staged_mode" -eq 1 ]; then
+  staged_files="$(git diff --cached --name-only --diff-filter=ACMRD || true)"
+  run_web=0
+  run_rust=0
+  run_ai_heavy=0
+  run_dist_scripts=0
+
+  if printf '%s\n' "$staged_files" | grep -qE '^(web/|scripts/check-web-safeguards\.sh$)'; then
+    run_web=1
+  fi
+  if printf '%s\n' "$staged_files" | grep -qE '^(crates/|Cargo\.(toml|lock)$|scripts/check-core-boundaries\.sh$)'; then
+    run_rust=1
+  fi
+  if printf '%s\n' "$staged_files" | grep -qE '^crates/(mahjong-ai|mahjong-core)/'; then
+    run_ai_heavy=1
+  fi
+  if printf '%s\n' "$staged_files" | grep -qE '^(scripts/|packaging/|Makefile$)'; then
+    run_dist_scripts=1
+  fi
 fi
-(cd web && npm run typecheck && npm test && npm run build)
 
-cargo clippy --workspace --all-targets -- -D warnings
-
-if [ "$sandbox_mode" -eq 1 ]; then
-  cargo test -p mahjong-core -p mahjong-ai
-  cargo test -p mahjong-server --lib --bin mahjong-server --test lan_discovery --test pacing_virtual_clock --test ts_contract_drift
-else
-  cargo test --workspace
-fi
-
-cargo run --release -p mahjong-ai --bin bench-ai -- smoke
-
-./scripts/check-core-boundaries.sh
-./scripts/check-web-safeguards.sh
+# 1. Fail-fast static & frontend checks
 ./scripts/check-glossary.sh
-./scripts/test-dist-scripts.sh
+
+if [ "$run_rust" -eq 1 ]; then
+  cargo fmt --all -- --check
+fi
+
+if [ "$run_web" -eq 1 ]; then
+  if [ ! -d "web/node_modules" ]; then
+    echo "ERROR: web/node_modules not found. Run 'make web-install' (or 'npm ci --prefix web') first." >&2
+    exit 1
+  fi
+  (cd web && npm run typecheck && npm test && npm run build)
+  ./scripts/check-web-safeguards.sh
+fi
+
+if [ "$run_dist_scripts" -eq 1 ]; then
+  ./scripts/test-dist-scripts.sh
+fi
+
+# 2. Heavier Rust clippy, crate boundary checks (after clippy warms cargo cache), tests & AI smoke gate
+if [ "$run_rust" -eq 1 ]; then
+  cargo clippy --workspace --all-targets -- -D warnings
+  ./scripts/check-core-boundaries.sh
+
+  if [ "$sandbox_mode" -eq 1 ]; then
+    cargo test -p mahjong-core
+    cargo test -p mahjong-server --lib --bin mahjong-server --test lan_discovery --test pacing_virtual_clock --test ts_contract_drift
+    if [ "$run_ai_heavy" -eq 1 ]; then
+      cargo test -p mahjong-ai
+    fi
+  else
+    cargo test --workspace
+  fi
+
+  if [ "$run_ai_heavy" -eq 1 ]; then
+    cargo run --release -p mahjong-ai --bin bench-ai -- smoke
+  fi
+fi

@@ -1,7 +1,7 @@
 import type { Seat } from "../protocol/generated/Seat";
 import type { WinKind } from "../protocol/generated/WinKind";
 import type { MeldKind } from "../protocol/melds";
-import { seatIndex, seatLabel } from "../protocol/seats";
+import { seatIndex, seatNumberLabel } from "../protocol/seats";
 import { getTileLabel } from "../table/tiles";
 import type { SemanticGameEvent } from "./semanticEvents";
 
@@ -108,21 +108,18 @@ const WIN_KIND_SPEC: Record<
   Ron: { kind: "hu", label: "胡！" },
 };
 
-function formatActorSublabel(
-  event: SemanticGameEvent,
-  extra?: string,
+function joinSublabel(
+  parts: ReadonlyArray<string | null | undefined | false>,
 ): string {
-  const parts: string[] = [];
-  if (event.seat !== null) {
-    parts.push(seatLabel(event.seat));
-  }
-  if (event.tile !== null) {
-    parts.push(getTileLabel(event.tile));
-  }
-  if (extra) {
-    parts.push(extra);
-  }
-  return parts.join(" · ");
+  return parts.filter((part): part is string => Boolean(part)).join(" · ");
+}
+
+function resolveActorText(
+  label: string | null | undefined,
+  role: SemanticGameEvent["relativeRole"],
+  seat: Seat | null,
+): string | null {
+  return label || role || (seat !== null ? seatNumberLabel(seat) : null);
 }
 
 /**
@@ -153,7 +150,11 @@ export function buildPiltoverImpactFrame(
       id,
       kind: spec.kind,
       label: spec.label,
-      sublabel: formatActorSublabel(event, kongExtra),
+      sublabel: joinSublabel([
+        resolveActorText(event.actorLabel, event.relativeRole, event.seat),
+        event.tile !== null && getTileLabel(event.tile),
+        kongExtra,
+      ]),
       accentColor: spec.accentColor,
       speedlines: true,
       skewDeg: PILTOVER_SKEW_DEG,
@@ -188,15 +189,11 @@ export function buildPiltoverImpactFrame(
     const winnerSeats = event.winners.map((w) => w.seat);
 
     if (event.isMultiRon) {
-      const fanText =
-        event.totalFan !== null ? `最高 ${event.totalFan} 番` : "";
-      const sublabel = [
+      const sublabel = joinSublabel([
         `${event.winners.length} 家胡牌`,
-        fanText,
-        event.tile !== null ? getTileLabel(event.tile) : "",
-      ]
-        .filter(Boolean)
-        .join(" · ");
+        event.totalFan !== null && `最高 ${event.totalFan} 番`,
+        event.tile !== null && getTileLabel(event.tile),
+      ]);
       return {
         id,
         kind: "multi_ron",
@@ -217,20 +214,22 @@ export function buildPiltoverImpactFrame(
     const winSpec = primary
       ? WIN_KIND_SPEC[primary.winKind]
       : WIN_KIND_SPEC.Ron;
-    const subParts: string[] = [];
-    if (primary) {
-      subParts.push(seatLabel(primary.seat));
-      subParts.push(`${primary.totalFan} 番`);
-    }
-    if (event.tile !== null) {
-      subParts.push(getTileLabel(event.tile));
-    }
+    const sublabel = joinSublabel([
+      primary &&
+        resolveActorText(
+          primary.displayName || event.actorLabel,
+          primary.relativeRole,
+          primary.seat,
+        ),
+      primary && `${primary.totalFan} 番`,
+      event.tile !== null && getTileLabel(event.tile),
+    ]);
 
     return {
       id,
       kind: winSpec.kind,
       label: winSpec.label,
-      sublabel: subParts.join(" · "),
+      sublabel,
       accentColor: "#F3A93B",
       speedlines: true,
       skewDeg: PILTOVER_SKEW_DEG,

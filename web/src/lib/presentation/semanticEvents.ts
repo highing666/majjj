@@ -6,10 +6,14 @@ import type { SeatInfo } from "../protocol/generated/SeatInfo";
 import type { Tile } from "../protocol/generated/Tile";
 import type { WinKind } from "../protocol/generated/WinKind";
 import { parseMeld, type MeldKind } from "../protocol/melds";
-import { seatIndex } from "../protocol/seats";
-import { seatRelativeRole } from "../table/viewModel";
+import {
+  formatRelativeSeatDisplay,
+  seatIndex,
+  seatRelativeRole,
+  type RelativeRole,
+} from "../protocol/seats";
 
-export type RelativeRole = "自家" | "下家" | "对家" | "上家";
+export type { RelativeRole };
 
 export type SemanticGameEventType =
   | "MatchStarted"
@@ -30,6 +34,7 @@ export type SemanticGameEventType =
 export interface SemanticWinnerInfo {
   seat: Seat;
   relativeRole: RelativeRole | null;
+  displayName: string;
   winKind: WinKind;
   totalFan: number;
   voicePackId: string | null;
@@ -40,6 +45,7 @@ export interface SemanticGameEvent {
   seq: number | null;
   seat: Seat | null;
   relativeRole: RelativeRole | null;
+  actorLabel: string | null;
   voicePackId: string | null;
   wallRemaining: number;
   isTsumogiri: boolean;
@@ -101,6 +107,10 @@ function makeBaseEvent(
     seq: null,
     seat,
     relativeRole: resolveRole(context.viewer, seat),
+    actorLabel:
+      seat !== null
+        ? formatRelativeSeatDisplay(seat, context.viewer, context.seats)
+        : null,
     voicePackId: resolveVoicePackId(context.seats, seat),
     wallRemaining: context.wallRemaining,
     isTsumogiri: false,
@@ -200,6 +210,11 @@ export function mapPlayerEventToSemanticEvent(
     const semanticWinners: SemanticWinnerInfo[] = winners.map((winner) => ({
       seat: winner.seat,
       relativeRole: resolveRole(context.viewer, winner.seat),
+      displayName: formatRelativeSeatDisplay(
+        winner.seat,
+        context.viewer,
+        context.seats,
+      ),
       winKind: winner.win_kind,
       totalFan: winner.total_fan,
       voicePackId: resolveVoicePackId(context.seats, winner.seat),

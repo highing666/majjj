@@ -4,10 +4,10 @@ import type { MatchRecord } from "../protocol/generated/MatchRecord";
 import type { PlayerStats } from "../protocol/generated/PlayerStats";
 import type { ScoreItem } from "../protocol/generated/ScoreItem";
 import type { Seat } from "../protocol/generated/Seat";
-import { seatIndex, seatLabel } from "../protocol/seats";
+import { formatSeatlessDisplay, seatIndex } from "../protocol/seats";
 import { kongKindLabel, winKindLabel } from "../protocol/settlements";
 import { formatRoundTitle, getTileLabel } from "../table/tiles";
-import { formatScoreDelta, formatSeatDisplayName } from "../table/viewModel";
+import { formatScoreDelta } from "../table/viewModel";
 
 export type DeltaTone = "pos" | "neg" | "zero";
 
@@ -29,7 +29,6 @@ export interface PlayerSummaryCard {
 
 export interface MatchSeatSummaryItem {
   seat: Seat;
-  seatLabel: string;
   nickname: string;
   isAi: boolean;
   assistedByAi: boolean;
@@ -66,7 +65,6 @@ export interface HandKongTransferSummary {
 
 export interface HandSeatDeltaItem {
   seat: Seat;
-  seatLabel: string;
   nickname: string;
   isAi: boolean;
   assistedByAi: boolean;
@@ -171,8 +169,7 @@ export function buildMatchHistoryRows(
     assistedByAi: match.seats.some((s) => s.assisted_by_ai),
     seats: match.seats.map((s) => ({
       seat: s.seat,
-      seatLabel: seatLabel(s.seat),
-      nickname: s.nickname || (s.seat_kind === "Ai" ? "AI" : seatLabel(s.seat)),
+      nickname: formatSeatlessDisplay(s.seat, match.seats),
       isAi: s.seat_kind === "Ai",
       assistedByAi: s.assisted_by_ai,
       finalScore: s.final_score,
@@ -210,7 +207,7 @@ export function buildHandHistoryRows(
       winningTileLabel = getTileLabel(win.winning_tile);
       discarderLabel =
         win.discarder !== null
-          ? formatSeatDisplayName(win.discarder, hand.seats)
+          ? formatSeatlessDisplay(win.discarder, hand.seats)
           : null;
       if (win.winners.length > 1) {
         outcomeLabel = "一炮多响";
@@ -221,7 +218,7 @@ export function buildHandHistoryRows(
       }
       winners = win.winners.map((w) => ({
         seat: w.seat,
-        displayName: formatSeatDisplayName(w.seat, hand.seats),
+        displayName: formatSeatlessDisplay(w.seat, hand.seats),
         winKindLabel: winKindLabel(w.win_kind),
         totalFan: w.total_fan,
         fanItems: w.items,
@@ -231,10 +228,10 @@ export function buildHandHistoryRows(
     const kongTransfers: HandKongTransferSummary[] =
       settlement.kong_transfers.map((kt) => ({
         kindLabel: kongKindLabel(kt.kind),
-        actorLabel: formatSeatDisplayName(kt.actor, hand.seats),
+        actorLabel: formatSeatlessDisplay(kt.actor, hand.seats),
         fromLabel:
           kt.from_seat !== null
-            ? formatSeatDisplayName(kt.from_seat, hand.seats)
+            ? formatSeatlessDisplay(kt.from_seat, hand.seats)
             : null,
         tileLabel: getTileLabel(kt.tile),
         actorDeltaText: formatScoreDelta(
@@ -246,10 +243,7 @@ export function buildHandHistoryRows(
       const delta = settlement.score_deltas[idx] ?? 0;
       return {
         seat: seatRec.seat,
-        seatLabel: seatLabel(seatRec.seat),
-        nickname:
-          seatRec.nickname ||
-          (seatRec.seat_kind === "Ai" ? `AI ${idx + 1}` : seatLabel(seatRec.seat)),
+        nickname: formatSeatlessDisplay(seatRec.seat, hand.seats),
         isAi: seatRec.seat_kind === "Ai",
         assistedByAi: seatRec.assisted_by_ai,
         tookOverAi: seatRec.took_over_ai,

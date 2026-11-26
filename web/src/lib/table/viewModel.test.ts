@@ -17,8 +17,6 @@ import {
   getTileRank,
   getTileSuit,
   getTileTone,
-  seatLabel,
-  seatShortWind,
 } from "./tiles";
 import {
   buildActionBarItems,
@@ -31,7 +29,6 @@ import {
   extractContentBoxSize,
   findLegalDiscardAction,
   formatScoreDelta,
-  formatSeatDisplayName,
   getRelativeSeats,
   resolveActionBarShortcut,
   seatRelativeSlot,
@@ -137,9 +134,7 @@ describe("tile metadata helpers", () => {
     ]);
   });
 
-  it("formats seat labels and round titles with GLOSSARY terms", () => {
-    expect(seatLabel("East")).toBe("东座");
-    expect(seatShortWind("West")).toBe("西");
+  it("formats round titles with GLOSSARY terms", () => {
     expect(
       formatRoundTitle({
         wind_round: "East",
@@ -197,54 +192,6 @@ describe("table viewModel helpers", () => {
     expect(seatRelativeSlot("West", "North")).toBe("right");
     expect(seatRelativeSlot("West", "East")).toBe("top");
     expect(seatRelativeSlot("West", "South")).toBe("left");
-
-    const sampleSeats = [
-      {
-        seat: "East",
-        kind: "Human",
-        nickname: "房主",
-        connected: true,
-        ai_assisted: false,
-        ai_difficulty: null,
-        ai_style: null,
-        voice_pack_id: null,
-      },
-      {
-        seat: "South",
-        kind: "Ai",
-        nickname: "",
-        connected: true,
-        ai_assisted: false,
-        ai_difficulty: "Strong",
-        ai_style: "Balanced",
-        voice_pack_id: null,
-      },
-      {
-        seat: "West",
-        kind: "Human",
-        nickname: "",
-        connected: true,
-        ai_assisted: false,
-        ai_difficulty: null,
-        ai_style: null,
-        voice_pack_id: null,
-      },
-      {
-        seat: "North",
-        kind: "Ai",
-        nickname: "AI北",
-        connected: true,
-        ai_assisted: false,
-        ai_difficulty: "Strong",
-        ai_style: "Balanced",
-        voice_pack_id: null,
-      },
-    ] as const;
-    expect(formatSeatDisplayName("East", sampleSeats)).toBe("东座 · 房主");
-    expect(formatSeatDisplayName("South", sampleSeats)).toBe("南座 · AI 2");
-    expect(formatSeatDisplayName("West", sampleSeats)).toBe("西座");
-    expect(formatSeatDisplayName("North", sampleSeats)).toBe("北座 · AI北");
-    expect(formatSeatDisplayName("East", null)).toBe("东座");
   });
 
   it("omits claimed discards and chunks rivers strictly into 6-tile rows", () => {
@@ -495,10 +442,44 @@ describe("table viewModel helpers", () => {
     ]);
     expect(standings[0]).toMatchObject({
       rank: 1,
+      seatName: "",
       nickname: "AI 1",
       finalScore: 12,
       netDelta: 12,
     });
+    expect(standings[2]).toMatchObject({
+      rank: 3,
+      seatName: "",
+      nickname: "小明",
+    });
+
+    const seatedStandings = buildMatchStandings(
+      {
+        mode: "EastOnly",
+        hands_played: 4,
+        initial_scores: [0, 0, 0, 0],
+        final_scores: [-4, 12, 0, -8],
+        net_deltas: [-4, 12, 0, -8],
+      },
+      seats,
+      "East",
+    );
+    expect(seatedStandings[0]).toMatchObject({
+      rank: 1,
+      seat: "South",
+      seatName: "下家",
+      nickname: "AI 1",
+    });
+    expect(seatedStandings[2]).toMatchObject({
+      rank: 3,
+      seat: "East",
+      seatName: "自家",
+      nickname: "小明",
+    });
+    for (const row of [...standings, ...seatedStandings]) {
+      expect(row.seatName).not.toMatch(/东座|南座|西座|北座/);
+      expect(row.nickname).not.toMatch(/东座|南座|西座|北座/);
+    }
   });
 
   it("resolves H/G/P/Esc ActionBar shortcuts only when unobstructed and unambiguous", () => {
@@ -565,7 +546,7 @@ describe("table viewModel helpers", () => {
     ).toBeNull();
   });
 
-  it("builds corner seat badge view models with dealer, active, offline, and score tags", () => {
+  it("builds corner seat badge view models with 2-char relative role, dealer, active, offline, and score tags", () => {
     const model = buildSeatBadgeModel(
       "South",
       {
@@ -592,7 +573,7 @@ describe("table viewModel helpers", () => {
     );
 
     expect(model).toEqual({
-      wind: "南",
+      role: "下家",
       isDealer: true,
       isActive: true,
       isOffline: true,
@@ -600,6 +581,7 @@ describe("table viewModel helpers", () => {
       name: "小红",
       scoreText: "+8",
     });
+    expect("wind" in model).toBe(false);
 
     const assistedModel = buildSeatBadgeModel(
       "South",
@@ -626,5 +608,136 @@ describe("table viewModel helpers", () => {
       "South",
     );
     expect(assistedModel.isAiAssisted).toBe(true);
+    expect(assistedModel.isOffline).toBe(true);
+    expect(assistedModel.role).toBe("下家");
+
+    const emptyHumanModel = buildSeatBadgeModel(
+      "South",
+      {
+        seat: "South",
+        score: 0,
+        hand_count: 13,
+        river: [],
+        melds: [],
+        last_draw_or_meld_seq: 0,
+      },
+      {
+        seat: "South",
+        kind: "Human",
+        nickname: "",
+        connected: true,
+        ai_assisted: false,
+        ai_difficulty: null,
+        ai_style: null,
+        voice_pack_id: null,
+      },
+      "East",
+      "East",
+      null,
+    );
+    expect(emptyHumanModel.role).toBe("下家");
+    expect(emptyHumanModel.name).toBe("2号位");
+
+    const whitespaceHumanModel = buildSeatBadgeModel(
+      "West",
+      {
+        seat: "West",
+        score: 0,
+        hand_count: 13,
+        river: [],
+        melds: [],
+        last_draw_or_meld_seq: 0,
+      },
+      {
+        seat: "West",
+        kind: "Human",
+        nickname: "   ",
+        connected: true,
+        ai_assisted: false,
+        ai_difficulty: null,
+        ai_style: null,
+        voice_pack_id: null,
+      },
+      "East",
+      "East",
+      null,
+    );
+    expect(whitespaceHumanModel.role).toBe("对门");
+    expect(whitespaceHumanModel.name).toBe("3号位");
+
+    const whitespaceAiModel = buildSeatBadgeModel(
+      "North",
+      {
+        seat: "North",
+        score: 0,
+        hand_count: 13,
+        river: [],
+        melds: [],
+        last_draw_or_meld_seq: 0,
+      },
+      {
+        seat: "North",
+        kind: "Ai",
+        nickname: "   ",
+        connected: true,
+        ai_assisted: false,
+        ai_difficulty: "Strong",
+        ai_style: "Balanced",
+        voice_pack_id: null,
+      },
+      "East",
+      "East",
+      null,
+    );
+    expect(whitespaceAiModel.name).toBe("AI");
+  });
+
+  it("assigns full 2-char counter-clockwise relative roles with zero wind characters across all 4 viewer perspectives", () => {
+    const seats: Seat[] = ["East", "South", "West", "North"];
+    const expectedByViewer: Record<Seat, Record<Seat, string>> = {
+      East: { East: "自家", South: "下家", West: "对门", North: "上家" },
+      South: { South: "自家", West: "下家", North: "对门", East: "上家" },
+      West: { West: "自家", North: "下家", East: "对门", South: "上家" },
+      North: { North: "自家", East: "下家", South: "对门", West: "上家" },
+    };
+
+    for (const viewer of seats) {
+      for (const seat of seats) {
+        const badge = buildSeatBadgeModel(
+          seat,
+          {
+            seat,
+            score: -4,
+            hand_count: 13,
+            river: [],
+            melds: [],
+            last_draw_or_meld_seq: 0,
+          },
+          {
+            seat,
+            kind: "Ai",
+            nickname: "",
+            connected: true,
+            ai_assisted: false,
+            ai_difficulty: "Strong",
+            ai_style: "Balanced",
+            voice_pack_id: null,
+          },
+          viewer,
+          "East",
+          "West",
+        );
+
+        expect(badge.role).toBe(expectedByViewer[viewer][seat]);
+        expect(badge.role).toHaveLength(2);
+        expect(badge.role).not.toMatch(/[东南西北]/);
+        expect(badge.isDealer).toBe(seat === "East");
+        expect(badge.isActive).toBe(seat === "West");
+        expect(badge.isOffline).toBe(false);
+        expect(badge.isAiAssisted).toBe(false);
+        expect(badge.name).toBe("AI");
+        expect(badge.scoreText).toBe("-4");
+      }
+    }
   });
 });
