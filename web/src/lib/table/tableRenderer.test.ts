@@ -1,4 +1,4 @@
-import { Container, type FederatedPointerEvent, Text, Texture } from "pixi.js";
+import { Container, type FederatedPointerEvent, Graphics, Text, Texture } from "pixi.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Seat } from "../protocol/generated/Seat";
 import type { SeatInfo } from "../protocol/generated/SeatInfo";
@@ -502,6 +502,103 @@ describe("TableSceneRenderer standing vs laid bodies & Scheme B integration", ()
     stage.emit("pointerup", makePointerEvent(tileSprite.x, restY));
     expect(onDiscard).toHaveBeenCalledTimes(1);
     expect(onDiscard).toHaveBeenCalledWith(0, false);
+
+    renderer.destroy();
+    spy.atlas.destroy();
+  });
+
+  it("renders 4-layer turn cues: drawn lift/caret vs post-pon 13-tile highlight, hand dimming, reducedEffects static glow, and onLayoutChange", () => {
+    const spy = createSpyAtlas();
+    const stage = new Container();
+    const onLayoutChange = vi.fn();
+    const renderer = new TableSceneRenderer(stage, spy.atlas, {
+      onDiscard: () => {},
+      onLayoutChange,
+    });
+
+    renderer.resize(1280, 720);
+
+    // 1. discard_drawn: drawn tile lifted with ▼ indicator, full brightness, breathing animates on tick
+    renderer.render({
+      snapshot: makeSnapshot(),
+      pendingAddedKong: null,
+      inputLocked: false,
+      reducedEffects: false,
+    });
+
+    expect(onLayoutChange).toHaveBeenCalled();
+    const latestLayout = onLayoutChange.mock.calls[onLayoutChange.mock.calls.length - 1][0];
+    expect(latestLayout.turnBarRect.width).toBeGreaterThan(0);
+
+    const viewerHandLayer = stage.children[7] as Container;
+    expect(collectTexts(viewerHandLayer)).toContain("▼");
+
+    const closedTileSprite = viewerHandLayer.children.find(
+      (c) => "texture" in c && c.texture === spy.standingTextures.get(0),
+    )!;
+    const drawnTileSprite = viewerHandLayer.children.find(
+      (c) => "texture" in c && c.texture === spy.standingTextures.get(5),
+    )!;
+    expect(drawnTileSprite.y).toBeLessThan(closedTileSprite.y);
+    expect(closedTileSprite.tint).toBe(0xffffff);
+    expect(closedTileSprite.alpha).toBe(1);
+
+    const trayGlow = viewerHandLayer.children.find(
+      (c) => c instanceof Graphics && c.label === "turn-tray-breath",
+    );
+    expect(trayGlow).toBeDefined();
+    const initialGlowAlpha = trayGlow!.alpha;
+    renderer.tick(425);
+    expect(trayGlow!.alpha).not.toBe(initialGlowAlpha);
+
+    // 2. reducedEffects: static highlight does not animate on tick
+    renderer.render({
+      snapshot: makeSnapshot(),
+      pendingAddedKong: null,
+      inputLocked: false,
+      reducedEffects: true,
+    });
+    const staticGlow = viewerHandLayer.children.find(
+      (c) => c instanceof Graphics && c.label === "turn-tray-breath",
+    );
+    expect(staticGlow).toBeDefined();
+    const staticAlpha = staticGlow!.alpha;
+    renderer.tick(425);
+    expect(staticGlow!.alpha).toBe(staticAlpha);
+
+    // 3. discard_post_pon (drawn_tile: null): no ▼ indicator, closed hand highlighted uniformly
+    const postPonSnap = makeSnapshot();
+    postPonSnap.player_view!.hand.closed_tiles = [0, 1, 2, 9, 10, 11, 18, 19, 20, 27];
+    postPonSnap.player_view!.hand.drawn_tile = null;
+    postPonSnap.player_view!.legal_actions = [{ Discard: { tile: 0, from_drawn: false } }];
+    renderer.render({
+      snapshot: postPonSnap,
+      pendingAddedKong: null,
+      inputLocked: false,
+      reducedEffects: false,
+    });
+    expect(collectTexts(viewerHandLayer)).not.toContain("▼");
+    const postPonHighlights = viewerHandLayer.children.filter(
+      (c) => c instanceof Graphics && c.label === "post-pon-tile-highlight",
+    );
+    expect(postPonHighlights).toHaveLength(10);
+
+    // 4. idle (waiting on opponent): Layer 3 dims hand, then snaps back on own turn
+    const idleSnap = makeSnapshot();
+    idleSnap.player_view!.turn.active_seat = "South";
+    idleSnap.player_view!.legal_actions = [];
+    renderer.render({
+      snapshot: idleSnap,
+      pendingAddedKong: null,
+      inputLocked: false,
+      reducedEffects: false,
+    });
+    expect(collectTexts(viewerHandLayer)).not.toContain("▼");
+    const dimmedSprite = viewerHandLayer.children.find(
+      (c) => "texture" in c && c.texture === spy.standingTextures.get(0),
+    )!;
+    expect(dimmedSprite.tint).not.toBe(0xffffff);
+    expect(dimmedSprite.alpha).toBeLessThan(1);
 
     renderer.destroy();
     spy.atlas.destroy();

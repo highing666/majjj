@@ -4,6 +4,7 @@
   import type { Tile } from "../protocol/generated/Tile";
   import type { PendingAddedKong } from "../session/reducer";
   import { TableSceneRenderer, type TableRenderParams } from "./tableRenderer";
+  import type { TableLayout } from "./layout";
   import { loadTileAtlas, type TileAtlas } from "./tileAtlas";
   import { computeCanvasResolution, extractContentBoxSize } from "./viewModel";
   import {
@@ -17,9 +18,11 @@
     inputLocked: boolean;
     confirmDiscard?: boolean;
     paperGrainEnabled?: boolean;
+    reducedEffects?: boolean;
     onDiscard: (tile: Tile, fromDrawn: boolean) => void;
     onTileHover?: (tile: Tile, fromDrawn: boolean) => void;
     onTileSelect?: (tile: Tile, fromDrawn: boolean) => void;
+    onLayoutChange?: (layout: TableLayout) => void;
     onFrameTick?: () => void;
     onWebGLRecoveryChange?: (state: WebGLRecoveryState) => void;
     onRefresh?: () => void;
@@ -31,9 +34,11 @@
     inputLocked,
     confirmDiscard = false,
     paperGrainEnabled = true,
+    reducedEffects = false,
     onDiscard,
     onTileHover,
     onTileSelect,
+    onLayoutChange,
     onFrameTick,
     onWebGLRecoveryChange,
     onRefresh,
@@ -54,6 +59,7 @@
     inputLocked,
     confirmDiscard,
     paperGrainEnabled,
+    reducedEffects,
   });
 
   let latestRenderParams: TableRenderParams | null = null;
@@ -96,6 +102,9 @@
         },
         onTileSelect: (tile, fromDrawn) => {
           onTileSelect?.(tile, fromDrawn);
+        },
+        onLayoutChange: (layout) => {
+          onLayoutChange?.(layout);
         },
       });
       nextRenderer.resize(width, height);
@@ -164,8 +173,9 @@
       }
     };
 
-    const handleTickerFrame = () => {
+    const handleTickerFrame = (ticker: { deltaMS: number }) => {
       if (!disposed && !document.hidden) {
+        renderer?.tick(ticker.deltaMS);
         onFrameTick?.();
       }
     };
