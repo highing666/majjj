@@ -5,6 +5,7 @@ use mahjong_ai::AiStyle;
 use mahjong_core::{PublicPhase, Seat};
 use uuid::Uuid;
 
+use crate::persona::is_valid_human_voice_pack_id;
 use crate::protocol::{SeatKind, ServerMessage, TablePhase};
 use crate::session::{SeatRecord, TableSession};
 
@@ -243,6 +244,7 @@ impl TableSession {
         let _ = self.bump_seat_generation(seat);
         self.in_flight_ai.retain(|k| k.seat != seat);
 
+        let fallback_voice_pack = self.default_human_voice_pack(Some(seat));
         let slot = &mut self.seats[seat.index()];
         slot.info.connected = true;
         slot.info.ai_assisted = false;
@@ -250,6 +252,14 @@ impl TableSession {
         slot.info.ai_style = None;
         slot.info.persona_id = None;
         slot.info.mood = None;
+        if !slot
+            .info
+            .voice_pack_id
+            .as_deref()
+            .is_some_and(is_valid_human_voice_pack_id)
+        {
+            slot.info.voice_pack_id = Some(fallback_voice_pack);
+        }
         if slot.info.nickname.trim().is_empty() {
             slot.info.nickname = effective_nickname(caller.nickname, seat);
         }
@@ -277,6 +287,7 @@ impl TableSession {
             self.history.record_nickname(caller.nickname);
         }
 
+        let human_voice_pack = self.default_human_voice_pack(Some(seat));
         let slot = &mut self.seats[seat.index()];
         slot.info.kind = SeatKind::Human;
         slot.info.nickname = effective_nickname(caller.nickname, seat);
@@ -286,6 +297,7 @@ impl TableSession {
         slot.info.ai_style = None;
         slot.info.persona_id = None;
         slot.info.mood = None;
+        slot.info.voice_pack_id = Some(human_voice_pack);
         slot.client_id = Some(caller.client_id.to_string());
         slot.seat_token = Some(caller.seat_token.to_string());
 

@@ -25,6 +25,7 @@ import {
   createUiActionPromptedEvent,
   mapLocalUiActionToSemanticEvent,
   mapPlayerEventToSemanticEvent,
+  mapQuickEmoteBroadcastToSemanticEvent,
   type LocalUiAction,
   type SemanticGameEvent,
   type SemanticMappingContext,
@@ -552,6 +553,13 @@ export function createPresentationQueue(
 
     const reduced = reduceServerMessage(sessionState, message);
     sessionState = reduced.state;
+
+    emitSemantic(
+      mapQuickEmoteBroadcastToSemanticEvent(
+        { seat, emote, text: trimmed },
+        buildSemanticContext(sessionState),
+      ),
+    );
 
     scheduleSeatBubble({
       kind: "quick_emote",

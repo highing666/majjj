@@ -1,5 +1,12 @@
 import type { IosAudioSessionMode } from "../preferences/devicePreferences";
 import type { Seat } from "../protocol/generated/Seat";
+import type {
+  VoicePackManifest,
+  VoiceSlotId,
+  VoiceSpriteSlice,
+} from "./voicePackSchema";
+
+export type { VoicePackManifest, VoiceSlotId, VoiceSpriteSlice };
 
 export type SfxSlotId =
   | "hover"
@@ -146,19 +153,17 @@ export type VoActionCategory =
   | "RobKong"
   | "Kong"
   | "Pon"
+  | "QuickEmote"
   | "Chi"
   | "Discard";
 
-export interface VoManifest {
-  readonly pack_id: string;
-  readonly version: number;
-  readonly clips: Partial<Record<VoActionCategory, readonly string[]>>;
-}
+export type VoManifest = VoicePackManifest;
 
 export interface VoTriggerRequest {
   readonly seat: Seat;
   readonly packId: string;
   readonly category: VoActionCategory;
+  readonly slot: VoiceSlotId;
 }
 
 export type SfxBackendMode = "uninitialized" | "sprite" | "procedural";

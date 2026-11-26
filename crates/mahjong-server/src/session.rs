@@ -37,7 +37,9 @@ use crate::pacing::{
     apply_discard_to_view, compute_ai_turn_trigger, discard_release_delay, target_ai_delay,
     AiTurnTrigger, PacingMode, ReleaseTicket,
 };
-use crate::persona::PersonaId;
+use crate::persona::{
+    is_valid_human_voice_pack_id, PersonaId, HUMAN_VOICE_PACK_FEMALE, HUMAN_VOICE_PACK_MALE,
+};
 use crate::persona_memory::{
     plan_match_finished_note_jobs, plan_memorable_hand_note_jobs, ClearPersonaMemoryResponse,
     PersonaMemoryNoteTrigger, PersonaMemoryResponse, PersonaMemoryStore,
@@ -772,6 +774,26 @@ impl TableSession {
         }
     }
 
+    pub(crate) fn default_human_voice_pack(&self, excluding_seat: Option<Seat>) -> String {
+        let mut male_count = 0usize;
+        let mut female_count = 0usize;
+        for slot in &self.seats {
+            if slot.info.kind != SeatKind::Human || Some(slot.info.seat) == excluding_seat {
+                continue;
+            }
+            match slot.info.voice_pack_id.as_deref() {
+                Some(HUMAN_VOICE_PACK_MALE) => male_count += 1,
+                Some(HUMAN_VOICE_PACK_FEMALE) => female_count += 1,
+                _ => {}
+            }
+        }
+        if male_count <= female_count {
+            HUMAN_VOICE_PACK_MALE.to_string()
+        } else {
+            HUMAN_VOICE_PACK_FEMALE.to_string()
+        }
+    }
+
     pub(crate) fn handle_join_seat(&mut self, conn_id: u64, requested_seat: Option<Seat>) {
         let Some(existing_conn) = self.connections.get(&conn_id).cloned() else {
             return;
@@ -816,9 +838,18 @@ impl TableSession {
             }
         };
 
+        let preserved_voice_pack = existing_conn.seat.and_then(|old_seat| {
+            self.seats[old_seat.index()]
+                .info
+                .voice_pack_id
+                .clone()
+                .filter(|id| is_valid_human_voice_pack_id(id))
+        });
         if let Some(old_seat) = existing_conn.seat {
             self.seats[old_seat.index()].clear_to_empty();
         }
+        let voice_pack_id =
+            preserved_voice_pack.unwrap_or_else(|| self.default_human_voice_pack(None));
 
         let effective_nickname = if existing_conn.nickname.is_empty() {
             format!("玩家{}", target_seat.index() + 1)
@@ -836,7 +867,7 @@ impl TableSession {
         slot.info.ai_style = None;
         slot.info.persona_id = None;
         slot.info.mood = None;
-        slot.info.voice_pack_id = None;
+        slot.info.voice_pack_id = Some(voice_pack_id);
         slot.client_id = Some(existing_conn.client_id.clone());
         slot.seat_token = Some(existing_conn.seat_token.clone());
 
@@ -932,6 +963,7 @@ impl TableSession {
 
         let slot = &mut self.seats[seat.index()];
         slot.info.persona_id = persona_id;
+        slot.info.voice_pack_id = persona_id.map(|pid| pid.voice_pack_id().to_string());
         if slot.info.kind == SeatKind::Ai {
             if let Some(pid) = persona_id {
                 slot.info.nickname = pid.display_name().to_string();
@@ -943,6 +975,24 @@ impl TableSession {
         } else {
             slot.info.mood = None;
         }
+        self.broadcast_lobby_updated(None);
+    }
+
+    pub(crate) fn handle_set_seat_voice_pack(&mut self, conn_id: u64, voice_pack_id: String) {
+        let Some((seat, tx)) = self.require_seated_human(conn_id, "selecting a voice pack") else {
+            return;
+        };
+        let trimmed = voice_pack_id.trim();
+        if !is_valid_human_voice_pack_id(trimmed) {
+            Self::send_error(
+                &tx,
+                format!(
+                    "invalid human voice_pack_id '{trimmed}'; expected '{HUMAN_VOICE_PACK_MALE}' or '{HUMAN_VOICE_PACK_FEMALE}'"
+                ),
+            );
+            return;
+        }
+        self.seats[seat.index()].info.voice_pack_id = Some(trimmed.to_string());
         self.broadcast_lobby_updated(None);
     }
 
@@ -1107,7 +1157,7 @@ impl TableSession {
                     ai_style: Some(persona.default_style()),
                     persona_id: Some(persona),
                     mood: Some(persona.initial_mood()),
-                    voice_pack_id: None,
+                    voice_pack_id: Some(persona.voice_pack_id().to_string()),
                 },
                 client_id: None,
                 seat_token: None,
@@ -2542,6 +2592,9 @@ impl TableRuntime {
                         }
                         ClientMessage::SetSeatPersona { seat, persona_id } => {
                             session.handle_set_seat_persona(conn_id, seat, persona_id);
+                        }
+                        ClientMessage::SetSeatVoicePack { voice_pack_id } => {
+                            session.handle_set_seat_voice_pack(conn_id, voice_pack_id);
                         }
                         ClientMessage::SetPace { pace } => {
                             session.handle_set_pace(conn_id, pace);

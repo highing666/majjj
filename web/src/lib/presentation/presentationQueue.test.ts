@@ -962,13 +962,27 @@ describe("PresentationQueue", () => {
     expect(queue.getState().snapshot?.slow_think_nudge_enabled).toBe(false);
     expect(queue.getState().activeBubbles.East?.text).toBe("就这？");
 
-    // Second QuickEmote on East overwrites first and cancels old timer.
+    // Second QuickEmote on East overwrites first and cancels old timer and emits QuickEmoteBroadcast semantic event.
+    const emittedQuickEmotes: SemanticGameEvent[] = [];
+    const unsubQuickEmote = queue.onSemanticEvent((ev) => {
+      if (ev.type === "QuickEmoteBroadcast") {
+        emittedQuickEmotes.push(ev);
+      }
+    });
     queue.enqueueServerMessage({
       QuickEmoteBroadcast: {
         seat: "East",
         emote: "GoingBig",
         text: "这把我要胡大的",
       },
+    });
+    unsubQuickEmote();
+    expect(emittedQuickEmotes).toHaveLength(1);
+    expect(emittedQuickEmotes[0]).toMatchObject({
+      type: "QuickEmoteBroadcast",
+      seat: "East",
+      quickEmote: "GoingBig",
+      relativeRole: "自家",
     });
     expect(clearedIds).toContain(firstTimerId);
     expect(queue.getState().activeBubbles.East).toMatchObject({

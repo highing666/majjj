@@ -1,3 +1,7 @@
+import {
+  getHumanVoicePackMeta,
+  type HumanVoicePackMeta,
+} from "../audio/voicePackSchema";
 import type { PersonaId } from "../protocol/generated/PersonaId";
 import type { Seat } from "../protocol/generated/Seat";
 import type { SeatInfo } from "../protocol/generated/SeatInfo";
@@ -31,6 +35,7 @@ export interface LobbyTableSlot {
   seatInfo: SeatInfo;
   label: string;
   isMine: boolean;
+  humanVoicePackMeta: HumanVoicePackMeta | null;
   personaMeta: PersonaMeta | null;
   personaOptions: readonly LobbyPersonaOption[];
 }
@@ -96,6 +101,10 @@ export function buildLobbyTableViewModel(
     const seatInfo = snapshot.seats[seatIndex(seat)];
     const label =
       viewer !== null ? seatRelativeRole(viewer, seat) : seatNumberLabel(seat);
+    const humanVoicePackMeta =
+      seatInfo.kind === "Human"
+        ? getHumanVoicePackMeta(seatInfo.voice_pack_id)
+        : null;
     const personaMeta =
       seatInfo.kind !== "Human" && seatInfo.persona_id !== null
         ? getPersonaMeta(seatInfo.persona_id)
@@ -110,6 +119,7 @@ export function buildLobbyTableViewModel(
       seatInfo,
       label,
       isMine: viewer === seat,
+      humanVoicePackMeta,
       personaMeta,
       personaOptions,
     };

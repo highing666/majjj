@@ -1,6 +1,7 @@
 import type { PlayerAction } from "../protocol/generated/PlayerAction";
 import type { PlayerEvent } from "../protocol/generated/PlayerEvent";
 import type { PublicPhase } from "../protocol/generated/PublicPhase";
+import type { QuickEmote } from "../protocol/generated/QuickEmote";
 import type { Seat } from "../protocol/generated/Seat";
 import type { SeatInfo } from "../protocol/generated/SeatInfo";
 import type { Tile } from "../protocol/generated/Tile";
@@ -25,6 +26,7 @@ export type SemanticGameEventType =
   | "HandSettled"
   | "NextHandConfirmed"
   | "MatchFinished"
+  | "QuickEmoteBroadcast"
   | "UiTileHover"
   | "UiTileSelect"
   | "UiActionPrompted"
@@ -54,6 +56,7 @@ export interface SemanticGameEvent {
   winners: readonly SemanticWinnerInfo[];
   meldKind: MeldKind | null;
   tile: Tile | null;
+  quickEmote: QuickEmote | null;
   isReplacement: boolean;
   isDrawGame: boolean;
   isMultiRon: boolean;
@@ -119,6 +122,7 @@ function makeBaseEvent(
     winners: [],
     meldKind: null,
     tile: null,
+    quickEmote: null,
     isReplacement: false,
     isDrawGame: false,
     isMultiRon: false,
@@ -252,6 +256,19 @@ export function mapPlayerEventToSemanticEvent(
   }
 
   return makeBaseEvent("MatchFinished", context, null, { seq });
+}
+
+/**
+ * Pure mapping layer turning a `QuickEmoteBroadcast` (`快捷互动`) into a normalized
+ * `SemanticGameEvent` for immediate `VoicePack` playback.
+ */
+export function mapQuickEmoteBroadcastToSemanticEvent(
+  payload: { seat: Seat; emote: QuickEmote; text: string },
+  context: SemanticMappingContext,
+): SemanticGameEvent {
+  return makeBaseEvent("QuickEmoteBroadcast", context, payload.seat, {
+    quickEmote: payload.emote,
+  });
 }
 
 /**

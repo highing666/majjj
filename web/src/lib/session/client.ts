@@ -1,3 +1,4 @@
+import type { HumanVoicePackId } from "../audio/voicePackSchema";
 import type { ClientMessage } from "../protocol/generated/ClientMessage";
 import type { LobbyConfig } from "../protocol/generated/LobbyConfig";
 import type { PersonaId } from "../protocol/generated/PersonaId";
@@ -82,6 +83,7 @@ export interface TableClient {
   leaveSeat(): boolean;
   updateLobbyConfig(config: LobbyConfig): boolean;
   setSeatPersona(seat: Seat, personaId: PersonaId | null): boolean;
+  setSeatVoicePack(voicePackId: HumanVoicePackId): boolean;
   setPace(pace: TablePace): boolean;
   sendQuickEmote(emote: QuickEmote): boolean;
   setSlowThinkNudge(enabled: boolean): boolean;
@@ -513,6 +515,12 @@ export function createTableClient(
     setSeatPersona(seat: Seat, personaId: PersonaId | null): boolean {
       return sendRaw({
         SetSeatPersona: { seat, persona_id: personaId },
+      });
+    },
+
+    setSeatVoicePack(voicePackId: HumanVoicePackId): boolean {
+      return sendRaw({
+        SetSeatVoicePack: { voice_pack_id: voicePackId },
       });
     },
 

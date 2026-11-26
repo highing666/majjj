@@ -21,6 +21,13 @@ import type {
   VoTriggerRequest,
 } from "./audioTypes";
 import { createSfxBackend, type SfxBackend } from "./sfxBackend";
+import {
+  meldKindToVoiceSlot,
+  quickEmoteToVoiceSlot,
+  tileToVoiceSlot,
+  winKindToVoiceSlot,
+  type VoiceSlotId,
+} from "./voicePackSchema";
 import { createVoManager, type VoManager } from "./voManager";
 
 const PAN_LEFT = -0.35;
@@ -58,6 +65,7 @@ export interface AudioEventRouter {
   getStatus(): AudioStatus;
   subscribe(listener: AudioStatusListener): () => void;
   applyPreferences(preferences: DevicePreferences): void;
+  preloadVoicePacks(packIds: readonly (string | null | undefined)[]): void;
   unlockFromGesture(): boolean;
   bindGestureUnlock(target?: EventTargetLike | null): () => void;
   handleSemanticEvent(event: SemanticGameEvent): void;
@@ -180,18 +188,41 @@ function resolveSfxMapping(
   }
 }
 
-function resolveVoCategory(event: SemanticGameEvent): VoActionCategory | null {
+function resolveVoTrigger(
+  event: SemanticGameEvent,
+): { category: VoActionCategory; slot: VoiceSlotId } | null {
   switch (event.type) {
-    case "TileDiscarded":
-      return "Discard";
-    case "MeldDeclared":
-      return event.meldKind ? MELD_VO_CATEGORY[event.meldKind] : null;
-    case "HandSettled":
-      return event.isDrawGame
-        ? null
-        : event.winKind === "RobKongHu"
-          ? "RobKong"
-          : "Hu";
+    case "TileDiscarded": {
+      const slot = event.tile !== null ? tileToVoiceSlot(event.tile) : null;
+      return slot !== null ? { category: "Discard", slot } : null;
+    }
+    case "MeldDeclared": {
+      if (!event.meldKind) {
+        return null;
+      }
+      const slot = meldKindToVoiceSlot(event.meldKind);
+      return slot !== null
+        ? { category: MELD_VO_CATEGORY[event.meldKind], slot }
+        : null;
+    }
+    case "HandSettled": {
+      if (event.isDrawGame || event.winKind === null) {
+        return null;
+      }
+      const slot = winKindToVoiceSlot(event.winKind);
+      const category: VoActionCategory =
+        event.winKind === "RobKongHu" ? "RobKong" : "Hu";
+      return { category, slot };
+    }
+    case "QuickEmoteBroadcast": {
+      if (event.quickEmote === null) {
+        return null;
+      }
+      return {
+        category: "QuickEmote",
+        slot: quickEmoteToVoiceSlot(event.quickEmote),
+      };
+    }
     default:
       return null;
   }
@@ -200,15 +231,16 @@ function resolveVoCategory(event: SemanticGameEvent): VoActionCategory | null {
 function resolveVoRequest(
   event: SemanticGameEvent,
 ): { request: VoTriggerRequest; pan: number } | null {
-  const category = resolveVoCategory(event);
-  if (category === null || !event.seat || !event.voicePackId) {
+  const resolved = resolveVoTrigger(event);
+  if (resolved === null || !event.seat || !event.voicePackId) {
     return null;
   }
   return {
     request: {
       seat: event.seat,
       packId: event.voicePackId,
-      category,
+      category: resolved.category,
+      slot: resolved.slot,
     },
     pan: resolvePan(event.relativeRole),
   };
@@ -244,6 +276,7 @@ export function createAudioEventRouter(
   let voGain: GainNodeLike | null = null;
   let compressor: DynamicsCompressorNodeLike | null = null;
   let lastHoverAt = -Infinity;
+  let desiredVoicePacks: string[] = [];
   let disposed = false;
 
   const listeners = new Set<AudioStatusListener>();
@@ -359,6 +392,9 @@ export function createAudioEventRouter(
         notify();
       }
     });
+    for (const packId of desiredVoicePacks) {
+      void voManager.preloadPack(created, packId);
+    }
 
     return ctx;
   }
@@ -401,6 +437,27 @@ export function createAudioEventRouter(
       }
       syncGainValues();
       notify();
+    },
+
+    preloadVoicePacks(packIds: readonly (string | null | undefined)[]): void {
+      if (disposed) {
+        return;
+      }
+      const unique = new Set<string>();
+      for (const raw of packIds) {
+        if (typeof raw === "string") {
+          const trimmed = raw.trim();
+          if (trimmed.length > 0) {
+            unique.add(trimmed);
+          }
+        }
+      }
+      desiredVoicePacks = [...unique];
+      if (ctx !== null) {
+        for (const packId of desiredVoicePacks) {
+          void voManager.preloadPack(ctx, packId);
+        }
+      }
     },
 
     unlockFromGesture(): boolean {

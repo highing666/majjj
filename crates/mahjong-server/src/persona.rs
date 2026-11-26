@@ -37,6 +37,21 @@ pub enum PersonaMood {
     Deadpan,
 }
 
+/// Canonical voice pack identifier (`角色语音包`) for the bright male human voice.
+pub const HUMAN_VOICE_PACK_MALE: &str = "human_male";
+
+/// Canonical voice pack identifier (`角色语音包`) for the crisp female human voice.
+pub const HUMAN_VOICE_PACK_FEMALE: &str = "human_female";
+
+/// All selectable human `VoicePack` (`角色语音包`) identifiers in canonical order.
+pub const HUMAN_VOICE_PACK_IDS: [&str; 2] = [HUMAN_VOICE_PACK_MALE, HUMAN_VOICE_PACK_FEMALE];
+
+/// Returns `true` when `id` is one of the two selectable human `VoicePack` identifiers.
+#[must_use]
+pub fn is_valid_human_voice_pack_id(id: &str) -> bool {
+    HUMAN_VOICE_PACK_IDS.contains(&id)
+}
+
 /// Static contract metadata for a built-in `PersonaId`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PersonaSpec {
@@ -50,6 +65,8 @@ pub struct PersonaSpec {
     pub initial_mood: PersonaMood,
     /// Short personality tagline for lobby/UI display.
     pub tagline: &'static str,
+    /// Canonical offline `VoicePack` (`角色语音包`) identifier.
+    pub voice_pack_id: &'static str,
 }
 
 impl PersonaId {
@@ -72,6 +89,7 @@ impl PersonaId {
                 default_style: AiStyle::AggressiveFast,
                 initial_mood: PersonaMood::Smug,
                 tagline: "嘴快手快，0番也狂吹",
+                voice_pack_id: "quick_hothead",
             },
             Self::TeaSarcasm => PersonaSpec {
                 id: Self::TeaSarcasm,
@@ -79,6 +97,7 @@ impl PersonaId {
                 default_style: AiStyle::DefensiveBigHand,
                 initial_mood: PersonaMood::Mocking,
                 tagline: "笑里藏刀，专爱翻旧账",
+                voice_pack_id: "tea_sarcasm",
             },
             Self::StubbornBlamer => PersonaSpec {
                 id: Self::StubbornBlamer,
@@ -86,6 +105,7 @@ impl PersonaId {
                 default_style: AiStyle::AggressiveFast,
                 initial_mood: PersonaMood::Deadpan,
                 tagline: "死磕到底，点炮全怪发牌员",
+                voice_pack_id: "stubborn_blamer",
             },
             Self::ChaosInstigator => PersonaSpec {
                 id: Self::ChaosInstigator,
@@ -93,6 +113,7 @@ impl PersonaId {
                 default_style: AiStyle::Balanced,
                 initial_mood: PersonaMood::Plotting,
                 tagline: "专业拱火，最爱补刀拆台",
+                voice_pack_id: "chaos_instigator",
             },
             Self::TiltedMaster => PersonaSpec {
                 id: Self::TiltedMaster,
@@ -100,6 +121,7 @@ impl PersonaId {
                 default_style: AiStyle::DefensiveBigHand,
                 initial_mood: PersonaMood::Smug,
                 tagline: "自封牌桌导师，一输就破防",
+                voice_pack_id: "tilted_master",
             },
         }
     }
@@ -120,6 +142,12 @@ impl PersonaId {
     #[must_use]
     pub const fn initial_mood(self) -> PersonaMood {
         self.spec().initial_mood
+    }
+
+    /// Returns the canonical offline `VoicePack` (`角色语音包`) identifier for this persona.
+    #[must_use]
+    pub const fn voice_pack_id(self) -> &'static str {
+        self.spec().voice_pack_id
     }
 }
 

@@ -214,7 +214,8 @@ for (const atlasJsonPath of collectFiles(atlasDir).filter((f) => /@2x\.json$/i.t
   }
 }
 
-// 4. AudioSprite .m4a budget: <= 307200 bytes (300 KB) AND parsed mvhd duration < 15.0 s
+// 4. SFX AudioSprite .m4a budget: <= 307200 bytes (300 KB) AND parsed mvhd duration < 15.0 s
+// (Scoped strictly to sfx-sprite*.m4a; VoicePack AudioSprites under assets/vo/ have their own budget.)
 const MAX_M4A_BYTES = 307200;
 const MAX_M4A_DURATION_SEC = 15.0;
 const m4aFiles = [];
@@ -226,9 +227,12 @@ if (!fs.existsSync(srcSpriteM4a)) {
 }
 
 if (fs.existsSync(distDir)) {
-  const distM4as = collectFiles(distAssetsDir).filter((f) => /\.m4a$/i.test(f));
+  const distVoPrefix = path.join(distAssetsDir, "vo") + path.sep;
+  const distM4as = collectFiles(distAssetsDir).filter(
+    (f) => !f.startsWith(distVoPrefix) && /^sfx-sprite.*\.m4a$/i.test(path.basename(f)),
+  );
   if (distM4as.length === 0) {
-    failures.push("web/dist/assets/ contains no built .m4a AudioSprite");
+    failures.push("web/dist/assets/ contains no built sfx-sprite .m4a AudioSprite");
   } else {
     m4aFiles.push(...distM4as);
   }

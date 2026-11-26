@@ -509,6 +509,7 @@ describe("TableClient", () => {
     // Lobby commands & nickname edit
     client.updateNickname(" 小明 ");
     client.joinSeat("South");
+    client.setSeatVoicePack("human_female");
     client.updateLobbyConfig({
       mode: "FreeTable",
       seating: "FixedOpposite",
@@ -527,6 +528,9 @@ describe("TableClient", () => {
       },
     });
     expect(sent).toContainEqual({ JoinSeat: { seat: "South" } });
+    expect(sent).toContainEqual({
+      SetSeatVoicePack: { voice_pack_id: "human_female" },
+    });
     expect(sent).toContainEqual({
       UpdateLobbyConfig: {
         mode: "FreeTable",
