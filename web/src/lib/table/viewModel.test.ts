@@ -537,6 +537,24 @@ describe("table viewModel helpers", () => {
       }),
     ).toBeNull();
 
+    // Suppress Escape when exiting native fullscreen without blocking Pon/Kong/Hu
+    expect(
+      resolveActionBarShortcut(items, "Escape", {
+        disabled: false,
+        hasModalOpen: false,
+        isInputFocused: false,
+        suppressEscape: true,
+      }),
+    ).toBeNull();
+    expect(
+      resolveActionBarShortcut(items, "p", {
+        disabled: false,
+        hasModalOpen: false,
+        isInputFocused: false,
+        suppressEscape: true,
+      }),
+    ).toEqual({ Pon: { tile: 27 } });
+
     // Ambiguous multiple kong actions do not fire blindly on G
     const multiKongItems = buildActionBarItems(
       makePlayerView({

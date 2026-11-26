@@ -320,23 +320,15 @@
   .table-canvas-host {
     position: relative;
     width: 100%;
-    height: clamp(320px, 76dvh, 840px);
-    min-height: 280px;
-    border-radius: 16px;
+    height: 100%;
+    min-height: 0;
+    border-radius: 0;
     overflow: hidden;
     background: #14282e;
-    border: 1.5px solid rgba(212, 168, 87, 0.48);
-    box-shadow:
-      0 14px 36px rgba(8, 12, 22, 0.42),
-      inset 0 0 24px rgba(8, 12, 26, 0.55);
+    border: none;
+    box-shadow: inset 0 0 24px rgba(8, 12, 26, 0.55);
     user-select: none;
     -webkit-user-select: none;
-  }
-
-  @media (max-height: 460px) {
-    .table-canvas-host {
-      height: clamp(280px, 78dvh, 380px);
-    }
   }
 
   .canvas-fallback {
