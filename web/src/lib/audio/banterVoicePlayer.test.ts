@@ -566,4 +566,75 @@ describe("BanterVoicePlayer", () => {
     externalActive = false;
     player.dispose();
   });
+
+  it("publishes pendingBanterIds across loading, queued cross-seat items, eviction, and flush", async () => {
+    const env = createFakeBanterAudioEnv();
+    const { fetchFn } = makeOkWavFetch();
+    const player = createBanterVoicePlayer({ fetchFn });
+
+    const snapshots: Array<{
+      active: ActiveBanterVoiceState | null;
+      pending: string[];
+    }> = [];
+    player.subscribe((active, pendingIds) => {
+      snapshots.push({ active, pending: [...pendingIds].sort() });
+    });
+    expect(snapshots).toEqual([{ active: null, pending: [] }]);
+
+    player.enqueue(env.ctx, env.voGain, env.sfxGain, 1.0, {
+      banterId: "b-1",
+      seat: "South",
+      audioUrl: "/api/banter-audio/b-1",
+      durationMs: 1200,
+      priority: "normal",
+      pan: 0.35,
+    });
+    expect([...player.getPendingBanterIds()]).toEqual(["b-1"]);
+
+    await vi.waitFor(() => expect(env.sources).toHaveLength(1));
+    expect(player.getActive()).toEqual({ seat: "South", banterId: "b-1" });
+    expect([...player.getPendingBanterIds()]).toEqual([]);
+
+    // Queue West (b-2) and North (b-3) while South plays
+    player.enqueue(env.ctx, env.voGain, env.sfxGain, 1.0, {
+      banterId: "b-2",
+      seat: "West",
+      audioUrl: "/api/banter-audio/b-2",
+      durationMs: 1000,
+      priority: "normal",
+      pan: 0,
+    });
+    player.enqueue(env.ctx, env.voGain, env.sfxGain, 1.0, {
+      banterId: "b-3",
+      seat: "North",
+      audioUrl: "/api/banter-audio/b-3",
+      durationMs: 1000,
+      priority: "highlight",
+      pan: -0.35,
+    });
+    expect([...player.getPendingBanterIds()].sort()).toEqual(["b-2", "b-3"]);
+    expect(snapshots.at(-1)).toEqual({
+      active: { seat: "South", banterId: "b-1" },
+      pending: ["b-2", "b-3"],
+    });
+
+    // Queue full: East normal (b-4) evicts b-2 -> pending updates to [b-3, b-4]
+    player.enqueue(env.ctx, env.voGain, env.sfxGain, 1.0, {
+      banterId: "b-4",
+      seat: "East",
+      audioUrl: "/api/banter-audio/b-4",
+      durationMs: 1000,
+      priority: "normal",
+      pan: 0,
+    });
+    expect([...player.getPendingBanterIds()].sort()).toEqual(["b-3", "b-4"]);
+
+    // Flush clears both active and pendingBanterIds and notifies subscribers
+    player.flush();
+    expect(player.getActive()).toBeNull();
+    expect([...player.getPendingBanterIds()]).toEqual([]);
+    expect(snapshots.at(-1)).toEqual({ active: null, pending: [] });
+
+    player.dispose();
+  });
 });

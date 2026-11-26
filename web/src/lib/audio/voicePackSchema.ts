@@ -234,6 +234,19 @@ export function isVoiceSlotId(value: string): value is VoiceSlotId {
   return ALL_VOICE_SLOT_SET.has(value);
 }
 
+export function isValidVoiceSlice(slice: unknown): slice is VoiceSpriteSlice {
+  return (
+    Array.isArray(slice) &&
+    slice.length === 2 &&
+    typeof slice[0] === "number" &&
+    typeof slice[1] === "number" &&
+    Number.isFinite(slice[0]) &&
+    Number.isFinite(slice[1]) &&
+    slice[0] >= 0 &&
+    slice[1] > 0
+  );
+}
+
 /**
  * Validates and normalizes an untrusted JSON object against the runtime
  * `VoicePackManifest` contract. Returns `null` if any required field or
@@ -274,16 +287,7 @@ export function parseVoicePackManifest(raw: unknown): VoicePackManifest | null {
     if (!isVoiceSlotId(key)) {
       return null;
     }
-    if (
-      !Array.isArray(value) ||
-      value.length !== 2 ||
-      typeof value[0] !== "number" ||
-      typeof value[1] !== "number" ||
-      !Number.isFinite(value[0]) ||
-      !Number.isFinite(value[1]) ||
-      value[0] < 0 ||
-      value[1] <= 0
-    ) {
+    if (!isValidVoiceSlice(value)) {
       return null;
     }
     sprites[key] = [value[0], value[1]];

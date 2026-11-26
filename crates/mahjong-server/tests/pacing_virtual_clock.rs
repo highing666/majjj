@@ -229,6 +229,7 @@ impl TestClient {
             )
             .await;
         let _ = client.recv_snapshot().await;
+        client.drain_pending();
         client
     }
 
@@ -258,7 +259,9 @@ impl TestClient {
         loop {
             match self.recv_msg().await {
                 ServerMessage::TableSnapshot(snap) => return snap,
-                ServerMessage::LobbyUpdated { .. } => continue,
+                ServerMessage::LobbyUpdated { .. } | ServerMessage::TtsStatusNotice { .. } => {
+                    continue
+                }
                 other => panic!("expected TableSnapshot, got {other:?}"),
             }
         }
@@ -275,7 +278,9 @@ impl TestClient {
                     events,
                     updated_legal_actions,
                 } => return (from_seq, to_seq, events, updated_legal_actions),
-                ServerMessage::LobbyUpdated { .. } => continue,
+                ServerMessage::LobbyUpdated { .. } | ServerMessage::TtsStatusNotice { .. } => {
+                    continue
+                }
                 other => panic!("expected EventBatch, got {other:?}"),
             }
         }

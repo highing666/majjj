@@ -12,8 +12,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use common::{
-    connect_and_hello, http_get, no_reaction_wall, recv_msg, recv_snapshot, send_msg,
-    stub_llm_client, TempDirGuard,
+    connect_and_hello, http_get, make_pcm16_mono_wav, no_reaction_wall, recv_msg, recv_snapshot,
+    send_msg, stub_llm_client, TempDirGuard,
 };
 use mahjong_core::{PresetWallProvider, Seat};
 use mahjong_server::banter_audio::BanterAudioCache;
@@ -22,29 +22,6 @@ use mahjong_server::session::{BoxedWallProvider, TableOptions, WallProviderFacto
 use mahjong_server::{PacingMode, ServerConfig};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
-
-fn make_valid_wav(sample_count: usize, fill_byte: u8) -> Vec<u8> {
-    let data_len = (sample_count * 2) as u32;
-    let riff_len = 36 + data_len;
-    let sample_rate: u32 = 24_000;
-    let byte_rate = sample_rate * 2;
-    let mut out = Vec::with_capacity(44 + data_len as usize);
-    out.extend_from_slice(b"RIFF");
-    out.extend_from_slice(&riff_len.to_le_bytes());
-    out.extend_from_slice(b"WAVE");
-    out.extend_from_slice(b"fmt ");
-    out.extend_from_slice(&16_u32.to_le_bytes());
-    out.extend_from_slice(&1_u16.to_le_bytes());
-    out.extend_from_slice(&1_u16.to_le_bytes());
-    out.extend_from_slice(&sample_rate.to_le_bytes());
-    out.extend_from_slice(&byte_rate.to_le_bytes());
-    out.extend_from_slice(&2_u16.to_le_bytes());
-    out.extend_from_slice(&16_u16.to_le_bytes());
-    out.extend_from_slice(b"data");
-    out.extend_from_slice(&data_len.to_le_bytes());
-    out.resize(44 + data_len as usize, fill_byte);
-    out
-}
 
 #[derive(Clone)]
 struct FakeTtsState {
@@ -238,7 +215,7 @@ async fn startup_with_unreachable_tts_still_boots_plays_and_notifies_clients() {
 
 #[tokio::test]
 async fn single_synthesis_shared_by_multiple_ws_clients_over_http_and_404_on_unknown_or_evicted() {
-    let expected_wav = make_valid_wav(12_000, 0x5A);
+    let expected_wav = make_pcm16_mono_wav(12_000, 0x5A);
     let fake_tts = FakeTtsServer::start(expected_wav.clone(), 1350).await;
 
     // 1-entry cache so a second banter evicts the first to verify HTTP 404 on evicted IDs.
@@ -401,8 +378,8 @@ async fn single_synthesis_shared_by_multiple_ws_clients_over_http_and_404_on_unk
 
 #[tokio::test]
 async fn tts_url_precedence_honors_cli_over_preferences_and_no_tts_disables_all_calls() {
-    let pref_tts = FakeTtsServer::start(make_valid_wav(4_800, 0x11), 200).await;
-    let cli_tts = FakeTtsServer::start(make_valid_wav(4_800, 0x22), 200).await;
+    let pref_tts = FakeTtsServer::start(make_pcm16_mono_wav(4_800, 0x11), 200).await;
+    let cli_tts = FakeTtsServer::start(make_pcm16_mono_wav(4_800, 0x22), 200).await;
 
     let temp = TempDirGuard::new("majjj_tts_prefs");
     fs::write(
@@ -456,7 +433,8 @@ async fn tts_url_precedence_honors_cli_over_preferences_and_no_tts_disables_all_
     assert_eq!(pref_tts.health_count(), prev_pref_count);
     server2.shutdown().await;
 
-    // 3. `with_no_tts(true)` disables all TTS probes even when both `tts_url` and `preferences.json` exist.
+    // 3. `with_no_tts(true)` disables all TTS probes even when both `tts_url` and `preferences.json` exist,
+    // and sends TtsStatusNotice(available=false) on Hello so clients auto-restore bubbles.
     let prev_cli_count = cli_tts.health_count();
     let server3 = ServerConfig::default()
         .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
@@ -471,6 +449,21 @@ async fn tts_url_precedence_honors_cli_over_preferences_and_no_tts_disables_all_
     tokio::time::sleep(Duration::from_millis(80)).await;
     assert_eq!(cli_tts.health_count(), prev_cli_count);
     assert_eq!(pref_tts.health_count(), prev_pref_count);
+
+    let mut no_tts_client = connect_and_hello(server3.addr(), "u-no-tts", "老李").await;
+    let disabled_notice = loop {
+        match recv_msg(&mut no_tts_client).await {
+            ServerMessage::TtsStatusNotice { available, message } => break (available, message),
+            ServerMessage::LobbyUpdated { .. } | ServerMessage::ServerPing { .. } => continue,
+            other => panic!("expected TtsStatusNotice(false) under --no-tts, got {other:?}"),
+        }
+    };
+    assert!(!disabled_notice.0);
+    assert_eq!(
+        disabled_notice.1,
+        "局域网语音合成已关闭，当前仅显示漫画气泡与离线角色语音包"
+    );
+    let _ = no_tts_client.close(None).await;
     server3.shutdown().await;
 
     pref_tts.shutdown();

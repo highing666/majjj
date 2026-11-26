@@ -185,6 +185,7 @@ export interface ActiveBanterVoiceState {
 
 export type BanterVoiceStateListener = (
   active: ActiveBanterVoiceState | null,
+  pendingBanterIds: ReadonlySet<string>,
 ) => void;
 
 export type SfxBackendMode = "uninitialized" | "sprite" | "procedural";

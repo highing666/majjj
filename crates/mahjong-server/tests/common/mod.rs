@@ -574,6 +574,30 @@ pub async fn recv_event_batch(
 }
 
 #[allow(dead_code)]
+pub fn make_pcm16_mono_wav(sample_count: usize, fill_byte: u8) -> Vec<u8> {
+    let data_len = (sample_count * 2) as u32;
+    let riff_len = 36 + data_len;
+    let sample_rate: u32 = 24_000;
+    let byte_rate = sample_rate * 2;
+    let mut out = Vec::with_capacity(44 + data_len as usize);
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&riff_len.to_le_bytes());
+    out.extend_from_slice(b"WAVE");
+    out.extend_from_slice(b"fmt ");
+    out.extend_from_slice(&16_u32.to_le_bytes());
+    out.extend_from_slice(&1_u16.to_le_bytes());
+    out.extend_from_slice(&1_u16.to_le_bytes());
+    out.extend_from_slice(&sample_rate.to_le_bytes());
+    out.extend_from_slice(&byte_rate.to_le_bytes());
+    out.extend_from_slice(&2_u16.to_le_bytes());
+    out.extend_from_slice(&16_u16.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data_len.to_le_bytes());
+    out.resize(44 + data_len as usize, fill_byte);
+    out
+}
+
+#[allow(dead_code)]
 pub fn no_reaction_wall() -> Vec<Tile> {
     let base_13 = tiles("1m 4m 7m 1s 4s 7s 1p 4p 7p E S W N");
     let mut east_14 = base_13.clone();

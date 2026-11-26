@@ -12,7 +12,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 import pathlib
-from typing import Any, Callable, Dict, Iterator, Optional
+from typing import Any, Callable, Dict, Iterator, Optional, Sequence, Tuple
 
 from audio import DEFAULT_SAMPLE_RATE, coerce_audio_to_pcm16_bytes
 from personas import CANONICAL_MOODS, PersonaRegistry, SynthesisVoicePlan
@@ -116,6 +116,38 @@ class TtsBackend(ABC):
             yield data[offset : offset + step]
 
 
+def _default_load_qwen3_model(model_path: str, **kwargs: Any) -> Any:
+    try:
+        from faster_qwen3_tts import FasterQwen3TTS  # type: ignore[import-not-found]
+
+        return FasterQwen3TTS.from_pretrained(model_path, **kwargs)
+    except ImportError:
+        from qwen_tts import Qwen3TTSModel  # type: ignore[import-not-found]
+
+        return Qwen3TTSModel.from_pretrained(model_path, **kwargs)
+
+
+def _resolve_reference_clip(
+    voices_dir: pathlib.Path,
+    candidate_stems: Sequence[str],
+    fallback_text: str,
+) -> Tuple[pathlib.Path, str]:
+    """Resolve the first existing `<stem>.wav` and matching `<stem>.txt` in priority order."""
+    chosen_stem = candidate_stems[0]
+    for stem in candidate_stems:
+        if (voices_dir / f"{stem}.wav").is_file():
+            chosen_stem = stem
+            break
+    wav_path = voices_dir / f"{chosen_stem}.wav"
+    txt_path = voices_dir / f"{chosen_stem}.txt"
+    ref_text = (
+        txt_path.read_text(encoding="utf-8").strip()
+        if txt_path.is_file()
+        else fallback_text
+    )
+    return wav_path, ref_text
+
+
 class Qwen3CustomVoiceBackend(TtsBackend):
     """Primary backend: Qwen3-TTS-12Hz-0.6B-CustomVoice (BF16 + faster-qwen3-tts + SDPA)."""
 
@@ -141,20 +173,10 @@ class Qwen3CustomVoiceBackend(TtsBackend):
         self._model_loader = model_loader
         self._model: Any = None
 
-    def _default_load_model(self, model_path: str, **kwargs: Any) -> Any:
-        try:
-            from faster_qwen3_tts import FasterQwen3TTS  # type: ignore[import-not-found]
-
-            return FasterQwen3TTS.from_pretrained(model_path, **kwargs)
-        except ImportError:
-            from qwen_tts import Qwen3TTSModel  # type: ignore[import-not-found]
-
-            return Qwen3TTSModel.from_pretrained(model_path, **kwargs)
-
     def load(self) -> None:
         torch_mod = self._resolve_torch()
         apply_vram_fraction_guard(torch_mod, fraction=self.vram_fraction, device=0)
-        loader = self._model_loader or self._default_load_model
+        loader = self._model_loader or _default_load_qwen3_model
         # Windows RTX 3060 (Ampere SM 8.6): native PyTorch SDPA + BF16, zero flash-attn build.
         self._model = loader(
             self.model_path,
@@ -223,8 +245,13 @@ class CosyVoice3Backend(TtsBackend):
 
         return AutoModel(model_dir=model_path, **kwargs)
 
-    def _ref_audio_path(self, voice_pack_id: str) -> str:
-        return str(self.voices_dir / f"{voice_pack_id}_neutral.wav")
+    def _resolve_ref_clip(self, voice_pack_id: str) -> Tuple[str, str]:
+        ref_wav, ref_text = _resolve_reference_clip(
+            self.voices_dir,
+            (f"{voice_pack_id}_neutral", f"{voice_pack_id}_ref"),
+            fallback_text="",
+        )
+        return str(ref_wav), ref_text
 
     def load(self) -> None:
         torch_mod = self._resolve_torch()
@@ -237,13 +264,16 @@ class CosyVoice3Backend(TtsBackend):
         # upstream zero_shot_spk_id prompt_text overwrite issues.
         self._speaker_cache.clear()
         for profile in self.registry.list_personas():
-            ref_path = self._ref_audio_path(profile.voice_pack_id)
+            ref_path, ref_text = self._resolve_ref_clip(profile.voice_pack_id)
             if hasattr(self._model, "extract_speaker_features"):
                 self._speaker_cache[profile.persona_id] = self._model.extract_speaker_features(
                     ref_path
                 )
             else:
-                self._speaker_cache[profile.persona_id] = {"ref_audio_path": ref_path}
+                self._speaker_cache[profile.persona_id] = {
+                    "ref_audio_path": ref_path,
+                    "ref_text": ref_text,
+                }
         self._ready = True
 
     def synthesize(
@@ -315,20 +345,10 @@ class Qwen3BaseCloneBackend(TtsBackend):
     def personas_cached(self) -> int:
         return self.registry.persona_count if self._ready and self._prompt_matrix else 0
 
-    def _default_load_model(self, model_path: str, **kwargs: Any) -> Any:
-        try:
-            from faster_qwen3_tts import FasterQwen3TTS  # type: ignore[import-not-found]
-
-            return FasterQwen3TTS.from_pretrained(model_path, **kwargs)
-        except ImportError:
-            from qwen_tts import Qwen3TTSModel  # type: ignore[import-not-found]
-
-            return Qwen3TTSModel.from_pretrained(model_path, **kwargs)
-
     def load(self) -> None:
         torch_mod = self._resolve_torch()
         apply_vram_fraction_guard(torch_mod, fraction=self.vram_fraction, device=0)
-        loader = self._model_loader or self._default_load_model
+        loader = self._model_loader or _default_load_qwen3_model
         self._model = loader(
             self.model_path,
             device="cuda:0" if torch_mod.cuda.is_available() else "cpu",
@@ -339,12 +359,14 @@ class Qwen3BaseCloneBackend(TtsBackend):
         for profile in self.registry.list_personas():
             for mood in CANONICAL_MOODS:
                 plan = self.registry.resolve(persona_id=profile.persona_id, mood=mood)
-                ref_wav = self.voices_dir / f"{plan.reference_key}.wav"
-                ref_txt_path = self.voices_dir / f"{plan.reference_key}.txt"
-                ref_text = (
-                    ref_txt_path.read_text(encoding="utf-8").strip()
-                    if ref_txt_path.exists()
-                    else plan.instruct
+                ref_wav, ref_text = _resolve_reference_clip(
+                    self.voices_dir,
+                    (
+                        plan.reference_key,
+                        f"{profile.voice_pack_id}_neutral",
+                        f"{profile.voice_pack_id}_ref",
+                    ),
+                    fallback_text=plan.instruct,
                 )
                 self._prompt_matrix[plan.reference_key] = self._model.create_voice_clone_prompt(
                     ref_audio=str(ref_wav),

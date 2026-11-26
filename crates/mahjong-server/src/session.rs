@@ -39,9 +39,7 @@ use crate::pacing::{
     apply_discard_to_view, compute_ai_turn_trigger, discard_release_delay, target_ai_delay,
     AiTurnTrigger, PacingMode, ReleaseTicket,
 };
-use crate::persona::{
-    is_valid_human_voice_pack_id, PersonaId, HUMAN_VOICE_PACK_FEMALE, HUMAN_VOICE_PACK_MALE,
-};
+use crate::persona::{is_valid_human_voice_pack_id, PersonaId};
 use crate::persona_memory::{
     plan_match_finished_note_jobs, plan_memorable_hand_note_jobs, ClearPersonaMemoryResponse,
     PersonaMemoryNoteTrigger, PersonaMemoryResponse, PersonaMemoryStore,
@@ -54,8 +52,7 @@ use crate::seat_control::HandAttribution;
 use crate::server::ServerError;
 use crate::storage::{current_unix_ms, normalize_nickname, HistoryStore};
 use crate::tts::{
-    TtsAudioOutput, TtsClient, TtsError, TtsSynthesisRequest, TTS_IN_HAND_DEADLINE_MS,
-    TTS_SETTLEMENT_DEADLINE_MS,
+    TtsClient, TtsSynthesisRequest, TTS_IN_HAND_DEADLINE_MS, TTS_SETTLEMENT_DEADLINE_MS,
 };
 
 /// `Send`-safe wrapper around a boxed [`WallProvider`] for injecting deterministic walls in tests.
@@ -463,8 +460,8 @@ pub struct TableSession {
     pub(crate) persona_memory: PersonaMemoryStore,
     phase_tx: watch::Sender<TablePhase>,
     banter: BanterSessionState,
-    tts: TtsSessionState,
-    banter_audio_cache: Arc<std::sync::Mutex<BanterAudioCache>>,
+    pub(crate) tts: TtsSessionState,
+    pub(crate) banter_audio_cache: Arc<std::sync::Mutex<BanterAudioCache>>,
 }
 
 impl TableSession {
@@ -825,7 +822,7 @@ impl TableSession {
         if let Some(notice) = self.banter.current_outage_notice() {
             Self::send_to(tx, notice);
         }
-        if let Some(notice) = self.tts.current_outage_notice() {
+        if let Some(notice) = self.tts.current_status_notice() {
             Self::send_to(tx, notice);
         }
         if lobby_changed {
@@ -833,26 +830,6 @@ impl TableSession {
         }
         if pending_op_updated {
             self.broadcast_snapshots_excluding(Some(conn_id));
-        }
-    }
-
-    pub(crate) fn default_human_voice_pack(&self, excluding_seat: Option<Seat>) -> String {
-        let mut male_count = 0usize;
-        let mut female_count = 0usize;
-        for slot in &self.seats {
-            if slot.info.kind != SeatKind::Human || Some(slot.info.seat) == excluding_seat {
-                continue;
-            }
-            match slot.info.voice_pack_id.as_deref() {
-                Some(HUMAN_VOICE_PACK_MALE) => male_count += 1,
-                Some(HUMAN_VOICE_PACK_FEMALE) => female_count += 1,
-                _ => {}
-            }
-        }
-        if male_count <= female_count {
-            HUMAN_VOICE_PACK_MALE.to_string()
-        } else {
-            HUMAN_VOICE_PACK_FEMALE.to_string()
         }
     }
 
@@ -1037,24 +1014,6 @@ impl TableSession {
         } else {
             slot.info.mood = None;
         }
-        self.broadcast_lobby_updated(None);
-    }
-
-    pub(crate) fn handle_set_seat_voice_pack(&mut self, conn_id: u64, voice_pack_id: String) {
-        let Some((seat, tx)) = self.require_seated_human(conn_id, "selecting a voice pack") else {
-            return;
-        };
-        let trimmed = voice_pack_id.trim();
-        if !is_valid_human_voice_pack_id(trimmed) {
-            Self::send_error(
-                &tx,
-                format!(
-                    "invalid human voice_pack_id '{trimmed}'; expected '{HUMAN_VOICE_PACK_MALE}' or '{HUMAN_VOICE_PACK_FEMALE}'"
-                ),
-            );
-            return;
-        }
-        self.seats[seat.index()].info.voice_pack_id = Some(trimmed.to_string());
         self.broadcast_lobby_updated(None);
     }
 
@@ -2048,7 +2007,7 @@ impl TableSession {
         }
     }
 
-    fn broadcast_all(&self, msg: ServerMessage) {
+    pub(crate) fn broadcast_all(&self, msg: ServerMessage) {
         for conn in self.connections.values() {
             Self::send_to(&conn.tx, msg.clone());
         }
@@ -2201,85 +2160,6 @@ impl TableSession {
                 BanterCommitOutcome { followup, tts_job }
             }
         }
-    }
-
-    fn is_tts_guard_fresh(&self, guard: &TtsGuard) -> bool {
-        let phase_ok = self.phase == TablePhase::InMatch
-            || (guard.allow_finished_phase && self.phase == TablePhase::Finished);
-        if !phase_ok {
-            return false;
-        }
-        let seat_slot = &self.seats[guard.seat.index()];
-        if seat_slot.info.kind != SeatKind::Ai
-            || seat_slot.info.persona_id != Some(guard.persona_id)
-            || self.seat_generation[guard.seat.index()] != guard.seat_generation
-            || self.tts.seat_banter_generation(guard.seat) != guard.seat_banter_generation
-        {
-            return false;
-        }
-        self.active_match.as_ref().is_some_and(|active| {
-            active.match_id == guard.match_id && active.hand_generation == guard.hand_generation
-        })
-    }
-
-    pub(crate) fn commit_tts_result(
-        &mut self,
-        guard: TtsGuard,
-        dispatched_at: tokio::time::Instant,
-        deadline_ms: u32,
-        result: Result<TtsAudioOutput, TtsError>,
-    ) -> Option<tokio::time::Instant> {
-        let now = tokio::time::Instant::now();
-        match result {
-            Err(err) => {
-                eprintln!(
-                    "warning: TTS synthesis failed for {}: {err}",
-                    guard.banter_id
-                );
-                let (notice, probe_at) = self.tts.record_synthesis_failure(&err.to_string(), now);
-                if let Some(notice) = notice {
-                    self.broadcast_all(notice);
-                }
-                probe_at
-            }
-            Ok(audio) => {
-                self.tts.record_synthesis_success();
-                let within_deadline = now.saturating_duration_since(dispatched_at)
-                    <= Duration::from_millis(u64::from(deadline_ms));
-                if !within_deadline || !self.is_tts_guard_fresh(&guard) {
-                    return None;
-                }
-                let inserted = self
-                    .banter_audio_cache
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .insert(guard.banter_id.clone(), audio.wav_bytes, now);
-                if inserted {
-                    self.broadcast_all(ServerMessage::TableBanterAudioReady {
-                        audio_url: format!("/api/banter-audio/{}", guard.banter_id),
-                        banter_id: guard.banter_id,
-                        seat: guard.seat,
-                        duration_ms: audio.duration_ms,
-                    });
-                }
-                None
-            }
-        }
-    }
-
-    pub(crate) fn commit_tts_health_probe(
-        &mut self,
-        result: Result<(), String>,
-    ) -> Option<tokio::time::Instant> {
-        if let Err(ref err) = result {
-            eprintln!("warning: LAN TTS /health probe failed: {err}");
-        }
-        let now = tokio::time::Instant::now();
-        let (notice, next_probe_at) = self.tts.record_health_probe_result(result, now);
-        if let Some(notice) = notice {
-            self.broadcast_all(notice);
-        }
-        next_probe_at
     }
 
     pub(crate) fn cancel_ai_job(&mut self, key: AiJobKey) {

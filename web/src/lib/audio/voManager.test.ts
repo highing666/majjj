@@ -460,4 +460,107 @@ describe("VoManager (AudioSprite VoicePack contract)", () => {
     expect(envCorrupt.sfxGain.gain.value).toBe(1.0);
     expect(voCorrupt.isDucking()).toBe(false);
   });
+
+  it("plays cross-seat QuickEmotes and QuickEmote during active Pon/Kong immediately without dropping or cutting off meld calls, holding sfxGain ducking until all finish", async () => {
+    const env = createFakeVoAudioEnv();
+    const { fetchFn } = makeSpritePackFetch();
+    const vo = createVoManager({ fetchFn });
+
+    // 1. South plays Pon action call -> ducks sfxGain to 0.45
+    expect(
+      await vo.triggerVo(
+        env.ctx,
+        env.voGain,
+        env.sfxGain,
+        1.0,
+        {
+          seat: "South",
+          packId: "quick_hothead",
+          category: "Pon",
+          slot: "pong",
+        },
+        0.35,
+      ),
+    ).toBe(true);
+    expect(env.sources).toHaveLength(1);
+    expect(env.sfxGain.gain.value).toBeCloseTo(0.45, 5);
+
+    // 2. East triggers QuickEmote while Pon is still playing -> plays IMMEDIATELY without stopping Pon!
+    expect(
+      await vo.triggerVo(
+        env.ctx,
+        env.voGain,
+        env.sfxGain,
+        1.0,
+        {
+          seat: "East",
+          packId: "human_male",
+          category: "QuickEmote",
+          slot: "emote_is_that_it",
+        },
+        0,
+      ),
+    ).toBe(true);
+    expect(env.sources).toHaveLength(2);
+    expect(env.sources[0]!.node.stop).not.toHaveBeenCalled();
+
+    // 3. West triggers QuickEmote back-to-back while Pon and East's QuickEmote are active -> plays IMMEDIATELY!
+    expect(
+      await vo.triggerVo(
+        env.ctx,
+        env.voGain,
+        env.sfxGain,
+        1.0,
+        {
+          seat: "West",
+          packId: "human_female",
+          category: "QuickEmote",
+          slot: "emote_hurry_up",
+        },
+        0,
+      ),
+    ).toBe(true);
+    expect(env.sources).toHaveLength(3);
+    expect(env.sources[0]!.node.stop).not.toHaveBeenCalled();
+    expect(env.sources[1]!.node.stop).not.toHaveBeenCalled();
+
+    // 4. Same-seat East triggers another QuickEmote -> replaces only East's previous emote, keeping Pon and West intact
+    expect(
+      await vo.triggerVo(
+        env.ctx,
+        env.voGain,
+        env.sfxGain,
+        1.0,
+        {
+          seat: "East",
+          packId: "human_male",
+          category: "QuickEmote",
+          slot: "emote_nice_play",
+        },
+        0,
+      ),
+    ).toBe(true);
+    expect(env.sources).toHaveLength(4);
+    expect(env.sources[0]!.node.stop).not.toHaveBeenCalled();
+    expect(env.sources[1]!.node.stop).toHaveBeenCalledTimes(1);
+    expect(env.sources[2]!.node.stop).not.toHaveBeenCalled();
+
+    // 5. Pon finishes -> sfxGain stays ducked while emotes are active
+    env.advanceTime(0.4);
+    env.sources[0]!.node.onended?.();
+    expect(vo.isDucking()).toBe(true);
+    expect(env.sfxGain.gain.value).toBeCloseTo(0.45, 5);
+
+    // 6. West's QuickEmote finishes -> sfxGain still ducked while East's 2nd emote is active
+    env.advanceTime(0.2);
+    env.sources[2]!.node.onended?.();
+    expect(vo.isDucking()).toBe(true);
+    expect(env.sfxGain.gain.value).toBeCloseTo(0.45, 5);
+
+    // 7. East's 2nd QuickEmote finishes -> all VO finished -> sfxGain restores to 1.0
+    env.advanceTime(0.2);
+    env.sources[3]!.node.onended?.();
+    expect(vo.isDucking()).toBe(false);
+    expect(env.sfxGain.gain.value).toBeCloseTo(1.0, 5);
+  });
 });

@@ -8,6 +8,7 @@ pub mod banter;
 pub mod banter_audio;
 pub mod history_dto;
 pub mod lan;
+mod lan_http;
 pub mod lifecycle;
 pub mod llm;
 pub mod pacing;
