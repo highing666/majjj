@@ -18,7 +18,7 @@ Judgement-call review standards live in `CODING_STANDARDS.md` (consult during co
 
 ### Environment & sandbox
 
-Shell search (`grep`/`node`, not `rg`), macOS sandbox `cargo`/`git` caveats, and worktree `npm` setup live in `docs/agents/environment.md`.
+Shell search (`grep`/`node`, not `rg`), macOS sandbox `cargo`/`git`/`swift` worktree caveats, and worktree `npm` setup live in `docs/agents/environment.md`.
 
 ### Architecture spec
 
@@ -26,4 +26,4 @@ Authoritative v1 rules, protocol, AI, AV, and delivery slices: `docs/specs/v1-ar
 
 ### Verification
 
-Run `./scripts/check.sh` (`make check`) before finishing. In sandboxed shells where localhost sockets or `/usr/bin/make` are restricted, run `./scripts/check.sh --sandbox` plus `make test-server` (`BypassSandbox: true`), and hydrate fresh worktrees with `npm ci --offline --prefix web`. After marking a PR ready, run `gh pr checks <pr>` (`BypassSandbox: true`) to confirm Linux CI parity.
+Run `./scripts/check.sh` (`make check`) before finishing; use `./scripts/check.sh --sandbox` (with `--since <base>` for scoped checks) plus `make test-server` (`BypassSandbox: true`) when sandboxed (details in `docs/agents/environment.md`). After marking a PR ready, run `gh pr checks <pr>` (`BypassSandbox: true`) to confirm Linux CI parity.

@@ -3,12 +3,21 @@
 
   interface Props {
     state: ShutdownState;
+    showTrigger?: boolean;
+    showDialog?: boolean;
     onRequestConfirm: () => void;
     onCancel: () => void;
     onConfirm: () => void;
   }
 
-  let { state, onRequestConfirm, onCancel, onConfirm }: Props = $props();
+  let {
+    state,
+    showTrigger = true,
+    showDialog = true,
+    onRequestConfirm,
+    onCancel,
+    onConfirm,
+  }: Props = $props();
 
   const dialogOpen = $derived(
     state.phase === "confirming" ||
@@ -18,7 +27,7 @@
   const submitting = $derived(state.phase === "submitting");
 </script>
 
-{#if state.visible}
+{#if showTrigger && state.visible}
   <button
     class="btn btn-subtle shutdown-trigger"
     type="button"
@@ -29,7 +38,7 @@
   </button>
 {/if}
 
-{#if dialogOpen}
+{#if showDialog && dialogOpen}
   <div
     class="confirm-backdrop"
     role="dialog"
@@ -79,7 +88,7 @@
   .confirm-backdrop {
     position: fixed;
     inset: 0;
-    z-index: 65;
+    z-index: 75;
     background: rgba(12, 22, 26, 0.78);
     backdrop-filter: blur(3px);
     display: flex;

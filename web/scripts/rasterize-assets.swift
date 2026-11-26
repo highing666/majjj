@@ -4,22 +4,120 @@ import CoreText
 import ImageIO
 import UniformTypeIdentifiers
 
-// Deterministic @2x vector-to-PNG rasterizer for Majjj Piltover tile atlas & impasto felt textures.
+// Deterministic @2x vector-to-PNG rasterizer for Style A ("玉骨工笔") dual-body tile atlas & impasto felt textures.
+
+struct AlphaColorSpec: Decodable {
+    let hex: String
+    let alpha: Double
+}
+
+struct PaletteSpec: Decodable {
+    let ink: String
+    let inkSoft: AlphaColorSpec
+    let crimson: String
+    let cobalt: String
+    let jade: String
+    let ivory: String
+    let ivoryTop: AlphaColorSpec
+    let ivoryBottom: String
+    let jadeBack: String
+    let jadeBackDark: String
+    let jadeBackHi: String
+    let jadeBorder: String
+    let jadeRim: AlphaColorSpec
+    let goldDot: AlphaColorSpec
+    let whiteBevel: AlphaColorSpec
+    let bambooSpec: AlphaColorSpec
+}
+
+struct GridSpec: Decodable {
+    let cols: Int
+    let rows: Int
+    let cellW: Int
+    let cellH: Int
+    let frameW: Int
+    let frameH: Int
+    let pad: Int
+    let tileCount: Int
+    let bodyFrames: [String]
+}
+
+struct BambooStalkSpec: Decodable {
+    let x: Double
+    let y: Double
+    let h: Double
+    let color: String
+    let angle: Double
+}
+
+struct PlumPinSpec: Decodable {
+    let x: Double
+    let y: Double
+    let r: Double
+    let color: String
+}
+
+struct StyleASpec: Decodable {
+    let grid: GridSpec
+    let palette: PaletteSpec
+    let bamboo: [String: [BambooStalkSpec]]
+    let dot: [String: [PlumPinSpec]]
+}
+
+func cgColorFromHex(_ hex: String, alpha: Double = 1.0) -> CGColor {
+    let clean = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
+    let value = UInt64(clean, radix: 16) ?? 0
+    let r = CGFloat((value >> 16) & 0xFF) / 255.0
+    let g = CGFloat((value >> 8) & 0xFF) / 255.0
+    let b = CGFloat(value & 0xFF) / 255.0
+    return CGColor(srgbRed: r, green: g, blue: b, alpha: CGFloat(alpha))
+}
 
 struct Palette {
-    static let ink = CGColor(srgbRed: 0x18 / 255.0, green: 0x1A / 255.0, blue: 0x20 / 255.0, alpha: 1.0)
-    static let crimson = CGColor(srgbRed: 0xC7 / 255.0, green: 0x35 / 255.0, blue: 0x2B / 255.0, alpha: 1.0)
-    static let cobalt = CGColor(srgbRed: 0x1C / 255.0, green: 0x52 / 255.0, blue: 0x96 / 255.0, alpha: 1.0)
-    static let jade = CGColor(srgbRed: 0x15 / 255.0, green: 0x7F / 255.0, blue: 0x56 / 255.0, alpha: 1.0)
-    static let gold = CGColor(srgbRed: 0xC4 / 255.0, green: 0x8A / 255.0, blue: 0x28 / 255.0, alpha: 1.0)
-    static let ivory = CGColor(srgbRed: 0xF5 / 255.0, green: 0xEE / 255.0, blue: 0xDF / 255.0, alpha: 1.0)
-    static let ivoryShadow = CGColor(srgbRed: 0xE4 / 255.0, green: 0xD8 / 255.0, blue: 0xBE / 255.0, alpha: 1.0)
-    static let ivorySpec = CGColor(srgbRed: 1.0, green: 0.99, blue: 0.96, alpha: 0.72)
-    static let jadeBack = CGColor(srgbRed: 0x1E / 255.0, green: 0x5C / 255.0, blue: 0x5E / 255.0, alpha: 1.0)
-    static let jadeBackHi = CGColor(srgbRed: 0x2A / 255.0, green: 0x76 / 255.0, blue: 0x78 / 255.0, alpha: 1.0)
-    static let jadeBackDeep = CGColor(srgbRed: 0x14 / 255.0, green: 0x42 / 255.0, blue: 0x44 / 255.0, alpha: 1.0)
-    static let jadeRim = CGColor(srgbRed: 0x39 / 255.0, green: 0x92 / 255.0, blue: 0x94 / 255.0, alpha: 0.85)
-    static let white = CGColor(srgbRed: 1.0, green: 1.0, blue: 1.0, alpha: 1.0)
+    let ink: CGColor
+    let inkSoft: CGColor
+    let crimson: CGColor
+    let cobalt: CGColor
+    let jade: CGColor
+    let ivory: CGColor
+    let ivoryShadow: CGColor
+    let ivorySpec: CGColor
+    let bambooSpec: CGColor
+    let jadeBack: CGColor
+    let jadeBackHi: CGColor
+    let jadeBackDeep: CGColor
+    let jadeBorder: CGColor
+    let jadeRim: CGColor
+    let goldDot: CGColor
+    let whiteBevel: CGColor
+
+    init(spec: PaletteSpec) {
+        self.ink = cgColorFromHex(spec.ink)
+        self.inkSoft = cgColorFromHex(spec.inkSoft.hex, alpha: spec.inkSoft.alpha)
+        self.crimson = cgColorFromHex(spec.crimson)
+        self.cobalt = cgColorFromHex(spec.cobalt)
+        self.jade = cgColorFromHex(spec.jade)
+        self.ivory = cgColorFromHex(spec.ivory)
+        self.ivoryShadow = cgColorFromHex(spec.ivoryBottom)
+        self.ivorySpec = cgColorFromHex(spec.ivoryTop.hex, alpha: spec.ivoryTop.alpha)
+        self.bambooSpec = cgColorFromHex(spec.bambooSpec.hex, alpha: spec.bambooSpec.alpha)
+        self.jadeBack = cgColorFromHex(spec.jadeBack)
+        self.jadeBackHi = cgColorFromHex(spec.jadeBackHi)
+        self.jadeBackDeep = cgColorFromHex(spec.jadeBackDark)
+        self.jadeBorder = cgColorFromHex(spec.jadeBorder)
+        self.jadeRim = cgColorFromHex(spec.jadeRim.hex, alpha: spec.jadeRim.alpha)
+        self.goldDot = cgColorFromHex(spec.goldDot.hex, alpha: spec.goldDot.alpha)
+        self.whiteBevel = cgColorFromHex(spec.whiteBevel.hex, alpha: spec.whiteBevel.alpha)
+    }
+
+    func resolve(_ key: String) -> CGColor {
+        switch key {
+        case "jade": return jade
+        case "crimson": return crimson
+        case "cobalt": return cobalt
+        default: return ink
+        }
+    }
 }
 
 struct SeededRNG {
@@ -45,7 +143,6 @@ func makeContext(width: Int, height: Int) -> CGContext {
     )!
     ctx.setAllowsAntialiasing(true)
     ctx.setShouldAntialias(true)
-    // Flip to top-left origin
     ctx.translateBy(x: 0, y: CGFloat(height))
     ctx.scaleBy(x: 1, y: -1)
     return ctx
@@ -65,12 +162,98 @@ func savePNG(ctx: CGContext, url: URL) throws {
     }
 }
 
+func loadIllustrationForMultiply(url: URL) throws -> CGImage {
+    guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
+          let rawImage = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
+        throw NSError(domain: "MajjjAtlas", code: 4, userInfo: [NSLocalizedDescriptionKey: "Failed to load illustration \(url.path)"])
+    }
+
+    let w = rawImage.width
+    let h = rawImage.height
+    let cs = CGColorSpace(name: CGColorSpace.sRGB)!
+    var rgba = [UInt8](repeating: 0, count: w * h * 4)
+    guard let ctx = CGContext(
+        data: &rgba,
+        width: w,
+        height: h,
+        bitsPerComponent: 8,
+        bytesPerRow: w * 4,
+        space: cs,
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ) else {
+        throw NSError(domain: "MajjjAtlas", code: 5, userInfo: [NSLocalizedDescriptionKey: "Failed to create bitmap for \(url.path)"])
+    }
+    ctx.draw(rawImage, in: CGRect(x: 0, y: 0, width: w, height: h))
+
+    // Sample corner cream color and normalize white-point so warm-cream background becomes pure white
+    // (1.0) under multiply blending without leaving a rectangular box against #F6EFE0/#FFFDF8.
+    let samplePoints = [(8, 8), (w - 9, 8), (8, h - 9), (w - 9, h - 9)]
+    var sumR = 0.0, sumG = 0.0, sumB = 0.0
+    for (sx, sy) in samplePoints {
+        let idx = (sy * w + sx) * 4
+        sumR += Double(rgba[idx])
+        sumG += Double(rgba[idx + 1])
+        sumB += Double(rgba[idx + 2])
+    }
+    let bgR = max(180.0, (sumR / 4.0) - 4.0)
+    let bgG = max(170.0, (sumG / 4.0) - 4.0)
+    let bgB = max(150.0, (sumB / 4.0) - 4.0)
+
+    var minX = w, maxX = -1, minY = h, maxY = -1
+    for y in 0..<h {
+        for x in 0..<w {
+            let idx = (y * w + x) * 4
+            let r = Double(rgba[idx])
+            let g = Double(rgba[idx + 1])
+            let b = Double(rgba[idx + 2])
+
+            let dr = abs(r - bgR)
+            let dg = abs(g - bgG)
+            let db = abs(b - bgB)
+            if dr + dg + db > 36.0 {
+                if x < minX { minX = x }
+                if x > maxX { maxX = x }
+                if y < minY { minY = y }
+                if y > maxY { maxY = y }
+            }
+
+            let nr = min(255.0, (r * 255.0) / bgR)
+            let ng = min(255.0, (g * 255.0) / bgG)
+            let nb = min(255.0, (b * 255.0) / bgB)
+            rgba[idx] = UInt8(nr)
+            rgba[idx + 1] = UInt8(ng)
+            rgba[idx + 2] = UInt8(nb)
+            rgba[idx + 3] = 255
+        }
+    }
+
+    guard let normalized = ctx.makeImage() else {
+        throw NSError(domain: "MajjjAtlas", code: 6, userInfo: [NSLocalizedDescriptionKey: "Failed to finalize normalized illustration"])
+    }
+
+    if minX <= maxX && minY <= maxY {
+        let pad = 12
+        let cropX = max(0, minX - pad)
+        let cropY = max(0, minY - pad)
+        let cropW = min(w - cropX, (maxX - minX + 1) + pad * 2)
+        let cropH = min(h - cropY, (maxY - minY + 1) + pad * 2)
+        if let cropped = normalized.cropping(to: CGRect(x: cropX, y: cropY, width: cropW, height: cropH)) {
+            return cropped
+        }
+    }
+    return normalized
+}
+
 func addRoundedRect(_ ctx: CGContext, rect: CGRect, radius: CGFloat) {
     let path = CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil)
     ctx.addPath(path)
 }
 
-func drawImpastoBody(_ ctx: CGContext, frame: CGRect, kind: String) {
+func tileBodyRect(isLaid: Bool) -> CGRect {
+    return CGRect(x: 2.5, y: isLaid ? 2.5 : 7.5, width: 95, height: isLaid ? 131 : 125)
+}
+
+func drawImpastoBody(_ ctx: CGContext, frame: CGRect, kind: String, palette: Palette) {
     ctx.saveGState()
     ctx.translateBy(x: frame.minX, y: frame.minY)
     let sx = frame.width / 100.0
@@ -93,16 +276,33 @@ func drawImpastoBody(_ ctx: CGContext, frame: CGRect, kind: String) {
     let isBack = (kind == "back" || kind == "laid_back")
     let isLaid = (kind == "laid" || kind == "laid_back")
 
-    // Subtle cel depth shadow at bottom edge
+    // Standing tile deep jade spine thickness (visible at top & subtle bottom edge)
     if !isLaid {
-        let lipRect = CGRect(x: 2.5, y: 5.5, width: 95, height: 128)
-        ctx.setFillColor(isBack ? Palette.jadeBackDeep : Palette.jadeBack)
-        addRoundedRect(ctx, rect: lipRect, radius: 11)
-        ctx.fillPath()
+        let spineRect = CGRect(x: 2.5, y: 1.5, width: 95, height: 133)
+        ctx.saveGState()
+        addRoundedRect(ctx, rect: spineRect, radius: 11)
+        ctx.clip()
+        let cs = CGColorSpace(name: CGColorSpace.sRGB)!
+        if let grad = CGGradient(
+            colorsSpace: cs,
+            colors: [palette.jadeBack, palette.jadeBackDeep] as CFArray,
+            locations: [0.0, 1.0]
+        ) {
+            ctx.drawLinearGradient(grad, start: CGPoint(x: 50, y: 1.5), end: CGPoint(x: 50, y: 134.5), options: [])
+        } else {
+            ctx.setFillColor(palette.jadeBack)
+            ctx.fill(spineRect)
+        }
+        ctx.restoreGState()
+
+        ctx.setStrokeColor(palette.jadeBorder)
+        ctx.setLineWidth(1.8)
+        addRoundedRect(ctx, rect: spineRect, radius: 11)
+        ctx.strokePath()
     }
 
-    let bodyRect = CGRect(x: 2.5, y: 2.5, width: 95, height: isLaid ? 131 : 126)
-    ctx.setFillColor(isBack ? Palette.jadeBack : Palette.ivory)
+    let bodyRect = tileBodyRect(isLaid: isLaid)
+    ctx.setFillColor(isBack ? palette.jadeBack : palette.ivory)
     addRoundedRect(ctx, rect: bodyRect, radius: 10.5)
     ctx.fillPath()
 
@@ -111,62 +311,59 @@ func drawImpastoBody(_ ctx: CGContext, frame: CGRect, kind: String) {
     ctx.clip()
 
     if isBack {
-        // Subtle painterly brushstrokes on jade back only
-        var rng = SeededRNG(seed: 918273)
-        for _ in 0..<18 {
-            let bx = rng.next() * 100.0
-            let by = rng.next() * 136.0
-            let bw = 14.0 + rng.next() * 24.0
-            let bh = 3.0 + rng.next() * 5.0
-            ctx.saveGState()
-            ctx.translateBy(x: bx, y: by)
-            ctx.rotate(by: -0.35 + (rng.next() - 0.5) * 0.3)
-            ctx.setFillColor(rng.next() > 0.5 ? Palette.jadeBackHi : Palette.jadeBackDeep)
-            ctx.setAlpha(0.32)
-            addRoundedRect(ctx, rect: CGRect(x: -bw / 2, y: -bh / 2, width: bw, height: bh), radius: bh * 0.4)
-            ctx.fillPath()
-            ctx.restoreGState()
+        let cs = CGColorSpace(name: CGColorSpace.sRGB)!
+        if let grad = CGGradient(
+            colorsSpace: cs,
+            colors: [palette.jadeBackHi, palette.jadeBack, palette.jadeBackDeep] as CFArray,
+            locations: [0.0, 0.58, 1.0]
+        ) {
+            ctx.drawLinearGradient(
+                grad,
+                start: CGPoint(x: bodyRect.minX, y: bodyRect.minY),
+                end: CGPoint(x: bodyRect.maxX, y: bodyRect.maxY),
+                options: []
+            )
         }
-        ctx.setAlpha(1.0)
 
-        // Engraved inner frame + center diamond
-        let inset = bodyRect.insetBy(dx: 10, dy: 11)
-        ctx.setStrokeColor(Palette.jadeRim)
-        ctx.setLineWidth(2.4)
-        addRoundedRect(ctx, rect: inset, radius: 6)
+        let inset = bodyRect.insetBy(dx: 10, dy: 10)
+        ctx.setStrokeColor(palette.jadeRim)
+        ctx.setLineWidth(2.2)
+        addRoundedRect(ctx, rect: inset, radius: 7)
         ctx.strokePath()
 
         let cx: CGFloat = 50
         let cy = bodyRect.midY
         ctx.beginPath()
-        ctx.move(to: CGPoint(x: cx, y: cy - 16))
-        ctx.addLine(to: CGPoint(x: cx + 12, y: cy))
-        ctx.addLine(to: CGPoint(x: cx, y: cy + 16))
-        ctx.addLine(to: CGPoint(x: cx - 12, y: cy))
+        ctx.move(to: CGPoint(x: cx, y: cy - 24))
+        ctx.addLine(to: CGPoint(x: cx + 16, y: cy))
+        ctx.addLine(to: CGPoint(x: cx, y: cy + 24))
+        ctx.addLine(to: CGPoint(x: cx - 16, y: cy))
         ctx.closePath()
         ctx.setLineWidth(2.2)
         ctx.strokePath()
-    } else {
-        // Crisp ivory top highlight + warm bevel bottom lip (zero noise in symbol zone!)
-        ctx.setFillColor(Palette.ivorySpec)
-        ctx.fill(CGRect(x: 4, y: 3, width: 92, height: 6))
 
-        ctx.setFillColor(Palette.ivoryShadow)
-        ctx.fill(CGRect(x: 4, y: bodyRect.maxY - (isLaid ? 6 : 9), width: 92, height: isLaid ? 6 : 9))
+        ctx.setFillColor(palette.goldDot)
+        ctx.fillEllipse(in: CGRect(x: cx - 5, y: cy - 5, width: 10, height: 10))
+    } else {
+        ctx.setFillColor(palette.ivorySpec)
+        ctx.fill(CGRect(x: 4, y: bodyRect.minY + 0.8, width: 92, height: 5.5))
+
+        ctx.setFillColor(palette.ivoryShadow)
+        let lipH: CGFloat = isLaid ? 6.5 : 7.5
+        ctx.fill(CGRect(x: 4, y: bodyRect.maxY - lipH - 0.5, width: 92, height: lipH))
     }
     ctx.restoreGState()
 
-    // Crisp comic ink outline
-    ctx.setStrokeColor(Palette.ink)
-    ctx.setLineWidth(3.0)
+    ctx.setStrokeColor(isBack ? palette.jadeBorder : palette.ink)
+    ctx.setLineWidth(2.6)
     addRoundedRect(ctx, rect: bodyRect, radius: 10.5)
     ctx.strokePath()
 
     ctx.restoreGState()
 }
 
-func drawCenteredText(_ ctx: CGContext, text: String, x: CGFloat, y: CGFloat, fontSize: CGFloat, fill: CGColor, strokeWidth: CGFloat = 0) {
-    let fontCandidates = ["Songti SC", "STSong", "PingFang SC", "Hiragino Sans GB"]
+func drawCenteredText(_ ctx: CGContext, text: String, x: CGFloat, y: CGFloat, fontSize: CGFloat, fill: CGColor) {
+    let fontCandidates = ["Kaiti SC", "STKaiti", "BiauKai", "Songti SC", "PingFang SC"]
     var chosenFont: CTFont?
     for name in fontCandidates {
         let f = CTFontCreateWithName(name as CFString, fontSize, nil)
@@ -177,407 +374,189 @@ func drawCenteredText(_ ctx: CGContext, text: String, x: CGFloat, y: CGFloat, fo
     }
     let font = chosenFont ?? CTFontCreateWithName("PingFang SC" as CFString, fontSize, nil)
 
-    var attrs: [NSAttributedString.Key: Any] = [
+    let attrs: [NSAttributedString.Key: Any] = [
         NSAttributedString.Key(kCTFontAttributeName as String): font,
         NSAttributedString.Key(kCTForegroundColorAttributeName as String): fill
     ]
-    if strokeWidth > 0 {
-        attrs[NSAttributedString.Key(kCTStrokeColorAttributeName as String)] = Palette.ink
-        // Negative stroke width in CoreText means fill + stroke
-        attrs[NSAttributedString.Key(kCTStrokeWidthAttributeName as String)] = -strokeWidth
-    }
 
     let attrStr = NSAttributedString(string: text, attributes: attrs)
     let line = CTLineCreateWithAttributedString(attrStr)
     let bounds = CTLineGetBoundsWithOptions(line, .useGlyphPathBounds)
 
     ctx.saveGState()
-    // Cancel top-left y-flip for CoreText text rendering
     ctx.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
     let drawX = x - bounds.midX
-    let drawY = y + bounds.height * 0.34
+    let drawY = y + bounds.midY
     ctx.textPosition = CGPoint(x: drawX, y: drawY)
     CTLineDraw(line, ctx)
     ctx.restoreGState()
 }
 
-func drawPinCircle(_ ctx: CGContext, cx: CGFloat, cy: CGFloat, r: CGFloat, fill: CGColor) {
+func drawPlumPin(_ ctx: CGContext, cx: CGFloat, cy: CGFloat, r: CGFloat, fill: CGColor, palette: Palette) {
     ctx.saveGState()
     let rect = CGRect(x: cx - r, y: cy - r, width: r * 2, height: r * 2)
     ctx.setFillColor(fill)
     ctx.fillEllipse(in: rect)
-    ctx.setStrokeColor(Palette.ink)
-    ctx.setLineWidth(2.1)
+    ctx.setStrokeColor(palette.ink)
+    ctx.setLineWidth(1.4)
     ctx.strokeEllipse(in: rect)
 
-    let innerR = r * 0.56
+    let innerR = r * 0.74
     let innerRect = CGRect(x: cx - innerR, y: cy - innerR, width: innerR * 2, height: innerR * 2)
-    ctx.setStrokeColor(Palette.ivory)
-    ctx.setLineWidth(max(1.4, r * 0.14))
+    ctx.setStrokeColor(palette.ivory)
+    ctx.setAlpha(0.92)
+    ctx.setLineWidth(max(1.1, r * 0.1))
     ctx.strokeEllipse(in: innerRect)
+    ctx.setAlpha(1.0)
 
-    ctx.setLineCap(.round)
-    ctx.setLineWidth(max(1.2, r * 0.12))
-    for i in 0..<8 {
-        let rad = CGFloat(i) * .pi / 4.0
-        let x1 = cx + cos(rad) * (innerR + 1.2)
-        let y1 = cy + sin(rad) * (innerR + 1.2)
-        let x2 = cx + cos(rad) * (r - 2.2)
-        let y2 = cy + sin(rad) * (r - 2.2)
-        ctx.beginPath()
-        ctx.move(to: CGPoint(x: x1, y: y1))
-        ctx.addLine(to: CGPoint(x: x2, y: y2))
-        ctx.strokePath()
-    }
-
-    let dotR = r * 0.22
-    let dotRect = CGRect(x: cx - dotR, y: cy - dotR, width: dotR * 2, height: dotR * 2)
-    ctx.setFillColor(Palette.ivory)
-    ctx.fillEllipse(in: dotRect)
-    ctx.setStrokeColor(Palette.ink)
-    ctx.setLineWidth(1.2)
-    ctx.strokeEllipse(in: dotRect)
-    ctx.restoreGState()
-}
-
-func drawOnePinMedallion(_ ctx: CGContext) {
-    ctx.saveGState()
-    let outer = CGRect(x: 15, y: 31, width: 70, height: 70)
-    ctx.setFillColor(Palette.cobalt)
-    ctx.fillEllipse(in: outer)
-    ctx.setStrokeColor(Palette.ink)
-    ctx.setLineWidth(2.8)
-    ctx.strokeEllipse(in: outer)
-
-    let ring = CGRect(x: 19.5, y: 35.5, width: 61, height: 61)
-    ctx.setFillColor(Palette.ivory)
-    ctx.fillEllipse(in: ring)
-    ctx.setLineWidth(1.6)
-    ctx.strokeEllipse(in: ring)
-
-    for i in 0..<8 {
+    let rx = r * 0.17
+    let ry = r * 0.25
+    let petalRect = CGRect(x: -rx, y: -r * 0.37 - ry, width: rx * 2, height: ry * 2)
+    ctx.setFillColor(palette.ivory)
+    for deg in [0.0, 72.0, 144.0, 216.0, 288.0] {
         ctx.saveGState()
-        ctx.translateBy(x: 50, y: 66)
-        ctx.rotate(by: CGFloat(i) * .pi / 4.0)
-        let petal = CGRect(x: -6.6, y: -35, width: 13.2, height: 22)
-        ctx.setFillColor(i % 2 == 0 ? Palette.jade : Palette.gold)
-        ctx.fillEllipse(in: petal)
-        ctx.setStrokeColor(Palette.ink)
-        ctx.setLineWidth(1.8)
-        ctx.strokeEllipse(in: petal)
+        ctx.translateBy(x: cx, y: cy)
+        ctx.rotate(by: CGFloat(deg) * .pi / 180.0)
+        ctx.fillEllipse(in: petalRect)
         ctx.restoreGState()
     }
 
-    let mid = CGRect(x: 36, y: 52, width: 28, height: 28)
-    ctx.setFillColor(Palette.crimson)
-    ctx.fillEllipse(in: mid)
-    ctx.setStrokeColor(Palette.ink)
-    ctx.setLineWidth(2.2)
-    ctx.strokeEllipse(in: mid)
+    let hubR = r * 0.19
+    ctx.setFillColor(fill)
+    ctx.fillEllipse(in: CGRect(x: cx - hubR, y: cy - hubR, width: hubR * 2, height: hubR * 2))
 
-    let core = CGRect(x: 42.5, y: 58.5, width: 15, height: 15)
-    ctx.setFillColor(Palette.ivory)
-    ctx.fillEllipse(in: core)
-    ctx.setLineWidth(1.6)
-    ctx.strokeEllipse(in: core)
-
-    let dot = CGRect(x: 46.6, y: 62.6, width: 6.8, height: 6.8)
-    ctx.setFillColor(Palette.crimson)
-    ctx.fillEllipse(in: dot)
+    let holeR = r * 0.09
+    ctx.setFillColor(palette.ivory)
+    ctx.fillEllipse(in: CGRect(x: cx - holeR, y: cy - holeR, width: holeR * 2, height: holeR * 2))
     ctx.restoreGState()
 }
 
-func drawBambooStalk(_ ctx: CGContext, cx: CGFloat, cy: CGFloat, h: CGFloat, color: CGColor, angleDeg: CGFloat = 0) {
+func drawBambooStalk(_ ctx: CGContext, cx: CGFloat, cy: CGFloat, h: CGFloat, bw: CGFloat, color: CGColor, angleDeg: CGFloat = 0, palette: Palette) {
     ctx.saveGState()
     ctx.translateBy(x: cx, y: cy)
     ctx.rotate(by: angleDeg * .pi / 180.0)
-    let w: CGFloat = 11.5
     let top = -h * 0.5
     let bot = h * 0.5
 
-    let stem = CGRect(x: -w * 0.44, y: top + 2, width: w * 0.88, height: h - 4)
+    let stem = CGRect(x: -bw * 0.42, y: top + 2, width: bw * 0.84, height: h - 4)
     ctx.setFillColor(color)
-    addRoundedRect(ctx, rect: stem, radius: 3.4)
+    addRoundedRect(ctx, rect: stem, radius: 3.2)
     ctx.fillPath()
-    ctx.setStrokeColor(Palette.ink)
-    ctx.setLineWidth(2.0)
-    addRoundedRect(ctx, rect: stem, radius: 3.4)
+    ctx.setStrokeColor(palette.inkSoft)
+    ctx.setLineWidth(1.1)
+    addRoundedRect(ctx, rect: stem, radius: 3.2)
     ctx.strokePath()
 
-    for ny in [top - 1, -2.6, bot - 4.5] {
-        let node = CGRect(x: -w * 0.56, y: ny, width: w * 1.12, height: 5.3)
+    for ny in [top - 0.5, -2.3, bot - 4.1] {
+        let node = CGRect(x: -bw * 0.58, y: ny, width: bw * 1.16, height: 4.6)
         ctx.setFillColor(color)
-        addRoundedRect(ctx, rect: node, radius: 2.5)
+        addRoundedRect(ctx, rect: node, radius: 2.3)
         ctx.fillPath()
-        ctx.setStrokeColor(Palette.ink)
-        ctx.setLineWidth(1.8)
-        addRoundedRect(ctx, rect: node, radius: 2.5)
+        ctx.setStrokeColor(palette.inkSoft)
+        ctx.setLineWidth(1.1)
+        addRoundedRect(ctx, rect: node, radius: 2.3)
         ctx.strokePath()
     }
 
-    ctx.setStrokeColor(Palette.ivory)
-    ctx.setAlpha(0.85)
-    ctx.setLineWidth(1.7)
-    ctx.setLineCap(.round)
-    ctx.beginPath()
-    ctx.move(to: CGPoint(x: 0, y: top + 5.5))
-    ctx.addLine(to: CGPoint(x: 0, y: bot - 5.5))
-    ctx.strokePath()
-    ctx.restoreGState()
-}
-
-func drawOneBambooBird(_ ctx: CGContext) {
-    ctx.saveGState()
-    // Perch branch
-    ctx.setLineCap(.round)
-    ctx.beginPath()
-    ctx.move(to: CGPoint(x: 18, y: 104))
-    ctx.addQuadCurve(to: CGPoint(x: 82, y: 104), control: CGPoint(x: 50, y: 96))
-    ctx.setStrokeColor(Palette.jade)
-    ctx.setLineWidth(6)
-    ctx.strokePath()
-    ctx.beginPath()
-    ctx.move(to: CGPoint(x: 18, y: 104))
-    ctx.addQuadCurve(to: CGPoint(x: 82, y: 104), control: CGPoint(x: 50, y: 96))
-    ctx.setStrokeColor(Palette.ink)
-    ctx.setLineWidth(2)
-    ctx.strokePath()
-
-    // Tail feathers
-    let tails: [([CGPoint], CGColor)] = [
-        ([CGPoint(x: 40, y: 82), CGPoint(x: 22, y: 112), CGPoint(x: 34, y: 112), CGPoint(x: 46, y: 86)], Palette.jade),
-        ([CGPoint(x: 48, y: 84), CGPoint(x: 42, y: 116), CGPoint(x: 54, y: 116), CGPoint(x: 55, y: 84)], Palette.crimson),
-        ([CGPoint(x: 56, y: 82), CGPoint(x: 64, y: 112), CGPoint(x: 75, y: 109), CGPoint(x: 61, y: 80)], Palette.cobalt)
-    ]
-    ctx.setLineJoin(.round)
-    for (pts, fill) in tails {
-        ctx.beginPath()
-        ctx.addLines(between: pts)
-        ctx.closePath()
-        ctx.setFillColor(fill)
-        ctx.drawPath(using: .fillStroke)
-    }
-
-    // Body
-    let body = CGRect(x: 33, y: 43, width: 36, height: 44)
-    ctx.setFillColor(Palette.jade)
-    ctx.fillEllipse(in: body)
-    ctx.setStrokeColor(Palette.ink)
-    ctx.setLineWidth(2.4)
-    ctx.strokeEllipse(in: body)
-
-    let belly = CGRect(x: 42.5, y: 55, width: 21, height: 26)
-    ctx.setFillColor(Palette.ivory)
-    ctx.fillEllipse(in: belly)
-    ctx.setLineWidth(1.6)
-    ctx.strokeEllipse(in: belly)
-
-    // Wings
-    for wingPts in [
-        (CGPoint(x: 35, y: 56), CGPoint(x: 27, y: 65), CGPoint(x: 30, y: 80), CGPoint(x: 44, y: 80)),
-        (CGPoint(x: 67, y: 56), CGPoint(x: 75, y: 65), CGPoint(x: 72, y: 80), CGPoint(x: 58, y: 80))
-    ] {
-        ctx.beginPath()
-        ctx.move(to: wingPts.0)
-        ctx.addCurve(to: wingPts.3, control1: wingPts.1, control2: wingPts.2)
-        ctx.closePath()
-        ctx.setFillColor(Palette.cobalt)
-        ctx.setStrokeColor(Palette.ink)
-        ctx.setLineWidth(2.0)
-        ctx.drawPath(using: .fillStroke)
-    }
-
-    // Head
-    let head = CGRect(x: 39, y: 25, width: 26, height: 26)
-    ctx.setFillColor(Palette.jade)
-    ctx.fillEllipse(in: head)
-    ctx.setStrokeColor(Palette.ink)
-    ctx.setLineWidth(2.3)
-    ctx.strokeEllipse(in: head)
-
-    // Crest
-    ctx.beginPath()
-    ctx.move(to: CGPoint(x: 46, y: 26))
-    ctx.addQuadCurve(to: CGPoint(x: 53, y: 25), control: CGPoint(x: 46, y: 15))
-    ctx.addQuadCurve(to: CGPoint(x: 58, y: 28), control: CGPoint(x: 64, y: 18))
-    ctx.closePath()
-    ctx.setFillColor(Palette.crimson)
-    ctx.setLineWidth(1.9)
-    ctx.drawPath(using: .fillStroke)
-
-    // Beak
-    ctx.beginPath()
-    ctx.addLines(between: [CGPoint(x: 62, y: 37), CGPoint(x: 76, y: 40), CGPoint(x: 62, y: 44)])
-    ctx.closePath()
-    ctx.setFillColor(Palette.gold)
-    ctx.setLineWidth(1.8)
-    ctx.drawPath(using: .fillStroke)
-
-    // Eye
-    let eye = CGRect(x: 53, y: 34, width: 6, height: 6)
-    ctx.setFillColor(Palette.ivory)
-    ctx.fillEllipse(in: eye)
+    ctx.setStrokeColor(palette.bambooSpec)
     ctx.setLineWidth(1.4)
-    ctx.strokeEllipse(in: eye)
-    ctx.setFillColor(Palette.ink)
-    ctx.fillEllipse(in: CGRect(x: 55.4, y: 35.6, width: 2.8, height: 2.8))
-
-    // Feet
-    ctx.setLineWidth(2.4)
+    ctx.setLineCap(.round)
     ctx.beginPath()
-    ctx.move(to: CGPoint(x: 45, y: 86)); ctx.addLine(to: CGPoint(x: 43, y: 100))
-    ctx.move(to: CGPoint(x: 57, y: 86)); ctx.addLine(to: CGPoint(x: 59, y: 100))
+    ctx.move(to: CGPoint(x: -bw * 0.1, y: top + 5.5))
+    ctx.addLine(to: CGPoint(x: -bw * 0.1, y: bot - 5.5))
     ctx.strokePath()
     ctx.restoreGState()
 }
 
-func drawTileFace(_ ctx: CGContext, frame: CGRect, tileIndex: Int) {
-    drawImpastoBody(ctx, frame: frame, kind: "standing")
+func drawNormalizedIllustration(_ ctx: CGContext, image: CGImage, targetRect: CGRect) {
+    let imgW = CGFloat(image.width)
+    let imgH = CGFloat(image.height)
+    let scale = min(targetRect.width / imgW, targetRect.height / imgH)
+    let drawW = imgW * scale
+    let drawH = imgH * scale
+    let drawRect = CGRect(
+        x: targetRect.midX - drawW * 0.5,
+        y: targetRect.midY - drawH * 0.5,
+        width: drawW,
+        height: drawH
+    )
+
+    ctx.saveGState()
+    ctx.setBlendMode(.multiply)
+    // Flip vertically to counteract top-left flipped CGContext when drawing CGImage
+    ctx.translateBy(x: drawRect.minX, y: drawRect.maxY)
+    ctx.scaleBy(x: 1, y: -1)
+    ctx.draw(image, in: CGRect(x: 0, y: 0, width: drawW, height: drawH))
+    ctx.restoreGState()
+}
+
+func drawTileFace(_ ctx: CGContext, frame: CGRect, tileIndex: Int, laid: Bool, spec: StyleASpec, palette: Palette, sou1Image: CGImage, pin1Image: CGImage) {
+    drawImpastoBody(ctx, frame: frame, kind: laid ? "laid" : "standing", palette: palette)
 
     ctx.saveGState()
     ctx.translateBy(x: frame.minX, y: frame.minY)
     ctx.scaleBy(x: frame.width / 100.0, y: frame.height / 136.0)
 
+    let bodyRect = tileBodyRect(isLaid: laid)
+    addRoundedRect(ctx, rect: bodyRect, radius: 10.5)
+    ctx.clip()
+
+    let artScaleY: CGFloat = laid ? (128.0 / 130.0) : (121.0 / 130.0)
+    let artOffsetY: CGFloat = laid ? 2.5 : 8.5
+    ctx.translateBy(x: 0, y: artOffsetY)
+    ctx.scaleBy(x: 1, y: artScaleY)
+
     let cnNums = ["", "一", "二", "三", "四", "五", "六", "七", "八", "九"]
 
     if tileIndex < 9 {
-        // Man 1..9
         let n = tileIndex + 1
-        drawCenteredText(ctx, text: cnNums[n], x: 50, y: 41, fontSize: 38, fill: Palette.ink, strokeWidth: 0.8)
-        drawCenteredText(ctx, text: "萬", x: 50, y: 90, fontSize: 44, fill: Palette.crimson, strokeWidth: 1.4)
+        drawCenteredText(ctx, text: cnNums[n], x: 50, y: 39, fontSize: 42, fill: palette.ink)
+        drawCenteredText(ctx, text: "萬", x: 50, y: 92, fontSize: 45, fill: palette.crimson)
     } else if tileIndex < 18 {
-        // Bamboo 1..9
-        let n = tileIndex - 9 + 1
-        switch n {
-        case 1:
-            drawOneBambooBird(ctx)
-        case 2:
-            drawBambooStalk(ctx, cx: 50, cy: 40, h: 38, color: Palette.jade)
-            drawBambooStalk(ctx, cx: 50, cy: 90, h: 38, color: Palette.cobalt)
-        case 3:
-            drawBambooStalk(ctx, cx: 50, cy: 40, h: 36, color: Palette.jade)
-            drawBambooStalk(ctx, cx: 32, cy: 90, h: 36, color: Palette.cobalt)
-            drawBambooStalk(ctx, cx: 68, cy: 90, h: 36, color: Palette.jade)
-        case 4:
-            drawBambooStalk(ctx, cx: 32, cy: 40, h: 36, color: Palette.cobalt)
-            drawBambooStalk(ctx, cx: 68, cy: 40, h: 36, color: Palette.jade)
-            drawBambooStalk(ctx, cx: 32, cy: 90, h: 36, color: Palette.jade)
-            drawBambooStalk(ctx, cx: 68, cy: 90, h: 36, color: Palette.cobalt)
-        case 5:
-            drawBambooStalk(ctx, cx: 27, cy: 36, h: 34, color: Palette.jade)
-            drawBambooStalk(ctx, cx: 73, cy: 36, h: 34, color: Palette.cobalt)
-            drawBambooStalk(ctx, cx: 50, cy: 65, h: 34, color: Palette.crimson)
-            drawBambooStalk(ctx, cx: 27, cy: 94, h: 34, color: Palette.cobalt)
-            drawBambooStalk(ctx, cx: 73, cy: 94, h: 34, color: Palette.jade)
-        case 6:
-            for y: CGFloat in [40, 90] {
-                for x: CGFloat in [26, 50, 74] {
-                    drawBambooStalk(ctx, cx: x, cy: y, h: 36, color: Palette.jade)
-                }
-            }
-        case 7:
-            drawBambooStalk(ctx, cx: 50, cy: 29, h: 28, color: Palette.crimson)
-            for y: CGFloat in [65, 101] {
-                drawBambooStalk(ctx, cx: 26, cy: y, h: 28, color: Palette.jade)
-                drawBambooStalk(ctx, cx: 50, cy: y, h: 28, color: Palette.cobalt)
-                drawBambooStalk(ctx, cx: 74, cy: y, h: 28, color: Palette.jade)
-            }
-        case 8:
-            drawBambooStalk(ctx, cx: 22, cy: 40, h: 34, color: Palette.jade)
-            drawBambooStalk(ctx, cx: 41, cy: 42, h: 31, color: Palette.cobalt, angleDeg: 26)
-            drawBambooStalk(ctx, cx: 59, cy: 42, h: 31, color: Palette.cobalt, angleDeg: -26)
-            drawBambooStalk(ctx, cx: 78, cy: 40, h: 34, color: Palette.jade)
-            drawBambooStalk(ctx, cx: 22, cy: 91, h: 34, color: Palette.jade)
-            drawBambooStalk(ctx, cx: 41, cy: 89, h: 31, color: Palette.cobalt, angleDeg: -26)
-            drawBambooStalk(ctx, cx: 59, cy: 89, h: 31, color: Palette.cobalt, angleDeg: 26)
-            drawBambooStalk(ctx, cx: 78, cy: 91, h: 34, color: Palette.jade)
-        default:
-            for y: CGFloat in [29, 65, 101] {
-                drawBambooStalk(ctx, cx: 25, cy: y, h: 27, color: Palette.jade)
-                drawBambooStalk(ctx, cx: 50, cy: y, h: 27, color: Palette.crimson)
-                drawBambooStalk(ctx, cx: 75, cy: y, h: 27, color: Palette.cobalt)
+        let rank = tileIndex - 9 + 1
+        let bw: CGFloat = rank >= 7 ? 10.2 : 12.2
+        if rank == 1 {
+            drawNormalizedIllustration(ctx, image: sou1Image, targetRect: CGRect(x: 7, y: 8, width: 86, height: 114))
+        } else if let entries = spec.bamboo[String(rank)] {
+            for entry in entries {
+                drawBambooStalk(
+                    ctx,
+                    cx: CGFloat(entry.x),
+                    cy: CGFloat(entry.y),
+                    h: CGFloat(entry.h),
+                    bw: bw,
+                    color: palette.resolve(entry.color),
+                    angleDeg: CGFloat(entry.angle),
+                    palette: palette
+                )
             }
         }
     } else if tileIndex < 27 {
-        // Dot 1..9
-        let n = tileIndex - 18 + 1
-        switch n {
-        case 1:
-            drawOnePinMedallion(ctx)
-        case 2:
-            drawPinCircle(ctx, cx: 50, cy: 40, r: 16, fill: Palette.jade)
-            drawPinCircle(ctx, cx: 50, cy: 90, r: 16, fill: Palette.cobalt)
-        case 3:
-            drawPinCircle(ctx, cx: 27, cy: 33, r: 13.5, fill: Palette.cobalt)
-            drawPinCircle(ctx, cx: 50, cy: 65, r: 13.5, fill: Palette.crimson)
-            drawPinCircle(ctx, cx: 73, cy: 97, r: 13.5, fill: Palette.jade)
-        case 4:
-            drawPinCircle(ctx, cx: 31, cy: 40, r: 14, fill: Palette.cobalt)
-            drawPinCircle(ctx, cx: 69, cy: 40, r: 14, fill: Palette.jade)
-            drawPinCircle(ctx, cx: 31, cy: 90, r: 14, fill: Palette.jade)
-            drawPinCircle(ctx, cx: 69, cy: 90, r: 14, fill: Palette.cobalt)
-        case 5:
-            drawPinCircle(ctx, cx: 27, cy: 34, r: 12.2, fill: Palette.cobalt)
-            drawPinCircle(ctx, cx: 73, cy: 34, r: 12.2, fill: Palette.jade)
-            drawPinCircle(ctx, cx: 50, cy: 65, r: 12.6, fill: Palette.crimson)
-            drawPinCircle(ctx, cx: 27, cy: 96, r: 12.2, fill: Palette.jade)
-            drawPinCircle(ctx, cx: 73, cy: 96, r: 12.2, fill: Palette.cobalt)
-        case 6:
-            drawPinCircle(ctx, cx: 32, cy: 30, r: 12.2, fill: Palette.jade)
-            drawPinCircle(ctx, cx: 68, cy: 30, r: 12.2, fill: Palette.jade)
-            drawPinCircle(ctx, cx: 32, cy: 65, r: 12.2, fill: Palette.crimson)
-            drawPinCircle(ctx, cx: 68, cy: 65, r: 12.2, fill: Palette.crimson)
-            drawPinCircle(ctx, cx: 32, cy: 99, r: 12.2, fill: Palette.crimson)
-            drawPinCircle(ctx, cx: 68, cy: 99, r: 12.2, fill: Palette.crimson)
-        case 7:
-            drawPinCircle(ctx, cx: 25, cy: 25, r: 10.6, fill: Palette.jade)
-            drawPinCircle(ctx, cx: 50, cy: 35, r: 10.6, fill: Palette.jade)
-            drawPinCircle(ctx, cx: 75, cy: 45, r: 10.6, fill: Palette.jade)
-            drawPinCircle(ctx, cx: 31, cy: 73, r: 11.4, fill: Palette.crimson)
-            drawPinCircle(ctx, cx: 69, cy: 73, r: 11.4, fill: Palette.crimson)
-            drawPinCircle(ctx, cx: 31, cy: 102, r: 11.4, fill: Palette.crimson)
-            drawPinCircle(ctx, cx: 69, cy: 102, r: 11.4, fill: Palette.crimson)
-        case 8:
-            for y: CGFloat in [24, 51, 79, 106] {
-                drawPinCircle(ctx, cx: 31, cy: y, r: 11, fill: Palette.cobalt)
-                drawPinCircle(ctx, cx: 69, cy: y, r: 11, fill: Palette.cobalt)
-            }
-        default:
-            for (y, fill) in [(29.0, Palette.jade), (65.0, Palette.crimson), (101.0, Palette.cobalt)] {
-                drawPinCircle(ctx, cx: 24, cy: y, r: 10.8, fill: fill)
-                drawPinCircle(ctx, cx: 50, cy: y, r: 10.8, fill: fill)
-                drawPinCircle(ctx, cx: 76, cy: y, r: 10.8, fill: fill)
+        let rank = tileIndex - 18 + 1
+        if rank == 1 {
+            drawNormalizedIllustration(ctx, image: pin1Image, targetRect: CGRect(x: 6, y: 9, width: 88, height: 112))
+        } else if let entries = spec.dot[String(rank)] {
+            for entry in entries {
+                drawPlumPin(
+                    ctx,
+                    cx: CGFloat(entry.x),
+                    cy: CGFloat(entry.y),
+                    r: CGFloat(entry.r),
+                    fill: palette.resolve(entry.color),
+                    palette: palette
+                )
             }
         }
     } else if tileIndex == 33 {
-        // White dragon (白板)
-        ctx.setStrokeColor(Palette.cobalt)
-        ctx.setLineWidth(5)
-        addRoundedRect(ctx, rect: CGRect(x: 20, y: 23, width: 60, height: 84), radius: 6)
-        ctx.strokePath()
-
-        ctx.setStrokeColor(Palette.ink)
-        ctx.setLineWidth(1.8)
-        ctx.setLineDash(phase: 0, lengths: [6, 4])
-        addRoundedRect(ctx, rect: CGRect(x: 27, y: 30, width: 46, height: 70), radius: 3)
-        ctx.strokePath()
-        ctx.setLineDash(phase: 0, lengths: [])
-
-        ctx.setStrokeColor(Palette.cobalt)
-        ctx.setLineWidth(3)
-        ctx.setLineCap(.round)
-        ctx.beginPath()
-        ctx.move(to: CGPoint(x: 20, y: 36)); ctx.addLine(to: CGPoint(x: 29, y: 23))
-        ctx.move(to: CGPoint(x: 71, y: 23)); ctx.addLine(to: CGPoint(x: 80, y: 36))
-        ctx.move(to: CGPoint(x: 20, y: 94)); ctx.addLine(to: CGPoint(x: 29, y: 107))
-        ctx.move(to: CGPoint(x: 71, y: 107)); ctx.addLine(to: CGPoint(x: 80, y: 94))
+        // Mainland plain white dragon (白板): faint inner recessed bevel only
+        ctx.setStrokeColor(palette.whiteBevel)
+        ctx.setLineWidth(1.6)
+        addRoundedRect(ctx, rect: CGRect(x: 13, y: 14, width: 74, height: 102), radius: 7)
         ctx.strokePath()
     } else {
-        // Winds & Dragons (27..32)
         let glyphs = [27: "東", 28: "南", 29: "西", 30: "北", 31: "中", 32: "發"]
-        let color: CGColor = tileIndex == 31 ? Palette.crimson : tileIndex == 32 ? Palette.jade : Palette.ink
-        let stroke: CGFloat = (tileIndex == 31 || tileIndex == 32) ? 1.4 : 0.8
-        drawCenteredText(ctx, text: glyphs[tileIndex] ?? "?", x: 50, y: 65, fontSize: 58, fill: color, strokeWidth: stroke)
+        let color: CGColor = tileIndex == 31 ? palette.crimson : tileIndex == 32 ? palette.jade : palette.ink
+        drawCenteredText(ctx, text: glyphs[tileIndex] ?? "?", x: 50, y: 65, fontSize: 63, fill: color)
     }
 
     ctx.restoreGState()
@@ -605,7 +584,6 @@ func buildFeltImpasto(url: URL) throws {
     let fSize = CGFloat(size)
     let ctx = makeContext(width: size, height: size)
 
-    // Piltover deep teal felt base (#14282E)
     ctx.setFillColor(CGColor(srgbRed: 0x14 / 255.0, green: 0x28 / 255.0, blue: 0x2E / 255.0, alpha: 1.0))
     ctx.fill(CGRect(x: 0, y: 0, width: fSize, height: fSize))
 
@@ -626,7 +604,6 @@ func buildFeltImpasto(url: URL) throws {
         drawToroidalStroke(ctx, size: fSize, x: x, y: y, w: w, h: h, angle: angle, color: color, alpha: alpha)
     }
 
-    // Fine canvas tooth wrapped toroidally
     for _ in 0..<1800 {
         let x = rng.next() * Double(size)
         let y = rng.next() * Double(size)
@@ -668,41 +645,52 @@ func buildFeltBrush(url: URL) throws {
 
 func main() throws {
     let args = CommandLine.arguments
-    guard args.count >= 4 else {
-        fputs("Usage: rasterize-assets.swift <atlas-png> <impasto-png> <brush-png>\n", stderr)
+    guard args.count >= 7 else {
+        fputs("Usage: rasterize-assets.swift <atlas-png> <impasto-png> <brush-png> <spec-json> <1sou-png> <1pin-png>\n", stderr)
         exit(1)
     }
 
     let atlasUrl = URL(fileURLWithPath: args[1])
     let impastoUrl = URL(fileURLWithPath: args[2])
     let brushUrl = URL(fileURLWithPath: args[3])
+    let specUrl = URL(fileURLWithPath: args[4])
+    let sou1Url = URL(fileURLWithPath: args[5])
+    let pin1Url = URL(fileURLWithPath: args[6])
 
-    let atlasW = 1152
-    let atlasH = 960
-    let cellW = 144
-    let cellH = 192
-    let frameW = 136
-    let frameH = 184
-    let pad = 4
-    let cols = 8
+    let specData = try Data(contentsOf: specUrl)
+    let spec = try JSONDecoder().decode(StyleASpec.self, from: specData)
+    let palette = Palette(spec: spec.palette)
+
+    let sou1Image = try loadIllustrationForMultiply(url: sou1Url)
+    let pin1Image = try loadIllustrationForMultiply(url: pin1Url)
+
+    let cols = spec.grid.cols
+    let rows = spec.grid.rows
+    let cellW = spec.grid.cellW
+    let cellH = spec.grid.cellH
+    let atlasW = cols * cellW
+    let atlasH = rows * cellH
+    let frameW = spec.grid.frameW
+    let frameH = spec.grid.frameH
+    let pad = spec.grid.pad
 
     let atlasCtx = makeContext(width: atlasW, height: atlasH)
     atlasCtx.clear(CGRect(x: 0, y: 0, width: atlasW, height: atlasH))
 
-    for t in 0..<34 {
-        let col = t % cols
-        let row = t / cols
-        let frame = CGRect(x: col * cellW + pad, y: row * cellH + pad, width: frameW, height: frameH)
-        drawTileFace(atlasCtx, frame: frame, tileIndex: t)
-    }
-
-    let bodyKinds = ["standing", "laid", "back", "shadow", "laid_back"]
-    for (idx, kind) in bodyKinds.enumerated() {
-        let slot = 34 + idx
+    func frameFor(slot: Int) -> CGRect {
         let col = slot % cols
         let row = slot / cols
-        let frame = CGRect(x: col * cellW + pad, y: row * cellH + pad, width: frameW, height: frameH)
-        drawImpastoBody(atlasCtx, frame: frame, kind: kind)
+        return CGRect(x: col * cellW + pad, y: row * cellH + pad, width: frameW, height: frameH)
+    }
+
+    for t in 0..<spec.grid.tileCount {
+        drawTileFace(atlasCtx, frame: frameFor(slot: t), tileIndex: t, laid: false, spec: spec, palette: palette, sou1Image: sou1Image, pin1Image: pin1Image)
+        drawTileFace(atlasCtx, frame: frameFor(slot: spec.grid.tileCount + t), tileIndex: t, laid: true, spec: spec, palette: palette, sou1Image: sou1Image, pin1Image: pin1Image)
+    }
+
+    for (idx, frameKey) in spec.grid.bodyFrames.enumerated() {
+        let kind = frameKey.hasPrefix("body_") ? String(frameKey.dropFirst("body_".count)) : frameKey
+        drawImpastoBody(atlasCtx, frame: frameFor(slot: spec.grid.tileCount * 2 + idx), kind: kind, palette: palette)
     }
 
     try savePNG(ctx: atlasCtx, url: atlasUrl)

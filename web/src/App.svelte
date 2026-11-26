@@ -11,12 +11,16 @@
     type ShutdownState,
   } from "./lib/lifecycle/shutdownController";
   import ShutdownControl from "./lib/lifecycle/ShutdownControl.svelte";
-  import { matchModeLabel, patchLobbyConfig } from "./lib/lobby/lobbyConfig";
+  import { patchLobbyConfig } from "./lib/lobby/lobbyConfig";
   import LobbyView from "./lib/lobby/LobbyView.svelte";
   import {
     getBrowserDevicePreferencesStore,
     type DevicePreferences,
   } from "./lib/preferences/devicePreferences";
+  import {
+    createViewportDisplayController,
+    type ViewportDisplayState,
+  } from "./lib/platform/viewportDisplay";
   import { createWakeLockController } from "./lib/platform/wakeLock";
   import ComicImpactOverlay from "./lib/presentation/ComicImpactOverlay.svelte";
   import { createPresentationEffectsBus } from "./lib/presentation/effectsBus";
@@ -32,26 +36,28 @@
   import { seatIndex } from "./lib/protocol/seats";
   import { createTableClient } from "./lib/session/client";
   import type { SessionState } from "./lib/session/reducer";
-  import ActionBar from "./lib/table/ActionBar.svelte";
   import DestructiveOpModal from "./lib/table/DestructiveOpModal.svelte";
+  import MatchHud from "./lib/table/MatchHud.svelte";
   import MatchSummaryView from "./lib/table/MatchSummaryView.svelte";
   import {
     createRenderQualityController,
     type RenderQualityState,
   } from "./lib/table/renderQuality";
+  import RotateOverlay from "./lib/table/RotateOverlay.svelte";
   import {
     buildOfflinePauseBanner,
     buildTakeOverSeatItems,
     getOfflineHumanTakeOverSeats,
     type TakeOverKind,
   } from "./lib/table/seatControl";
-  import SeatControlBar from "./lib/table/SeatControlBar.svelte";
   import SettlementModal from "./lib/table/SettlementModal.svelte";
   import TableCanvas from "./lib/table/TableCanvas.svelte";
   import TakeOverModal from "./lib/table/TakeOverModal.svelte";
-  import { formatRelativeSeatParen } from "./lib/protocol/seats";
-  import { formatRoundTitle } from "./lib/table/tiles";
-  import { findLegalDiscardAction } from "./lib/table/viewModel";
+  import type { TableLayout } from "./lib/table/layout";
+  import {
+    deriveTurnCueState,
+    findLegalDiscardAction,
+  } from "./lib/table/viewModel";
   import type { WebGLRecoveryState } from "./lib/table/webglRecovery";
   import AudioResumeCapsule from "./lib/ui/AudioResumeCapsule.svelte";
   import SettingsModal from "./lib/ui/SettingsModal.svelte";
@@ -67,6 +73,7 @@
     initialManualReducedEffects: initialDevicePrefs.reduced_effects,
   });
   const wakeLock = createWakeLockController();
+  const viewportDisplay = createViewportDisplayController();
   const presentationQueue = createPresentationQueue({ effectsBus });
   const audioRouter = createAudioEventRouter({
     initialPreferences: initialDevicePrefs,
@@ -83,7 +90,9 @@
   );
   let devicePrefs = $state<DevicePreferences>(initialDevicePrefs);
   let renderQualityState = $state<RenderQualityState>(renderQuality.getState());
+  let viewportState = $state<ViewportDisplayState>(viewportDisplay.getState());
   let webglRecoveryState = $state<WebGLRecoveryState | null>(null);
+  let tableLayout = $state<TableLayout | null>(null);
   let audioStatus = $state<AudioStatus>(audioRouter.getStatus());
   let settingsOpen = $state(false);
   let takeOverTarget = $state<{
@@ -108,6 +117,9 @@
     const unsubscribeRenderQuality = renderQuality.subscribe((next) => {
       renderQualityState = next;
     });
+    const unsubscribeViewportDisplay = viewportDisplay.subscribe((next) => {
+      viewportState = next;
+    });
     const unsubscribePresentation = presentationQueue.subscribe((next) => {
       presentationState = next;
     });
@@ -128,11 +140,13 @@
       unsubscribeSemantic();
       unsubscribeAudioStatus();
       unsubscribePresentation();
+      unsubscribeViewportDisplay();
       unsubscribeRenderQuality();
       unsubscribePrefs();
       unsubscribeHistory();
       unsubscribeShutdown();
       unsubscribeClient();
+      viewportDisplay.dispose();
       wakeLock.dispose();
       renderQuality.dispose();
       audioRouter.dispose();
@@ -158,6 +172,7 @@
     wakeLock.syncPhase(phase);
     if (phase !== "InMatch") {
       webglRecoveryState = null;
+      tableLayout = null;
       renderQuality.resetSamplingWindow();
     }
   });
@@ -182,6 +197,14 @@
       sessionState.pendingActionId !== null ||
       yourSeatAiAssisted,
   );
+  const turnCue = $derived(
+    deriveTurnCueState({
+      playerView: presentedPlayerView,
+      pendingAddedKong: presentationState.pendingAddedKong,
+      inputLocked,
+      reducedEffects: renderQualityState.reducedEffects,
+    }),
+  );
   const settlementVisible = $derived(
     presentedSnapshot !== null &&
       presentedSnapshot.phase === "InMatch" &&
@@ -189,16 +212,45 @@
       presentedPlayerView?.phase === "BetweenHands" &&
       presentedPlayerView.last_settlement !== null,
   );
+  const isSeatedMatch = $derived(
+    presentedSnapshot?.phase === "InMatch" && presentedPlayerView !== null,
+  );
+  const currentPace = $derived<TablePace>(
+    snapshot?.pace ?? presentedSnapshot?.pace ?? "Standard",
+  );
+  const connectionStatusText = $derived(
+    shutdownState.phase === "stopped"
+      ? "本机服务已关闭"
+      : sessionState.replacedByNewTab
+        ? "已被新标签页接管"
+        : sessionState.connectionStatus === "connected"
+          ? "已连接"
+          : sessionState.connectionStatus === "connecting"
+            ? "连接中"
+            : "已断开",
+  );
   const hasModalOpen = $derived(
     settingsOpen ||
       historyState.open ||
       takeOverTarget !== null ||
+      viewportState.showRotateOverlay ||
       shutdownState.phase === "confirming" ||
       shutdownState.phase === "submitting" ||
       shutdownState.phase === "error" ||
       (snapshot !== null &&
         (snapshot.pending_destructive_op !== null || settlementVisible)),
   );
+
+  $effect(() => {
+    viewportDisplay.syncPhase(
+      presentedSnapshot?.phase ?? null,
+      presentedPlayerView !== null,
+    );
+  });
+
+  $effect(() => {
+    viewportDisplay.setModalOpen(hasModalOpen);
+  });
 
   function reloadPage(): void {
     window.location.reload();
@@ -266,29 +318,33 @@
   }
 </script>
 
-<main class="app-shell" class:app-shell-match={presentedSnapshot?.phase === "InMatch"}>
+{#snippet statusBanners(compact = false)}
   {#if shutdownState.phase === "stopped"}
-    <div class="banner banner-warn" role="status">
+    <div class="banner banner-warn" class:banner-floating={compact} role="status">
       <div>
         <strong>本机服务已关闭</strong>
-        <div>
-          本机 majjj 服务已安全停止。如需继续游玩，请重新启动应用或服务后刷新页面。
-        </div>
+        {#if !compact}
+          <div>
+            本机 majjj 服务已安全停止。如需继续游玩，请重新启动应用或服务后刷新页面。
+          </div>
+        {/if}
       </div>
       <button class="btn" type="button" onclick={reloadPage}>刷新页面</button>
     </div>
   {:else if sessionState.replacedByNewTab}
-    <div class="banner banner-danger" role="alert">
+    <div class="banner banner-danger" class:banner-floating={compact} role="alert">
       <div>
         <strong>会话已被新标签页接管</strong>
-        <div>
-          同浏览器的另一标签页已接管当前牌桌连接，本页已停止自动重连，避免双标签页互踢。
-        </div>
+        {#if !compact}
+          <div>
+            同浏览器的另一标签页已接管当前牌桌连接，本页已停止自动重连，避免双标签页互踢。
+          </div>
+        {/if}
       </div>
       <button class="btn" type="button" onclick={reloadPage}>刷新接回</button>
     </div>
   {:else if sessionState.connectionStatus !== "connected"}
-    <div class="banner banner-warn" role="status">
+    <div class="banner banner-warn" class:banner-floating={compact} role="status">
       <span>
         {sessionState.connectionStatus === "connecting"
           ? "正在连接牌桌服务…"
@@ -298,25 +354,33 @@
   {/if}
 
   {#if sessionState.lastErrorNotice}
-    <div class="banner banner-warn" role="status">
+    <div class="banner banner-warn" class:banner-floating={compact} role="status">
       <span>提示：{sessionState.lastErrorNotice}</span>
     </div>
   {/if}
 
   {#if sessionState.lastRejectedReason}
-    <div class="banner banner-warn" role="status">
+    <div class="banner banner-warn" class:banner-floating={compact} role="status">
       <span>操作未生效：{sessionState.lastRejectedReason}</span>
     </div>
   {/if}
 
   {#if webglRecoveryState?.needsRefresh}
-    <div class="banner banner-danger" role="alert">
+    <div class="banner banner-danger" class:banner-floating={compact} role="alert">
       <div>
         <strong>2D 牌桌渲染异常</strong>
-        <div>{webglRecoveryState.errorMessage}</div>
+        {#if !compact}
+          <div>{webglRecoveryState.errorMessage}</div>
+        {/if}
       </div>
       <button class="btn" type="button" onclick={reloadPage}>刷新页面</button>
     </div>
+  {/if}
+{/snippet}
+
+<main class="app-shell" class:app-shell-match={isSeatedMatch}>
+  {#if !isSeatedMatch}
+    {@render statusBanners(false)}
   {/if}
 
   {#if presentedSnapshot === null}
@@ -339,85 +403,11 @@
       onTakeOverSeat={(seatInfo) => openTakeOverModal(seatInfo, "offline_human")}
     />
   {:else if presentedSnapshot.phase === "InMatch"}
-    <section class="match-shell">
-      <header class="match-topbar">
-        <div class="topbar-info">
-          <span class="tag tag-mode">
-            {matchModeLabel(presentedSnapshot.config.mode)}
-          </span>
-          {#if presentedPlayerView}
-            <span class="topbar-round">
-              {formatRoundTitle(presentedPlayerView.turn)} · 牌墙余 {presentedPlayerView.wall_remaining} 张
-            </span>
-            {#if presentationState.pendingAddedKong !== null}
-              <span class="tag tag-pending">补杠待确认…</span>
-            {:else if presentedPlayerView.phase === "Playing" && presentedPlayerView.turn.active_seat === presentedSnapshot.your_seat}
-              <span class="tag tag-turn">轮到你行动</span>
-            {:else if presentedPlayerView.phase === "Playing" && presentedPlayerView.turn.active_seat !== null}
-              <span class="tag">
-                等待{formatRelativeSeatParen(
-                  presentedPlayerView.turn.active_seat,
-                  presentedSnapshot.your_seat,
-                  presentedSnapshot.seats,
-                )}
-              </span>
-            {/if}
-          {/if}
-        </div>
-
-        <div class="topbar-controls">
-          <div class="pace-switch" role="group" aria-label="牌桌节奏">
-            <button
-              class="pace-btn"
-              class:pace-active={(snapshot?.pace ?? presentedSnapshot.pace) === "Standard"}
-              type="button"
-              disabled={actionsDisabled || (snapshot?.your_seat ?? presentedSnapshot.your_seat) === null}
-              onclick={() => handleSetPace("Standard")}
-            >
-              标准节奏
-            </button>
-            <button
-              class="pace-btn"
-              class:pace-active={(snapshot?.pace ?? presentedSnapshot.pace) === "Fast"}
-              type="button"
-              disabled={actionsDisabled || (snapshot?.your_seat ?? presentedSnapshot.your_seat) === null}
-              onclick={() => handleSetPace("Fast")}
-            >
-              快速节奏
-            </button>
-          </div>
-
-          <button
-            class="btn btn-subtle topbar-btn"
-            type="button"
-            onclick={() => (settingsOpen = true)}
-          >
-            设置
-          </button>
-
-          <button
-            class="btn btn-subtle topbar-btn"
-            type="button"
-            disabled={actionsDisabled ||
-              snapshot === null ||
-              snapshot.your_seat === null ||
-              snapshot.pending_destructive_op !== null}
-            onclick={() => client.requestDisbandMatch()}
-          >
-            解散对局
-          </button>
-        </div>
-      </header>
-
+    <section class="match-shell" class:match-shell-immersive={isSeatedMatch}>
       {#if presentedSnapshot && presentedPlayerView}
-        <SeatControlBar
-          snapshot={snapshot ?? presentedSnapshot}
-          disabled={actionsDisabled}
-          onToggleAiAssist={(seat, enabled) => client.toggleAiAssist(seat, enabled)}
-        />
-
         <div
           class="table-stage"
+          class:table-stage-immersive={isSeatedMatch}
           class:stage-shaking={presentationState.activeImpact?.dampedShake ??
             false}
         >
@@ -427,7 +417,9 @@
             {inputLocked}
             confirmDiscard={devicePrefs.confirm_discard}
             paperGrainEnabled={renderQualityState.paperGrainEnabled}
+            reducedEffects={renderQualityState.reducedEffects}
             onDiscard={handleCanvasDiscard}
+            onLayoutChange={(layout) => (tableLayout = layout)}
             onFrameTick={() => renderQuality.recordFrame()}
             onWebGLRecoveryChange={(state) => (webglRecoveryState = state)}
             onRefresh={reloadPage}
@@ -445,6 +437,38 @@
               })}
           />
 
+          <MatchHud
+            seatSnapshot={snapshot ?? presentedSnapshot}
+            {presentedSnapshot}
+            playerView={presentedPlayerView}
+            {tableLayout}
+            {turnCue}
+            {viewportState}
+            {currentPace}
+            {actionsDisabled}
+            {inputLocked}
+            {hasModalOpen}
+            canTogglePace={!actionsDisabled &&
+              (snapshot?.your_seat ?? presentedSnapshot.your_seat) !== null}
+            canDisband={!actionsDisabled &&
+              snapshot !== null &&
+              snapshot.your_seat !== null &&
+              snapshot.pending_destructive_op === null}
+            shouldSuppressEscape={() =>
+              viewportDisplay.shouldSuppressActionBarEscape()}
+            onToggleFullscreen={() => void viewportDisplay.toggleFullscreen()}
+            onTogglePace={() =>
+              handleSetPace(currentPace === "Fast" ? "Standard" : "Fast")}
+            onOpenSettings={() => (settingsOpen = true)}
+            onDisband={() => client.requestDisbandMatch()}
+            onToggleAiAssist={(seat, enabled) => client.toggleAiAssist(seat, enabled)}
+            onAction={handleActionBar}
+          >
+            {#snippet floatingBanners()}
+              {@render statusBanners(true)}
+            {/snippet}
+          </MatchHud>
+
           <ComicImpactOverlay
             impact={presentationState.activeImpact}
             viewerSeat={presentedSnapshot.your_seat}
@@ -452,16 +476,11 @@
             onSkip={() => presentationQueue.skipActiveImpact()}
           />
 
-          {#if presentedPlayerView.phase === "Playing"}
-            <div class="action-bar-slot">
-              <ActionBar
-                playerView={presentedPlayerView}
-                disabled={inputLocked}
-                {hasModalOpen}
-                onAction={handleActionBar}
-              />
-            </div>
-          {/if}
+          <RotateOverlay
+            visible={viewportState.showRotateOverlay}
+            reducedMotion={renderQualityState.reducedEffects}
+            onBypass={() => viewportDisplay.bypassPortrait()}
+          />
         </div>
 
         {#if settlementVisible && presentedPlayerView.last_settlement !== null}
@@ -613,6 +632,13 @@
     canEditPace={snapshot !== null &&
       !actionsDisabled &&
       snapshot.your_seat !== null}
+    serverVersion={snapshot?.server_version ?? null}
+    tableId={snapshot?.table_id ?? null}
+    {connectionStatusText}
+    {shutdownState}
+    onRequestShutdownConfirm={() => shutdownController.requestConfirm()}
+    onCancelShutdown={() => shutdownController.cancelConfirm()}
+    onConfirmShutdown={() => shutdownController.confirmShutdown()}
     onUpdatePreferences={(patch) => preferencesStore.update(patch)}
     onResetPreferences={() => preferencesStore.reset()}
     onChangePace={handleSettingsPaceChange}
@@ -644,32 +670,35 @@
     />
   {/if}
 
-  <footer class="footer-bar">
-    <span>
-      {#if snapshot}
-        服务端版本 v{snapshot.server_version} · 牌桌 {snapshot.table_id.slice(0, 8)}
-      {:else}
-        等待服务端版本信息…
-      {/if}
-    </span>
-    <span class="footer-status">
-      连接状态：{shutdownState.phase === "stopped"
-        ? "本机服务已关闭"
-        : sessionState.replacedByNewTab
-          ? "已被新标签页接管"
-          : sessionState.connectionStatus === "connected"
-            ? "已连接"
-            : sessionState.connectionStatus === "connecting"
-              ? "连接中"
-              : "已断开"}
-      <ShutdownControl
-        state={shutdownState}
-        onRequestConfirm={() => shutdownController.requestConfirm()}
-        onCancel={() => shutdownController.cancelConfirm()}
-        onConfirm={() => shutdownController.confirmShutdown()}
-      />
-    </span>
-  </footer>
+  <ShutdownControl
+    state={shutdownState}
+    showTrigger={false}
+    onRequestConfirm={() => shutdownController.requestConfirm()}
+    onCancel={() => shutdownController.cancelConfirm()}
+    onConfirm={() => shutdownController.confirmShutdown()}
+  />
+
+  {#if !isSeatedMatch}
+    <footer class="footer-bar">
+      <span>
+        {#if snapshot}
+          服务端版本 v{snapshot.server_version} · 牌桌 {snapshot.table_id.slice(0, 8)}
+        {:else}
+          等待服务端版本信息…
+        {/if}
+      </span>
+      <span class="footer-status">
+        连接状态：{connectionStatusText}
+        <ShutdownControl
+          state={shutdownState}
+          showDialog={false}
+          onRequestConfirm={() => shutdownController.requestConfirm()}
+          onCancel={() => shutdownController.cancelConfirm()}
+          onConfirm={() => shutdownController.confirmShutdown()}
+        />
+      </span>
+    </footer>
+  {/if}
 </main>
 
 <style>
@@ -678,13 +707,6 @@
     align-items: center;
     gap: 10px;
     flex-wrap: wrap;
-  }
-
-  .app-shell-match {
-    max-width: 1380px;
-    padding-top: max(10px, env(safe-area-inset-top));
-    padding-bottom: max(12px, env(safe-area-inset-bottom));
-    gap: 10px;
   }
 
   .placeholder-card {
@@ -739,91 +761,43 @@
     gap: 8px;
   }
 
-  .match-topbar {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: space-between;
-    align-items: center;
-    gap: 8px;
-    padding: 6px 12px;
-    border-radius: 12px;
-    background: #102026;
-    color: #f5eedf;
-    border: 1px solid rgba(212, 168, 87, 0.45);
-    box-shadow: 0 6px 18px rgba(10, 18, 24, 0.2);
-  }
-
-  .topbar-info {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .topbar-round {
-    font-size: 13px;
-    font-weight: 700;
-    color: #f5eedf;
-  }
-
-  .tag-mode {
-    background: rgba(212, 168, 87, 0.2);
-    border: 1px solid rgba(212, 168, 87, 0.55);
-    color: #f5be58;
-  }
-
-  .tag-turn {
-    background: #f5be58;
-    color: #181a20;
-  }
-
-  .tag-pending {
-    background: #f09d38;
-    color: #181a20;
-  }
-
-  .topbar-controls {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .pace-switch {
-    display: inline-flex;
-    border: 1px solid rgba(212, 168, 87, 0.4);
-    border-radius: 9px;
+  .match-shell-immersive {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    gap: 0;
     overflow: hidden;
-    background: #0b161b;
-  }
-
-  .pace-btn {
-    border: none;
-    background: transparent;
-    padding: 4px 10px;
-    font-size: 12px;
-    font-weight: 600;
-    color: #a9c0c4;
-  }
-
-  .pace-active {
-    background: #d4a857;
-    color: #181a20;
-  }
-
-  .topbar-btn {
-    padding: 4px 10px;
-    font-size: 12px;
-    color: #f5eedf;
-    border-color: rgba(245, 238, 223, 0.28);
-  }
-
-  .topbar-btn:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.1);
   }
 
   .table-stage {
     position: relative;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+  }
+
+  .table-stage-immersive {
+    flex: 1 1 auto;
+    overflow: hidden;
+  }
+
+  .banner-floating {
+    padding: 5px 10px;
+    border-radius: 10px;
+    font-size: 12px;
+    background: rgba(16, 32, 38, 0.92);
+    border-color: rgba(245, 190, 88, 0.65);
+    color: #fef3c7;
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+  }
+
+  .banner-floating.banner-danger {
+    background: rgba(88, 20, 20, 0.92);
+    border-color: #f87171;
+    color: #fee2e2;
   }
 
   .table-stage.stage-shaking {
@@ -845,30 +819,6 @@
     }
     100% {
       transform: translate(0, 0);
-    }
-  }
-
-  .action-bar-slot {
-    position: absolute;
-    left: 50%;
-    transform: translateX(-50%);
-    bottom: clamp(68px, 15%, 124px);
-    z-index: 20;
-    max-width: calc(100% - 16px);
-    pointer-events: none;
-  }
-
-  .action-bar-slot > :global(*) {
-    pointer-events: auto;
-  }
-
-  @media (max-height: 460px) {
-    .action-bar-slot {
-      position: static;
-      transform: none;
-      max-width: 100%;
-      margin-top: 8px;
-      pointer-events: auto;
     }
   }
 </style>

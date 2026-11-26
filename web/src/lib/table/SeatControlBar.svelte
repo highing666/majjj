@@ -10,10 +10,16 @@
   interface Props {
     snapshot: TableSnapshot;
     disabled?: boolean;
+    floating?: boolean;
     onToggleAiAssist: (seat: Seat, enabled: boolean) => void;
   }
 
-  let { snapshot, disabled = false, onToggleAiAssist }: Props = $props();
+  let {
+    snapshot,
+    disabled = false,
+    floating = false,
+    onToggleAiAssist,
+  }: Props = $props();
 
   const offlineBanner = $derived(buildOfflinePauseBanner(snapshot));
   const showReclaim = $derived(shouldShowReclaimControl(snapshot));
@@ -24,7 +30,11 @@
 </script>
 
 {#if hasVisibleControls}
-  <section class="seat-control-stack" aria-label="座次与托管控制">
+  <section
+    class="seat-control-stack"
+    class:seat-control-floating={floating}
+    aria-label="座次与托管控制"
+  >
     {#if showReclaim && snapshot.your_seat !== null}
       {@const yourSeat = snapshot.your_seat}
       <div class="banner banner-warn reclaim-banner" role="alert">
@@ -116,5 +126,53 @@
   .btn-chip {
     padding: 4px 10px;
     font-size: 12px;
+  }
+
+  .seat-control-floating {
+    align-items: center;
+    gap: 4px;
+  }
+
+  .seat-control-floating .seat-control-bar {
+    justify-content: center;
+    gap: 6px;
+  }
+
+  .seat-control-floating .seat-chip {
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: rgba(9, 20, 24, 0.76);
+    border: 1px solid rgba(212, 168, 87, 0.38);
+    color: #f5eedf;
+    font-size: 11px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+  }
+
+  .seat-control-floating .btn-chip {
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    border-color: rgba(255, 255, 255, 0.22);
+    background: rgba(255, 255, 255, 0.08);
+    color: #f5eedf;
+  }
+
+  .seat-control-floating .btn-chip.btn-jade {
+    background: rgba(19, 116, 73, 0.85);
+    border-color: rgba(147, 208, 203, 0.45);
+    color: #fff;
+  }
+
+  .seat-control-floating .reclaim-banner,
+  .seat-control-floating .offline-banner {
+    padding: 5px 10px;
+    border-radius: 10px;
+    background: rgba(16, 32, 38, 0.9);
+    border: 1px solid rgba(245, 190, 88, 0.7);
+    color: #fef3c7;
+    font-size: 11px;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
   }
 </style>

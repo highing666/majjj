@@ -1,0 +1,25 @@
+{
+  "name": "麻将牌局 · Majjj",
+  "short_name": "Majjj",
+  "description": "家庭局域网四人推倒胡麻将牌桌",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#102026",
+  "theme_color": "#102026",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

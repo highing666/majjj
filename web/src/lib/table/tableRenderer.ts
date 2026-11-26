@@ -25,12 +25,15 @@ import {
 } from "./feltBackdrop";
 import {
   computeBottomRiverSlotPoint,
+  computeCenterSealEdgeBars,
   computeCenterSealLayout,
-  computeCenterSealPointer,
   computeOpponentHandSlots,
   computeRiverSlotPoint,
+  computeSeatBadgeLayout,
   computeTableLayout,
   computeViewerHandSlots,
+  MELD_GROUP_GAP,
+  MELD_TILE_GAP,
   type Rect,
   type TableLayout,
 } from "./layout";
@@ -38,15 +41,17 @@ import {
   createPaperGrainFilter,
   type PaperGrainFilter,
 } from "./paperGrainFilter";
-import type { TileAtlas } from "./tileAtlas";
+import type { TileAtlas, TileBodyKind } from "./tileAtlas";
 import { formatCompactRoundTitle } from "./tiles";
 import {
   buildMeldRenderItems,
   buildSeatBadgeModel,
   buildVisibleRiverRows,
+  deriveTurnCueState,
   findLegalDiscardAction,
   getRelativeSeats,
-  seatRelativeSlot,
+  type RelativeSlot,
+  type TurnCueState,
 } from "./viewModel";
 
 const SEAL_BG = 0x0d1b20;
@@ -68,6 +73,7 @@ export interface TableRenderParams {
   inputLocked: boolean;
   confirmDiscard?: boolean;
   paperGrainEnabled?: boolean;
+  reducedEffects?: boolean;
 }
 
 export interface TableRendererCallbacks {
@@ -75,6 +81,7 @@ export interface TableRendererCallbacks {
   onTileHover?: (tile: Tile, fromDrawn: boolean) => void;
   onTileSelect?: (tile: Tile, fromDrawn: boolean) => void;
   onTileUnhover?: () => void;
+  onLayoutChange?: (layout: TableLayout) => void;
 }
 
 interface ShadowedTilePair {
@@ -103,6 +110,7 @@ function addShadowedTilePair(
   height: number,
   rotation = 0,
   shadowOffsetY = 2,
+  body: TileBodyKind = "standing",
 ): ShadowedTilePair {
   const shadow = new Sprite(atlas.shadowTexture);
   shadow.anchor.set(0.5);
@@ -113,7 +121,12 @@ function addShadowedTilePair(
   shadow.alpha = 0.65;
   layer.addChild(shadow);
 
-  const texture = tile === null ? atlas.backTexture : atlas.getTileTexture(tile);
+  const texture =
+    tile === null
+      ? body === "laid"
+        ? atlas.laidBackTexture
+        : atlas.backTexture
+      : atlas.getTileTexture(tile, body);
   const sprite = new Sprite(texture);
   sprite.anchor.set(0.5);
   sprite.width = width;
@@ -134,6 +147,7 @@ function addShadowedTileSprite(
   height: number,
   rotation = 0,
   shadowOffsetY = 2,
+  body: TileBodyKind = "standing",
 ): Sprite {
   return addShadowedTilePair(
     layer,
@@ -145,6 +159,7 @@ function addShadowedTileSprite(
     height,
     rotation,
     shadowOffsetY,
+    body,
   ).sprite;
 }
 
@@ -167,7 +182,7 @@ function fitTextToWidth(label: Text, maxWidth: number): void {
 }
 
 /**
- * Manages the PixiJS v8 scene layers for the Piltover Stage (Scheme A) + Four-Corner Minimal (Scheme C) table.
+ * Manages the PixiJS v8 scene layers for the Piltover Stage (Scheme A) + Three-Column Theater (Scheme B) table.
  * Reserves dedicated `ghostLayer` (#42) and `effectsLayer` (#43) containers.
  */
 export class TableSceneRenderer {
@@ -188,6 +203,11 @@ export class TableSceneRenderer {
   private height = 600;
   private lastParams: TableRenderParams | null = null;
   private lastLayout: TableLayout | null = null;
+  private lastNotifiedLayoutKey: string | null = null;
+  private currentTurnCue: TurnCueState | null = null;
+  private trayBreathGlow: Graphics | null = null;
+  private drawnHighlightGlow: Graphics | null = null;
+  private breathPhase = 0;
   private bottomVisibleRiverCount = 0;
   private viewerHandVisuals: ViewerHandVisual[] = [];
   private readonly lastDragOffsets = new Map<string, { dx: number; dy: number }>();
@@ -284,7 +304,35 @@ export class TableSceneRenderer {
     this.root.filterArea = bounds;
     if (this.lastParams !== null) {
       this.render(this.lastParams);
+    } else {
+      const layout = computeTableLayout(this.width, this.height);
+      this.lastLayout = layout;
+      this.notifyLayoutChange(layout);
     }
+  }
+
+  tick(deltaMs: number): void {
+    if (!this.currentTurnCue?.animateBreath || !this.trayBreathGlow) {
+      return;
+    }
+    const safeDelta =
+      Number.isFinite(deltaMs) && deltaMs > 0 ? Math.min(deltaMs, 100) : 0;
+    this.breathPhase =
+      (this.breathPhase + (safeDelta / 1700) * Math.PI * 2) % (Math.PI * 2);
+    const pulse = 0.5 + 0.5 * Math.sin(this.breathPhase);
+    this.trayBreathGlow.alpha = 0.28 + 0.62 * pulse;
+    if (this.drawnHighlightGlow) {
+      this.drawnHighlightGlow.alpha = 0.45 + 0.55 * pulse;
+    }
+  }
+
+  private notifyLayoutChange(layout: TableLayout): void {
+    const key = `${layout.width}x${layout.height}:${layout.turnBarRect.x},${layout.turnBarRect.y},${layout.turnBarRect.width},${layout.turnBarRect.height}`;
+    if (key === this.lastNotifiedLayoutKey) {
+      return;
+    }
+    this.lastNotifiedLayoutKey = key;
+    this.callbacks.onLayoutChange?.(layout);
   }
 
   render(params: TableRenderParams): void {
@@ -294,12 +342,23 @@ export class TableSceneRenderer {
     }
     const view = params.snapshot.player_view;
     if (!view) {
+      this.currentTurnCue = null;
       this.clearAll(true);
       return;
     }
 
     const layout = computeTableLayout(this.width, this.height);
     this.lastLayout = layout;
+    this.notifyLayoutChange(layout);
+
+    const turnCue = deriveTurnCueState({
+      playerView: view,
+      pendingAddedKong: params.pendingAddedKong,
+      inputLocked: params.inputLocked,
+      reducedEffects: params.reducedEffects ?? false,
+    });
+    this.currentTurnCue = turnCue;
+
     const relative = getRelativeSeats(view.viewer);
     const seatByName = new Map<Seat, PublicSeatView>();
     for (const s of view.seats) {
@@ -316,11 +375,25 @@ export class TableSceneRenderer {
     ).length;
 
     renderFeltBackdrop(this.feltLayer, layout, this.atlas);
-    this.drawCenterSeal(layout, view.viewer, view.turn, view.wall_remaining);
-    this.drawRivers(layout, relative, seatByName, findLatestRiverSeq(view.seats));
+    if (turnCue.showStageWash) {
+      this.drawStageWash(layout);
+    }
+    this.drawCenterSeal(
+      layout,
+      turnCue.centerEdgeGlowSlot,
+      view.turn,
+      view.wall_remaining,
+    );
+    this.drawRivers(
+      layout,
+      relative,
+      seatByName,
+      findLatestRiverSeq(view.seats),
+      turnCue.centerEdgeGlowSlot,
+    );
     this.drawMelds(layout, relative, seatByName, params.pendingAddedKong);
     this.drawOpponentHands(layout, relative, seatByName);
-    this.drawCornerBadges(
+    this.drawSeatBadges(
       layout,
       relative,
       seatByName,
@@ -329,7 +402,7 @@ export class TableSceneRenderer {
       view.turn.dealer,
       view.turn.active_seat,
     );
-    const legalSlotIds = this.drawViewerHand(layout, params);
+    const legalSlotIds = this.drawViewerHand(layout, params, turnCue);
 
     this.suppressInteractionApply = true;
     try {
@@ -363,6 +436,8 @@ export class TableSceneRenderer {
   private clearAll(includeAuxiliaryLayers: boolean): void {
     this.cancelSnapBackAnimation();
     this.viewerHandVisuals = [];
+    this.trayBreathGlow = null;
+    this.drawnHighlightGlow = null;
     disposeContainerChildren(this.feltLayer);
     disposeContainerChildren(this.centerSealLayer);
     disposeContainerChildren(this.riverLayer);
@@ -376,87 +451,116 @@ export class TableSceneRenderer {
     }
   }
 
+  private drawStageWash(layout: TableLayout): void {
+    const { viewerHandRect: handRect } = layout;
+    const wash = new Graphics();
+    wash.label = "turn-stage-wash";
+    const washCx = handRect.x + handRect.width / 2;
+    const washCy = handRect.y + handRect.height * 0.65;
+    const rx = Math.max(handRect.width * 0.56, 160);
+    const ry = Math.max(handRect.height * 1.1, 64);
+    wash
+      .ellipse(washCx, washCy, rx, ry)
+      .fill({ color: ACTIVE_GLOW, alpha: 0.08 });
+    wash
+      .ellipse(washCx, washCy, rx * 0.72, ry * 0.72)
+      .fill({ color: ACTIVE_GLOW, alpha: 0.1 });
+    wash
+      .ellipse(washCx, washCy, rx * 0.45, ry * 0.45)
+      .fill({ color: ACTIVE_GLOW, alpha: 0.12 });
+    this.feltLayer.addChild(wash);
+  }
+
   private drawCenterSeal(
     layout: TableLayout,
-    viewer: Seat,
+    activeSlot: RelativeSlot | null,
     turn: NonNullable<TableSnapshot["player_view"]>["turn"],
     wallRemaining: number,
   ): void {
     disposeContainerChildren(this.centerSealLayer);
     const { centerSeal } = layout;
     const sealLayout = computeCenterSealLayout(centerSeal);
-    const activeSlot = turn.active_seat
-      ? seatRelativeSlot(viewer, turn.active_seat)
-      : null;
-    const pointer = computeCenterSealPointer(centerSeal, activeSlot);
+    const edgeBars = computeCenterSealEdgeBars(centerSeal);
     const cx = centerSeal.x + centerSeal.width / 2;
-    const cy = centerSeal.y + centerSeal.height / 2;
-    const ringRadius = sealLayout.ringRadius;
 
-    const ring = new Graphics();
-    ring
-      .circle(cx, cy, ringRadius)
-      .fill({ color: SEAL_BG, alpha: 0.9 })
-      .stroke({ width: 1.5, color: BRASS, alpha: 0.52 });
-    ring
-      .circle(cx, cy, Math.max(4, ringRadius - 4))
-      .stroke({ width: 1, color: BRASS, alpha: 0.22 });
-    this.centerSealLayer.addChild(ring);
+    const pill = new Graphics();
+    pill
+      .roundRect(
+        centerSeal.x,
+        centerSeal.y,
+        centerSeal.width,
+        centerSeal.height,
+        sealLayout.pillRadius,
+      )
+      .fill({ color: 0x0a171c, alpha: 0.94 })
+      .stroke({ width: 1.5, color: BRASS, alpha: 0.48 });
+    this.centerSealLayer.addChild(pill);
 
-    if (pointer) {
-      const glowArc = new Graphics();
-      glowArc
-        .arc(cx, cy, ringRadius, pointer.arcStart, pointer.arcEnd)
-        .stroke({ width: 5, color: ACTIVE_GLOW, alpha: 0.24, cap: "round" });
-      this.centerSealLayer.addChild(glowArc);
-
-      const activeArc = new Graphics();
-      activeArc
-        .arc(cx, cy, ringRadius, pointer.arcStart, pointer.arcEnd)
-        .stroke({ width: 2.5, color: ACTIVE_GLOW, alpha: 0.98, cap: "round" });
-      this.centerSealLayer.addChild(activeArc);
-
-      const arrow = new Graphics();
-      arrow
-        .poly([
-          pointer.tip.x,
-          pointer.tip.y,
-          pointer.baseLeft.x,
-          pointer.baseLeft.y,
-          pointer.baseRight.x,
-          pointer.baseRight.y,
-        ])
-        .fill({ color: ACTIVE_GLOW, alpha: 1 });
-      this.centerSealLayer.addChild(arrow);
+    for (const slot of ["top", "bottom", "left", "right"] as const) {
+      const bar = edgeBars[slot];
+      const isActive = slot === activeSlot;
+      const g = new Graphics();
+      if (isActive) {
+        g.roundRect(
+          bar.activeRect.x - 2,
+          bar.activeRect.y - 2,
+          bar.activeRect.width + 4,
+          bar.activeRect.height + 4,
+          3,
+        ).fill({ color: ACTIVE_GLOW, alpha: 0.28 });
+        g.roundRect(
+          bar.activeRect.x,
+          bar.activeRect.y,
+          bar.activeRect.width,
+          bar.activeRect.height,
+          2,
+        ).fill({ color: ACTIVE_GLOW, alpha: 0.98 });
+      } else {
+        g.roundRect(
+          bar.rect.x,
+          bar.rect.y,
+          bar.rect.width,
+          bar.rect.height,
+          2,
+        ).fill({ color: BRASS, alpha: 0.2 });
+      }
+      this.centerSealLayer.addChild(g);
     }
 
+    const textGroup = new Container();
     const roundText = new Text({
       text: formatCompactRoundTitle(turn),
       style: {
         fontFamily: SERIF_FONT,
-        fontSize: sealLayout.roundFontSize,
-        fontWeight: "800",
+        fontSize: sealLayout.fontSize,
+        fontWeight: "900",
         fill: TEXT_LIGHT,
       },
     });
-    roundText.anchor.set(0.5);
-    roundText.position.set(cx, sealLayout.roundY);
-    fitTextToWidth(roundText, centerSeal.width - 12);
-    this.centerSealLayer.addChild(roundText);
+    roundText.anchor.set(0, 0.5);
 
     const wallText = new Text({
-      text: `余 ${wallRemaining}`,
+      text: ` · 牌墙余 ${wallRemaining}`,
       style: {
         fontFamily: UI_FONT,
-        fontSize: sealLayout.wallFontSize,
+        fontSize: Math.max(9.5, sealLayout.fontSize - 1.5),
         fontWeight: "700",
         fill: TEXT_MUTED,
       },
     });
-    wallText.anchor.set(0.5);
-    wallText.position.set(cx, sealLayout.wallY);
-    fitTextToWidth(wallText, centerSeal.width - 12);
-    this.centerSealLayer.addChild(wallText);
+    wallText.anchor.set(0, 0.5);
+    wallText.position.set(roundText.width, 0);
+
+    textGroup.addChild(roundText, wallText);
+    const totalW = roundText.width + wallText.width;
+    if (totalW > sealLayout.textMaxWidth && totalW > 0) {
+      textGroup.scale.set(sealLayout.textMaxWidth / totalW);
+    }
+    textGroup.position.set(
+      Math.round(cx - (totalW * textGroup.scale.x) / 2),
+      sealLayout.textY,
+    );
+    this.centerSealLayer.addChild(textGroup);
   }
 
   private drawRivers(
@@ -464,6 +568,7 @@ export class TableSceneRenderer {
     relative: ReturnType<typeof getRelativeSeats>,
     seatByName: Map<Seat, PublicSeatView>,
     latestSeq: number,
+    activeSlot: RelativeSlot | null,
   ): void {
     disposeContainerChildren(this.riverLayer);
     const { riverTileW: tw, riverTileH: th } = layout;
@@ -486,6 +591,7 @@ export class TableSceneRenderer {
         th,
         rotation,
         1.5,
+        "laid",
       );
       const isHorizontal = rotation === 0 || Math.abs(rotation - Math.PI) < 0.01;
       const rw = isHorizontal ? tw : th;
@@ -512,13 +618,51 @@ export class TableSceneRenderer {
     };
 
     for (const side of ["bottom", "top", "left", "right"] as const) {
+      const trough = layout.riverTroughs[side];
+      const isActive = side === activeSlot;
+      const troughBg = new Graphics();
+      if (isActive) {
+        troughBg
+          .roundRect(
+            trough.x - 1.5,
+            trough.y - 1.5,
+            trough.width + 3,
+            trough.height + 3,
+            10,
+          )
+          .stroke({ width: 3, color: ACTIVE_GLOW, alpha: 0.24 });
+      }
+      troughBg
+        .roundRect(trough.x, trough.y, trough.width, trough.height, 9)
+        .fill({ color: 0x071014, alpha: 0.78 })
+        .stroke({
+          width: isActive ? 1.5 : 1,
+          color: isActive ? ACTIVE_GLOW : BRASS,
+          alpha: isActive ? 0.85 : 0.34,
+        });
+      troughBg
+        .roundRect(
+          trough.x + 1,
+          trough.y + 1,
+          Math.max(1, trough.width - 2),
+          Math.max(1, trough.height - 2),
+          8,
+        )
+        .stroke({ width: 1, color: 0x020608, alpha: 0.55 });
+      this.riverLayer.addChild(troughBg);
+
+      const perLine = layout.riverGrid[side].perLine;
       const rows = buildVisibleRiverRows(
         seatByName.get(relative[side])?.river ?? [],
-        6,
+        perLine,
       );
       rows.forEach((row, rIdx) => {
         row.forEach((entry, cIdx) => {
-          const slot = computeRiverSlotPoint(layout, side, rIdx * 6 + cIdx);
+          const slot = computeRiverSlotPoint(
+            layout,
+            side,
+            rIdx * perLine + cIdx,
+          );
           placeRiverTile(
             entry.tile,
             slot.x,
@@ -540,8 +684,8 @@ export class TableSceneRenderer {
   ): void {
     disposeContainerChildren(this.meldLayer);
     const { meldTileW: mw, meldTileH: mh } = layout;
-    const tileGap = 1;
-    const groupGap = 8;
+    const tileGap = MELD_TILE_GAP;
+    const groupGap = MELD_GROUP_GAP;
 
     interface MeldGroupPlacement {
       seat: Seat;
@@ -591,6 +735,7 @@ export class TableSceneRenderer {
             mh,
             rotation,
             1.5,
+            "laid",
           );
         });
 
@@ -601,7 +746,9 @@ export class TableSceneRenderer {
               ? secondAlong
               : fixedCoord + (rotation > 0 ? mh * 0.32 : -mh * 0.32);
           const hoverY =
-            axis === "horizontal" ? fixedCoord - mh * 0.28 : secondAlong;
+            axis === "horizontal"
+              ? fixedCoord + (Math.abs(rotation - Math.PI) < 0.01 ? mh * 0.28 : -mh * 0.28)
+              : secondAlong;
           addShadowedTileSprite(
             this.meldLayer,
             this.atlas,
@@ -612,6 +759,7 @@ export class TableSceneRenderer {
             mh,
             rotation,
             1.5,
+            "laid",
           );
 
           const boxW = axis === "horizontal" ? mw : mh;
@@ -697,7 +845,7 @@ export class TableSceneRenderer {
     }
   }
 
-  private drawCornerBadges(
+  private drawSeatBadges(
     layout: TableLayout,
     relative: ReturnType<typeof getRelativeSeats>,
     seatByName: Map<Seat, PublicSeatView>,
@@ -723,10 +871,10 @@ export class TableSceneRenderer {
         dealer,
         activeSeat,
       );
-      const padX = layout.isWide ? 7 : 4;
+      const badgeLayout = computeSeatBadgeLayout(rect, model.isDealer);
       const box = new Graphics();
       box
-        .roundRect(rect.x, rect.y, rect.width, rect.height, 8)
+        .roundRect(rect.x, rect.y, rect.width, rect.height, badgeLayout.cornerRadius)
         .fill({
           color: model.isActive ? 0x1b3b44 : SEAL_BG,
           alpha: 0.9,
@@ -738,12 +886,16 @@ export class TableSceneRenderer {
         });
       this.badgeLayer.addChild(box);
 
-      const pillH = rect.height - 8;
-      const pillFontSize = layout.isWide ? 11 : rect.height >= 24 ? 10 : 9;
-      const rolePillW = layout.isWide ? 34 : 24;
+      const { rolePillRect, pillFontSize, centerY } = badgeLayout;
       const rolePill = new Graphics();
       rolePill
-        .roundRect(rect.x + padX, rect.y + 4, rolePillW, pillH, 5)
+        .roundRect(
+          rolePillRect.x,
+          rolePillRect.y,
+          rolePillRect.width,
+          rolePillRect.height,
+          5,
+        )
         .fill({ color: model.isActive ? 0x265663 : 0x264852 });
       this.badgeLayer.addChild(rolePill);
 
@@ -758,20 +910,17 @@ export class TableSceneRenderer {
       });
       roleLabel.anchor.set(0.5);
       roleLabel.position.set(
-        rect.x + padX + rolePillW / 2,
-        rect.y + rect.height / 2,
+        rolePillRect.x + rolePillRect.width / 2,
+        centerY,
       );
-      fitTextToWidth(roleLabel, rolePillW - 3);
+      fitTextToWidth(roleLabel, rolePillRect.width - 3);
       this.badgeLayer.addChild(roleLabel);
 
-      let leftCursor = rect.x + padX + rolePillW;
-      if (model.isDealer) {
-        const dealerGap = layout.isWide ? 4 : 3;
-        const dealerPillW = layout.isWide ? 20 : 15;
-        const dealerX = leftCursor + dealerGap;
+      if (badgeLayout.dealerPillRect) {
+        const dp = badgeLayout.dealerPillRect;
         const dealerPill = new Graphics();
         dealerPill
-          .roundRect(dealerX, rect.y + 4, dealerPillW, pillH, 5)
+          .roundRect(dp.x, dp.y, dp.width, dp.height, 5)
           .fill({ color: DEALER_CORAL });
         this.badgeLayer.addChild(dealerPill);
 
@@ -785,36 +934,28 @@ export class TableSceneRenderer {
           },
         });
         dealerLabel.anchor.set(0.5);
-        dealerLabel.position.set(
-          dealerX + dealerPillW / 2,
-          rect.y + rect.height / 2,
-        );
-        fitTextToWidth(dealerLabel, dealerPillW - 2);
+        dealerLabel.position.set(dp.x + dp.width / 2, centerY);
+        fitTextToWidth(dealerLabel, dp.width - 2);
         this.badgeLayer.addChild(dealerLabel);
-        leftCursor = dealerX + dealerPillW;
       }
 
       const scoreText = new Text({
         text: model.scoreText,
         style: {
           fontFamily: UI_FONT,
-          fontSize: layout.isWide ? 12 : 10,
+          fontSize: badgeLayout.scoreFontSize,
           fontWeight: "800",
           fill: model.isActive ? ACTIVE_GLOW : BRASS,
         },
       });
       scoreText.anchor.set(1, 0.5);
-      scoreText.position.set(
-        rect.x + rect.width - padX,
-        rect.y + rect.height / 2,
-      );
+      scoreText.position.set(badgeLayout.scoreRightX, centerY);
       this.badgeLayer.addChild(scoreText);
 
-      const scoreGap = layout.isWide ? 5 : 4;
-      const nameStart = leftCursor + (layout.isWide ? 6 : 4);
-      const nameMaxW = Math.max(
-        8,
-        rect.x + rect.width - padX - scoreText.width - scoreGap - nameStart,
+      const { nameMaxW } = computeSeatBadgeLayout(
+        rect,
+        model.isDealer,
+        scoreText.width,
       );
       const statusSuffix =
         model.isOffline && model.isAiAssisted
@@ -828,13 +969,13 @@ export class TableSceneRenderer {
         text: `${model.name}${statusSuffix}`,
         style: {
           fontFamily: UI_FONT,
-          fontSize: layout.isWide ? 12 : 10,
+          fontSize: badgeLayout.nameFontSize,
           fontWeight: model.isActive ? "700" : "600",
           fill: model.isOffline || model.isAiAssisted ? PENDING_AMBER : TEXT_LIGHT,
         },
       });
       nameLabel.anchor.set(0, 0.5);
-      nameLabel.position.set(nameStart, rect.y + rect.height / 2);
+      nameLabel.position.set(badgeLayout.nameStartX, centerY);
       fitTextToWidth(nameLabel, nameMaxW);
       this.badgeLayer.addChild(nameLabel);
     };
@@ -848,9 +989,12 @@ export class TableSceneRenderer {
   private drawViewerHand(
     layout: TableLayout,
     params: TableRenderParams,
+    turnCue: TurnCueState,
   ): Set<string> {
     this.cancelSnapBackAnimation();
     this.viewerHandVisuals = [];
+    this.trayBreathGlow = null;
+    this.drawnHighlightGlow = null;
     disposeContainerChildren(this.viewerHandLayer);
     const legalSlotIds = new Set<string>();
     const view = params.snapshot.player_view;
@@ -870,11 +1014,53 @@ export class TableSceneRenderer {
       hasDrawn,
     );
 
+    // Layer 1: Hand tray & breathing gold border around viewerHandRect
+    const trayPadX = layout.isShortLandscape ? 6 : 10;
+    const trayPadY = layout.isShortLandscape ? 3 : 5;
+    const trayX = Math.max(2, layout.viewerHandRect.x - trayPadX);
+    const trayY = Math.max(2, layout.viewerHandRect.y - trayPadY);
+    const trayW = Math.min(
+      layout.width - trayX - 2,
+      layout.viewerHandRect.width + trayPadX * 2,
+    );
+    const trayH = Math.min(
+      layout.height - trayY - 2,
+      layout.viewerHandRect.height + trayPadY * 2,
+    );
+
+    if (turnCue.showStageWash) {
+      const breathGlow = new Graphics();
+      breathGlow.label = "turn-tray-breath";
+      breathGlow
+        .roundRect(trayX - 3, trayY - 3, trayW + 6, trayH + 6, 16)
+        .stroke({ width: 5, color: ACTIVE_GLOW, alpha: 0.55 });
+      breathGlow.alpha = turnCue.animateBreath ? 0.55 : 0.78;
+      this.viewerHandLayer.addChild(breathGlow);
+      this.trayBreathGlow = breathGlow;
+
+      const activeTray = new Graphics();
+      activeTray.label = "turn-tray-active";
+      activeTray
+        .roundRect(trayX, trayY, trayW, trayH, 14)
+        .fill({ color: ACTIVE_GLOW, alpha: 0.14 })
+        .stroke({ width: 2, color: ACTIVE_GLOW, alpha: 0.96 });
+      this.viewerHandLayer.addChild(activeTray);
+    } else {
+      const idleTray = new Graphics();
+      idleTray.label = "turn-tray-idle";
+      idleTray
+        .roundRect(trayX, trayY, trayW, trayH, 14)
+        .fill({ color: 0x081216, alpha: 0.45 })
+        .stroke({ width: 1.5, color: BRASS, alpha: 0.24 });
+      this.viewerHandLayer.addChild(idleTray);
+    }
+
     const addInteractiveHandTile = (
       slotId: string,
       tile: Tile,
       fromDrawn: boolean,
       geom: (typeof handSlots.closed)[number],
+      liftY = 0,
     ) => {
       const legal =
         !params.inputLocked &&
@@ -884,7 +1070,20 @@ export class TableSceneRenderer {
         legalSlotIds.add(slotId);
       }
 
-      const { x, y, restX, restY, width: tw, height: th } = geom;
+      const { x, y, width: tw, height: th } = geom;
+      const visualY = y - liftY;
+      const restX = geom.restX;
+      const restY = geom.restY - liftY;
+
+      if (turnCue.highlightClosedHand && !fromDrawn) {
+        const postPonHighlight = new Graphics();
+        postPonHighlight.label = "post-pon-tile-highlight";
+        postPonHighlight
+          .roundRect(x - 1.5, visualY - 1.5, tw + 3, th + 3, 6)
+          .stroke({ width: 2, color: ACTIVE_GLOW, alpha: 0.9 });
+        this.viewerHandLayer.addChild(postPonHighlight);
+      }
+
       const { sprite, shadow } = addShadowedTilePair(
         this.viewerHandLayer,
         this.atlas,
@@ -895,11 +1094,12 @@ export class TableSceneRenderer {
         th,
         0,
         3,
+        "standing",
       );
 
       const selectRing = new Graphics();
       selectRing
-        .roundRect(x - 2, y - 14, tw + 4, th + 4, 6)
+        .roundRect(x - 2, visualY - 14, tw + 4, th + 4, 6)
         .stroke({ width: 2.2, color: ACTIVE_GLOW });
       selectRing.visible = false;
       this.viewerHandLayer.addChild(selectRing);
@@ -943,9 +1143,6 @@ export class TableSceneRenderer {
         });
       } else {
         sprite.eventMode = "none";
-        if (params.inputLocked) {
-          sprite.alpha = 0.86;
-        }
       }
     };
 
@@ -960,13 +1157,62 @@ export class TableSceneRenderer {
 
     if (drawn_tile !== null && handSlots.drawn !== null) {
       const { x: drawnX, y: baseY, width: tw, height: th } = handSlots.drawn;
-      const marker = new Graphics();
-      marker
-        .roundRect(drawnX - 2, baseY - 2, tw + 4, th + 4, 6)
-        .stroke({ width: 1.5, color: BRASS, alpha: 0.72 });
-      this.viewerHandLayer.addChild(marker);
+      const drawnLiftY = turnCue.highlightDrawnTile
+        ? layout.isShortLandscape
+          ? 3
+          : 5
+        : 0;
+      const visualY = baseY - drawnLiftY;
 
-      addInteractiveHandTile("drawn", drawn_tile, true, handSlots.drawn);
+      if (turnCue.highlightDrawnTile) {
+        const drawnGlow = new Graphics();
+        drawnGlow.label = "drawn-tile-glow";
+        drawnGlow
+          .roundRect(drawnX - 3.5, visualY - 3.5, tw + 7, th + 7, 8)
+          .stroke({ width: 4, color: ACTIVE_GLOW, alpha: 0.42 });
+        drawnGlow.alpha = turnCue.animateBreath ? 0.65 : 0.9;
+        this.viewerHandLayer.addChild(drawnGlow);
+        this.drawnHighlightGlow = drawnGlow;
+
+        const marker = new Graphics();
+        marker
+          .roundRect(drawnX - 2, visualY - 2, tw + 4, th + 4, 6)
+          .stroke({ width: 2.2, color: ACTIVE_GLOW, alpha: 0.98 });
+        this.viewerHandLayer.addChild(marker);
+      } else {
+        const marker = new Graphics();
+        marker
+          .roundRect(drawnX - 2, visualY - 2, tw + 4, th + 4, 6)
+          .stroke({ width: 1.5, color: BRASS, alpha: 0.55 });
+        this.viewerHandLayer.addChild(marker);
+      }
+
+      addInteractiveHandTile(
+        "drawn",
+        drawn_tile,
+        true,
+        handSlots.drawn,
+        drawnLiftY,
+      );
+
+      if (turnCue.highlightDrawnTile) {
+        const caret = new Text({
+          text: "▼",
+          style: {
+            fontFamily: UI_FONT,
+            fontSize: layout.isShortLandscape ? 10 : 12,
+            fontWeight: "900",
+            fill: ACTIVE_GLOW,
+            stroke: { color: INK_DARK, width: 2 },
+          },
+        });
+        caret.anchor.set(0.5, 1);
+        caret.position.set(
+          drawnX + tw / 2,
+          visualY - (layout.isShortLandscape ? 2 : 4),
+        );
+        this.viewerHandLayer.addChild(caret);
+      }
     }
 
     return legalSlotIds;
@@ -1017,6 +1263,8 @@ export class TableSceneRenderer {
       });
     }
 
+    const isDimmed = Boolean(this.currentTurnCue?.dimViewerHand);
+
     for (const v of this.viewerHandVisuals) {
       const id = v.slot.slotId;
       const isDragging = state.drag?.slotId === id;
@@ -1027,10 +1275,10 @@ export class TableSceneRenderer {
       v.sprite.width = v.width;
       v.sprite.height = v.height;
       v.sprite.rotation = 0;
-      v.sprite.tint = 0xffffff;
-      v.sprite.alpha = state.locked && !isLifting ? 0.86 : 1;
+      v.sprite.tint = isDimmed ? 0xaebbc0 : 0xffffff;
+      v.sprite.alpha = isDimmed ? 0.82 : state.locked && !isLifting ? 0.86 : 1;
       v.shadow.position.set(v.restX, v.restY + 3);
-      v.shadow.alpha = 0.65;
+      v.shadow.alpha = isDimmed ? 0.45 : 0.65;
       v.selectRing.visible = false;
 
       if (isDragging && state.drag) {
@@ -1112,7 +1360,9 @@ export class TableSceneRenderer {
       .stroke({ width: 1.8, color: ACTIVE_GLOW, alpha: 0.86 });
     this.ghostLayer.addChild(frame);
 
-    const ghostSprite = new Sprite(this.atlas.getTileTexture(state.ghostTile));
+    const ghostSprite = new Sprite(
+      this.atlas.getTileTexture(state.ghostTile, "laid"),
+    );
     ghostSprite.anchor.set(0.5);
     ghostSprite.width = tw;
     ghostSprite.height = th;

@@ -12,6 +12,17 @@ import feltBrushUrl from "../../assets/textures/felt-brush@2x.png";
 import feltImpastoUrl from "../../assets/textures/felt-impasto@2x.png";
 import type { Tile } from "../protocol/generated/Tile";
 import {
+  ATLAS_GRID,
+  ATLAS_REQUIRED_BODY_FRAMES,
+  ATLAS_TILE_FRAME_COUNT,
+  type BambooStalkSpec,
+  type PlumPinSpec,
+  type SpecColorKey,
+  STYLE_A_PALETTE,
+  STYLE_A_SPEC,
+  toRgbaCss,
+} from "./atlasConstants";
+import {
   getDragonKind,
   getTileLabel,
   getTileNumeral,
@@ -19,43 +30,47 @@ import {
   getTileSuit,
 } from "./tiles";
 
-export const ATLAS_TILE_FRAME_COUNT = 34;
-export const ATLAS_REQUIRED_BODY_FRAMES = [
-  "body_standing",
-  "body_laid",
-  "body_back",
-  "body_shadow",
-  "body_laid_back",
-] as const;
+export type TileBodyKind = "standing" | "laid";
+export { ATLAS_REQUIRED_BODY_FRAMES, ATLAS_TILE_FRAME_COUNT };
 
-const CELL_W = 144;
-const CELL_H = 192;
-const FRAME_W = 136;
-const FRAME_H = 184;
-const FRAME_PAD = 4;
-const GRID_COLS = 8;
-const GRID_ROWS = 5;
-const ATLAS_W = CELL_W * GRID_COLS; // 1152 <= 2048
-const ATLAS_H = CELL_H * GRID_ROWS; // 960 <= 2048
+const CELL_W = ATLAS_GRID.cellW;
+const CELL_H = ATLAS_GRID.cellH;
+const FRAME_W = ATLAS_GRID.frameW;
+const FRAME_H = ATLAS_GRID.frameH;
+const FRAME_PAD = ATLAS_GRID.pad;
+const GRID_COLS = ATLAS_GRID.cols;
+const GRID_ROWS = ATLAS_GRID.rows;
+const ATLAS_W = CELL_W * GRID_COLS; // 1440 <= 2048
+const ATLAS_H = CELL_H * GRID_ROWS; // 1536 <= 2048
 
-const IVORY = "#F5EEDF";
-const IVORY_HIGHLIGHT = "#FFFDF8";
-const IVORY_BOTTOM_LIP = "#E4D8BE";
-const JADE_BACK = "#1E5C5E";
-const JADE_RIM = "#399294";
-const INK = "#181A20";
-const RED = "#C7352B";
-const GREEN = "#157F56";
-const BLUE = "#1C5296";
+const IVORY = STYLE_A_PALETTE.ivory;
+const IVORY_HIGHLIGHT = STYLE_A_PALETTE.ivoryTop.hex;
+const IVORY_BOTTOM_LIP = STYLE_A_PALETTE.ivoryBottom;
+const JADE_BACK = STYLE_A_PALETTE.jadeBack;
+const JADE_BACK_DARK = STYLE_A_PALETTE.jadeBackDark;
+const JADE_BORDER = STYLE_A_PALETTE.jadeBorder;
+const JADE_RIM = toRgbaCss(STYLE_A_PALETTE.jadeRim);
+const GOLD_DOT = toRgbaCss(STYLE_A_PALETTE.goldDot);
+const WHITE_BEVEL = toRgbaCss(STYLE_A_PALETTE.whiteBevel);
+const INK = STYLE_A_PALETTE.ink;
+const RED = STYLE_A_PALETTE.crimson;
+const GREEN = STYLE_A_PALETTE.jade;
+const BLUE = STYLE_A_PALETTE.cobalt;
+const KAITI_FONT_STACK = '"Kaiti SC", "STKaiti", "BiauKai", "Songti SC", serif';
+
+function resolveSpecColor(key: SpecColorKey): string {
+  return STYLE_A_PALETTE[key];
+}
 
 export interface TileAtlas {
   readonly width: number;
   readonly height: number;
   readonly backTexture: Texture;
+  readonly laidBackTexture: Texture;
   readonly shadowTexture: Texture;
   readonly feltImpastoTexture: Texture;
   readonly feltBrushTexture: Texture;
-  getTileTexture(tile: Tile): Texture;
+  getTileTexture(tile: Tile, body?: TileBodyKind): Texture;
   destroy(): void;
 }
 
@@ -124,19 +139,26 @@ export async function loadTileAtlas(): Promise<TileAtlas> {
     sheet = new Spritesheet(atlasTexture, sheetData);
     await sheet.parse();
 
-    const faceTextures: Texture[] = [];
+    const standingTextures: Texture[] = [];
+    const laidTextures: Texture[] = [];
     for (let t = 0; t < ATLAS_TILE_FRAME_COUNT; t += 1) {
-      const tex = sheet.textures[`tile_${t}`];
-      if (!tex) {
+      const standingTex = sheet.textures[`tile_${t}`];
+      if (!standingTex) {
         throw new Error(`Missing spritesheet frame tile_${t}`);
       }
-      faceTextures.push(tex);
+      const laidTex = sheet.textures[`tile_laid_${t}`];
+      if (!laidTex) {
+        throw new Error(`Missing spritesheet frame tile_laid_${t}`);
+      }
+      standingTextures.push(standingTex);
+      laidTextures.push(laidTex);
     }
 
     const backTexture = sheet.textures.body_back;
+    const laidBackTexture = sheet.textures.body_laid_back;
     const shadowTexture = sheet.textures.body_shadow;
-    if (!backTexture || !shadowTexture) {
-      throw new Error("Missing required impasto body frame in tiles@2x.json");
+    if (!backTexture || !laidBackTexture || !shadowTexture) {
+      throw new Error("Missing required Style A body frame in tiles@2x.json");
     }
 
     const metaSize = sheetData.meta.size ?? { w: ATLAS_W, h: ATLAS_H };
@@ -145,11 +167,15 @@ export async function loadTileAtlas(): Promise<TileAtlas> {
       width: metaSize.w,
       height: metaSize.h,
       backTexture,
+      laidBackTexture,
       shadowTexture,
       feltImpastoTexture,
       feltBrushTexture,
-      getTileTexture(tile: Tile): Texture {
-        return faceTextures[tile] ?? backTexture;
+      getTileTexture(tile: Tile, body: TileBodyKind = "standing"): Texture {
+        if (body === "laid") {
+          return laidTextures[tile] ?? laidBackTexture;
+        }
+        return standingTextures[tile] ?? backTexture;
       },
       destroy(): void {
         sheet?.destroy(true);
@@ -202,15 +228,13 @@ function drawTileBase(
   oy: number,
   kind: "standing" | "laid" | "back" | "shadow" | "laid_back",
 ): void {
-  const x = ox + 4;
-  const y = oy + 4;
-  const w = FRAME_W - 8;
-  const h = FRAME_H - 8;
+  const x = ox + 3;
+  const w = FRAME_W - 6;
   const radius = 14;
 
   if (kind === "shadow") {
     ctx.save();
-    roundRectPath(ctx, x + 2, y + 4, w - 4, h - 6, radius);
+    roundRectPath(ctx, x + 2, oy + 6, w - 4, FRAME_H - 10, radius);
     ctx.fillStyle = "rgba(8, 13, 18, 0.42)";
     ctx.fill();
     ctx.restore();
@@ -219,8 +243,19 @@ function drawTileBase(
 
   const isBack = kind === "back" || kind === "laid_back";
   const isLaid = kind === "laid" || kind === "laid_back";
+  const y = isLaid ? oy + 3 : oy + 10;
+  const h = isLaid ? FRAME_H - 6 : FRAME_H - 14;
 
   ctx.save();
+  if (!isLaid) {
+    roundRectPath(ctx, x, oy + 2, w, FRAME_H - 4, radius + 1);
+    ctx.fillStyle = isBack ? JADE_BACK_DARK : JADE_BACK;
+    ctx.fill();
+    ctx.strokeStyle = JADE_BORDER;
+    ctx.lineWidth = 2.4;
+    ctx.stroke();
+  }
+
   roundRectPath(ctx, x, y, w, h, radius);
   ctx.fillStyle = isBack ? JADE_BACK : IVORY;
   ctx.fill();
@@ -229,32 +264,37 @@ function drawTileBase(
     ctx.save();
     ctx.clip();
     ctx.fillStyle = IVORY_BOTTOM_LIP;
-    ctx.fillRect(x, y + h - (isLaid ? 8 : 12), w, isLaid ? 8 : 12);
+    ctx.fillRect(x, y + h - (isLaid ? 9 : 10), w, isLaid ? 9 : 10);
     ctx.fillStyle = IVORY_HIGHLIGHT;
-    ctx.fillRect(x, y, w, 6);
+    ctx.fillRect(x, y, w, 7);
     ctx.restore();
   } else {
-    roundRectPath(ctx, x + 12, y + 12, w - 24, h - 24, 8);
+    roundRectPath(ctx, x + 13, y + 13, w - 26, h - 26, 9);
     ctx.strokeStyle = JADE_RIM;
-    ctx.lineWidth = 3;
+    ctx.lineWidth = 2.8;
     ctx.stroke();
 
     const cx = ox + FRAME_W / 2;
-    const cy = oy + FRAME_H / 2;
+    const cy = y + h / 2;
     ctx.beginPath();
-    ctx.moveTo(cx, cy - 18);
-    ctx.lineTo(cx + 14, cy);
-    ctx.lineTo(cx, cy + 18);
-    ctx.lineTo(cx - 14, cy);
+    ctx.moveTo(cx, cy - 28);
+    ctx.lineTo(cx + 19, cy);
+    ctx.lineTo(cx, cy + 28);
+    ctx.lineTo(cx - 19, cy);
     ctx.closePath();
     ctx.strokeStyle = JADE_RIM;
     ctx.lineWidth = 2.5;
     ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(cx, cy, 6, 0, Math.PI * 2);
+    ctx.fillStyle = GOLD_DOT;
+    ctx.fill();
   }
 
   roundRectPath(ctx, x, y, w, h, radius);
-  ctx.strokeStyle = INK;
-  ctx.lineWidth = 3.5;
+  ctx.strokeStyle = isBack ? JADE_BORDER : INK;
+  ctx.lineWidth = 3.2;
   ctx.stroke();
   ctx.restore();
 }
@@ -264,19 +304,21 @@ function drawManTile(
   ox: number,
   oy: number,
   tile: Tile,
+  laid: boolean,
 ): void {
   const cx = ox + FRAME_W / 2;
+  const topOffset = laid ? 0 : 5;
   ctx.save();
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
 
   ctx.fillStyle = INK;
-  ctx.font = '900 50px "Songti SC", "STSong", "PingFang SC", serif';
-  ctx.fillText(getTileNumeral(tile), cx, oy + 56);
+  ctx.font = `900 54px ${KAITI_FONT_STACK}`;
+  ctx.fillText(getTileNumeral(tile), cx, oy + 54 + topOffset);
 
   ctx.fillStyle = RED;
-  ctx.font = '900 54px "Songti SC", "STSong", "PingFang SC", serif';
-  ctx.fillText("萬", cx, oy + 122);
+  ctx.font = `900 58px ${KAITI_FONT_STACK}`;
+  ctx.fillText("萬", cx, oy + 124 + topOffset * 0.5);
   ctx.restore();
 }
 
@@ -287,21 +329,31 @@ function drawBambooStalk(
   w: number,
   h: number,
   color: string,
+  angleDeg = 0,
 ): void {
   ctx.save();
+  if (angleDeg !== 0 && typeof ctx.translate === "function" && typeof ctx.rotate === "function") {
+    ctx.translate(x, y);
+    ctx.rotate((angleDeg * Math.PI) / 180);
+    x = 0;
+    y = 0;
+  }
   ctx.fillStyle = color;
   ctx.strokeStyle = INK;
-  ctx.lineWidth = 1.8;
+  ctx.lineWidth = 1.5;
 
   ctx.beginPath();
   ctx.roundRect(x - w / 2, y - h / 2, w, h, w / 2);
   ctx.fill();
   ctx.stroke();
 
-  ctx.fillStyle = IVORY;
-  ctx.fillRect(x - w / 2 - 1, y - 2, w + 2, 4);
-  ctx.fillStyle = color;
-  ctx.fillRect(x - w / 2 + 1, y - 1, w - 2, 2);
+  const nodeW = w * 1.18;
+  for (const ny of [y - h / 2, y - 2, y + h / 2 - 4]) {
+    ctx.beginPath();
+    ctx.roundRect(x - nodeW / 2, ny, nodeW, 5, 2.5);
+    ctx.fill();
+    ctx.stroke();
+  }
   ctx.restore();
 }
 
@@ -310,101 +362,53 @@ function drawBambooTile(
   ox: number,
   oy: number,
   rank: number,
+  laid: boolean,
 ): void {
   const cx = ox + FRAME_W / 2;
-  const cy = oy + FRAME_H / 2 - 4;
+  const cy = oy + FRAME_H / 2 + (laid ? 0 : 4);
 
   if (rank === 1) {
     ctx.save();
     ctx.strokeStyle = GREEN;
     ctx.lineWidth = 4;
     ctx.beginPath();
-    ctx.arc(cx, cy, 30, 0, Math.PI * 2);
+    ctx.arc(cx, cy, 32, 0, Math.PI * 2);
     ctx.stroke();
 
-    drawBambooStalk(ctx, cx, cy, 14, 54, GREEN);
+    drawBambooStalk(ctx, cx, cy, 14, 58, GREEN);
     ctx.fillStyle = RED;
     ctx.beginPath();
-    ctx.arc(cx, cy - 12, 7, 0, Math.PI * 2);
+    ctx.arc(cx, cy - 12, 8, 0, Math.PI * 2);
     ctx.fill();
     ctx.strokeStyle = INK;
-    ctx.lineWidth = 1.8;
+    ctx.lineWidth = 1.6;
     ctx.stroke();
     ctx.restore();
     return;
   }
 
-  const layouts: Record<number, Array<[number, number, string]>> = {
-    2: [
-      [0, -30, GREEN],
-      [0, 30, BLUE],
-    ],
-    3: [
-      [0, -30, GREEN],
-      [-22, 30, GREEN],
-      [22, 30, GREEN],
-    ],
-    4: [
-      [-22, -30, BLUE],
-      [22, -30, GREEN],
-      [-22, 30, GREEN],
-      [22, 30, BLUE],
-    ],
-    5: [
-      [-26, -30, GREEN],
-      [26, -30, BLUE],
-      [0, 0, RED],
-      [-26, 30, BLUE],
-      [26, 30, GREEN],
-    ],
-    6: [
-      [-26, -30, GREEN],
-      [0, -30, GREEN],
-      [26, -30, GREEN],
-      [-26, 30, BLUE],
-      [0, 30, BLUE],
-      [26, 30, BLUE],
-    ],
-    7: [
-      [0, -42, RED],
-      [-26, 0, GREEN],
-      [0, 0, BLUE],
-      [26, 0, GREEN],
-      [-26, 42, GREEN],
-      [0, 42, BLUE],
-      [26, 42, GREEN],
-    ],
-    8: [
-      [-28, -30, GREEN],
-      [0, -30, GREEN],
-      [28, -30, GREEN],
-      [-14, 0, RED],
-      [14, 0, RED],
-      [-28, 30, BLUE],
-      [0, 30, BLUE],
-      [28, 30, BLUE],
-    ],
-    9: [
-      [-28, -42, RED],
-      [0, -42, BLUE],
-      [28, -42, GREEN],
-      [-28, 0, RED],
-      [0, 0, BLUE],
-      [28, 0, GREEN],
-      [-28, 42, RED],
-      [0, 42, BLUE],
-      [28, 42, GREEN],
-    ],
-  };
-
-  const stalkH = rank >= 7 ? 34 : 44;
-  const stalkW = rank >= 8 ? 12 : 14;
-  for (const [dx, dy, color] of layouts[rank]) {
-    drawBambooStalk(ctx, cx + dx, cy + dy, stalkW, stalkH, color);
+  // Style A Bamboo: ZERO blue! Traditional jade green & crimson only, symmetric M/W 8-bamboo.
+  const entries = STYLE_A_SPEC.bamboo[
+    String(rank) as keyof typeof STYLE_A_SPEC.bamboo
+  ] as readonly BambooStalkSpec[];
+  const scaleX = FRAME_W / 100;
+  const scaleY = (FRAME_H / 136) * (laid ? 128 / 130 : 121 / 130);
+  const artTop = oy + (laid ? 2.5 : 8.5) * (FRAME_H / 136);
+  const stalkW = (rank >= 7 ? 10.2 : 12.2) * scaleX;
+  for (const entry of entries) {
+    drawBambooStalk(
+      ctx,
+      ox + entry.x * scaleX,
+      artTop + entry.y * scaleY,
+      stalkW,
+      entry.h * scaleY,
+      resolveSpecColor(entry.color),
+      entry.angle,
+    );
   }
 }
 
-function drawPip(
+function drawPlumPip(
   ctx: CanvasRenderingContext2D,
   x: number,
   y: number,
@@ -417,17 +421,40 @@ function drawPip(
   ctx.fillStyle = color;
   ctx.fill();
   ctx.strokeStyle = INK;
-  ctx.lineWidth = 2;
+  ctx.lineWidth = 1.8;
   ctx.stroke();
 
   ctx.beginPath();
-  ctx.arc(x, y, radius * 0.56, 0, Math.PI * 2);
+  ctx.arc(x, y, radius * 0.74, 0, Math.PI * 2);
   ctx.strokeStyle = IVORY;
-  ctx.lineWidth = 2.2;
+  ctx.lineWidth = Math.max(1.4, radius * 0.1);
   ctx.stroke();
 
+  // 5-petal plum blossom inside coin disc (zero radial gear ticks)
+  ctx.fillStyle = IVORY;
+  for (const deg of [0, 72, 144, 216, 288]) {
+    ctx.save();
+    if (typeof ctx.translate === "function" && typeof ctx.rotate === "function") {
+      ctx.translate(x, y);
+      ctx.rotate((deg * Math.PI) / 180);
+      ctx.beginPath();
+      if (typeof ctx.ellipse === "function") {
+        ctx.ellipse(0, -radius * 0.37, radius * 0.17, radius * 0.25, 0, 0, Math.PI * 2);
+      } else {
+        ctx.arc(0, -radius * 0.37, radius * 0.2, 0, Math.PI * 2);
+      }
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
   ctx.beginPath();
-  ctx.arc(x, y, radius * 0.24, 0, Math.PI * 2);
+  ctx.arc(x, y, radius * 0.19, 0, Math.PI * 2);
+  ctx.fillStyle = color;
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.arc(x, y, radius * 0.09, 0, Math.PI * 2);
   ctx.fillStyle = IVORY;
   ctx.fill();
   ctx.restore();
@@ -438,81 +465,31 @@ function drawDotTile(
   ox: number,
   oy: number,
   rank: number,
+  laid: boolean,
 ): void {
   const cx = ox + FRAME_W / 2;
-  const cy = oy + FRAME_H / 2 - 4;
+  const cy = oy + FRAME_H / 2 + (laid ? 0 : 4);
 
   if (rank === 1) {
-    drawPip(ctx, cx, cy, 36, BLUE);
-    drawPip(ctx, cx, cy, 18, RED);
+    drawPlumPip(ctx, cx, cy, 40, BLUE);
+    drawPlumPip(ctx, cx, cy, 20, RED);
     return;
   }
 
-  const layouts: Record<number, Array<[number, number, number, string]>> = {
-    2: [
-      [0, -32, 18, GREEN],
-      [0, 32, 18, BLUE],
-    ],
-    3: [
-      [-28, -36, 15, BLUE],
-      [0, 0, 15, RED],
-      [28, 36, 15, GREEN],
-    ],
-    4: [
-      [-24, -28, 16, BLUE],
-      [24, -28, 16, GREEN],
-      [-24, 28, 16, GREEN],
-      [24, 28, 16, BLUE],
-    ],
-    5: [
-      [-28, -36, 14, BLUE],
-      [28, -36, 14, GREEN],
-      [0, 0, 14, RED],
-      [-28, 36, 14, GREEN],
-      [28, 36, 14, BLUE],
-    ],
-    6: [
-      [-24, -40, 14, GREEN],
-      [24, -40, 14, GREEN],
-      [-24, 0, 14, RED],
-      [24, 0, 14, RED],
-      [-24, 40, 14, RED],
-      [24, 40, 14, RED],
-    ],
-    7: [
-      [-28, -44, 12, GREEN],
-      [0, -34, 12, GREEN],
-      [28, -24, 12, GREEN],
-      [-24, 12, 13, RED],
-      [24, 12, 13, RED],
-      [-24, 44, 13, RED],
-      [24, 44, 13, RED],
-    ],
-    8: [
-      [-24, -46, 12, BLUE],
-      [24, -46, 12, BLUE],
-      [-24, -15, 12, BLUE],
-      [24, -15, 12, BLUE],
-      [-24, 15, 12, BLUE],
-      [24, 15, 12, BLUE],
-      [-24, 46, 12, BLUE],
-      [24, 46, 12, BLUE],
-    ],
-    9: [
-      [-28, -42, 12, GREEN],
-      [0, -42, 12, GREEN],
-      [28, -42, 12, GREEN],
-      [-28, 0, 12, RED],
-      [0, 0, 12, RED],
-      [28, 0, 12, RED],
-      [-28, 42, 12, BLUE],
-      [0, 42, 12, BLUE],
-      [28, 42, 12, BLUE],
-    ],
-  };
-
-  for (const [dx, dy, r, color] of layouts[rank]) {
-    drawPip(ctx, cx + dx, cy + dy, r, color);
+  const entries = STYLE_A_SPEC.dot[
+    String(rank) as keyof typeof STYLE_A_SPEC.dot
+  ] as readonly PlumPinSpec[];
+  const scaleX = FRAME_W / 100;
+  const scaleY = (FRAME_H / 136) * (laid ? 128 / 130 : 121 / 130);
+  const artTop = oy + (laid ? 2.5 : 8.5) * (FRAME_H / 136);
+  for (const entry of entries) {
+    drawPlumPip(
+      ctx,
+      ox + entry.x * scaleX,
+      artTop + entry.y * scaleY,
+      entry.r * scaleX,
+      resolveSpecColor(entry.color),
+    );
   }
 }
 
@@ -521,20 +498,17 @@ function drawHonorTile(
   ox: number,
   oy: number,
   tile: Tile,
+  laid: boolean,
 ): void {
   const cx = ox + FRAME_W / 2;
-  const cy = oy + FRAME_H / 2 - 4;
+  const cy = oy + FRAME_H / 2 + (laid ? 0 : 4);
   ctx.save();
 
   const dragon = getDragonKind(tile);
   if (dragon === "White") {
-    roundRectPath(ctx, ox + 28, oy + 28, FRAME_W - 56, FRAME_H - 62, 8);
-    ctx.strokeStyle = BLUE;
-    ctx.lineWidth = 6;
-    ctx.stroke();
-
-    roundRectPath(ctx, ox + 38, oy + 38, FRAME_W - 76, FRAME_H - 82, 4);
-    ctx.strokeStyle = INK;
+    // Mainland plain white dragon: faint recessed inner bevel only (zero blue dashed frame)
+    roundRectPath(ctx, ox + 19, oy + (laid ? 20 : 25), FRAME_W - 38, FRAME_H - 46, 9);
+    ctx.strokeStyle = WHITE_BEVEL;
     ctx.lineWidth = 2;
     ctx.stroke();
     ctx.restore();
@@ -545,7 +519,7 @@ function drawHonorTile(
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillStyle = color;
-  ctx.font = '900 72px "Songti SC", "STSong", "PingFang SC", serif';
+  ctx.font = `900 78px ${KAITI_FONT_STACK}`;
   ctx.fillText(getTileLabel(tile), cx, cy);
   ctx.restore();
 }
@@ -555,23 +529,24 @@ function drawTileArtwork(
   ox: number,
   oy: number,
   tile: Tile,
+  laid: boolean,
 ): void {
-  drawTileBase(ctx, ox, oy, "standing");
+  drawTileBase(ctx, ox, oy, laid ? "laid" : "standing");
   const suit = getTileSuit(tile);
   const rank = getTileRank(tile);
   switch (suit) {
     case "Man":
-      drawManTile(ctx, ox, oy, tile);
+      drawManTile(ctx, ox, oy, tile, laid);
       break;
     case "Bamboo":
-      drawBambooTile(ctx, ox, oy, rank ?? 1);
+      drawBambooTile(ctx, ox, oy, rank ?? 1, laid);
       break;
     case "Dot":
-      drawDotTile(ctx, ox, oy, rank ?? 1);
+      drawDotTile(ctx, ox, oy, rank ?? 1, laid);
       break;
     case "Wind":
     case "Dragon":
-      drawHonorTile(ctx, ox, oy, tile);
+      drawHonorTile(ctx, ox, oy, tile, laid);
       break;
   }
 }
@@ -592,8 +567,8 @@ function createFallbackFeltTexture(
     }
     ctx.fillStyle = "rgba(255, 240, 210, 0.04)";
     for (let i = 0; i < 64; i += 1) {
-      const x = ((i * 53) % size);
-      const y = ((i * 97) % size);
+      const x = (i * 53) % size;
+      const y = (i * 97) % size;
       ctx.fillRect(x, y, 28, 4);
     }
   }
@@ -632,8 +607,10 @@ export function createTileAtlas(): TileAtlas {
   };
 
   for (let t = 0; t < ATLAS_TILE_FRAME_COUNT; t += 1) {
-    const { x, y } = slotCoords(t);
-    drawTileArtwork(ctx, x, y, t);
+    const standingPos = slotCoords(t);
+    drawTileArtwork(ctx, standingPos.x, standingPos.y, t, false);
+    const laidPos = slotCoords(34 + t);
+    drawTileArtwork(ctx, laidPos.x, laidPos.y, t, true);
   }
 
   const bodyKinds = [
@@ -644,7 +621,7 @@ export function createTileAtlas(): TileAtlas {
     "laid_back",
   ] as const;
   bodyKinds.forEach((kind, idx) => {
-    const { x, y } = slotCoords(34 + idx);
+    const { x, y } = slotCoords(68 + idx);
     drawTileBase(ctx, x, y, kind);
   });
 
@@ -663,13 +640,16 @@ export function createTileAtlas(): TileAtlas {
     });
   };
 
-  const faceTextures: Texture[] = [];
+  const standingTextures: Texture[] = [];
+  const laidTextures: Texture[] = [];
   for (let t = 0; t < ATLAS_TILE_FRAME_COUNT; t += 1) {
-    faceTextures.push(frameAt(t));
+    standingTextures.push(frameAt(t));
+    laidTextures.push(frameAt(34 + t));
   }
 
-  const backTexture = frameAt(36);
-  const shadowTexture = frameAt(37);
+  const backTexture = frameAt(70);
+  const shadowTexture = frameAt(71);
+  const laidBackTexture = frameAt(72);
 
   const impasto = createFallbackFeltTexture(
     512,
@@ -686,17 +666,25 @@ export function createTileAtlas(): TileAtlas {
     width: ATLAS_W,
     height: ATLAS_H,
     backTexture,
+    laidBackTexture,
     shadowTexture,
     feltImpastoTexture: impasto.texture,
     feltBrushTexture: brush.texture,
-    getTileTexture(tile: Tile): Texture {
-      return faceTextures[tile] ?? backTexture;
+    getTileTexture(tile: Tile, body: TileBodyKind = "standing"): Texture {
+      if (body === "laid") {
+        return laidTextures[tile] ?? laidBackTexture;
+      }
+      return standingTextures[tile] ?? backTexture;
     },
     destroy(): void {
-      for (const tex of faceTextures) {
+      for (const tex of standingTextures) {
+        tex.destroy(false);
+      }
+      for (const tex of laidTextures) {
         tex.destroy(false);
       }
       backTexture.destroy(false);
+      laidBackTexture.destroy(false);
       shadowTexture.destroy(false);
       source.destroy();
       impasto.texture.destroy(false);

@@ -383,4 +383,40 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn embedded_assets_serve_pwa_manifest_and_icons() {
+        let assets = EmbeddedStaticAssets;
+        let manifest = assets
+            .resolve("/manifest.webmanifest")
+            .expect("resolve manifest")
+            .expect("manifest.webmanifest must be embedded");
+        assert_eq!(
+            manifest.content_type,
+            "application/manifest+json; charset=utf-8"
+        );
+        assert_eq!(manifest.cache_control, "no-cache");
+
+        let text = String::from_utf8(manifest.bytes).expect("manifest must be valid UTF-8");
+        assert!(text.contains("\"standalone\""));
+        let json: serde_json::Value =
+            serde_json::from_str(&text).expect("manifest must be valid JSON");
+        assert_eq!(json["display"], "standalone");
+        assert_eq!(json["background_color"], "#102026");
+        assert_eq!(json["theme_color"], "#102026");
+
+        let icons = json["icons"]
+            .as_array()
+            .expect("manifest must list icons array");
+        assert!(!icons.is_empty(), "manifest must include at least one icon");
+        for icon in icons {
+            let src = icon["src"].as_str().expect("icon src string");
+            let resolved_icon = assets
+                .resolve(src)
+                .expect("resolve icon")
+                .expect("icon file must be embedded in web/dist");
+            assert_eq!(resolved_icon.content_type, "image/png");
+            assert!(!resolved_icon.bytes.is_empty());
+        }
+    }
 }
