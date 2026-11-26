@@ -9,10 +9,13 @@ import type {
 } from "../presentation/semanticEvents";
 import type { MeldKind } from "../protocol/melds";
 import type {
+  ActiveBanterVoiceState,
   AudioContextLike,
   AudioContextStateLike,
   AudioSessionLike,
   AudioStatus,
+  BanterVoiceRequest,
+  BanterVoiceStateListener,
   DynamicsCompressorNodeLike,
   FetchLike,
   GainNodeLike,
@@ -20,6 +23,10 @@ import type {
   VoActionCategory,
   VoTriggerRequest,
 } from "./audioTypes";
+import {
+  createBanterVoicePlayer,
+  type BanterVoicePlayer,
+} from "./banterVoicePlayer";
 import { createSfxBackend, type SfxBackend } from "./sfxBackend";
 import {
   meldKindToVoiceSlot,
@@ -56,6 +63,7 @@ export interface AudioEventRouterOptions {
   readonly getVisibilityState?: () => DocumentVisibilityState;
   readonly sfxBackend?: SfxBackend;
   readonly voManager?: VoManager;
+  readonly banterVoicePlayer?: BanterVoicePlayer;
   readonly fetchFn?: FetchLike;
 }
 
@@ -64,11 +72,18 @@ export type AudioStatusListener = (status: AudioStatus) => void;
 export interface AudioEventRouter {
   getStatus(): AudioStatus;
   subscribe(listener: AudioStatusListener): () => void;
+  getActiveBanterVoice(): ActiveBanterVoiceState | null;
+  onBanterVoiceStateChange(listener: BanterVoiceStateListener): () => void;
   applyPreferences(preferences: DevicePreferences): void;
+  setVoiceVolume(volume: number): void;
+  setTileCallVoiceEnabled(enabled: boolean): void;
+  setBanterVoiceEnabled(enabled: boolean): void;
   preloadVoicePacks(packIds: readonly (string | null | undefined)[]): void;
   unlockFromGesture(): boolean;
   bindGestureUnlock(target?: EventTargetLike | null): () => void;
   handleSemanticEvent(event: SemanticGameEvent): void;
+  enqueueBanterVoice(request: BanterVoiceRequest): void;
+  flushBanterVoices(): void;
   dispose(): void;
 }
 
@@ -264,12 +279,27 @@ export function createAudioEventRouter(
     options.getVisibilityState ?? defaultVisibilityState;
   const sfxBackend =
     options.sfxBackend ?? createSfxBackend({ fetchFn: options.fetchFn });
-  const voManager =
-    options.voManager ?? createVoManager({ fetchFn: options.fetchFn });
+  let voManager!: VoManager;
+  let banterVoicePlayer!: BanterVoicePlayer;
+  voManager =
+    options.voManager ??
+    createVoManager({
+      fetchFn: options.fetchFn,
+      isExternalVoiceActive: () => banterVoicePlayer.isPlaying(),
+    });
+  banterVoicePlayer =
+    options.banterVoicePlayer ??
+    createBanterVoicePlayer({
+      fetchFn: options.fetchFn,
+      isExternalVoiceActive: () => voManager.isDucking(),
+    });
 
   let prefs: DevicePreferences = options.initialPreferences
     ? { ...options.initialPreferences }
     : defaultDevicePreferences();
+  let voiceVolume = 1;
+  let tileCallVoiceEnabled = true;
+  let banterVoiceEnabled = true;
   let ctx: AudioContextLike | null = null;
   let masterGain: GainNodeLike | null = null;
   let sfxGain: GainNodeLike | null = null;
@@ -344,12 +374,16 @@ export function createAudioEventRouter(
   }
 
   function syncGainValues(): void {
+    banterVoicePlayer.updateSfxBaseVolume(prefs.sfx_volume);
     if (!ctx || !masterGain || !sfxGain) {
       return;
     }
     const targetMaster = prefs.muted ? 0 : prefs.master_volume;
     masterGain.gain.setTargetAtTime(targetMaster, ctx.currentTime, 0.015);
     voManager.updateSfxBaseVolume(ctx, sfxGain, prefs.sfx_volume);
+    if (voGain) {
+      voGain.gain.setTargetAtTime(voiceVolume, ctx.currentTime, 0.015);
+    }
   }
 
   function ensureContext(): AudioContextLike | null {
@@ -379,7 +413,7 @@ export function createAudioEventRouter(
     sfxGain.gain.value = prefs.sfx_volume;
 
     voGain = created.createGain();
-    voGain.gain.value = 1;
+    voGain.gain.value = voiceVolume;
 
     sfxGain.connect(masterGain);
     voGain.connect(masterGain);
@@ -425,6 +459,14 @@ export function createAudioEventRouter(
       };
     },
 
+    getActiveBanterVoice(): ActiveBanterVoiceState | null {
+      return banterVoicePlayer.getActive();
+    },
+
+    onBanterVoiceStateChange(listener: BanterVoiceStateListener): () => void {
+      return banterVoicePlayer.subscribe(listener);
+    },
+
     applyPreferences(nextPreferences: DevicePreferences): void {
       if (disposed) {
         return;
@@ -437,6 +479,33 @@ export function createAudioEventRouter(
       }
       syncGainValues();
       notify();
+    },
+
+    setVoiceVolume(volume: number): void {
+      if (disposed || typeof volume !== "number" || !Number.isFinite(volume)) {
+        return;
+      }
+      voiceVolume = Math.min(1, Math.max(0, volume));
+      if (ctx && voGain) {
+        voGain.gain.setTargetAtTime(voiceVolume, ctx.currentTime, 0.015);
+      }
+    },
+
+    setTileCallVoiceEnabled(enabled: boolean): void {
+      if (disposed) {
+        return;
+      }
+      tileCallVoiceEnabled = Boolean(enabled);
+    },
+
+    setBanterVoiceEnabled(enabled: boolean): void {
+      if (disposed) {
+        return;
+      }
+      banterVoiceEnabled = Boolean(enabled);
+      if (!banterVoiceEnabled) {
+        banterVoicePlayer.flush();
+      }
     },
 
     preloadVoicePacks(packIds: readonly (string | null | undefined)[]): void {
@@ -504,7 +573,13 @@ export function createAudioEventRouter(
     },
 
     handleSemanticEvent(event: SemanticGameEvent): void {
-      if (disposed || prefs.muted) {
+      if (disposed) {
+        return;
+      }
+      if (event.type === "HandStarted") {
+        banterVoicePlayer.flush();
+      }
+      if (prefs.muted) {
         return;
       }
       const sfxMapping = resolveSfxMapping(event);
@@ -536,6 +611,12 @@ export function createAudioEventRouter(
       }
 
       if (voMapping !== null) {
+        if (
+          voMapping.request.category === "Discard" &&
+          (!tileCallVoiceEnabled || banterVoicePlayer.isPlaying())
+        ) {
+          return;
+        }
         void voManager.triggerVo(
           audioCtx,
           voGain,
@@ -545,6 +626,42 @@ export function createAudioEventRouter(
           voMapping.pan,
         );
       }
+    },
+
+    enqueueBanterVoice(request: BanterVoiceRequest): void {
+      if (disposed || prefs.muted || !banterVoiceEnabled) {
+        return;
+      }
+      const audioCtx = ensureContext();
+      if (!audioCtx || !sfxGain || !voGain) {
+        notify();
+        return;
+      }
+      if (audioCtx.state !== "running") {
+        notify();
+        return;
+      }
+      banterVoicePlayer.enqueue(
+        audioCtx,
+        voGain,
+        sfxGain,
+        prefs.sfx_volume,
+        {
+          banterId: request.banterId,
+          seat: request.seat,
+          audioUrl: request.audioUrl,
+          durationMs: request.durationMs,
+          priority: request.priority,
+          pan: resolvePan(request.relativeRole),
+        },
+      );
+    },
+
+    flushBanterVoices(): void {
+      if (disposed) {
+        return;
+      }
+      banterVoicePlayer.flush();
     },
 
     dispose(): void {
@@ -562,6 +679,7 @@ export function createAudioEventRouter(
         ctx.removeEventListener("statechange", handleStateChange);
         void ctx.close?.().catch(() => {});
       }
+      banterVoicePlayer.dispose();
       voManager.dispose();
       sfxBackend.dispose();
       listeners.clear();

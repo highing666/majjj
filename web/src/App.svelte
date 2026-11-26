@@ -62,6 +62,10 @@
   import type { WebGLRecoveryState } from "./lib/table/webglRecovery";
   import AudioResumeCapsule from "./lib/ui/AudioResumeCapsule.svelte";
   import SettingsModal from "./lib/ui/SettingsModal.svelte";
+  import {
+    createTtsNoticeController,
+    type TtsNoticeViewState,
+  } from "./lib/ui/ttsNotice";
 
   const client = createTableClient();
   const preferencesStore = getBrowserDevicePreferencesStore();
@@ -83,9 +87,13 @@
     onShutdownSuccess: () => client.dispose(),
   });
   const historyController = createHistoryController();
+  const ttsNoticeController = createTtsNoticeController();
   let sessionState = $state<SessionState>(client.getState());
   let shutdownState = $state<ShutdownState>(shutdownController.getState());
   let historyState = $state<HistoryState>(historyController.getState());
+  let ttsNoticeState = $state<TtsNoticeViewState>(
+    ttsNoticeController.getState(),
+  );
   let presentationState = $state<PresentationState>(
     presentationQueue.getState(),
   );
@@ -112,6 +120,9 @@
     const unsubscribeHistory = historyController.subscribe((next) => {
       historyState = next;
     });
+    const unsubscribeTtsNotice = ttsNoticeController.subscribe((next) => {
+      ttsNoticeState = next;
+    });
     const unsubscribePrefs = preferencesStore.subscribe((next) => {
       devicePrefs = next;
     });
@@ -130,6 +141,15 @@
     const unsubscribeSemantic = presentationQueue.onSemanticEvent((event) => {
       audioRouter.handleSemanticEvent(event);
     });
+    const unsubscribeBanterVoice = presentationQueue.onBanterVoiceEvent(
+      (event) => {
+        if (event.type === "ready") {
+          audioRouter.enqueueBanterVoice(event.request);
+        } else {
+          audioRouter.flushBanterVoices();
+        }
+      },
+    );
     const unbindAudioGestures = audioRouter.bindGestureUnlock(window);
     const unsubscribeMessages = client.onServerMessage((message) => {
       presentationQueue.enqueueServerMessage(message);
@@ -138,12 +158,14 @@
     return () => {
       unsubscribeMessages();
       unbindAudioGestures();
+      unsubscribeBanterVoice();
       unsubscribeSemantic();
       unsubscribeAudioStatus();
       unsubscribePresentation();
       unsubscribeViewportDisplay();
       unsubscribeRenderQuality();
       unsubscribePrefs();
+      unsubscribeTtsNotice();
       unsubscribeHistory();
       unsubscribeShutdown();
       unsubscribeClient();
@@ -153,8 +175,13 @@
       audioRouter.dispose();
       presentationQueue.dispose();
       effectsBus.dispose();
+      ttsNoticeController.dispose();
       client.dispose();
     };
+  });
+
+  $effect(() => {
+    ttsNoticeController.applyNotice(sessionState.ttsStatusNotice);
   });
 
   $effect(() => {
@@ -364,6 +391,19 @@
   {#if sessionState.llmStatusNotice && !sessionState.llmStatusNotice.available}
     <div class="banner banner-warn" class:banner-floating={compact} role="alert">
       <span>{sessionState.llmStatusNotice.message}</span>
+    </div>
+  {/if}
+
+  {#if ttsNoticeState.visible && !settlementVisible}
+    <div
+      class="banner"
+      class:banner-warn={ttsNoticeState.kind === "degraded"}
+      class:banner-info={ttsNoticeState.kind === "recovered"}
+      class:banner-floating={compact}
+      role="status"
+      aria-live="polite"
+    >
+      <span>{ttsNoticeState.message}</span>
     </div>
   {/if}
 
@@ -704,6 +744,18 @@
     onResume={() => audioRouter.unlockFromGesture()}
   />
 
+  {#if ttsNoticeState.visible && settlementVisible}
+    <div class="tts-modal-notice" role="status" aria-live="polite">
+      <div
+        class="banner banner-floating"
+        class:banner-warn={ttsNoticeState.kind === "degraded"}
+        class:banner-info={ttsNoticeState.kind === "recovered"}
+      >
+        <span>{ttsNoticeState.message}</span>
+      </div>
+    </div>
+  {/if}
+
   {#if takeOverTarget !== null}
     <TakeOverModal
       seatInfo={takeOverTarget.seatInfo}
@@ -849,6 +901,28 @@
     background: rgba(88, 20, 20, 0.92);
     border-color: #f87171;
     color: #fee2e2;
+  }
+
+  .banner-info {
+    background: var(--jade-soft);
+    border-color: #9ed4be;
+    color: var(--jade);
+  }
+
+  .banner-floating.banner-info {
+    background: rgba(16, 46, 38, 0.92);
+    border-color: rgba(110, 231, 183, 0.65);
+    color: #d1fae5;
+  }
+
+  .tts-modal-notice {
+    position: fixed;
+    top: max(8px, env(safe-area-inset-top));
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 46;
+    max-width: min(460px, calc(100% - 24px));
+    pointer-events: none;
   }
 
   .table-stage.stage-shaking {

@@ -1141,4 +1141,264 @@ describe("PresentationQueue", () => {
 
     queue.dispose();
   });
+
+  it("stores banterId and priority on ActiveBanterBubble, emits BanterVoiceEvent on TableBanterAudioReady, and flushes on boundary transitions", () => {
+    const queue = createPresentationQueue({ banterDurationMs: 5000 });
+    const banterVoiceEvents: Array<
+      | {
+          type: "ready";
+          request: {
+            banterId: string;
+            seat: string;
+            audioUrl: string;
+            durationMs: number;
+            priority: "highlight" | "normal";
+            relativeRole: string | null;
+          };
+        }
+      | { type: "flush"; reason: string }
+    > = [];
+    queue.onBanterVoiceEvent((ev) => banterVoiceEvents.push(ev));
+
+    const snap = makeSnapshot(3, "Standard");
+    snap.seats[1] = {
+      ...snap.seats[1],
+      kind: "Ai",
+      persona_id: "QuickHothead",
+      mood: "Smug",
+      nickname: "急眼快攻哥",
+    };
+    snap.seats[2] = {
+      ...snap.seats[2],
+      kind: "Ai",
+      persona_id: "TeaSarcasm",
+      mood: "Mocking",
+      nickname: "阴阳茶艺师",
+    };
+    snap.seats[3] = {
+      ...snap.seats[3],
+      kind: "Ai",
+      persona_id: "StubbornBlamer",
+      mood: "Tilted",
+      nickname: "嘴硬死磕王",
+    };
+    queue.enqueueServerMessage({ TableSnapshot: snap });
+    // Initial snapshot triggers a clean flush boundary
+    expect(banterVoiceEvents.at(-1)).toEqual({ type: "flush", reason: "snapshot" });
+    banterVoiceEvents.length = 0;
+
+    // 1. Ordinary mid-hand banter (after a normal discard) -> priority "normal"
+    queue.enqueueServerMessage({
+      EventBatch: {
+        from_seq: 4,
+        to_seq: 4,
+        events: [
+          {
+            seq: 4,
+            kind: { TileDiscarded: { seat: "East", tile: 0, is_tsumogiri: false } },
+          },
+        ],
+        updated_legal_actions: [],
+      },
+    });
+    queue.enqueueServerMessage({
+      TableBanter: {
+        banter_id: "b-10",
+        seat: "South",
+        persona_id: "QuickHothead",
+        mood: "Plotting",
+        text: "这牌打得有点保守啊。",
+        event_seq: 4,
+        reply_to_seat: null,
+      },
+    });
+    expect(queue.getState().activeBubbles.South).toMatchObject({
+      banterId: "b-10",
+      priority: "normal",
+    });
+
+    queue.enqueueServerMessage({
+      TableBanterAudioReady: {
+        banter_id: "b-10",
+        seat: "South",
+        audio_url: "/api/banter-audio/b-10",
+        duration_ms: 1400,
+      },
+    });
+    expect(banterVoiceEvents.at(-1)).toEqual({
+      type: "ready",
+      request: {
+        banterId: "b-10",
+        seat: "South",
+        audioUrl: "/api/banter-audio/b-10",
+        durationMs: 1400,
+        priority: "normal",
+        relativeRole: "下家",
+      },
+    });
+
+    // 2. Highlight meld event -> banter & reply referencing event_seq get priority "highlight"
+    queue.enqueueServerMessage({
+      EventBatch: {
+        from_seq: 5,
+        to_seq: 5,
+        events: [
+          {
+            seq: 5,
+            kind: {
+              MeldDeclared: {
+                seat: "North",
+                meld: { Pon: { tile: 0, from_seat: "East", seq: 4 } },
+                kong_score_deltas: null,
+              },
+            },
+          },
+        ],
+        updated_legal_actions: [],
+      },
+    });
+    queue.enqueueServerMessage({
+      TableBanter: {
+        banter_id: "b-11",
+        seat: "North",
+        persona_id: "StubbornBlamer",
+        mood: "Smug",
+        text: "碰！这张一万我等好久了！",
+        event_seq: 5,
+        reply_to_seat: null,
+      },
+    });
+    expect(queue.getState().activeBubbles.North).toMatchObject({
+      banterId: "b-11",
+      priority: "highlight",
+    });
+    queue.enqueueServerMessage({
+      TableBanterAudioReady: {
+        banter_id: "b-11",
+        seat: "North",
+        audio_url: "/api/banter-audio/b-11",
+        duration_ms: 1600,
+      },
+    });
+    expect(banterVoiceEvents.at(-1)).toEqual({
+      type: "ready",
+      request: {
+        banterId: "b-11",
+        seat: "North",
+        audioUrl: "/api/banter-audio/b-11",
+        durationMs: 1600,
+        priority: "highlight",
+        relativeRole: "上家",
+      },
+    });
+
+    // 3. Mid-match LobbyUpdated (pace change) must NOT flush banter voice
+    banterVoiceEvents.length = 0;
+    queue.enqueueServerMessage({
+      LobbyUpdated: {
+        phase: "InMatch",
+        config: { ...snap.config, pace: "Fast" },
+        seats: snap.seats,
+        slow_think_nudge_enabled: true,
+      },
+    });
+    expect(banterVoiceEvents).toHaveLength(0);
+
+    // 4. Settlement phase banter -> priority "highlight", and HandStarted flushes
+    queue.enqueueServerMessage({
+      EventBatch: {
+        from_seq: 6,
+        to_seq: 6,
+        events: [
+          {
+            seq: 6,
+            kind: { HandSettled: { settlement: makeSettlement("DrawGame") } },
+          },
+        ],
+        updated_legal_actions: ["ConfirmNextHand"],
+      },
+    });
+    queue.enqueueServerMessage({
+      TableBanter: {
+        banter_id: "b-12",
+        seat: "West",
+        persona_id: "TeaSarcasm",
+        mood: "Deadpan",
+        text: "荒庄也好，省得输分。",
+        event_seq: 6,
+        reply_to_seat: null,
+      },
+    });
+    expect(queue.getState().activeBubbles.West).toMatchObject({
+      banterId: "b-12",
+      priority: "highlight",
+    });
+    queue.enqueueServerMessage({
+      TableBanterAudioReady: {
+        banter_id: "b-12",
+        seat: "West",
+        audio_url: "/api/banter-audio/b-12",
+        duration_ms: 1200,
+      },
+    });
+    expect(banterVoiceEvents.at(-1)).toEqual({
+      type: "ready",
+      request: {
+        banterId: "b-12",
+        seat: "West",
+        audioUrl: "/api/banter-audio/b-12",
+        durationMs: 1200,
+        priority: "highlight",
+        relativeRole: "对门",
+      },
+    });
+
+    // Flush on HandStarted
+    banterVoiceEvents.length = 0;
+    vi.advanceTimersByTime(10000);
+    queue.enqueueServerMessage({
+      EventBatch: {
+        from_seq: 7,
+        to_seq: 7,
+        events: [
+          {
+            seq: 7,
+            kind: {
+              HandStarted: {
+                wind_round: "East",
+                hand_number: 2,
+                dealer: "South",
+                dealer_streak: 0,
+                wall_remaining: 83,
+                hand: {
+                  closed_tiles: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+                  drawn_tile: null,
+                },
+                scores: [0, 0, 0, 0],
+              },
+            },
+          },
+        ],
+        updated_legal_actions: [],
+      },
+    });
+    expect(banterVoiceEvents).toContainEqual({
+      type: "flush",
+      reason: "hand_started",
+    });
+
+    // Flush on returning to Lobby via LobbyUpdated
+    banterVoiceEvents.length = 0;
+    queue.enqueueServerMessage({
+      LobbyUpdated: {
+        phase: "Lobby",
+        config: snap.config,
+        seats: snap.seats,
+        slow_think_nudge_enabled: true,
+      },
+    });
+    expect(banterVoiceEvents).toEqual([{ type: "flush", reason: "lobby" }]);
+
+    queue.dispose();
+  });
 });
