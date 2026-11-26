@@ -228,6 +228,76 @@ export interface VoicePackManifest {
 
 const HUMAN_VOICE_PACK_SET: ReadonlySet<string> = new Set(HUMAN_VOICE_PACK_IDS);
 const ALL_VOICE_PACK_SET: ReadonlySet<string> = new Set(ALL_VOICE_PACK_IDS);
+const ALL_VOICE_SLOT_SET: ReadonlySet<string> = new Set(ALL_VOICE_SLOTS);
+
+export function isVoiceSlotId(value: string): value is VoiceSlotId {
+  return ALL_VOICE_SLOT_SET.has(value);
+}
+
+/**
+ * Validates and normalizes an untrusted JSON object against the runtime
+ * `VoicePackManifest` contract. Returns `null` if any required field or
+ * sprite slice entry is malformed.
+ */
+export function parseVoicePackManifest(raw: unknown): VoicePackManifest | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return null;
+  }
+  const obj = raw as Record<string, unknown>;
+  const packId = typeof obj.pack_id === "string" ? obj.pack_id.trim() : "";
+  if (packId.length === 0) {
+    return null;
+  }
+  const version = obj.version;
+  if (typeof version !== "number" || !Number.isInteger(version) || version < 1) {
+    return null;
+  }
+  const audio = typeof obj.audio === "string" ? obj.audio.trim() : "";
+  if (audio.length === 0) {
+    return null;
+  }
+  const sampleRate = obj.sample_rate;
+  if (typeof sampleRate !== "number" || !Number.isFinite(sampleRate) || sampleRate <= 0) {
+    return null;
+  }
+  const duration = obj.duration;
+  if (typeof duration !== "number" || !Number.isFinite(duration) || duration <= 0) {
+    return null;
+  }
+  const rawSprites = obj.sprites;
+  if (!rawSprites || typeof rawSprites !== "object" || Array.isArray(rawSprites)) {
+    return null;
+  }
+
+  const sprites: Partial<Record<VoiceSlotId, VoiceSpriteSlice>> = {};
+  for (const [key, value] of Object.entries(rawSprites as Record<string, unknown>)) {
+    if (!isVoiceSlotId(key)) {
+      return null;
+    }
+    if (
+      !Array.isArray(value) ||
+      value.length !== 2 ||
+      typeof value[0] !== "number" ||
+      typeof value[1] !== "number" ||
+      !Number.isFinite(value[0]) ||
+      !Number.isFinite(value[1]) ||
+      value[0] < 0 ||
+      value[1] <= 0
+    ) {
+      return null;
+    }
+    sprites[key] = [value[0], value[1]];
+  }
+
+  return {
+    pack_id: packId,
+    version,
+    audio,
+    sample_rate: sampleRate,
+    duration,
+    sprites,
+  };
+}
 
 const QUICK_EMOTE_SLOT_MAP: Record<QuickEmote, VoiceEmoteSlotId> = {
   IsThatIt: "emote_is_that_it",

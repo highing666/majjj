@@ -11,7 +11,10 @@ import type {
   VoiceSpriteSlice,
   VoTriggerRequest,
 } from "./audioTypes";
-import { voicePackManifestUrl } from "./voicePackSchema";
+import {
+  parseVoicePackManifest,
+  voicePackManifestUrl,
+} from "./voicePackSchema";
 
 export const VO_MAX_CACHED_PACKS = 4;
 export const VO_DUCK_FACTOR = 0.45;
@@ -180,19 +183,12 @@ export function createVoManager(options: VoManagerOptions = {}): VoManager {
         if (!manifestResponse.ok || disposed) {
           return null;
         }
-        const parsed = (await manifestResponse.json()) as Partial<VoicePackManifest> | null;
-        if (
-          !parsed ||
-          typeof parsed !== "object" ||
-          typeof parsed.audio !== "string" ||
-          parsed.audio.trim().length === 0 ||
-          typeof parsed.sprites !== "object" ||
-          parsed.sprites === null
-        ) {
+        const parsed = parseVoicePackManifest(await manifestResponse.json());
+        if (!parsed) {
           return null;
         }
 
-        const audioUrl = resolveSpriteAudioUrl(packId, parsed.audio.trim());
+        const audioUrl = resolveSpriteAudioUrl(packId, parsed.audio);
         const audioResponse = await fetchFn(audioUrl);
         if (!audioResponse.ok || disposed) {
           return null;
@@ -207,20 +203,7 @@ export function createVoManager(options: VoManagerOptions = {}): VoManager {
         }
 
         const entry: CachedPack = {
-          manifest: {
-            pack_id: parsed.pack_id ?? packId,
-            version: typeof parsed.version === "number" ? parsed.version : 1,
-            audio: parsed.audio.trim(),
-            sample_rate:
-              typeof parsed.sample_rate === "number"
-                ? parsed.sample_rate
-                : buffer.sampleRate,
-            duration:
-              typeof parsed.duration === "number"
-                ? parsed.duration
-                : buffer.duration,
-            sprites: parsed.sprites,
-          },
+          manifest: parsed,
           buffer,
         };
         touchLru(packId, entry);
