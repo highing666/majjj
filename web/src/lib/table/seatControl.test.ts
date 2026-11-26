@@ -7,6 +7,7 @@ import {
   buildOfflinePauseBanner,
   buildSeatControlItems,
   buildTakeOverSeatItems,
+  getOfflineHumanTakeOverSeats,
   getTakeOverModalCopy,
   shouldShowReclaimControl,
 } from "./seatControl";
@@ -186,6 +187,23 @@ describe("seatControl view-model helpers", () => {
     expect(lobbyItems.find((i) => i.seatInfo.seat === "South")?.takeOverKind).toBe(
       "offline_human",
     );
+
+    const observerFinished = makeSnapshot({ phase: "Finished", your_seat: null });
+    const finishedItems = buildTakeOverSeatItems(observerFinished);
+    expect(finishedItems.find((i) => i.seatInfo.seat === "West")?.takeOverKind).toBeNull();
+    expect(finishedItems.find((i) => i.seatInfo.seat === "South")).toMatchObject({
+      takeOverKind: "offline_human",
+      actionLabel: "接管离线座位",
+    });
+
+    expect(
+      getOfflineHumanTakeOverSeats(observerFinished.seats, null).map(
+        (i) => i.seatInfo.seat,
+      ),
+    ).toEqual(["South"]);
+    expect(
+      getOfflineHumanTakeOverSeats(observerFinished.seats, "East"),
+    ).toEqual([]);
   });
 
   it("produces glossary-compliant confirmation copy for AI and offline human takeovers", () => {

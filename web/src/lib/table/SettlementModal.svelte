@@ -1,16 +1,15 @@
 <script lang="ts">
   import type { HandSettlement } from "../protocol/generated/HandSettlement";
-  import type { KongKind } from "../protocol/generated/KongKind";
   import type { MatchMode } from "../protocol/generated/MatchMode";
   import type { Seat } from "../protocol/generated/Seat";
   import type { SeatInfo } from "../protocol/generated/SeatInfo";
-  import type { WinKind } from "../protocol/generated/WinKind";
   import {
     ALL_SEATS,
     seatIndex,
     seatLabel,
     seatShortWind,
   } from "../protocol/seats";
+  import { kongKindLabel, winKindLabel } from "../protocol/settlements";
   import TileBadge from "./TileBadge.svelte";
   import { formatRoundTitle, getTileLabel } from "./tiles";
   import {
@@ -49,28 +48,6 @@
 
   function seatName(seat: Seat): string {
     return formatSeatDisplayName(seat, seats);
-  }
-
-  function winKindLabel(kind: WinKind): string {
-    switch (kind) {
-      case "Tsumo":
-        return "自摸";
-      case "Ron":
-        return "点炮";
-      case "RobKongHu":
-        return "抢杠胡";
-    }
-  }
-
-  function kongKindLabel(kind: KongKind): string {
-    switch (kind) {
-      case "ExposedKong":
-        return "明杠";
-      case "AddedKong":
-        return "补杠";
-      case "ConcealedKong":
-        return "暗杠";
-    }
   }
 
   const outcomeBadge = $derived.by(() => {

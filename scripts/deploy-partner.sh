@@ -21,7 +21,6 @@ remote_bin=""
 force=0
 rollback=0
 sync_app=0
-explicit_bin=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -44,7 +43,6 @@ while [ "$#" -gt 0 ]; do
       shift
       [ "$#" -gt 0 ] || usage
       local_bin="$1"
-      explicit_bin=1
       ;;
     --remote-bin)
       shift
@@ -247,14 +245,10 @@ do_push() {
 
 if [ "$rollback" -eq 1 ]; then
   do_rollback
-  if [ "$sync_app" -eq 1 ]; then
-    sync_remote_app
-  fi
-elif [ "$sync_app" -eq 1 ] && [ "$explicit_bin" -eq 0 ]; then
-  sync_remote_app
 else
   do_push
-  if [ "$sync_app" -eq 1 ]; then
-    sync_remote_app
-  fi
+fi
+
+if [ "$sync_app" -eq 1 ]; then
+  sync_remote_app
 fi

@@ -7,64 +7,25 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use common::{
-    connect_and_hello, http_get, recv_event_batch, recv_snapshot, send_msg, tile, tiles,
-    TempDirGuard, WsClient,
+    connect_and_hello, http_get, http_post_raw, recv_event_batch, recv_snapshot, send_msg, tile,
+    tiles, TempDirGuard, WsClient,
 };
-use http_body_util::{BodyExt, Full};
-use hyper::body::Bytes;
-use hyper::header::{CACHE_CONTROL, CONTENT_TYPE};
-use hyper::{Request, StatusCode};
-use hyper_util::rt::TokioIo;
+use hyper::header::CACHE_CONTROL;
+use hyper::StatusCode;
 use mahjong_ai::AiDifficulty;
 use mahjong_core::{
     build_preset_wall, MatchMode, PlayerAction, PlayerEventKind, PresetWallProvider, PublicPhase,
     Seat,
 };
 use mahjong_server::history_dto::{
-    ClearHistoryResponse, HandRecord, HistoryExportResponse, MatchRecord, StatsResponse,
+    ClearHistoryResponse, HandRecord, HistoryExportResponse, MatchRecord, PreferencesData,
+    StatsResponse,
 };
 use mahjong_server::protocol::{
     ClientMessage, LobbyConfig, SeatKind, SeatingRule, TablePace, TablePhase,
 };
 use mahjong_server::session::{BoxedWallProvider, TableOptions};
 use mahjong_server::{PacingMode, ServerConfig, ServerHandle};
-use tokio::net::TcpStream;
-
-async fn http_post_raw(
-    addr: SocketAddr,
-    uri_path: &str,
-    body: Option<&[u8]>,
-) -> (StatusCode, hyper::HeaderMap, Vec<u8>) {
-    let stream = TcpStream::connect(addr).await.expect("connect to server");
-    let io = TokioIo::new(stream);
-    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
-        .await
-        .expect("http1 handshake");
-    tokio::spawn(async move {
-        let _ = conn.await;
-    });
-
-    let payload = body.map(Bytes::copy_from_slice).unwrap_or_default();
-    let mut builder = Request::builder()
-        .method("POST")
-        .uri(uri_path)
-        .header("Host", addr.to_string());
-    if body.is_some() {
-        builder = builder.header(CONTENT_TYPE, "application/json");
-    }
-    let req = builder.body(Full::new(payload)).expect("build post");
-    let res = sender.send_request(req).await.expect("send post");
-    let status = res.status();
-    let headers = res.headers().clone();
-    let resp_body = res
-        .into_body()
-        .collect()
-        .await
-        .expect("collect body")
-        .to_bytes()
-        .to_vec();
-    (status, headers, resp_body)
-}
 
 async fn spawn_history_server(
     data_dir: PathBuf,
@@ -271,6 +232,17 @@ async fn between_hands_persists_hands_free_table_persists_matches_and_restart_re
         .preferences
         .recent_nicknames
         .contains(&"Alice".to_string()));
+
+    // GET /api/preferences (no-store)
+    let (status, headers, body) = http_get(addr2, "/api/preferences").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        headers.get(CACHE_CONTROL).and_then(|v| v.to_str().ok()),
+        Some("no-store")
+    );
+    let prefs: PreferencesData = serde_json::from_slice(&body).expect("PreferencesData JSON");
+    assert_eq!(prefs.default_mode, MatchMode::FreeTable);
+    assert!(prefs.recent_nicknames.contains(&"Alice".to_string()));
 
     // POST /api/history/clear rejects missing or false confirm with 400 Bad Request + no-store.
     for bad_body in [

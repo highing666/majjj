@@ -3,7 +3,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use axum::body::Bytes;
 use axum::extract::ws::{Message as WsMessage, WebSocket};
@@ -32,6 +32,7 @@ use crate::session::{OutboundSignal, TableOptions, TableRuntime};
 use crate::static_assets::{
     DiskStaticAssets, EmbeddedStaticAssets, StaticAssetError, StaticAssetSource,
 };
+use crate::storage::current_unix_ms;
 
 const DEFAULT_PING_INTERVAL: Duration = Duration::from_secs(10);
 const DEFAULT_ACTIVITY_TIMEOUT: Duration = Duration::from_secs(25);
@@ -319,6 +320,7 @@ fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/api/health", get(health_handler))
         .route("/api/stats", get(stats_handler))
+        .route("/api/preferences", get(preferences_handler))
         .route("/api/history/export", get(history_export_handler))
         .route("/api/history/clear", post(history_clear_handler))
         .route("/api/shutdown", post(shutdown_handler))
@@ -374,6 +376,11 @@ async fn stats_handler(State(state): State<AppState>) -> Response {
     json_with_no_store(StatusCode::OK, &payload)
 }
 
+async fn preferences_handler(State(state): State<AppState>) -> Response {
+    let payload = state.session.history_preferences().await;
+    json_with_no_store(StatusCode::OK, &payload)
+}
+
 async fn history_export_handler(State(state): State<AppState>) -> Response {
     let payload = state.session.history_export().await;
     json_with_no_store(StatusCode::OK, &payload)
@@ -401,8 +408,12 @@ async fn history_clear_handler(State(state): State<AppState>, body: Bytes) -> Re
     }
 }
 
-async fn api_not_found() -> StatusCode {
-    StatusCode::NOT_FOUND
+async fn api_not_found() -> Response {
+    let mut response = StatusCode::NOT_FOUND.into_response();
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 async fn ws_handler(
@@ -535,14 +546,6 @@ async fn close_ws_gracefully(ws_tx: &mut futures_util::stream::SplitSink<WebSock
         let _ = ws_tx.close().await;
     })
     .await;
-}
-
-fn current_unix_ms() -> u64 {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    u64::try_from(millis).unwrap_or(u64::MAX)
 }
 
 async fn send_server_message(

@@ -7,6 +7,7 @@ import type { PublicSeatView } from "../protocol/generated/PublicSeatView";
 import type { RevealedMeld } from "../protocol/generated/RevealedMeld";
 import type { Seat } from "../protocol/generated/Seat";
 import type { SeatInfo } from "../protocol/generated/SeatInfo";
+import type { SeatKind } from "../protocol/generated/SeatKind";
 import type { Tile } from "../protocol/generated/Tile";
 import { parseMeld, type MeldKind } from "../protocol/melds";
 import { ALL_SEATS, seatIndex, seatLabel, seatShortWind } from "../protocol/seats";
@@ -123,16 +124,26 @@ export function seatRelativeRole(viewer: Seat, target: Seat): RelativeRole {
   return SLOT_TO_ROLE[seatRelativeSlot(viewer, target)];
 }
 
+export type SeatDisplayEntry =
+  | { nickname: string; kind: SeatKind }
+  | { nickname: string; seat_kind: SeatKind };
+
 /**
  * Formats a canonical seat display title (`东座 · 房主`, `南座 · AI 2`, or `西座`).
  */
 export function formatSeatDisplayName(
   seat: Seat,
-  seats?: readonly [SeatInfo, SeatInfo, SeatInfo, SeatInfo] | null,
+  seats?: readonly [
+    SeatDisplayEntry,
+    SeatDisplayEntry,
+    SeatDisplayEntry,
+    SeatDisplayEntry,
+  ] | null,
 ): string {
   const idx = seatIndex(seat);
   const info = seats?.[idx];
-  const name = info?.nickname || (info?.kind === "Ai" ? `AI ${idx + 1}` : "");
+  const seatKind = info ? ("kind" in info ? info.kind : info.seat_kind) : null;
+  const name = info?.nickname || (seatKind === "Ai" ? `AI ${idx + 1}` : "");
   return name ? `${seatLabel(seat)} · ${name}` : seatLabel(seat);
 }
 

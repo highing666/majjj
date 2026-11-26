@@ -42,6 +42,7 @@
   import {
     buildOfflinePauseBanner,
     buildTakeOverSeatItems,
+    getOfflineHumanTakeOverSeats,
     type TakeOverKind,
   } from "./lib/table/seatControl";
   import SeatControlBar from "./lib/table/SeatControlBar.svelte";
@@ -535,25 +536,32 @@
       {/if}
     </section>
   {:else if presentedPlayerView?.match_summary}
+    {@const activeSnap = snapshot ?? presentedSnapshot}
     <MatchSummaryView
       summary={presentedPlayerView.match_summary}
-      config={presentedSnapshot.config}
-      seats={presentedSnapshot.seats}
-      yourSeat={presentedSnapshot.your_seat}
+      config={activeSnap.config}
+      seats={activeSnap.seats}
+      yourSeat={activeSnap.your_seat}
       lastSettlement={presentedPlayerView.last_settlement}
       disabled={actionsDisabled}
       onUpdateConfig={(config) => client.updateLobbyConfig(config)}
       onStartMatch={() => client.startMatch()}
       onReturnToLobby={() => client.returnToLobby()}
       onOpenHistory={() => void historyController.open()}
+      onTakeOverSeat={(seatInfo) => openTakeOverModal(seatInfo, "offline_human")}
     />
   {:else}
+    {@const activeSnap = snapshot ?? presentedSnapshot}
+    {@const offlineTakeOverSeats = getOfflineHumanTakeOverSeats(
+      activeSnap.seats,
+      activeSnap.your_seat,
+    )}
     <section class="card placeholder-card">
       <h1>对局已结束</h1>
       <p class="placeholder-note">
         当前牌桌已进入总结算阶段。
       </p>
-      {#if presentedSnapshot.your_seat !== null}
+      {#if activeSnap.your_seat !== null}
         <div class="fallback-actions">
           <button
             class="btn btn-subtle"
@@ -571,6 +579,19 @@
           >
             原班人马再开一桌
           </button>
+        </div>
+      {:else if offlineTakeOverSeats.length > 0}
+        <div class="fallback-actions">
+          {#each offlineTakeOverSeats as item (item.seatInfo.seat)}
+            <button
+              class="btn btn-primary"
+              type="button"
+              disabled={actionsDisabled}
+              onclick={() => openTakeOverModal(item.seatInfo, "offline_human")}
+            >
+              {item.actionLabel ?? "接管离线座位"}（{item.displayName}）
+            </button>
+          {/each}
         </div>
       {/if}
     </section>

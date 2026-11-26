@@ -1,6 +1,7 @@
 import type { ClearHistoryRequest } from "../protocol/generated/ClearHistoryRequest";
 import type { ClearHistoryResponse } from "../protocol/generated/ClearHistoryResponse";
 import type { HistoryExportResponse } from "../protocol/generated/HistoryExportResponse";
+import type { PreferencesData } from "../protocol/generated/PreferencesData";
 import type { StatsResponse } from "../protocol/generated/StatsResponse";
 
 export interface HistoryResponseLike {
@@ -32,6 +33,7 @@ export interface HistoryExportDownload {
 
 export interface HistoryClient {
   fetchStats(): Promise<StatsResponse>;
+  fetchPreferences(): Promise<PreferencesData>;
   exportHistory(): Promise<HistoryExportResponse>;
   clearHistory(confirm?: boolean): Promise<ClearHistoryResponse>;
 }
@@ -179,7 +181,8 @@ async function requestJson<T>(
 }
 
 /**
- * Creates a typed HTTP client for `/api/stats`, `/api/history/export`, and `/api/history/clear`.
+ * Creates a typed HTTP client for `/api/stats`, `/api/preferences`, `/api/history/export`,
+ * and `/api/history/clear`.
  */
 export function createHistoryClient(
   fetchFn: HistoryFetch = defaultFetch,
@@ -191,6 +194,14 @@ export function createHistoryClient(
         "/api/stats",
         { method: "GET", cache: "no-store" },
         "获取战绩统计",
+      );
+    },
+    fetchPreferences() {
+      return requestJson<PreferencesData>(
+        fetchFn,
+        "/api/preferences",
+        { method: "GET", cache: "no-store" },
+        "获取偏好配置",
       );
     },
     exportHistory() {

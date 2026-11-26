@@ -160,9 +160,16 @@ async fn static_hosting_enforces_cache_headers_spa_fallback_and_traversal_guard(
     let (status, _, _) = http_get(addr, "/assets/missing-999.js").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
-    // Unknown /api/* route must 404 instead of SPA fallback
-    let (status, _, _) = http_get(addr, "/api/unknown").await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    // Unknown /api/* route must 404 with Cache-Control: no-store instead of SPA fallback
+    for path in ["/api/unknown", "/api"] {
+        let (status, headers, _) = http_get(addr, path).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "path={path}");
+        assert_eq!(
+            headers.get(CACHE_CONTROL).and_then(|v| v.to_str().ok()),
+            Some("no-store"),
+            "path={path}"
+        );
+    }
 
     // SPA route fallback to index.html with no-cache
     let (status, headers, body) = http_get(addr, "/lobby/seat").await;

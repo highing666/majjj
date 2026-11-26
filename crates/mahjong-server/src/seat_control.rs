@@ -39,6 +39,13 @@ impl HandAttribution {
     }
 }
 
+struct CallerIdentity<'a> {
+    conn_id: u64,
+    client_id: &'a str,
+    seat_token: &'a str,
+    nickname: &'a str,
+}
+
 fn effective_nickname(raw: &str, seat: Seat) -> String {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -157,7 +164,7 @@ impl TableSession {
         }
 
         let _ = self.bump_seat_generation(seat);
-        self.in_flight_ai.retain(|&(_, _, s, _)| s != seat);
+        self.in_flight_ai.retain(|k| k.seat != seat);
 
         let slot = &mut self.seats[seat.index()];
         slot.info.ai_assisted = false;
@@ -186,6 +193,13 @@ impl TableSession {
             return;
         }
 
+        let caller_identity = CallerIdentity {
+            conn_id,
+            client_id: &caller.client_id,
+            seat_token: &caller.seat_token,
+            nickname: &caller.nickname,
+        };
+
         match self.seats[seat.index()].info.kind {
             SeatKind::Empty => {
                 Self::send_error(
@@ -197,13 +211,7 @@ impl TableSession {
                 Self::send_error(&caller.tx, "cannot take over an online human seat");
             }
             SeatKind::Human => {
-                self.take_over_offline_human_seat(
-                    conn_id,
-                    &caller.client_id,
-                    &caller.seat_token,
-                    &caller.nickname,
-                    seat,
-                );
+                self.take_over_offline_human_seat(caller_identity, seat);
             }
             SeatKind::Ai => {
                 if self.phase != TablePhase::InMatch {
@@ -213,40 +221,27 @@ impl TableSession {
                     );
                     return;
                 }
-                self.take_over_ai_seat(
-                    conn_id,
-                    &caller.client_id,
-                    &caller.seat_token,
-                    &caller.nickname,
-                    seat,
-                );
+                self.take_over_ai_seat(caller_identity, seat);
             }
         }
     }
 
-    fn take_over_offline_human_seat(
-        &mut self,
-        conn_id: u64,
-        caller_client_id: &str,
-        prev_caller_token: &str,
-        caller_nickname: &str,
-        seat: Seat,
-    ) {
+    fn take_over_offline_human_seat(&mut self, caller: CallerIdentity<'_>, seat: Seat) {
         if let Some(old_seat_token) = self.seats[seat.index()].seat_token.take() {
             self.issued_tokens.remove(&old_seat_token);
             self.token_to_conn.remove(&old_seat_token);
         }
 
-        self.issued_tokens.remove(prev_caller_token);
-        self.token_to_conn.remove(prev_caller_token);
+        self.issued_tokens.remove(caller.seat_token);
+        self.token_to_conn.remove(caller.seat_token);
 
         let new_token = Uuid::new_v4().to_string();
         self.issued_tokens
-            .insert(new_token.clone(), caller_client_id.to_string());
-        self.token_to_conn.insert(new_token.clone(), conn_id);
+            .insert(new_token.clone(), caller.client_id.to_string());
+        self.token_to_conn.insert(new_token.clone(), caller.conn_id);
 
         let _ = self.bump_seat_generation(seat);
-        self.in_flight_ai.retain(|&(_, _, s, _)| s != seat);
+        self.in_flight_ai.retain(|k| k.seat != seat);
 
         let slot = &mut self.seats[seat.index()];
         slot.info.connected = true;
@@ -254,50 +249,43 @@ impl TableSession {
         slot.info.ai_difficulty = None;
         slot.info.ai_style = None;
         if slot.info.nickname.trim().is_empty() {
-            slot.info.nickname = effective_nickname(caller_nickname, seat);
+            slot.info.nickname = effective_nickname(caller.nickname, seat);
         }
-        slot.client_id = Some(caller_client_id.to_string());
+        slot.client_id = Some(caller.client_id.to_string());
         slot.seat_token = Some(new_token.clone());
 
-        if let Some(conn_mut) = self.connections.get_mut(&conn_id) {
+        if let Some(conn_mut) = self.connections.get_mut(&caller.conn_id) {
             conn_mut.seat = Some(seat);
             conn_mut.seat_token = new_token;
         }
 
-        if !caller_nickname.trim().is_empty() {
-            self.history.record_nickname(caller_nickname);
+        if !caller.nickname.trim().is_empty() {
+            self.history.record_nickname(caller.nickname);
         }
 
         let pending_op_updated = self.reconcile_pending_destructive_op_on_seat_join(seat);
-        self.notify_takeover_participants(conn_id, pending_op_updated);
+        self.notify_takeover_participants(caller.conn_id, pending_op_updated);
     }
 
-    fn take_over_ai_seat(
-        &mut self,
-        conn_id: u64,
-        caller_client_id: &str,
-        caller_seat_token: &str,
-        caller_nickname: &str,
-        seat: Seat,
-    ) {
+    fn take_over_ai_seat(&mut self, caller: CallerIdentity<'_>, seat: Seat) {
         let _ = self.bump_seat_generation(seat);
-        self.in_flight_ai.retain(|&(_, _, s, _)| s != seat);
+        self.in_flight_ai.retain(|k| k.seat != seat);
 
-        if !caller_nickname.trim().is_empty() {
-            self.history.record_nickname(caller_nickname);
+        if !caller.nickname.trim().is_empty() {
+            self.history.record_nickname(caller.nickname);
         }
 
         let slot = &mut self.seats[seat.index()];
         slot.info.kind = SeatKind::Human;
-        slot.info.nickname = effective_nickname(caller_nickname, seat);
+        slot.info.nickname = effective_nickname(caller.nickname, seat);
         slot.info.connected = true;
         slot.info.ai_assisted = false;
         slot.info.ai_difficulty = None;
         slot.info.ai_style = None;
-        slot.client_id = Some(caller_client_id.to_string());
-        slot.seat_token = Some(caller_seat_token.to_string());
+        slot.client_id = Some(caller.client_id.to_string());
+        slot.seat_token = Some(caller.seat_token.to_string());
 
-        if let Some(conn_mut) = self.connections.get_mut(&conn_id) {
+        if let Some(conn_mut) = self.connections.get_mut(&caller.conn_id) {
             conn_mut.seat = Some(seat);
         }
 
@@ -306,7 +294,7 @@ impl TableSession {
         }
 
         let pending_op_updated = self.reconcile_pending_destructive_op_on_seat_join(seat);
-        self.notify_takeover_participants(conn_id, pending_op_updated);
+        self.notify_takeover_participants(caller.conn_id, pending_op_updated);
     }
 
     fn notify_takeover_participants(&self, caller_conn_id: u64, pending_op_updated: bool) {
@@ -418,7 +406,7 @@ mod tests {
         let work = session.complete_pending_release(release_ticket);
         assert_eq!(work.ai_jobs.len(), 1);
         let job = &work.ai_jobs[0];
-        assert_eq!(job.seat, Seat::South);
+        assert_eq!(job.key.seat, Seat::South);
 
         // Unseated c2 takes over South AI seat -> increments seat_generation[South].
         session.handle_take_over_seat(c2, Seat::South, true);
@@ -429,10 +417,7 @@ mod tests {
 
         // Stale Rayon job arriving at plan_ai_action_delay is dropped (returns None).
         let stale_delay = session.plan_ai_action_delay(
-            job.match_id,
-            job.seq,
-            job.seat,
-            job.seat_generation,
+            job.key,
             PlayerAction::Discard {
                 tile: make_tile(30),
                 from_drawn: false,
@@ -445,10 +430,7 @@ mod tests {
         // Even if complete_ai_job is reached directly with stale generation, zero state mutation occurs.
         let seq_after_takeover = session.active_match.as_ref().expect("match").game.seq();
         let next = session.complete_ai_job(
-            job.match_id,
-            job.seq,
-            job.seat,
-            job.seat_generation,
+            job.key,
             PlayerAction::Discard {
                 tile: make_tile(30),
                 from_drawn: false,
