@@ -9,22 +9,37 @@ const assetsSrcDir = path.join(webRoot, "assets-src");
 const illustrationsDir = path.join(assetsSrcDir, "illustrations");
 const atlasOutDir = path.join(webRoot, "src/assets/atlas");
 const texturesOutDir = path.join(webRoot, "src/assets/textures");
+const specPath = path.join(webRoot, "src/lib/table/styleASpec.json");
+const STYLE_A_SPEC = JSON.parse(fs.readFileSync(specPath, "utf8"));
+
+function toRgbaCss(entry) {
+  if (typeof entry === "string") {
+    return entry;
+  }
+  const clean = entry.hex.replace("#", "");
+  const r = Number.parseInt(clean.slice(0, 2), 16);
+  const g = Number.parseInt(clean.slice(2, 4), 16);
+  const b = Number.parseInt(clean.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${entry.alpha})`;
+}
 
 const PALETTE = {
-  ink: "#1C1917",
-  crimson: "#B92822",
-  cobalt: "#1B4E8D",
-  jade: "#137449",
-  ivory: "#F6EFE0",
-  ivoryTop: "#FFFDF8",
-  ivoryBottom: "#E2D4B7",
-  jadeBack: "#186258",
-  jadeBackDark: "#0E433C",
-  jadeBackHi: "#21786B",
-  jadeBorder: "#091D1B",
-  jadeRim: "rgba(167, 243, 208, 0.42)",
-  goldDot: "rgba(212, 168, 87, 0.55)",
-  whiteBevel: "rgba(128, 114, 88, 0.22)",
+  ink: STYLE_A_SPEC.palette.ink,
+  inkSoft: toRgbaCss(STYLE_A_SPEC.palette.inkSoft),
+  crimson: STYLE_A_SPEC.palette.crimson,
+  cobalt: STYLE_A_SPEC.palette.cobalt,
+  jade: STYLE_A_SPEC.palette.jade,
+  ivory: STYLE_A_SPEC.palette.ivory,
+  ivoryTop: STYLE_A_SPEC.palette.ivoryTop.hex,
+  ivoryBottom: STYLE_A_SPEC.palette.ivoryBottom,
+  jadeBack: STYLE_A_SPEC.palette.jadeBack,
+  jadeBackDark: STYLE_A_SPEC.palette.jadeBackDark,
+  jadeBackHi: STYLE_A_SPEC.palette.jadeBackHi,
+  jadeBorder: STYLE_A_SPEC.palette.jadeBorder,
+  jadeRim: toRgbaCss(STYLE_A_SPEC.palette.jadeRim),
+  goldDot: toRgbaCss(STYLE_A_SPEC.palette.goldDot),
+  whiteBevel: toRgbaCss(STYLE_A_SPEC.palette.whiteBevel),
+  bambooSpec: toRgbaCss(STYLE_A_SPEC.palette.bambooSpec),
 };
 
 const FONT_KAITI = "'Kaiti SC','STKaiti','BiauKai','Songti SC',serif";
@@ -50,13 +65,13 @@ function drawPlumPinSvg(cx, cy, r, fill) {
 function drawBambooSvg(cx, cy, h, color, bw = 12.2, angle = 0) {
   const top = cy - h * 0.5;
   const bot = cy + h * 0.5;
-  const stroke = "rgba(18, 22, 24, 0.72)";
+  const stroke = PALETTE.inkSoft;
   return `<g transform="rotate(${angle} ${cx} ${cy})">
     <rect x="${(cx - bw * 0.42).toFixed(2)}" y="${(top + 2).toFixed(2)}" width="${(bw * 0.84).toFixed(2)}" height="${(h - 4).toFixed(2)}" rx="3.2" fill="${color}" stroke="${stroke}" stroke-width="1.1"/>
     <rect x="${(cx - bw * 0.58).toFixed(2)}" y="${(top - 0.5).toFixed(2)}" width="${(bw * 1.16).toFixed(2)}" height="4.6" rx="2.3" fill="${color}" stroke="${stroke}" stroke-width="1.1"/>
     <rect x="${(cx - bw * 0.58).toFixed(2)}" y="${(cy - 2.3).toFixed(2)}" width="${(bw * 1.16).toFixed(2)}" height="4.6" rx="2.3" fill="${color}" stroke="${stroke}" stroke-width="1.1"/>
     <rect x="${(cx - bw * 0.58).toFixed(2)}" y="${(bot - 4.1).toFixed(2)}" width="${(bw * 1.16).toFixed(2)}" height="4.6" rx="2.3" fill="${color}" stroke="${stroke}" stroke-width="1.1"/>
-    <line x1="${(cx - bw * 0.1).toFixed(2)}" y1="${(top + 5.5).toFixed(2)}" x2="${(cx - bw * 0.1).toFixed(2)}" y2="${(bot - 5.5).toFixed(2)}" stroke="rgba(255, 252, 240, 0.7)" stroke-width="1.4" stroke-linecap="round"/>
+    <line x1="${(cx - bw * 0.1).toFixed(2)}" y1="${(top + 5.5).toFixed(2)}" x2="${(cx - bw * 0.1).toFixed(2)}" y2="${(bot - 5.5).toFixed(2)}" stroke="${PALETTE.bambooSpec}" stroke-width="1.4" stroke-linecap="round"/>
   </g>`;
 }
 
@@ -73,67 +88,11 @@ function tileFaceInnerSvg(tileIndex) {
     if (rank === 1) {
       return `<image href="../illustrations/art-a-1sou.png" x="5" y="10" width="90" height="110" preserveAspectRatio="xMidYMid meet"/>`;
     }
-    const g = PALETTE.jade;
-    const r = PALETTE.crimson;
     const bw = rank >= 7 ? 10.2 : 12.2;
-    const layouts = {
-      2: [
-        [50, 38, 42, g, 0],
-        [50, 92, 42, g, 0],
-      ],
-      3: [
-        [50, 36, 40, g, 0],
-        [30, 92, 40, g, 0],
-        [70, 92, 40, g, 0],
-      ],
-      4: [
-        [31, 38, 40, g, 0],
-        [69, 38, 40, g, 0],
-        [31, 92, 40, g, 0],
-        [69, 92, 40, g, 0],
-      ],
-      5: [
-        [25, 35, 36, g, 0],
-        [75, 35, 36, g, 0],
-        [50, 65, 36, r, 0],
-        [25, 95, 36, g, 0],
-        [75, 95, 36, g, 0],
-      ],
-      6: [
-        [25, 38, 40, g, 0],
-        [50, 38, 40, g, 0],
-        [75, 38, 40, g, 0],
-        [25, 92, 40, g, 0],
-        [50, 92, 40, g, 0],
-        [75, 92, 40, g, 0],
-      ],
-      7: [
-        [50, 26, 30, r, 0],
-        [25, 64, 30, g, 0],
-        [50, 64, 30, g, 0],
-        [75, 64, 30, g, 0],
-        [25, 102, 30, g, 0],
-        [50, 102, 30, g, 0],
-        [75, 102, 30, g, 0],
-      ],
-      8: [
-        [20, 38, 36, g, 0],
-        [39, 40, 34, g, 28],
-        [61, 40, 34, g, -28],
-        [80, 38, 36, g, 0],
-        [20, 92, 36, g, 0],
-        [39, 90, 34, g, -28],
-        [61, 90, 34, g, 28],
-        [80, 92, 36, g, 0],
-      ],
-      9: [27, 65, 103].flatMap((y) => [
-        [24, y, 29, g, 0],
-        [50, y, 29, r, 0],
-        [76, y, 29, g, 0],
-      ]),
-    };
-    return layouts[rank]
-      .map(([x, y, h, color, angle]) => drawBambooSvg(x, y, h, color, bw, angle))
+    return STYLE_A_SPEC.bamboo[String(rank)]
+      .map(({ x, y, h, color, angle }) =>
+        drawBambooSvg(x, y, h, PALETTE[color], bw, angle),
+      )
       .join("");
   }
   if (tileIndex < 27) {
@@ -141,65 +100,8 @@ function tileFaceInnerSvg(tileIndex) {
     if (rank === 1) {
       return `<image href="../illustrations/art-a-1pin.png" x="4" y="11" width="92" height="108" preserveAspectRatio="xMidYMid meet"/>`;
     }
-    const g = PALETTE.jade;
-    const r = PALETTE.crimson;
-    const b = PALETTE.cobalt;
-    const layouts = {
-      2: [
-        [50, 38, 17, g],
-        [50, 92, 17, b],
-      ],
-      3: [
-        [26, 31, 14, b],
-        [50, 65, 14, r],
-        [74, 99, 14, g],
-      ],
-      4: [
-        [30, 39, 15, b],
-        [70, 39, 15, g],
-        [30, 91, 15, g],
-        [70, 91, 15, b],
-      ],
-      5: [
-        [26, 33, 13, b],
-        [74, 33, 13, g],
-        [50, 65, 13.5, r],
-        [26, 97, 13, g],
-        [74, 97, 13, b],
-      ],
-      6: [
-        [31, 29, 13, g],
-        [69, 29, 13, g],
-        [31, 65, 13, r],
-        [69, 65, 13, r],
-        [31, 101, 13, r],
-        [69, 101, 13, r],
-      ],
-      7: [
-        [24, 23, 11.2, g],
-        [50, 34, 11.2, g],
-        [76, 45, 11.2, g],
-        [30, 74, 12.2, r],
-        [70, 74, 12.2, r],
-        [30, 103, 12.2, r],
-        [70, 103, 12.2, r],
-      ],
-      8: [23, 51, 79, 107].flatMap((y) => [
-        [30, y, 11.6, b],
-        [70, y, 11.6, b],
-      ]),
-      9: [
-        [27, g],
-        [65, r],
-        [103, b],
-      ].flatMap(([y, c]) => [
-        [23, y, 11.4, c],
-        [50, y, 11.4, c],
-        [77, y, 11.4, c],
-      ]),
-    };
-    return layouts[rank]
-      .map(([x, y, rad, fill]) => drawPlumPinSvg(x, y, rad, fill))
+    return STYLE_A_SPEC.dot[String(rank)]
+      .map(({ x, y, r, color }) => drawPlumPinSvg(x, y, r, PALETTE[color]))
       .join("");
   }
   if (tileIndex === 33) {
@@ -267,25 +169,22 @@ function writeVectorSources() {
   fs.mkdirSync(tilesDir, { recursive: true });
   fs.mkdirSync(bodiesDir, { recursive: true });
 
-  for (let t = 0; t < 34; t += 1) {
+  const { tileCount, bodyFrames } = STYLE_A_SPEC.grid;
+  for (let t = 0; t < tileCount; t += 1) {
     fs.writeFileSync(path.join(tilesDir, `tile_${t}.svg`), buildTileSvg(t, false), "utf8");
     fs.writeFileSync(path.join(tilesDir, `tile_laid_${t}.svg`), buildTileSvg(t, true), "utf8");
   }
-  for (const kind of ["standing", "laid", "back", "shadow", "laid_back"]) {
-    fs.writeFileSync(path.join(bodiesDir, `body_${kind}.svg`), buildBodySvg(kind), "utf8");
+  for (const frameKey of bodyFrames) {
+    const kind = frameKey.replace(/^body_/, "");
+    fs.writeFileSync(path.join(bodiesDir, `${frameKey}.svg`), buildBodySvg(kind), "utf8");
   }
 }
 
 function writeSpritesheetJson() {
-  const cols = 10;
-  const rows = 8;
-  const cellW = 144;
-  const cellH = 192;
+  const { cols, rows, cellW, cellH, frameW, frameH, pad, tileCount, bodyFrames } =
+    STYLE_A_SPEC.grid;
   const atlasW = cols * cellW; // 1440 <= 2048
   const atlasH = rows * cellH; // 1536 <= 2048
-  const frameW = 136;
-  const frameH = 184;
-  const pad = 4;
 
   const frames = {};
   const addSlot = (key, slot) => {
@@ -300,13 +199,11 @@ function writeSpritesheetJson() {
     };
   };
 
-  for (let t = 0; t < 34; t += 1) {
+  for (let t = 0; t < tileCount; t += 1) {
     addSlot(`tile_${t}`, t);
-    addSlot(`tile_laid_${t}`, 34 + t);
+    addSlot(`tile_laid_${t}`, tileCount + t);
   }
-  ["body_standing", "body_laid", "body_back", "body_shadow", "body_laid_back"].forEach(
-    (name, idx) => addSlot(name, 68 + idx),
-  );
+  bodyFrames.forEach((name, idx) => addSlot(name, tileCount * 2 + idx));
 
   const sheetJson = {
     frames,
@@ -366,6 +263,7 @@ function rasterizePngAssets() {
         path.join(atlasOutDir, "tiles@2x.png"),
         path.join(texturesOutDir, "felt-impasto@2x.png"),
         path.join(texturesOutDir, "felt-brush@2x.png"),
+        specPath,
         sou1Art,
         pin1Art,
       ],

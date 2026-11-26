@@ -249,6 +249,69 @@ describe("ViewportDisplayController", () => {
     }
   });
 
+  it("exits viewportImmersive on Escape without triggering ActionBar Pass, and leaves non-immersive Escape untouched", async () => {
+    const host = createFakeHost({
+      width: 844,
+      height: 390,
+      supportMode: "unsupported",
+    });
+    const controller = createViewportDisplayController({
+      documentTarget: host.documentTarget,
+      windowTarget: host.windowTarget,
+      now: host.now,
+    });
+    controller.syncPhase("InMatch", true);
+
+    // When NOT in viewportImmersive or native fullscreen, Escape is ignored
+    const nonImmersivePrevent = vi.fn();
+    expect(
+      controller.handleKeyDown({ key: "Escape", preventDefault: nonImmersivePrevent }),
+    ).toBe(false);
+    expect(nonImmersivePrevent).not.toHaveBeenCalled();
+    expect(controller.shouldSuppressActionBarEscape()).toBe(false);
+
+    // Enter emulated 100dvh fullscreen
+    await controller.toggleFullscreen();
+    expect(controller.getState().viewportImmersive).toBe(true);
+    expect(controller.getState().isFullscreen).toBe(true);
+
+    // Guards: modal open, input focused, or modifier key must not exit viewportImmersive
+    const guardedPrevent = vi.fn();
+    controller.setModalOpen(true);
+    host.pressKey({ key: "Escape", preventDefault: guardedPrevent });
+    expect(controller.getState().viewportImmersive).toBe(true);
+    controller.setModalOpen(false);
+
+    host.pressKey({
+      key: "Escape",
+      target: { tagName: "INPUT" },
+      preventDefault: guardedPrevent,
+    });
+    expect(controller.getState().viewportImmersive).toBe(true);
+
+    host.pressKey({
+      key: "Escape",
+      ctrlKey: true,
+      preventDefault: guardedPrevent,
+    });
+    expect(controller.getState().viewportImmersive).toBe(true);
+    expect(guardedPrevent).not.toHaveBeenCalled();
+
+    // Valid Escape exits viewportImmersive, calls preventDefault(), and triggers grace suppression
+    const escPrevent = vi.fn();
+    host.pressKey({ key: "Escape", preventDefault: escPrevent });
+    expect(escPrevent).toHaveBeenCalledTimes(1);
+    expect(controller.getState().viewportImmersive).toBe(false);
+    expect(controller.getState().isFullscreen).toBe(false);
+    expect(controller.shouldSuppressActionBarEscape()).toBe(true);
+
+    // Grace period expires -> ActionBar Escape works normally again
+    host.advanceMs(500);
+    expect(controller.shouldSuppressActionBarEscape()).toBe(false);
+
+    controller.dispose();
+  });
+
   it("routes F shortcut ONLY in InMatch without modals, input focus, or modifier keys", async () => {
     const host = createFakeHost({ width: 1280, height: 720, supportMode: "standard" });
     const controller = createViewportDisplayController({

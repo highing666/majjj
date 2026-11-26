@@ -29,8 +29,11 @@ import {
   computeCenterSealLayout,
   computeOpponentHandSlots,
   computeRiverSlotPoint,
+  computeSeatBadgeLayout,
   computeTableLayout,
   computeViewerHandSlots,
+  MELD_GROUP_GAP,
+  MELD_TILE_GAP,
   type Rect,
   type TableLayout,
 } from "./layout";
@@ -681,8 +684,8 @@ export class TableSceneRenderer {
   ): void {
     disposeContainerChildren(this.meldLayer);
     const { meldTileW: mw, meldTileH: mh } = layout;
-    const tileGap = 1;
-    const groupGap = 8;
+    const tileGap = MELD_TILE_GAP;
+    const groupGap = MELD_GROUP_GAP;
 
     interface MeldGroupPlacement {
       seat: Seat;
@@ -743,7 +746,9 @@ export class TableSceneRenderer {
               ? secondAlong
               : fixedCoord + (rotation > 0 ? mh * 0.32 : -mh * 0.32);
           const hoverY =
-            axis === "horizontal" ? fixedCoord - mh * 0.28 : secondAlong;
+            axis === "horizontal"
+              ? fixedCoord + (Math.abs(rotation - Math.PI) < 0.01 ? mh * 0.28 : -mh * 0.28)
+              : secondAlong;
           addShadowedTileSprite(
             this.meldLayer,
             this.atlas,
@@ -866,12 +871,10 @@ export class TableSceneRenderer {
         dealer,
         activeSeat,
       );
-      const compact = rect.width < 120 || rect.height < 24;
-      const padX = compact ? 4 : 7;
-      const padY = compact ? 3 : 4;
+      const badgeLayout = computeSeatBadgeLayout(rect, model.isDealer);
       const box = new Graphics();
       box
-        .roundRect(rect.x, rect.y, rect.width, rect.height, compact ? 7 : 9)
+        .roundRect(rect.x, rect.y, rect.width, rect.height, badgeLayout.cornerRadius)
         .fill({
           color: model.isActive ? 0x1b3b44 : SEAL_BG,
           alpha: 0.9,
@@ -883,12 +886,16 @@ export class TableSceneRenderer {
         });
       this.badgeLayer.addChild(box);
 
-      const pillH = Math.max(12, rect.height - padY * 2);
-      const pillFontSize = compact ? 9 : 11;
-      const rolePillW = compact ? 24 : 32;
+      const { rolePillRect, pillFontSize, centerY } = badgeLayout;
       const rolePill = new Graphics();
       rolePill
-        .roundRect(rect.x + padX, rect.y + padY, rolePillW, pillH, 5)
+        .roundRect(
+          rolePillRect.x,
+          rolePillRect.y,
+          rolePillRect.width,
+          rolePillRect.height,
+          5,
+        )
         .fill({ color: model.isActive ? 0x265663 : 0x264852 });
       this.badgeLayer.addChild(rolePill);
 
@@ -903,20 +910,17 @@ export class TableSceneRenderer {
       });
       roleLabel.anchor.set(0.5);
       roleLabel.position.set(
-        rect.x + padX + rolePillW / 2,
-        rect.y + rect.height / 2,
+        rolePillRect.x + rolePillRect.width / 2,
+        centerY,
       );
-      fitTextToWidth(roleLabel, rolePillW - 3);
+      fitTextToWidth(roleLabel, rolePillRect.width - 3);
       this.badgeLayer.addChild(roleLabel);
 
-      let leftCursor = rect.x + padX + rolePillW;
-      if (model.isDealer) {
-        const dealerGap = compact ? 3 : 4;
-        const dealerPillW = compact ? 14 : 19;
-        const dealerX = leftCursor + dealerGap;
+      if (badgeLayout.dealerPillRect) {
+        const dp = badgeLayout.dealerPillRect;
         const dealerPill = new Graphics();
         dealerPill
-          .roundRect(dealerX, rect.y + padY, dealerPillW, pillH, 5)
+          .roundRect(dp.x, dp.y, dp.width, dp.height, 5)
           .fill({ color: DEALER_CORAL });
         this.badgeLayer.addChild(dealerPill);
 
@@ -930,36 +934,28 @@ export class TableSceneRenderer {
           },
         });
         dealerLabel.anchor.set(0.5);
-        dealerLabel.position.set(
-          dealerX + dealerPillW / 2,
-          rect.y + rect.height / 2,
-        );
-        fitTextToWidth(dealerLabel, dealerPillW - 2);
+        dealerLabel.position.set(dp.x + dp.width / 2, centerY);
+        fitTextToWidth(dealerLabel, dp.width - 2);
         this.badgeLayer.addChild(dealerLabel);
-        leftCursor = dealerX + dealerPillW;
       }
 
       const scoreText = new Text({
         text: model.scoreText,
         style: {
           fontFamily: UI_FONT,
-          fontSize: compact ? 10 : 12,
+          fontSize: badgeLayout.scoreFontSize,
           fontWeight: "800",
           fill: model.isActive ? ACTIVE_GLOW : BRASS,
         },
       });
       scoreText.anchor.set(1, 0.5);
-      scoreText.position.set(
-        rect.x + rect.width - padX,
-        rect.y + rect.height / 2,
-      );
+      scoreText.position.set(badgeLayout.scoreRightX, centerY);
       this.badgeLayer.addChild(scoreText);
 
-      const scoreGap = compact ? 3 : 5;
-      const nameStart = leftCursor + (compact ? 4 : 6);
-      const nameMaxW = Math.max(
-        8,
-        rect.x + rect.width - padX - scoreText.width - scoreGap - nameStart,
+      const { nameMaxW } = computeSeatBadgeLayout(
+        rect,
+        model.isDealer,
+        scoreText.width,
       );
       const statusSuffix =
         model.isOffline && model.isAiAssisted
@@ -973,13 +969,13 @@ export class TableSceneRenderer {
         text: `${model.name}${statusSuffix}`,
         style: {
           fontFamily: UI_FONT,
-          fontSize: compact ? 10 : 12,
+          fontSize: badgeLayout.nameFontSize,
           fontWeight: model.isActive ? "700" : "600",
           fill: model.isOffline || model.isAiAssisted ? PENDING_AMBER : TEXT_LIGHT,
         },
       });
       nameLabel.anchor.set(0, 0.5);
-      nameLabel.position.set(nameStart, rect.y + rect.height / 2);
+      nameLabel.position.set(badgeLayout.nameStartX, centerY);
       fitTextToWidth(nameLabel, nameMaxW);
       this.badgeLayer.addChild(nameLabel);
     };

@@ -1,3 +1,7 @@
+import {
+  NARROW_PORTRAIT_MAX_WIDTH,
+  SHORT_LANDSCAPE_MAX_HEIGHT,
+} from "../platform/viewportDisplay";
 import type { RelativeSlot } from "./viewModel";
 
 export interface Rect {
@@ -54,6 +58,29 @@ export interface CenterSealEdgeBar {
   activeRect: Rect;
 }
 
+export interface SeatBadgeLayout {
+  compact: boolean;
+  padX: number;
+  padY: number;
+  cornerRadius: number;
+  pillH: number;
+  pillFontSize: number;
+  rolePillW: number;
+  rolePillRect: Rect;
+  dealerGap: number;
+  dealerPillW: number;
+  dealerPillRect: Rect | null;
+  scoreFontSize: number;
+  scoreRightX: number;
+  scoreGap: number;
+  nameStartX: number;
+  nameFontSize: number;
+  nameMaxW: number;
+  centerY: number;
+}
+
+export const MELD_TILE_GAP = 1;
+export const MELD_GROUP_GAP = 8;
 const OPP_HAND_GAP = 1;
 
 export interface TableLayout {
@@ -138,6 +165,125 @@ function createTrough(inner: Rect, padX: number, padY: number): Rect {
   };
 }
 
+interface ViewerHandRectParams {
+  centerX: number;
+  height: number;
+  bottomPad: number;
+  handTileW: number;
+  handGap: number;
+  drawnGap: number;
+}
+
+function buildViewerHandRect(params: ViewerHandRectParams): {
+  handTileH: number;
+  bottomHandY: number;
+  viewerHandRect: Rect;
+} {
+  const { centerX, height, bottomPad, handTileW, handGap, drawnGap } = params;
+  const handTileH = Math.round(handTileW * 1.36);
+  const bottomHandY = height - bottomPad - handTileH;
+  const fullHandW = 13 * handTileW + 12 * handGap + drawnGap + handTileW;
+  return {
+    handTileH,
+    bottomHandY,
+    viewerHandRect: {
+      x: Math.round(centerX - fullHandW / 2),
+      y: bottomHandY,
+      width: fullHandW,
+      height: handTileH,
+    },
+  };
+}
+
+interface RiverLayoutBoxesParams {
+  centerX: number;
+  centerSeal: Rect;
+  leftWing: Rect;
+  rightWing: Rect;
+  sideRiverY: number;
+  riverTileW: number;
+  riverGap: number;
+  perLineV: number;
+  maxLinesV: number;
+  perLineH: number;
+  maxLinesH: number;
+  sealGap: number;
+  troughPadX: number;
+  troughPadY: number;
+}
+
+function buildRiverLayoutBoxes(params: RiverLayoutBoxesParams): {
+  riverTileH: number;
+  rivers: TableLayout["rivers"];
+  riverTroughs: TableLayout["riverTroughs"];
+  riverGrid: TableLayout["riverGrid"];
+} {
+  const {
+    centerX,
+    centerSeal,
+    leftWing,
+    rightWing,
+    sideRiverY,
+    riverTileW,
+    riverGap,
+    perLineV,
+    maxLinesV,
+    perLineH,
+    maxLinesH,
+    sealGap,
+    troughPadX,
+    troughPadY,
+  } = params;
+  const riverTileH = Math.round(riverTileW * 1.36);
+
+  const wideRiverW = perLineV * riverTileW + (perLineV - 1) * riverGap;
+  const wideRiverH = maxLinesV * riverTileH + (maxLinesV - 1) * riverGap;
+  const top: Rect = {
+    x: Math.round(centerX - wideRiverW / 2),
+    y: centerSeal.y - sealGap - troughPadY - wideRiverH,
+    width: wideRiverW,
+    height: wideRiverH,
+  };
+  const bottom: Rect = {
+    x: Math.round(centerX - wideRiverW / 2),
+    y: centerSeal.y + centerSeal.height + sealGap + troughPadY,
+    width: wideRiverW,
+    height: wideRiverH,
+  };
+
+  const sideRiverW = maxLinesH * riverTileH + (maxLinesH - 1) * riverGap;
+  const sideRiverH = perLineH * riverTileW + (perLineH - 1) * riverGap;
+  const left: Rect = {
+    x: leftWing.x + leftWing.width - troughPadX - sideRiverW,
+    y: sideRiverY,
+    width: sideRiverW,
+    height: sideRiverH,
+  };
+  const right: Rect = {
+    x: rightWing.x + troughPadX,
+    y: sideRiverY,
+    width: sideRiverW,
+    height: sideRiverH,
+  };
+
+  return {
+    riverTileH,
+    rivers: { bottom, top, left, right },
+    riverTroughs: {
+      bottom: createTrough(bottom, troughPadX, troughPadY),
+      top: createTrough(top, troughPadX, troughPadY),
+      left: createTrough(left, troughPadX, troughPadY),
+      right: createTrough(right, troughPadX, troughPadY),
+    },
+    riverGrid: {
+      bottom: { perLine: perLineV, maxLines: maxLinesV },
+      top: { perLine: perLineV, maxLines: maxLinesV },
+      left: { perLine: perLineH, maxLines: maxLinesH },
+      right: { perLine: perLineH, maxLines: maxLinesH },
+    },
+  };
+}
+
 function computeTopSafeZones(
   width: number,
   margin: number,
@@ -167,7 +313,7 @@ function computeLandscapeTheaterLayout(
   width: number,
   height: number,
 ): TableLayout {
-  const isShortLandscape = height <= 460;
+  const isShortLandscape = height <= SHORT_LANDSCAPE_MAX_HEIGHT;
   const margin = isShortLandscape ? 8 : width >= 1024 ? 14 : 10;
   const colGap = isShortLandscape ? 6 : 10;
   const bottomPad = isShortLandscape ? 6 : 12;
@@ -214,15 +360,14 @@ function computeLandscapeTheaterLayout(
     Math.min(20, maxHandWByCenter),
     62,
   );
-  const handTileH = Math.round(handTileW * 1.36);
-  const bottomHandY = height - bottomPad - handTileH;
-  const fullHandW = 13 * handTileW + 12 * handGap + drawnGap + handTileW;
-  const viewerHandRect: Rect = {
-    x: Math.round(centerCx - fullHandW / 2),
-    y: bottomHandY,
-    width: fullHandW,
-    height: handTileH,
-  };
+  const { handTileH, bottomHandY, viewerHandRect } = buildViewerHandRect({
+    centerX: centerCx,
+    height,
+    bottomPad,
+    handTileW,
+    handGap,
+    drawnGap,
+  });
 
   // Turn bar / ActionBar dock centered directly above viewer hand
   const turnBarH = isShortLandscape ? 20 : 28;
@@ -354,8 +499,12 @@ function computeLandscapeTheaterLayout(
     height: sideOppSpan,
   };
 
+  // Dedicated top meld strip inside centerStage above riverTroughs.top prevents multi-meld overlap
+  const topMeldY = wingTop + topBandH + (isShortLandscape ? 4 : 10);
+  const topMeldBandH = meldTileH + (isShortLandscape ? 4 : 7);
+
   // River sizing across centerStage (10/row) and wings (4/col)
-  const playTop = wingTop + topBandH + (isShortLandscape ? 4 : 10);
+  const playTop = topMeldY + topMeldBandH;
   const playBottom = turnBarRect.y - (isShortLandscape ? 4 : 10);
   const playH = playBottom - playTop;
   const cy = Math.round(playTop + playH / 2);
@@ -405,44 +554,22 @@ function computeLandscapeTheaterLayout(
     14,
     34,
   );
-  const riverTileH = Math.round(riverTileW * 1.36);
-
-  const wideRiverW = 10 * riverTileW + 9 * riverGap;
-  const wideRiverH = maxLinesV * riverTileH + (maxLinesV - 1) * riverGap;
-  const topRiverRect: Rect = {
-    x: Math.round(centerCx - wideRiverW / 2),
-    y: centerSeal.y - sealGap - troughPadY - wideRiverH,
-    width: wideRiverW,
-    height: wideRiverH,
-  };
-  const bottomRiverRect: Rect = {
-    x: Math.round(centerCx - wideRiverW / 2),
-    y: centerSeal.y + centerSeal.height + sealGap + troughPadY,
-    width: wideRiverW,
-    height: wideRiverH,
-  };
-
-  const sideRiverW = maxLinesH * riverTileH + (maxLinesH - 1) * riverGap;
-  const sideRiverH = 4 * riverTileW + 3 * riverGap;
-  const leftRiverRect: Rect = {
-    x: leftWing.x + leftWing.width - troughPadX - sideRiverW,
-    y: wingMidTop + troughPadY,
-    width: sideRiverW,
-    height: sideRiverH,
-  };
-  const rightRiverRect: Rect = {
-    x: rightWing.x + troughPadX,
-    y: wingMidTop + troughPadY,
-    width: sideRiverW,
-    height: sideRiverH,
-  };
-
-  const riverTroughs = {
-    bottom: createTrough(bottomRiverRect, troughPadX, troughPadY),
-    top: createTrough(topRiverRect, troughPadX, troughPadY),
-    left: createTrough(leftRiverRect, troughPadX, troughPadY),
-    right: createTrough(rightRiverRect, troughPadX, troughPadY),
-  };
+  const { riverTileH, rivers, riverTroughs, riverGrid } = buildRiverLayoutBoxes({
+    centerX: centerCx,
+    centerSeal,
+    leftWing,
+    rightWing,
+    sideRiverY: wingMidTop + troughPadY,
+    riverTileW,
+    riverGap,
+    perLineV: 10,
+    maxLinesV,
+    perLineH: 4,
+    maxLinesH,
+    sealGap,
+    troughPadX,
+    troughPadY,
+  });
 
   return {
     width,
@@ -478,21 +605,11 @@ function computeLandscapeTheaterLayout(
     riverTileW,
     riverTileH,
     riverGap,
-    riverGrid: {
-      bottom: { perLine: 10, maxLines: maxLinesV },
-      top: { perLine: 10, maxLines: maxLinesV },
-      left: { perLine: 4, maxLines: maxLinesH },
-      right: { perLine: 4, maxLines: maxLinesH },
-    },
+    riverGrid,
     meldTileW,
     meldTileH,
     centerSeal,
-    rivers: {
-      bottom: bottomRiverRect,
-      top: topRiverRect,
-      left: leftRiverRect,
-      right: rightRiverRect,
-    },
+    rivers,
     riverTroughs,
     badges: {
       bottom: bottomBadge,
@@ -513,7 +630,7 @@ function computeLandscapeTheaterLayout(
       },
       top: {
         x: centerStage.x + centerStage.width - 2,
-        y: riverTroughs.top.y,
+        y: topMeldY,
       },
       left: {
         x: leftOppRect.x + leftOppRect.width + 6,
@@ -560,15 +677,14 @@ function computePortraitFallbackLayout(
     Math.min(19, maxHandW),
     36,
   );
-  const handTileH = Math.round(handTileW * 1.36);
-  const bottomHandY = height - bottomPad - handTileH;
-  const fullHandW = 13 * handTileW + 12 * handGap + drawnGap + handTileW;
-  const viewerHandRect: Rect = {
-    x: Math.round(width / 2 - fullHandW / 2),
-    y: bottomHandY,
-    width: fullHandW,
-    height: handTileH,
-  };
+  const { handTileH, bottomHandY, viewerHandRect } = buildViewerHandRect({
+    centerX: width / 2,
+    height,
+    bottomPad,
+    handTileW,
+    handGap,
+    drawnGap,
+  });
 
   const turnBarH = 24;
   const turnBarW = Math.min(width - margin * 2, clamp(Math.round(width * 0.72), 180, 300));
@@ -607,8 +723,9 @@ function computePortraitFallbackLayout(
     height: oppHandTileH,
   };
 
-  // Middle three-column theater fallback between topOppRect and bottomRowY
-  const playTop = topOppRect.y + topOppRect.height + 6;
+  // Middle three-column theater fallback between dedicated top meld strip and bottomRowY
+  const topMeldY = topOppRect.y + topOppRect.height + 4;
+  const playTop = topMeldY + meldTileH + 6;
   const playBottom = bottomRowY - 6;
   const playH = Math.max(180, playBottom - playTop);
   const colGap = 4;
@@ -709,44 +826,22 @@ function computePortraitFallbackLayout(
     14,
     20,
   );
-  const riverTileH = Math.round(riverTileW * 1.36);
-
-  const wideRiverW = perLineV * riverTileW + (perLineV - 1) * riverGap;
-  const wideRiverH = maxLinesV * riverTileH + (maxLinesV - 1) * riverGap;
-  const topRiverRect: Rect = {
-    x: Math.round(cx - wideRiverW / 2),
-    y: centerSeal.y - 6 - troughPadY - wideRiverH,
-    width: wideRiverW,
-    height: wideRiverH,
-  };
-  const bottomRiverRect: Rect = {
-    x: Math.round(cx - wideRiverW / 2),
-    y: centerSeal.y + centerSeal.height + 6 + troughPadY,
-    width: wideRiverW,
-    height: wideRiverH,
-  };
-
-  const sideRiverW = maxLinesH * riverTileH + (maxLinesH - 1) * riverGap;
-  const sideRiverH = perLineH * riverTileW + (perLineH - 1) * riverGap;
-  const leftRiverRect: Rect = {
-    x: leftWing.x + leftWing.width - troughPadX - sideRiverW,
-    y: sideTop + troughPadY,
-    width: sideRiverW,
-    height: sideRiverH,
-  };
-  const rightRiverRect: Rect = {
-    x: rightWing.x + troughPadX,
-    y: sideTop + troughPadY,
-    width: sideRiverW,
-    height: sideRiverH,
-  };
-
-  const riverTroughs = {
-    bottom: createTrough(bottomRiverRect, troughPadX, troughPadY),
-    top: createTrough(topRiverRect, troughPadX, troughPadY),
-    left: createTrough(leftRiverRect, troughPadX, troughPadY),
-    right: createTrough(rightRiverRect, troughPadX, troughPadY),
-  };
+  const { riverTileH, rivers, riverTroughs, riverGrid } = buildRiverLayoutBoxes({
+    centerX: cx,
+    centerSeal,
+    leftWing,
+    rightWing,
+    sideRiverY: sideTop + troughPadY,
+    riverTileW,
+    riverGap,
+    perLineV,
+    maxLinesV,
+    perLineH,
+    maxLinesH,
+    sealGap: 6,
+    troughPadX,
+    troughPadY,
+  });
 
   return {
     width,
@@ -782,21 +877,11 @@ function computePortraitFallbackLayout(
     riverTileW,
     riverTileH,
     riverGap,
-    riverGrid: {
-      bottom: { perLine: perLineV, maxLines: maxLinesV },
-      top: { perLine: perLineV, maxLines: maxLinesV },
-      left: { perLine: perLineH, maxLines: maxLinesH },
-      right: { perLine: perLineH, maxLines: maxLinesH },
-    },
+    riverGrid,
     meldTileW,
     meldTileH,
     centerSeal,
-    rivers: {
-      bottom: bottomRiverRect,
-      top: topRiverRect,
-      left: leftRiverRect,
-      right: rightRiverRect,
-    },
+    rivers,
     riverTroughs,
     badges: {
       bottom: bottomBadge,
@@ -816,8 +901,8 @@ function computePortraitFallbackLayout(
         y: riverTroughs.right.y + riverTroughs.right.height + 6,
       },
       top: {
-        x: centerStage.x + centerStage.width - 2,
-        y: playTop,
+        x: width - margin,
+        y: topMeldY,
       },
       left: {
         x: leftOppRect.x + leftOppRect.width + 4,
@@ -837,10 +922,76 @@ export function computeTableLayout(
 ): TableLayout {
   const width = Math.max(320, Math.round(rawWidth));
   const height = Math.max(280, Math.round(rawHeight));
-  const isWide = width >= height || width >= 600;
+  const isWide = width >= height || width >= NARROW_PORTRAIT_MAX_WIDTH;
   return isWide
     ? computeLandscapeTheaterLayout(width, height)
     : computePortraitFallbackLayout(width, height);
+}
+
+/**
+ * Computes inner pill, dealer chip, score, and name-width metrics for a seat badge rectangle.
+ */
+export function computeSeatBadgeLayout(
+  rect: Rect,
+  isDealer: boolean,
+  scoreWidth = 0,
+): SeatBadgeLayout {
+  const compact = rect.width < 120 || rect.height < 24;
+  const padX = compact ? 4 : 7;
+  const padY = compact ? 3 : 4;
+  const cornerRadius = compact ? 7 : 9;
+  const pillH = Math.max(12, rect.height - padY * 2);
+  const pillFontSize = compact ? 9 : 11;
+  const rolePillW = compact ? 24 : 32;
+  const rolePillRect: Rect = {
+    x: rect.x + padX,
+    y: rect.y + padY,
+    width: rolePillW,
+    height: pillH,
+  };
+  const dealerGap = compact ? 3 : 4;
+  const dealerPillW = compact ? 14 : 19;
+  const dealerX = rolePillRect.x + rolePillW + dealerGap;
+  const dealerPillRect: Rect | null = isDealer
+    ? {
+        x: dealerX,
+        y: rect.y + padY,
+        width: dealerPillW,
+        height: pillH,
+      }
+    : null;
+  const leftCursor = dealerPillRect
+    ? dealerPillRect.x + dealerPillW
+    : rolePillRect.x + rolePillW;
+  const scoreFontSize = compact ? 10 : 12;
+  const scoreRightX = rect.x + rect.width - padX;
+  const scoreGap = compact ? 3 : 5;
+  const nameStartX = leftCursor + (compact ? 4 : 6);
+  const nameFontSize = compact ? 10 : 12;
+  const nameMaxW = Math.max(
+    8,
+    scoreRightX - scoreWidth - scoreGap - nameStartX,
+  );
+  return {
+    compact,
+    padX,
+    padY,
+    cornerRadius,
+    pillH,
+    pillFontSize,
+    rolePillW,
+    rolePillRect,
+    dealerGap,
+    dealerPillW,
+    dealerPillRect,
+    scoreFontSize,
+    scoreRightX,
+    scoreGap,
+    nameStartX,
+    nameFontSize,
+    nameMaxW,
+    centerY: rect.y + rect.height / 2,
+  };
 }
 
 /**

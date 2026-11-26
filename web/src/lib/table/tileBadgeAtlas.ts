@@ -1,5 +1,9 @@
 import atlasMetaJson from "../../assets/atlas/tiles@2x.json";
 import type { Tile } from "../protocol/generated/Tile";
+import {
+  ATLAS_REQUIRED_BODY_FRAMES,
+  ATLAS_TILE_FRAME_COUNT,
+} from "./atlasConstants";
 import { getTileLabel } from "./tiles";
 
 export type TileBadgeSize = "xs" | "sm" | "md";
@@ -49,8 +53,7 @@ interface AtlasMetaShape {
   };
 }
 
-const ATLAS_TILE_COUNT = 34;
-const LAID_BACK_FRAME_KEY = "body_laid_back";
+const LAID_BACK_FRAME_KEY = ATLAS_REQUIRED_BODY_FRAMES[4];
 
 /**
  * Display sizes matching the `136:184` laid-tile frame aspect ratio
@@ -74,7 +77,7 @@ function isValidTileIndex(tile: Tile | null): tile is Tile {
     tile !== null &&
     Number.isInteger(tile) &&
     tile >= 0 &&
-    tile < ATLAS_TILE_COUNT
+    tile < ATLAS_TILE_FRAME_COUNT
   );
 }
 
