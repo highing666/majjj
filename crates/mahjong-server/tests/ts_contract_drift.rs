@@ -364,6 +364,18 @@ fn frozen_server_protocol_types_roundtrip_serde_json_without_loss() {
         ServerMessage::ErrorNotice {
             message: "not enabled".to_string(),
         },
+        ServerMessage::TableBanter {
+            seat: Seat::South,
+            persona_id: PersonaId::QuickHothead,
+            mood: PersonaMood::Smug,
+            text: "五巡就胡，你们太慢了！".to_string(),
+            event_seq: 18,
+            reply_to_seat: Some(Seat::East),
+        },
+        ServerMessage::LlmStatusNotice {
+            available: false,
+            message: "局域网推理服务异常：请求超时".to_string(),
+        },
     ];
     for msg in &server_messages {
         let json = serde_json::to_string(msg).unwrap();

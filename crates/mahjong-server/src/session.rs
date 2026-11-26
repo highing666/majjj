@@ -20,11 +20,16 @@ use uuid::Uuid;
 use crate::ai_pool::{
     build_ai_pool, default_ai_threads, spawn_scheduled_work, AiJobKey, PendingAiJob, ScheduledWork,
 };
+use crate::banter::{
+    plan_highlight_banter_for_events, plan_initial_hand_banter, BanterGuard, BanterPlanContext,
+    PendingBanterJob, HIGHLIGHT_SYNC_CAP,
+};
 use crate::history_dto::{
     ClearHistoryResponse, HandRecord, HandSeatRecord, HistoryExportResponse, MatchRecord,
     MatchSeatRecord, PreferencesData, StatsResponse, HISTORY_SCHEMA_VERSION,
 };
 use crate::lan::{discover_lan_urls, read_local_hostname, read_system_interfaces};
+use crate::llm::{BanterOutput, LlmClient, LlmError};
 use crate::pacing::{
     apply_discard_to_view, compute_ai_turn_trigger, discard_release_delay, target_ai_delay,
     AiTurnTrigger, PacingMode, ReleaseTicket,
@@ -54,7 +59,7 @@ impl WallProvider for BoxedWallProvider {
 /// Factory returning a fresh [`BoxedWallProvider`] whenever a new match starts.
 pub type WallProviderFactory = Arc<dyn Fn() -> BoxedWallProvider + Send + Sync>;
 
-/// Injectable configuration hooks for deterministic testing of walls, seating, pacing, and AI RNG.
+/// Injectable configuration hooks for deterministic testing of walls, seating, pacing, AI RNG, and LLM.
 #[derive(Clone)]
 pub struct TableOptions {
     wall_factory: WallProviderFactory,
@@ -62,6 +67,8 @@ pub struct TableOptions {
     ai_budget: Option<DecisionBudget>,
     pacing: PacingMode,
     data_dir: Option<PathBuf>,
+    llm_client: Option<Arc<dyn LlmClient>>,
+    banter_sync_cap: Duration,
 }
 
 impl std::fmt::Debug for TableOptions {
@@ -71,6 +78,8 @@ impl std::fmt::Debug for TableOptions {
             .field("ai_budget", &self.ai_budget)
             .field("pacing", &self.pacing)
             .field("data_dir", &self.data_dir)
+            .field("has_llm_client", &self.llm_client.is_some())
+            .field("banter_sync_cap", &self.banter_sync_cap)
             .finish_non_exhaustive()
     }
 }
@@ -85,6 +94,8 @@ impl Default for TableOptions {
             ai_budget: None,
             pacing: PacingMode::Humanized,
             data_dir: None,
+            llm_client: None,
+            banter_sync_cap: HIGHLIGHT_SYNC_CAP,
         }
     }
 }
@@ -104,6 +115,8 @@ impl TableOptions {
             ai_budget: None,
             pacing: PacingMode::Humanized,
             data_dir: None,
+            llm_client: None,
+            banter_sync_cap: HIGHLIGHT_SYNC_CAP,
         }
     }
 
@@ -116,6 +129,8 @@ impl TableOptions {
             ai_budget: None,
             pacing: PacingMode::Humanized,
             data_dir: None,
+            llm_client: None,
+            banter_sync_cap: HIGHLIGHT_SYNC_CAP,
         }
     }
 
@@ -140,6 +155,20 @@ impl TableOptions {
         self
     }
 
+    /// Configures the [`LlmClient`] driving persona banter generation for this table runtime.
+    #[must_use]
+    pub fn with_llm_client(mut self, llm_client: Arc<dyn LlmClient>) -> Self {
+        self.llm_client = Some(llm_client);
+        self
+    }
+
+    /// Overrides the bounded short-sync timeout for major highlight banter (defaults to `1500ms`).
+    #[must_use]
+    pub fn with_banter_sync_cap(mut self, cap: Duration) -> Self {
+        self.banter_sync_cap = cap;
+        self
+    }
+
     /// Returns the configured [`PacingMode`].
     #[must_use]
     pub fn pacing(&self) -> PacingMode {
@@ -150,6 +179,12 @@ impl TableOptions {
     #[must_use]
     pub fn data_dir(&self) -> Option<&Path> {
         self.data_dir.as_deref()
+    }
+
+    /// Returns the configured [`LlmClient`], if any.
+    #[must_use]
+    pub fn llm_client(&self) -> Option<&Arc<dyn LlmClient>> {
+        self.llm_client.as_ref()
     }
 }
 
@@ -325,6 +360,7 @@ pub(crate) struct ActiveMatchState {
     ai_turn_trigger: AiTurnTrigger,
     pub(crate) hand_attribution: HandAttribution,
     pub(crate) hands_settled: u32,
+    pub(crate) hand_generation: u64,
     pub(crate) any_ai_assisted: [bool; 4],
 }
 
@@ -367,6 +403,10 @@ pub struct TableSession {
     local_hostname: Option<String>,
     pub(crate) history: HistoryStore,
     phase_tx: watch::Sender<TablePhase>,
+    pending_sync_banter: Vec<PendingBanterJob>,
+    pending_async_banter: Vec<PendingBanterJob>,
+    llm_available: bool,
+    last_llm_error: Option<String>,
 }
 
 impl TableSession {
@@ -430,6 +470,10 @@ impl TableSession {
             local_hostname,
             history,
             phase_tx,
+            pending_sync_banter: Vec::new(),
+            pending_async_banter: Vec::new(),
+            llm_available: true,
+            last_llm_error: None,
         })
     }
 
@@ -680,6 +724,17 @@ impl TableSession {
         self.token_to_conn.insert(seat_token, conn_id);
 
         Self::send_to(tx, ServerMessage::TableSnapshot(snapshot));
+        if !self.llm_available {
+            if let Some(err_msg) = &self.last_llm_error {
+                Self::send_to(
+                    tx,
+                    ServerMessage::LlmStatusNotice {
+                        available: false,
+                        message: err_msg.clone(),
+                    },
+                );
+            }
+        }
         if lobby_changed {
             self.broadcast_lobby_updated(Some(conn_id));
         }
@@ -994,6 +1049,8 @@ impl TableSession {
         self.set_phase(TablePhase::InMatch);
         self.pending_destructive_op = None;
         self.in_flight_ai.clear();
+        self.pending_sync_banter.clear();
+        self.pending_async_banter.clear();
         let hand_attribution = HandAttribution::from_seats(&self.seats);
         self.active_match = Some(ActiveMatchState {
             match_id,
@@ -1005,10 +1062,28 @@ impl TableSession {
             ai_turn_trigger: AiTurnTrigger::AfterHandStarted,
             hand_attribution,
             hands_settled: 0,
+            hand_generation: 1,
             any_ai_assisted: [false; 4],
         });
 
         self.broadcast_all_snapshots();
+
+        if self.options.llm_client.is_some() {
+            if let Some(active_ref) = self.active_match.as_ref() {
+                let seat_infos = self.seat_infos();
+                let ctx = BanterPlanContext {
+                    match_id: active_ref.match_id,
+                    hand_generation: active_ref.hand_generation,
+                    game: &active_ref.game,
+                    seats: &seat_infos,
+                    seat_generation: &self.seat_generation,
+                    sync_cap: self.options.banter_sync_cap,
+                };
+                if let Some(job) = plan_initial_hand_banter(&ctx) {
+                    self.pending_async_banter.push(job);
+                }
+            }
+        }
     }
 
     fn send_action_rejected(
@@ -1335,6 +1410,7 @@ impl TableSession {
         };
         if let Some(attribution) = next_hand_attribution {
             active_mut.hand_attribution = attribution;
+            active_mut.hand_generation += 1;
         }
         let next_trigger = compute_ai_turn_trigger(&active_mut.game, &emitted);
         active_mut.ai_turn_trigger = next_trigger;
@@ -1345,6 +1421,21 @@ impl TableSession {
 
         let active_ref = self.active_match.as_ref().expect("active match exists");
         self.broadcast_event_batch(&active_ref.game, &emitted);
+
+        if self.options.llm_client.is_some() {
+            let seat_infos = self.seat_infos();
+            let ctx = BanterPlanContext {
+                match_id: active_ref.match_id,
+                hand_generation: active_ref.hand_generation,
+                game: &active_ref.game,
+                seats: &seat_infos,
+                seat_generation: &self.seat_generation,
+                sync_cap: self.options.banter_sync_cap,
+            };
+            let (mut sync_jobs, mut async_jobs) = plan_highlight_banter_for_events(&ctx, &emitted);
+            self.pending_sync_banter.append(&mut sync_jobs);
+            self.pending_async_banter.append(&mut async_jobs);
+        }
 
         match public_phase {
             PublicPhase::MatchFinished => {
@@ -1557,9 +1648,88 @@ impl TableSession {
     fn collect_scheduled_work(&mut self) -> ScheduledWork {
         let pending_release = self.take_unscheduled_pending_release();
         let ai_jobs = self.collect_pending_ai_jobs();
+        let sync_banter = std::mem::take(&mut self.pending_sync_banter);
+        let async_banter = std::mem::take(&mut self.pending_async_banter);
         ScheduledWork {
             ai_jobs,
             pending_release,
+            sync_banter,
+            async_banter,
+        }
+    }
+
+    fn broadcast_all(&self, msg: ServerMessage) {
+        for conn in self.connections.values() {
+            Self::send_to(&conn.tx, msg.clone());
+        }
+    }
+
+    pub(crate) fn commit_banter_result(
+        &mut self,
+        guard: BanterGuard,
+        result: Result<BanterOutput, LlmError>,
+    ) {
+        let phase_ok = self.phase == TablePhase::InMatch
+            || (guard.allow_finished_phase && self.phase == TablePhase::Finished);
+        let match_ok = self
+            .active_match
+            .as_ref()
+            .is_some_and(|active| active.match_id == guard.match_id);
+
+        match result {
+            Err(err) => {
+                if phase_ok && match_ok && self.llm_available {
+                    let message =
+                        format!("局域网推理服务异常：{err}（牌局照常进行，暂不生成牌桌台词）");
+                    self.llm_available = false;
+                    self.last_llm_error = Some(message.clone());
+                    self.broadcast_all(ServerMessage::LlmStatusNotice {
+                        available: false,
+                        message,
+                    });
+                }
+            }
+            Ok(output) => {
+                if !self.llm_available {
+                    self.llm_available = true;
+                    self.last_llm_error = None;
+                    self.broadcast_all(ServerMessage::LlmStatusNotice {
+                        available: true,
+                        message: "局域网推理服务已恢复连接".to_string(),
+                    });
+                }
+
+                if !phase_ok {
+                    return;
+                }
+                let seat_slot = &self.seats[guard.seat.index()];
+                if seat_slot.info.kind != SeatKind::Ai
+                    || seat_slot.info.persona_id != Some(guard.persona_id)
+                    || self.seat_generation[guard.seat.index()] != guard.seat_generation
+                {
+                    return;
+                }
+                let state_fresh = self.active_match.as_ref().is_some_and(|active| {
+                    active.match_id == guard.match_id
+                        && active.hand_generation == guard.hand_generation
+                        && guard.max_seq_drift.is_none_or(|max_drift| {
+                            active.game.seq().saturating_sub(guard.event_seq) <= max_drift
+                        })
+                });
+                if !state_fresh {
+                    return;
+                }
+
+                self.seats[guard.seat.index()].info.mood = Some(output.mood);
+                self.broadcast_all(ServerMessage::TableBanter {
+                    seat: guard.seat,
+                    persona_id: guard.persona_id,
+                    mood: output.mood,
+                    text: output.text,
+                    event_seq: guard.event_seq,
+                    reply_to_seat: None,
+                });
+            }
         }
     }
 
@@ -1664,6 +1834,8 @@ impl TableSession {
         self.set_phase(TablePhase::Lobby);
         self.active_match = None;
         self.in_flight_ai.clear();
+        self.pending_sync_banter.clear();
+        self.pending_async_banter.clear();
         self.pending_destructive_op = None;
         self.seq = 0;
         for slot in &mut self.seats {
@@ -1846,6 +2018,7 @@ struct HelloParams {
 pub struct TableRuntime {
     inner: Arc<Mutex<TableSession>>,
     ai_pool: Arc<rayon::ThreadPool>,
+    llm_client: Option<Arc<dyn LlmClient>>,
 }
 
 impl TableRuntime {
@@ -1887,10 +2060,12 @@ impl TableRuntime {
         ai_threads: usize,
     ) -> Result<Self, ServerError> {
         let ai_pool = build_ai_pool(ai_threads)?;
+        let llm_client = options.llm_client().cloned();
         let session = TableSession::try_with_options(port, local_hostname, options)?;
         Ok(Self {
             inner: Arc::new(Mutex::new(session)),
             ai_pool,
+            llm_client,
         })
     }
 
@@ -2089,6 +2264,7 @@ impl TableRuntime {
             spawn_scheduled_work(
                 Arc::clone(&self.inner),
                 Arc::clone(&self.ai_pool),
+                self.llm_client.clone(),
                 scheduled_work,
             );
         }

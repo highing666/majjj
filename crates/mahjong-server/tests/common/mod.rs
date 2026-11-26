@@ -4,6 +4,7 @@ use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
@@ -13,12 +14,52 @@ use hyper::header::{CACHE_CONTROL, CONTENT_TYPE};
 use hyper::{Request, StatusCode};
 use hyper_util::rt::TokioIo;
 use mahjong_core::{build_preset_wall, PlayerAction, PlayerEvent, Tile};
+use mahjong_server::llm::{
+    BanterGenerationRequest, BanterOutput, LlmClient, LlmError, LlmFuture, LlmHealthStatus,
+};
+use mahjong_server::persona::PersonaMood;
 use mahjong_server::protocol::{ClientMessage, HealthResponse, ServerMessage, TableSnapshot};
 use mahjong_server::session::{TableOptions, WallProviderFactory};
 use mahjong_server::{PacingMode, ServerConfig, ServerHandle};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+
+#[allow(dead_code)]
+#[derive(Debug)]
+pub struct FastStubLlmClient;
+
+impl LlmClient for FastStubLlmClient {
+    fn endpoint(&self) -> &str {
+        "http://stub-llm.local:8080"
+    }
+
+    fn health_check(&self) -> LlmFuture<'_, Result<LlmHealthStatus, LlmError>> {
+        Box::pin(async {
+            Ok(LlmHealthStatus {
+                endpoint: "http://stub-llm.local:8080".to_string(),
+                model_id: "stub-qwen".to_string(),
+            })
+        })
+    }
+
+    fn generate_banter(
+        &self,
+        _request: BanterGenerationRequest,
+    ) -> LlmFuture<'_, Result<BanterOutput, LlmError>> {
+        Box::pin(async {
+            Ok(BanterOutput {
+                mood: PersonaMood::Smug,
+                text: "这招够狠，你们接着看！".to_string(),
+            })
+        })
+    }
+}
+
+#[allow(dead_code)]
+pub fn stub_llm_client() -> Arc<dyn LlmClient> {
+    Arc::new(FastStubLlmClient)
+}
 
 #[allow(dead_code)]
 pub type WsClient = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -59,6 +100,7 @@ pub async fn spawn_server(static_dir: Option<PathBuf>) -> ServerHandle {
         .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
         .with_port(0)
         .with_static_dir(static_dir)
+        .with_llm_client(stub_llm_client())
         .spawn()
         .await
         .expect("spawn server")
@@ -70,6 +112,7 @@ pub async fn spawn_seeded_server(seed: u64, static_dir: Option<PathBuf>) -> Serv
         .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
         .with_port(0)
         .with_static_dir(static_dir)
+        .with_llm_client(stub_llm_client())
         .spawn_with_options(TableOptions::seeded(seed).with_pacing(PacingMode::Immediate))
         .await
         .expect("spawn seeded server")
@@ -80,6 +123,7 @@ pub async fn spawn_with_wall_factory(seed: u64, factory: WallProviderFactory) ->
     ServerConfig::default()
         .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
         .with_port(0)
+        .with_llm_client(stub_llm_client())
         .spawn_with_options(
             TableOptions::with_wall_factory(seed, factory).with_pacing(PacingMode::Immediate),
         )
@@ -200,7 +244,9 @@ pub async fn recv_msg(ws: &mut WsClient) -> ServerMessage {
 pub async fn recv_non_ping_msg(ws: &mut WsClient) -> ServerMessage {
     loop {
         match recv_msg(ws).await {
-            ServerMessage::ServerPing { .. } => continue,
+            ServerMessage::ServerPing { .. }
+            | ServerMessage::TableBanter { .. }
+            | ServerMessage::LlmStatusNotice { .. } => continue,
             other => return other,
         }
     }
@@ -211,7 +257,9 @@ pub async fn recv_snapshot(ws: &mut WsClient) -> TableSnapshot {
     loop {
         match recv_non_ping_msg(ws).await {
             ServerMessage::TableSnapshot(snap) => return snap,
-            ServerMessage::LobbyUpdated { .. } => continue,
+            ServerMessage::LobbyUpdated { .. }
+            | ServerMessage::TableBanter { .. }
+            | ServerMessage::LlmStatusNotice { .. } => continue,
             other => panic!("expected TableSnapshot, got {other:?}"),
         }
     }
@@ -229,7 +277,9 @@ pub async fn recv_event_batch(
                 events,
                 updated_legal_actions,
             } => return (from_seq, to_seq, events, updated_legal_actions),
-            ServerMessage::LobbyUpdated { .. } => continue,
+            ServerMessage::LobbyUpdated { .. }
+            | ServerMessage::TableBanter { .. }
+            | ServerMessage::LlmStatusNotice { .. } => continue,
             other => panic!("expected EventBatch, got {other:?}"),
         }
     }

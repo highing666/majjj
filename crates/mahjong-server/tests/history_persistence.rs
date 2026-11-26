@@ -39,6 +39,7 @@ async fn spawn_history_server(
         .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
         .with_port(0)
         .with_data_dir(data_dir)
+        .with_llm_client(common::stub_llm_client())
         .spawn_with_options(
             TableOptions::with_wall_factory(seed, factory).with_pacing(PacingMode::Immediate),
         )

@@ -31,4 +31,8 @@ default_ai_difficulty: AiDifficulty,
 /**
  * Default table-wide animation and AI pacing tier.
  */
-default_pace: TablePace, };
+default_pace: TablePace, 
+/**
+ * Optional persisted base URL for the LAN `llama-server` endpoint.
+ */
+llm_base_url: string | null, };

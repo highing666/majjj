@@ -354,6 +354,12 @@
     </div>
   {/if}
 
+  {#if sessionState.llmStatusNotice && !sessionState.llmStatusNotice.available}
+    <div class="banner banner-warn" class:banner-floating={compact} role="alert">
+      <span>{sessionState.llmStatusNotice.message}</span>
+    </div>
+  {/if}
+
   {#if sessionState.lastErrorNotice}
     <div class="banner banner-warn" class:banner-floating={compact} role="status">
       <span>提示：{sessionState.lastErrorNotice}</span>
@@ -444,6 +450,8 @@
             {presentedSnapshot}
             playerView={presentedPlayerView}
             {tableLayout}
+            activeBubbles={presentationState.activeBubbles}
+            reducedEffects={renderQualityState.reducedEffects}
             {turnCue}
             {viewportState}
             {currentPace}

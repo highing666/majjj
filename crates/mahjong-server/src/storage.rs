@@ -213,6 +213,15 @@ fn write_jsonl_atomic<T: Serialize>(path: &Path, records: &[T]) -> Result<(), st
     atomic_write_bytes(path, &buf)
 }
 
+/// Loads `preferences.json` from `data_dir` with default fallback on missing or corrupt files.
+///
+/// # Errors
+///
+/// Returns an I/O error if `preferences.json` exists but cannot be read.
+pub(crate) fn load_preferences_for_dir(data_dir: &Path) -> Result<PreferencesData, std::io::Error> {
+    load_preferences(&data_dir.join(PREFERENCES_FILE))
+}
+
 fn load_preferences(path: &Path) -> Result<PreferencesData, std::io::Error> {
     match fs::read_to_string(path) {
         Ok(contents) => match serde_json::from_str::<PreferencesData>(&contents) {

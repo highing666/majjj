@@ -288,4 +288,16 @@ pub enum ServerMessage {
     SessionReplaced,
     /// Non-fatal protocol or validation notice sent to the requesting client.
     ErrorNotice { message: String },
+    /// Comic speech bubble banter line emitted by an AI table persona (`牌桌台词`).
+    TableBanter {
+        seat: Seat,
+        persona_id: PersonaId,
+        mood: PersonaMood,
+        text: String,
+        #[ts(type = "number")]
+        event_seq: u64,
+        reply_to_seat: Option<Seat>,
+    },
+    /// Status notice emitted when the mandatory LAN LLM service disconnects, times out, or recovers.
+    LlmStatusNotice { available: bool, message: String },
 }

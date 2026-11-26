@@ -121,7 +121,7 @@ if [ "$run_rust" -eq 1 ]; then
 
   if [ "$sandbox_mode" -eq 1 ]; then
     cargo test -p mahjong-core
-    cargo test -p mahjong-server --lib --bin mahjong-server --test lan_discovery --test pacing_virtual_clock --test ts_contract_drift
+    cargo test -p mahjong-server --lib --bin mahjong-server --test lan_discovery --test pacing_virtual_clock --test banter_virtual_clock --test ts_contract_drift
     if [ "$run_ai_heavy" -eq 1 ]; then
       cargo test -p mahjong-ai
     fi

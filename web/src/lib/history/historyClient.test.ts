@@ -60,6 +60,7 @@ function sampleExport(): HistoryExportResponse {
       default_seating: "Random",
       default_ai_difficulty: "Strong",
       default_pace: "Standard",
+      llm_base_url: null,
     },
     matches: [],
     hands: [],
@@ -92,6 +93,7 @@ describe("historyClient", () => {
       default_seating: "Random",
       default_ai_difficulty: "Strong",
       default_pace: "Standard",
+      llm_base_url: null,
     };
     const fetchFn = vi
       .fn<HistoryFetch>()

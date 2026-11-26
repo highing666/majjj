@@ -63,6 +63,10 @@ struct Cli {
     /// Run in 7x24 headless mode (implies `--no-open`; disables idle auto-exit and `/api/shutdown`).
     #[arg(long, env = "MAJJJ_HEADLESS", default_value_t = false)]
     headless: bool,
+
+    /// Base URL for the mandatory LAN OpenAI-compatible `llama-server` endpoint.
+    #[arg(long, env = "MAJJJ_LLM_URL")]
+    llm_url: Option<String>,
 }
 
 impl From<Cli> for ServerConfig {
@@ -75,6 +79,7 @@ impl From<Cli> for ServerConfig {
             .with_ai_threads(cli.ai_threads)
             .with_no_open(cli.no_open || cli.headless)
             .with_headless(cli.headless)
+            .with_llm_url(cli.llm_url)
     }
 }
 
@@ -383,6 +388,31 @@ mod tests {
         let env_headless_cfg = ServerConfig::from(env_headless_cli);
         assert!(env_headless_cfg.headless);
         assert!(env_headless_cfg.no_open);
+    }
+
+    #[test]
+    fn cli_accepts_llm_url_flag_and_env_override() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var("MAJJJ_LLM_URL");
+
+        let default_cli = Cli::try_parse_from(["mahjong-server"]).expect("parse default llm_url");
+        assert_eq!(ServerConfig::from(default_cli).llm_url, None);
+
+        std::env::set_var("MAJJJ_LLM_URL", "http://192.168.5.77:8080");
+        let env_cli = Cli::try_parse_from(["mahjong-server"]).expect("parse MAJJJ_LLM_URL");
+        assert_eq!(
+            ServerConfig::from(env_cli).llm_url.as_deref(),
+            Some("http://192.168.5.77:8080")
+        );
+
+        let flag_cli =
+            Cli::try_parse_from(["mahjong-server", "--llm-url", "http://127.0.0.1:18080"])
+                .expect("parse --llm-url over env");
+        std::env::remove_var("MAJJJ_LLM_URL");
+        assert_eq!(
+            ServerConfig::from(flag_cli).llm_url.as_deref(),
+            Some("http://127.0.0.1:18080")
+        );
     }
 
     #[test]

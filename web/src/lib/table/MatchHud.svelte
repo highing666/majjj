@@ -2,12 +2,14 @@
   import type { Snippet } from "svelte";
   import { matchModeLabel } from "../lobby/lobbyConfig";
   import type { ViewportDisplayState } from "../platform/viewportDisplay";
+  import type { ActiveBanterMap } from "../presentation/presentationQueue";
   import type { PlayerAction } from "../protocol/generated/PlayerAction";
   import type { PlayerView } from "../protocol/generated/PlayerView";
   import type { Seat } from "../protocol/generated/Seat";
   import type { TablePace } from "../protocol/generated/TablePace";
   import type { TableSnapshot } from "../protocol/generated/TableSnapshot";
   import ActionBar from "./ActionBar.svelte";
+  import BanterBubbles from "./BanterBubbles.svelte";
   import type { TableLayout } from "./layout";
   import SeatControlBar from "./SeatControlBar.svelte";
   import TablePersonaPockets from "./TablePersonaPockets.svelte";
@@ -19,6 +21,8 @@
     presentedSnapshot: TableSnapshot;
     playerView: PlayerView;
     tableLayout: TableLayout | null;
+    activeBubbles: ActiveBanterMap;
+    reducedEffects: boolean;
     turnCue: TurnCueState;
     viewportState: ViewportDisplayState;
     currentPace: TablePace;
@@ -42,6 +46,8 @@
     presentedSnapshot,
     playerView,
     tableLayout,
+    activeBubbles,
+    reducedEffects,
     turnCue,
     viewportState,
     currentPace,
@@ -77,6 +83,14 @@
   snapshot={presentedSnapshot}
   {playerView}
   {tableLayout}
+/>
+
+<BanterBubbles
+  snapshot={presentedSnapshot}
+  {playerView}
+  {tableLayout}
+  {activeBubbles}
+  {reducedEffects}
 />
 
 <div class="glass-top-left">

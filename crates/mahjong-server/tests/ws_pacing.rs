@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use common::{
-    connect_and_hello, no_reaction_wall, recv_event_batch, recv_msg, recv_snapshot, send_msg, tile,
-    tiles,
+    connect_and_hello, no_reaction_wall, recv_event_batch, recv_non_ping_msg as recv_msg,
+    recv_snapshot, send_msg, tile, tiles,
 };
 use mahjong_ai::{AiDifficulty, DecisionBudget};
 use mahjong_core::{
@@ -27,6 +27,7 @@ async fn spawn_humanized_server(
         .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
         .with_port(0)
         .with_ai_threads(2)
+        .with_llm_client(common::stub_llm_client())
         .spawn_with_options(TableOptions::with_wall_factory(seed, factory))
         .await
         .expect("spawn humanized server")
@@ -312,6 +313,7 @@ async fn real_ws_ai_only_all_pass_alignment_and_realtime_overlapped_thinking() {
         .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
         .with_port(0)
         .with_ai_threads(2)
+        .with_llm_client(common::stub_llm_client())
         .spawn_with_options(
             TableOptions::with_wall_factory(101, factory).with_ai_budget(
                 DecisionBudget::Realtime {

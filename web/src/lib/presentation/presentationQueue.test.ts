@@ -765,4 +765,144 @@ describe("PresentationQueue", () => {
 
     queue.dispose();
   });
+
+  it("displays TableBanter bubbles, updates live seat mood, overwrites same seat, auto-fades, and clears on takeover/Lobby", () => {
+    const scheduled = new Map<number, { cb: () => void; delayMs: number }>();
+    let nextTimerId = 1;
+    const clearedIds: number[] = [];
+
+    const queue = createPresentationQueue({
+      banterDurationMs: 4000,
+      scheduler: {
+        setTimeout(cb, delayMs) {
+          const id = nextTimerId++;
+          scheduled.set(id, { cb, delayMs });
+          return id;
+        },
+        clearTimeout(handle) {
+          const id = handle as number;
+          clearedIds.push(id);
+          scheduled.delete(id);
+        },
+      },
+    });
+
+    const snap = makeSnapshot(3, "Standard");
+    snap.seats[1] = {
+      ...snap.seats[1],
+      kind: "Ai",
+      persona_id: "QuickHothead",
+      mood: "Smug",
+      nickname: "急眼快攻哥",
+    };
+    snap.seats[2] = {
+      ...snap.seats[2],
+      kind: "Ai",
+      persona_id: "TeaSarcasm",
+      mood: "Mocking",
+      nickname: "阴阳茶艺师",
+    };
+    queue.enqueueServerMessage({ TableSnapshot: snap });
+
+    // 1. First banter on South sets bubble and updates live seat mood to Tilted
+    queue.enqueueServerMessage({
+      TableBanter: {
+        seat: "South",
+        persona_id: "QuickHothead",
+        mood: "Tilted",
+        text: "这手怎么又没摸到！",
+        event_seq: 4,
+        reply_to_seat: null,
+      },
+    });
+    expect(queue.getState().activeBubbles.South?.text).toBe("这手怎么又没摸到！");
+    expect(queue.getState().activeBubbles.South?.mood).toBe("Tilted");
+    expect(queue.getState().snapshot?.seats[1].mood).toBe("Tilted");
+    expect(scheduled.size).toBe(1);
+    const firstSouthTimer = [...scheduled.keys()][0]!;
+    expect(scheduled.get(firstSouthTimer)?.delayMs).toBe(4000);
+
+    // 2. Second banter on South overwrites first bubble and cancels its timer
+    queue.enqueueServerMessage({
+      TableBanter: {
+        seat: "South",
+        persona_id: "QuickHothead",
+        mood: "Smug",
+        text: "碰！这回轮到我收菜！",
+        event_seq: 5,
+        reply_to_seat: "East",
+      },
+    });
+    expect(clearedIds).toContain(firstSouthTimer);
+    expect(queue.getState().activeBubbles.South?.text).toBe("碰！这回轮到我收菜！");
+    expect(queue.getState().activeBubbles.South?.replyToSeat).toBe("East");
+    expect(queue.getState().snapshot?.seats[1].mood).toBe("Smug");
+
+    // 3. West speaks concurrently without disturbing South's bubble
+    queue.enqueueServerMessage({
+      TableBanter: {
+        seat: "West",
+        persona_id: "TeaSarcasm",
+        mood: "Mocking",
+        text: "哟，急眼哥又急了呢。",
+        event_seq: 6,
+        reply_to_seat: "South",
+      },
+    });
+    expect(queue.getState().activeBubbles.South).not.toBeNull();
+    expect(queue.getState().activeBubbles.West?.text).toBe("哟，急眼哥又急了呢。");
+
+    // 4. Firing South's fade timer clears only South
+    const [southTimerId] = [...scheduled.keys()];
+    scheduled.get(southTimerId!)?.cb();
+    scheduled.delete(southTimerId!);
+    expect(queue.getState().activeBubbles.South).toBeNull();
+    expect(queue.getState().activeBubbles.West).not.toBeNull();
+
+    // 5. Human takes over West -> LobbyUpdated prunes West's AI bubble immediately
+    const takeoverSeats = snap.seats.map((entry) =>
+      entry.seat === "West"
+        ? {
+            ...entry,
+            kind: "Human" as const,
+            nickname: "客串玩家",
+            persona_id: null,
+            mood: null,
+          }
+        : entry,
+    ) as TableSnapshot["seats"];
+    queue.enqueueServerMessage({
+      LobbyUpdated: {
+        phase: "InMatch",
+        config: snap.config,
+        seats: takeoverSeats,
+      },
+    });
+    expect(queue.getState().activeBubbles.West).toBeNull();
+
+    // 6. Returning to Lobby clears all active bubbles
+    queue.enqueueServerMessage({
+      TableBanter: {
+        seat: "South",
+        persona_id: "QuickHothead",
+        mood: "Plotting",
+        text: "再来一局！",
+        event_seq: 7,
+        reply_to_seat: null,
+      },
+    });
+    expect(queue.getState().activeBubbles.South).not.toBeNull();
+    queue.enqueueServerMessage({
+      TableSnapshot: {
+        ...snap,
+        phase: "Lobby",
+        player_view: null,
+        seq: 0,
+      },
+    });
+    expect(queue.getState().activeBubbles.South).toBeNull();
+    expect(scheduled.size).toBe(0);
+
+    queue.dispose();
+  });
 });
