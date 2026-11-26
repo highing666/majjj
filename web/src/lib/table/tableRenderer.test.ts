@@ -1,9 +1,75 @@
-import { Container, Texture } from "pixi.js";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { Container, type FederatedPointerEvent, Text, Texture } from "pixi.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Seat } from "../protocol/generated/Seat";
+import type { SeatInfo } from "../protocol/generated/SeatInfo";
 import type { TableSnapshot } from "../protocol/generated/TableSnapshot";
 import type { Tile } from "../protocol/generated/Tile";
+import { computeBottomRiverSlotPoint, computeTableLayout } from "./layout";
 import { TableSceneRenderer } from "./tableRenderer";
 import type { TileAtlas, TileBodyKind } from "./tileAtlas";
+
+function installCanvasDocumentStub(): () => void {
+  const prevDocument = globalThis.document;
+  const prevCtx2D = (globalThis as { CanvasRenderingContext2D?: unknown })
+    .CanvasRenderingContext2D;
+  const noop = () => {};
+  const fakeCtx = {
+    save: noop,
+    restore: noop,
+    scale: noop,
+    translate: noop,
+    beginPath: noop,
+    closePath: noop,
+    rect: noop,
+    fill: noop,
+    stroke: noop,
+    clearRect: noop,
+    fillRect: noop,
+    fillText: noop,
+    strokeText: noop,
+    setTransform: noop,
+    getImageData: () => ({ data: new Uint8ClampedArray(4) }),
+    measureText: (text: string) => ({
+      width: Math.max(8, text.length * 8),
+      actualBoundingBoxAscent: 8,
+      actualBoundingBoxDescent: 2,
+      fontBoundingBoxAscent: 9,
+      fontBoundingBoxDescent: 3,
+      actualBoundingBoxLeft: 0,
+      actualBoundingBoxRight: Math.max(8, text.length * 8),
+    }),
+    fillStyle: "",
+    strokeStyle: "",
+    lineWidth: 1,
+    font: "",
+    textAlign: "left",
+    textBaseline: "alphabetic",
+  };
+  (globalThis as { CanvasRenderingContext2D?: unknown }).CanvasRenderingContext2D =
+    function CanvasRenderingContext2D() {};
+  (globalThis as unknown as { document: unknown }).document = {
+    createElement: () => ({
+      width: 256,
+      height: 256,
+      style: {},
+      getContext: () => fakeCtx,
+    }),
+  };
+  return () => {
+    if (prevDocument === undefined) {
+      delete (globalThis as { document?: Document }).document;
+    } else {
+      globalThis.document = prevDocument;
+    }
+    if (prevCtx2D === undefined) {
+      delete (globalThis as { CanvasRenderingContext2D?: unknown })
+        .CanvasRenderingContext2D;
+    } else {
+      (globalThis as { CanvasRenderingContext2D?: unknown }).CanvasRenderingContext2D =
+        prevCtx2D;
+    }
+  };
+}
 
 function createSpyAtlas() {
   const standingTextures = new Map<Tile, Texture>();
@@ -56,29 +122,62 @@ function createSpyAtlas() {
   };
 }
 
-function makeSnapshot(): TableSnapshot {
+function makePointerEvent(x = 0, y = 0): FederatedPointerEvent {
   return {
-    table_id: "t1",
+    global: { x, y },
+    stopPropagation: () => {},
+  } as unknown as FederatedPointerEvent;
+}
+
+function makeSeatInfo(
+  seat: Seat,
+  nickname: string,
+  overrides: Partial<SeatInfo> = {},
+): SeatInfo {
+  return {
+    seat,
+    kind: seat === "East" ? "Human" : "Ai",
+    nickname,
+    connected: true,
+    ai_assisted: false,
+    ai_difficulty: null,
+    ai_style: null,
+    voice_pack_id: null,
+    ...overrides,
+  };
+}
+
+function makeSnapshot(overrides: Partial<TableSnapshot> = {}): TableSnapshot {
+  return {
+    table_id: "tbl-72",
     phase: "InMatch",
     config: {
       mode: "EastOnly",
-      seating: "Random",
-      ai_difficulty: "Strong",
+      seating: "KeepLobbySeats",
+      ai_difficulty: "Intermediate",
       pace: "Standard",
     },
     pace: "Standard",
     seats: [
-      { seat: "East", kind: "Human", nickname: "玩家甲", connected: true, ai_assisted: false, ai_difficulty: null, ai_style: null, voice_pack_id: null },
-      { seat: "South", kind: "Ai", nickname: "AI乙", connected: true, ai_assisted: false, ai_difficulty: "Strong", ai_style: "Balanced", voice_pack_id: null },
-      { seat: "West", kind: "Ai", nickname: "AI丙", connected: true, ai_assisted: false, ai_difficulty: "Strong", ai_style: "Balanced", voice_pack_id: null },
-      { seat: "North", kind: "Ai", nickname: "AI丁", connected: true, ai_assisted: false, ai_difficulty: "Strong", ai_style: "Balanced", voice_pack_id: null },
+      makeSeatInfo("East", "阿东"),
+      makeSeatInfo("South", "小南"),
+      makeSeatInfo("West", "阿西", {
+        kind: "Human",
+        connected: false,
+        ai_assisted: true,
+      }),
+      makeSeatInfo("North", "北北"),
     ],
     your_seat: "East",
-    seat_token: "tok",
+    seat_token: "tok-east",
     pending_destructive_op: null,
-    seq: 2,
+    seq: 70,
     server_version: "0.1.0",
-    lan_urls: { preferred_ipv4_url: null, ipv4_urls: [], local_hostname_url: null },
+    lan_urls: {
+      preferred_ipv4_url: null,
+      ipv4_urls: [],
+      local_hostname_url: null,
+    },
     host_is_loopback: true,
     player_view: {
       viewer: "East",
@@ -96,58 +195,98 @@ function makeSnapshot(): TableSnapshot {
       },
       phase: "Playing",
       hand: {
-        closed_tiles: [0, 1, 2, 9, 10, 11, 18, 19, 20, 27],
-        drawn_tile: 31,
+        closed_tiles: [0, 1, 2, 9, 10, 11, 18, 19, 20, 27, 27, 31, 31],
+        drawn_tile: 5,
       },
       seats: [
         {
           seat: "East",
-          score: 0,
-          hand_count: 11,
-          river: [{ tile: 4, seq: 1, is_tsumogiri: false, claimed_by: null }],
-          melds: [{ Pon: { tile: 33, from_seat: "South", seq: 1 } }],
-          last_draw_or_meld_seq: 1,
+          score: 12,
+          hand_count: 14,
+          river: Array.from({ length: 12 }, (_, idx) => ({
+            tile: idx % 9,
+            is_tsumogiri: idx % 3 === 0,
+            claimed_by: null,
+            seq: idx + 1,
+          })),
+          melds: [
+            { Pon: { tile: 27, from_seat: "South", seq: 20 } },
+            { ConcealedKong: { tile: 31, seq: 21 } },
+          ],
+          last_draw_or_meld_seq: 22,
         },
         {
           seat: "South",
-          score: 0,
-          hand_count: 10,
-          river: [{ tile: 14, seq: 2, is_tsumogiri: true, claimed_by: null }],
-          melds: [{ ConcealedKong: { tile: null, seq: 2 } }],
-          last_draw_or_meld_seq: 2,
+          score: -4,
+          hand_count: 13,
+          river: Array.from({ length: 5 }, (_, idx) => ({
+            tile: 9 + idx,
+            is_tsumogiri: false,
+            claimed_by: null,
+            seq: 30 + idx,
+          })),
+          melds: [],
+          last_draw_or_meld_seq: 30,
         },
         {
           seat: "West",
-          score: 0,
+          score: -8,
           hand_count: 13,
-          river: [],
-          melds: [],
-          last_draw_or_meld_seq: 0,
+          river: Array.from({ length: 11 }, (_, idx) => ({
+            tile: 18 + (idx % 9),
+            is_tsumogiri: false,
+            claimed_by: null,
+            seq: 40 + idx,
+          })),
+          melds: [{ ConcealedKong: { tile: null, seq: 55 } }],
+          last_draw_or_meld_seq: 40,
         },
         {
           seat: "North",
           score: 0,
           hand_count: 13,
-          river: [],
+          river: Array.from({ length: 6 }, (_, idx) => ({
+            tile: idx,
+            is_tsumogiri: true,
+            claimed_by: null,
+            seq: 60 + idx,
+          })),
           melds: [],
-          last_draw_or_meld_seq: 0,
+          last_draw_or_meld_seq: 60,
         },
       ],
-      wall_remaining: 50,
+      wall_remaining: 42,
       turn: {
         wind_round: "East",
-        hand_number: 1,
+        hand_number: 2,
         dealer_streak: 0,
         dealer: "East",
         active_seat: "East",
       },
-      legal_actions: [{ Discard: { tile: 31, from_drawn: true } }],
+      legal_actions: [
+        { Discard: { tile: 5, from_drawn: true } },
+        { Discard: { tile: 0, from_drawn: false } },
+      ],
       last_settlement: null,
       ready_seats: null,
       match_summary: null,
-      seq: 2,
+      seq: 70,
     },
+    ...overrides,
   };
+}
+
+function collectTexts(container: Container): string[] {
+  const out: string[] = [];
+  for (const child of container.children) {
+    if (child instanceof Text) {
+      out.push(child.text);
+    }
+    if (child instanceof Container && child.children.length > 0) {
+      out.push(...collectTexts(child));
+    }
+  }
+  return out;
 }
 
 function collectLayerTextures(layer: Container): Set<Texture> {
@@ -160,66 +299,16 @@ function collectLayerTextures(layer: Container): Set<Texture> {
   return out;
 }
 
-describe("TableSceneRenderer standing vs laid tile body selection", () => {
-  const prevDocument = globalThis.document;
-  const prevCtx2d = (globalThis as { CanvasRenderingContext2D?: unknown })
-    .CanvasRenderingContext2D;
+describe("TableSceneRenderer standing vs laid bodies & Scheme B integration", () => {
+  let restoreDoc: (() => void) | null = null;
 
   beforeEach(() => {
-    (
-      globalThis as unknown as { CanvasRenderingContext2D: unknown }
-    ).CanvasRenderingContext2D = function CanvasRenderingContext2D() {};
-    const noop = () => {};
-    const fakeCtx = {
-      save: noop,
-      restore: noop,
-      beginPath: noop,
-      closePath: noop,
-      rect: noop,
-      fill: noop,
-      stroke: noop,
-      fillRect: noop,
-      clearRect: noop,
-      fillText: noop,
-      strokeText: noop,
-      scale: noop,
-      translate: noop,
-      setTransform: noop,
-      measureText: () => ({
-        width: 24,
-        actualBoundingBoxAscent: 10,
-        actualBoundingBoxDescent: 3,
-        fontBoundingBoxAscent: 12,
-        fontBoundingBoxDescent: 4,
-      }),
-      getImageData: () => ({ data: new Uint8ClampedArray(4) }),
-      fillStyle: "",
-      strokeStyle: "",
-      font: "",
-    };
-    (globalThis as unknown as { document: unknown }).document = {
-      createElement: () => ({
-        width: 0,
-        height: 0,
-        getContext: () => fakeCtx,
-      }),
-    };
+    restoreDoc = installCanvasDocumentStub();
   });
 
   afterEach(() => {
-    if (prevDocument === undefined) {
-      delete (globalThis as { document?: Document }).document;
-    } else {
-      globalThis.document = prevDocument;
-    }
-    if (prevCtx2d === undefined) {
-      delete (globalThis as { CanvasRenderingContext2D?: unknown })
-        .CanvasRenderingContext2D;
-    } else {
-      (
-        globalThis as unknown as { CanvasRenderingContext2D?: unknown }
-      ).CanvasRenderingContext2D = prevCtx2d;
-    }
+    restoreDoc?.();
+    restoreDoc = null;
   });
 
   it("renders viewer hand with standing textures, rivers and melds with laid textures, and opponent concealed kongs with laidBackTexture", () => {
@@ -232,7 +321,7 @@ describe("TableSceneRenderer standing vs laid tile body selection", () => {
     renderer.resize(1280, 720);
     renderer.render({
       snapshot: makeSnapshot(),
-      pendingAddedKong: { seat: "East", tile: 33 },
+      pendingAddedKong: { seat: "East", tile: 27 },
       inputLocked: false,
     });
 
@@ -243,40 +332,176 @@ describe("TableSceneRenderer standing vs laid tile body selection", () => {
     const opponentHandTextures = collectLayerTextures(stage.children[5] as Container);
     const viewerHandTextures = collectLayerTextures(stage.children[7] as Container);
 
-    // Rivers use laid tile textures (tile 4 & tile 14)
+    // Rivers use laid tile textures (tile 4 from bottom river, tile 13 from right river)
     expect(riverTextures.has(spy.laidTextures.get(4)!)).toBe(true);
-    expect(riverTextures.has(spy.laidTextures.get(14)!)).toBe(true);
+    expect(riverTextures.has(spy.laidTextures.get(13)!)).toBe(true);
     expect(riverTextures.has(spy.standingTextures.get(4)!)).toBe(false);
-    expect(riverTextures.has(spy.standingTextures.get(14)!)).toBe(false);
+    expect(riverTextures.has(spy.standingTextures.get(13)!)).toBe(false);
 
-    // Melds use laid tile textures (Pon of 33 + pendingAddedKong 33) and laidBackTexture for concealed kong
-    expect(meldTextures.has(spy.laidTextures.get(33)!)).toBe(true);
+    // Melds use laid tile textures (Pon of 27 + pendingAddedKong 27 + ConcealedKong 31) and laidBackTexture
+    expect(meldTextures.has(spy.laidTextures.get(27)!)).toBe(true);
+    expect(meldTextures.has(spy.laidTextures.get(31)!)).toBe(true);
     expect(meldTextures.has(spy.laidBackTexture)).toBe(true);
-    expect(meldTextures.has(spy.standingTextures.get(33)!)).toBe(false);
+    expect(meldTextures.has(spy.standingTextures.get(27)!)).toBe(false);
     expect(meldTextures.has(spy.backTexture)).toBe(false);
 
     // Opponent concealed hands use standing backTexture
     expect(opponentHandTextures.has(spy.backTexture)).toBe(true);
     expect(opponentHandTextures.has(spy.laidBackTexture)).toBe(false);
 
-    // Viewer hand uses standing tile textures (e.g. closed 0, drawn 31)
+    // Viewer hand uses standing tile textures (e.g. closed 0, drawn 5)
     expect(viewerHandTextures.has(spy.standingTextures.get(0)!)).toBe(true);
-    expect(viewerHandTextures.has(spy.standingTextures.get(31)!)).toBe(true);
+    expect(viewerHandTextures.has(spy.standingTextures.get(5)!)).toBe(true);
     expect(viewerHandTextures.has(spy.laidTextures.get(0)!)).toBe(false);
-    expect(viewerHandTextures.has(spy.laidTextures.get(31)!)).toBe(false);
+    expect(viewerHandTextures.has(spy.laidTextures.get(5)!)).toBe(false);
 
     // Hovering legal drawn tile renders laid ghost preview in ghostLayer
     const viewerHandLayer = stage.children[7] as Container;
     const drawnSprite = viewerHandLayer.children.find(
       (child) =>
-        "texture" in child &&
-        child.texture === spy.standingTextures.get(31),
+        "texture" in child && child.texture === spy.standingTextures.get(5),
     );
     expect(drawnSprite).toBeDefined();
-    drawnSprite!.emit("pointerover", {} as never);
+    drawnSprite!.emit("pointerover", makePointerEvent());
     const ghostTextures = collectLayerTextures(stage.children[3] as Container);
-    expect(ghostTextures.has(spy.laidTextures.get(31)!)).toBe(true);
-    expect(ghostTextures.has(spy.standingTextures.get(31)!)).toBe(false);
+    expect(ghostTextures.has(spy.laidTextures.get(5)!)).toBe(true);
+    expect(ghostTextures.has(spy.standingTextures.get(5)!)).toBe(false);
+
+    renderer.destroy();
+    spy.atlas.destroy();
+  });
+
+  it("renders Scheme B theater layout, ultra-flat pill center seal, and wind-free relative badges", () => {
+    const spy = createSpyAtlas();
+    const stage = new Container();
+    const onDiscard = vi.fn();
+    const renderer = new TableSceneRenderer(stage, spy.atlas, {
+      onDiscard,
+    });
+
+    renderer.resize(1440, 900);
+    renderer.render({
+      snapshot: makeSnapshot(),
+      pendingAddedKong: { seat: "East", tile: 27 },
+      inputLocked: false,
+    });
+
+    const layout = renderer.getLayout();
+    expect(layout).not.toBeNull();
+    expect(layout!.isWide).toBe(true);
+    expect(layout!.riverGrid.bottom.perLine).toBe(10);
+    expect(layout!.riverGrid.left.perLine).toBe(4);
+
+    const texts = collectTexts(stage).join(" | ");
+    expect(texts).toContain("东2");
+    expect(texts).toContain("牌墙余 42");
+    expect(texts).toContain("自家");
+    expect(texts).toContain("下家");
+    expect(texts).toContain("对门");
+    expect(texts).toContain("上家");
+    expect(texts).toContain("庄");
+    expect(texts).toContain("离线托管");
+
+    renderer.destroy();
+    spy.atlas.destroy();
+  });
+
+  it("aligns discard ghost preview with 10-per-row bottom river slot and commits desktop click discard", () => {
+    const spy = createSpyAtlas();
+    const stage = new Container();
+    const onDiscard = vi.fn();
+    const renderer = new TableSceneRenderer(stage, spy.atlas, {
+      onDiscard,
+    });
+
+    renderer.resize(1280, 720);
+    renderer.render({
+      snapshot: makeSnapshot(),
+      pendingAddedKong: null,
+      inputLocked: false,
+      confirmDiscard: false,
+    });
+
+    const layout = renderer.getLayout()!;
+    const expectedSlot = computeBottomRiverSlotPoint(layout, 12);
+    const expectedSameAsCompute = computeBottomRiverSlotPoint(
+      computeTableLayout(1280, 720),
+      12,
+    );
+    expect(expectedSlot).toEqual(expectedSameAsCompute);
+
+    const viewerHandLayer = stage.children[7] as Container;
+    const interactiveSprites = viewerHandLayer.children.filter(
+      (c) => c.eventMode === "static",
+    );
+    expect(interactiveSprites.length).toBeGreaterThan(0);
+
+    const targetSprite = interactiveSprites[interactiveSprites.length - 1];
+    targetSprite.emit("pointerover", makePointerEvent());
+
+    const ghostChildren = renderer.ghostLayer.children;
+    const ghostSprite = ghostChildren[ghostChildren.length - 1];
+    expect(ghostSprite.x).toBeCloseTo(expectedSlot.x, 1);
+    expect(ghostSprite.y).toBeCloseTo(expectedSlot.y, 1);
+
+    targetSprite.emit(
+      "pointerdown",
+      makePointerEvent(targetSprite.x, targetSprite.y),
+    );
+    stage.emit("pointerup", makePointerEvent(targetSprite.x, targetSprite.y));
+
+    expect(onDiscard).toHaveBeenCalledTimes(1);
+    expect(onDiscard).toHaveBeenCalledWith(5, true);
+
+    renderer.destroy();
+    spy.atlas.destroy();
+  });
+
+  it("supports touch tap-twice, swipe-up cancel snap-back, and narrow portrait fallback", () => {
+    const spy = createSpyAtlas();
+    const stage = new Container();
+    const onDiscard = vi.fn();
+    const renderer = new TableSceneRenderer(stage, spy.atlas, {
+      onDiscard,
+    });
+
+    renderer.resize(390, 844);
+    renderer.render({
+      snapshot: makeSnapshot(),
+      pendingAddedKong: { seat: "East", tile: 27 },
+      inputLocked: false,
+      confirmDiscard: true,
+    });
+
+    expect(renderer.getLayout()!.isWide).toBe(false);
+
+    const viewerHandLayer = stage.children[7] as Container;
+    const interactiveSprites = viewerHandLayer.children.filter(
+      (c) => c.eventMode === "static",
+    );
+    const tileSprite = interactiveSprites[0];
+    const restY = tileSprite.y;
+
+    // First tap selects and shows ghost preview
+    tileSprite.emit("pointerdown", makePointerEvent(tileSprite.x, tileSprite.y));
+    stage.emit("pointerup", makePointerEvent(tileSprite.x, tileSprite.y));
+    expect(onDiscard).not.toHaveBeenCalled();
+    expect(renderer.ghostLayer.children.length).toBeGreaterThan(0);
+
+    // Small drag below swipe threshold cancels and snaps back
+    tileSprite.emit("pointerdown", makePointerEvent(tileSprite.x, restY));
+    stage.emit("globalpointermove", makePointerEvent(tileSprite.x, restY - 12));
+    stage.emit("pointerup", makePointerEvent(tileSprite.x, restY - 12));
+    expect(onDiscard).not.toHaveBeenCalled();
+    expect(tileSprite.y).toBe(restY);
+
+    // Tap twice commits discard
+    tileSprite.emit("pointerdown", makePointerEvent(tileSprite.x, restY));
+    stage.emit("pointerup", makePointerEvent(tileSprite.x, restY));
+    tileSprite.emit("pointerdown", makePointerEvent(tileSprite.x, restY));
+    stage.emit("pointerup", makePointerEvent(tileSprite.x, restY));
+    expect(onDiscard).toHaveBeenCalledTimes(1);
+    expect(onDiscard).toHaveBeenCalledWith(0, false);
 
     renderer.destroy();
     spy.atlas.destroy();

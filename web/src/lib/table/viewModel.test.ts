@@ -211,6 +211,15 @@ describe("table viewModel helpers", () => {
     expect(rows[0].map((e) => e.tile)).toEqual([0, 2, 3, 4, 5, 6]);
     expect(rows[0][2].is_tsumogiri).toBe(true);
     expect(rows[1].map((e) => e.tile)).toEqual([7]);
+
+    const wideRows = buildVisibleRiverRows(river, 10);
+    expect(wideRows).toHaveLength(1);
+    expect(wideRows[0].map((e) => e.tile)).toEqual([0, 2, 3, 4, 5, 6, 7]);
+
+    const sideCols = buildVisibleRiverRows(river, 4);
+    expect(sideCols).toHaveLength(2);
+    expect(sideCols[0].map((e) => e.tile)).toEqual([0, 2, 3, 4]);
+    expect(sideCols[1].map((e) => e.tile)).toEqual([5, 6, 7]);
   });
 
   it("projects meld tiles with viewer vs opponent ConcealedKong and pendingAddedKong", () => {

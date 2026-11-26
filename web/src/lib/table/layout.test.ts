@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   computeBottomRiverSlotPoint,
+  computeCenterSealEdgeBars,
   computeCenterSealLayout,
-  computeCenterSealPointer,
   computeOpponentHandSlots,
   computeRiverSlotPoint,
   computeTableLayout,
@@ -26,187 +26,244 @@ function expectInsideBounds(rect: Rect, width: number, height: number): void {
   expect(rect.y + rect.height).toBeLessThanOrEqual(height);
 }
 
-describe("Scheme C four-corner minimal computeTableLayout", () => {
+function expectRectContains(outer: Rect, inner: Rect): void {
+  expect(inner.x).toBeGreaterThanOrEqual(outer.x);
+  expect(inner.y).toBeGreaterThanOrEqual(outer.y);
+  expect(inner.x + inner.width).toBeLessThanOrEqual(outer.x + outer.width);
+  expect(inner.y + inner.height).toBeLessThanOrEqual(outer.y + outer.height);
+}
+
+describe("Scheme B three-column theater computeTableLayout", () => {
   it.each([
-    { name: "Mac wide 1440x900", width: 1440, height: 900, minHandW: 54, minRiverW: 28 },
-    { name: "Mac wide 1440x860", width: 1440, height: 860, minHandW: 54, minRiverW: 28 },
-    { name: "Mac laptop 1280x720", width: 1280, height: 720, minHandW: 48, minRiverW: 26 },
-    { name: "desktop 1040x660", width: 1040, height: 660, minHandW: 44, minRiverW: 24 },
-    { name: "desktop 1024x720", width: 1024, height: 720, minHandW: 44, minRiverW: 24 },
-    { name: "iPhone portrait 390x844", width: 390, height: 844, minHandW: 24, minRiverW: 16 },
-    { name: "iPhone portrait 390x780", width: 390, height: 780, minHandW: 24, minRiverW: 16 },
-    { name: "compact portrait 375x560", width: 375, height: 560, minHandW: 23, minRiverW: 15 },
-    { name: "SE portrait 320x568", width: 320, height: 568, minHandW: 20, minRiverW: 15 },
-    { name: "iPhone landscape 844x390", width: 844, height: 390, minHandW: 34, minRiverW: 18 },
-    { name: "compact landscape 760x340", width: 760, height: 340, minHandW: 29, minRiverW: 15 },
-    { name: "SE landscape 568x320", width: 568, height: 320, minHandW: 28, minRiverW: 15 },
+    { name: "Mac wide 1440x900", width: 1440, height: 900, wide: true, minHandW: 54, minRiverW: 28 },
+    { name: "Mac laptop 1280x720", width: 1280, height: 720, wide: true, minHandW: 46, minRiverW: 24 },
+    { name: "desktop 1024x720", width: 1024, height: 720, wide: true, minHandW: 36, minRiverW: 20 },
+    { name: "iPhone landscape 844x390", width: 844, height: 390, wide: true, minHandW: 30, minRiverW: 18 },
+    { name: "compact landscape 760x340", width: 760, height: 340, wide: true, minHandW: 26, minRiverW: 16 },
+    { name: "SE landscape 568x320", width: 568, height: 320, wide: true, minHandW: 20, minRiverW: 14 },
+    { name: "iPhone portrait fallback 390x844", width: 390, height: 844, wide: false, minHandW: 23, minRiverW: 15 },
+    { name: "SE portrait fallback 320x568", width: 320, height: 568, wide: false, minHandW: 19, minRiverW: 14 },
   ])(
-    "produces zero-overlap, in-bounds four-corner layout on $name ($width x $height)",
-    ({ width, height, minHandW, minRiverW }) => {
+    "produces zero-overlap, in-bounds Scheme B layout on $name ($width x $height)",
+    ({ width, height, wide, minHandW, minRiverW }) => {
       const layout = computeTableLayout(width, height);
 
-      expect(layout.isWide).toBe(width >= 640);
+      expect(layout.isWide).toBe(wide);
       expect(layout.handTileW).toBeGreaterThanOrEqual(minHandW);
       expect(layout.handTileH).toBeGreaterThan(layout.handTileW);
       expect(layout.riverTileW).toBeGreaterThanOrEqual(minRiverW);
       expect(layout.riverTileH).toBeGreaterThan(layout.riverTileW);
 
-      // Compact center compass seal (round + wall remaining)
-      expect(layout.centerSeal.width).toBeLessThanOrEqual(76);
-      expect(layout.centerSeal.height).toBeLessThanOrEqual(76);
-      expectInsideBounds(layout.centerSeal, width, height);
-
-      const sealLayout = computeCenterSealLayout(layout.centerSeal);
-      expect("windY" in sealLayout).toBe(false);
-      expect("windFontSize" in sealLayout).toBe(false);
-      expect(sealLayout.outerRadius).toBe(
-        Math.min(layout.centerSeal.width, layout.centerSeal.height) / 2,
-      );
-      expect(sealLayout.ringInset).toBeGreaterThanOrEqual(4);
-      expect(sealLayout.ringRadius).toBeGreaterThan(0);
-      expect(sealLayout.ringRadius).toBeLessThan(sealLayout.outerRadius);
-      expect(sealLayout.roundFontSize).toBeGreaterThan(0);
-      expect(sealLayout.wallFontSize).toBeGreaterThan(0);
-      expect(sealLayout.roundY - sealLayout.roundFontSize / 2).toBeGreaterThanOrEqual(
-        layout.centerSeal.y,
-      );
-      expect(sealLayout.wallY + sealLayout.wallFontSize / 2).toBeLessThanOrEqual(
-        layout.centerSeal.y + layout.centerSeal.height,
-      );
-      expect(sealLayout.wallY - sealLayout.roundY).toBeGreaterThanOrEqual(
-        (sealLayout.roundFontSize + sealLayout.wallFontSize) * 0.45,
-      );
-
-      // Viewer 13+1 hand inside bounds
-      const fullHandWidth =
-        13 * layout.handTileW +
-        12 * layout.handGap +
-        layout.drawnGap +
-        layout.handTileW;
-      expect(fullHandWidth).toBeLessThanOrEqual(width);
-      expectInsideBounds(layout.viewerHandRect, width, height);
-      expect(layout.viewerHandRect.y).toBe(layout.bottomHandY);
-
-      // Opponent hand bounds stay inside canvas
-      expectInsideBounds(layout.oppHands.top, width, height);
-      expectInsideBounds(layout.oppHands.left, width, height);
-      expectInsideBounds(layout.oppHands.right, width, height);
-
-      // Four-corner seat/score badges (TL / TR / BL / BR) sized for 2-char role + optional dealer pill
-      const tl = layout.badges.top;
-      const tr = layout.badges.right;
-      const bl = layout.badges.left;
-      const br = layout.badges.bottom;
-      const expectedMinBadgeW = layout.isWide ? 140 : 114;
-      for (const badge of [tl, tr, bl, br]) {
-        expectInsideBounds(badge, width, height);
-        expect(badge.width).toBeGreaterThanOrEqual(expectedMinBadgeW);
+      // Three theater regions + top floating capsule safe areas stay in bounds and pairwise disjoint
+      for (const zone of [
+        layout.leftWing,
+        layout.centerStage,
+        layout.rightWing,
+        layout.topLeftSafeRect,
+        layout.topRightSafeRect,
+      ]) {
+        expectInsideBounds(zone, width, height);
+        expect(zone.width).toBeGreaterThan(0);
+        expect(zone.height).toBeGreaterThan(0);
       }
-      if (!layout.isWide && width >= 390) {
-        expect(tl.width).toBeGreaterThanOrEqual(132);
-      }
-      expect(tl.x + tl.width / 2).toBeLessThan(width / 2);
-      expect(tl.y + tl.height / 2).toBeLessThan(height / 2);
-      expect(tr.x + tr.width / 2).toBeGreaterThan(width / 2);
-      expect(tr.y + tr.height / 2).toBeLessThan(height / 2);
-      expect(bl.x + bl.width / 2).toBeLessThan(width / 2);
-      expect(bl.y + bl.height / 2).toBeGreaterThan(height / 2);
-      expect(br.x + br.width / 2).toBeGreaterThan(width / 2);
-      expect(br.y + br.height / 2).toBeGreaterThan(height / 2);
 
-      // All 4 rivers inside bounds and never overlapping centerSeal or each other
-      const riverRects = [
-        layout.rivers.bottom,
-        layout.rivers.top,
-        layout.rivers.left,
-        layout.rivers.right,
+      const theaterColumns = [
+        layout.leftWing,
+        layout.centerStage,
+        layout.rightWing,
+        layout.topLeftSafeRect,
+        layout.topRightSafeRect,
       ];
-      for (const r of riverRects) {
-        expectInsideBounds(r, width, height);
-        expect(rectsOverlap(r, layout.centerSeal)).toBe(false);
-        expect(rectsOverlap(r, layout.viewerHandRect)).toBe(false);
-      }
-      for (let i = 0; i < riverRects.length; i += 1) {
-        for (let j = i + 1; j < riverRects.length; j += 1) {
-          expect(rectsOverlap(riverRects[i], riverRects[j])).toBe(false);
+      for (let i = 0; i < theaterColumns.length; i += 1) {
+        for (let j = i + 1; j < theaterColumns.length; j += 1) {
+          expect(rectsOverlap(theaterColumns[i], theaterColumns[j])).toBe(false);
         }
       }
 
-      // Check pairwise non-overlap among badges, opponent hands, rivers, and viewer hand
+      if (wide) {
+        expect(layout.leftWing.x + layout.leftWing.width).toBeLessThan(layout.centerStage.x);
+        expect(layout.centerStage.x + layout.centerStage.width).toBeLessThan(layout.rightWing.x);
+        expect(layout.riverGrid.top.perLine).toBe(10);
+        expect(layout.riverGrid.bottom.perLine).toBe(10);
+        expect(layout.riverGrid.left.perLine).toBe(4);
+        expect(layout.riverGrid.right.perLine).toBe(4);
+      } else {
+        expect(layout.riverGrid.top.perLine).toBeGreaterThanOrEqual(4);
+        expect(layout.riverGrid.bottom.perLine).toBeGreaterThanOrEqual(4);
+        expect(layout.riverGrid.left.perLine).toBeGreaterThanOrEqual(4);
+        expect(layout.riverGrid.right.perLine).toBeGreaterThanOrEqual(4);
+      }
+
+      // Ultra-flat rounded pill center seal
+      expectInsideBounds(layout.centerSeal, width, height);
+      expect(layout.centerSeal.width).toBeGreaterThan(layout.centerSeal.height * 2.5);
+      expect(layout.centerSeal.height).toBeLessThanOrEqual(36);
+
+      const sealLayout = computeCenterSealLayout(layout.centerSeal);
+      expect(sealLayout.pillRadius).toBe(layout.centerSeal.height / 2);
+      expect(sealLayout.fontSize).toBeGreaterThanOrEqual(10);
+      expect(sealLayout.textMaxWidth).toBeGreaterThanOrEqual(40);
+      expect(sealLayout.textY).toBeGreaterThan(layout.centerSeal.y);
+      expect(sealLayout.textY).toBeLessThan(layout.centerSeal.y + layout.centerSeal.height);
+
+      // Viewer 13+1 hand + centered turnBarRect directly above hand
+      expectInsideBounds(layout.viewerHandRect, width, height);
+      expectInsideBounds(layout.turnBarRect, width, height);
+      expect(layout.viewerHandRect.y).toBe(layout.bottomHandY);
+      expect(layout.turnBarRect.y + layout.turnBarRect.height).toBeLessThan(
+        layout.viewerHandRect.y,
+      );
+      expect(
+        Math.abs(
+          layout.turnBarRect.x +
+            layout.turnBarRect.width / 2 -
+            (layout.viewerHandRect.x + layout.viewerHandRect.width / 2),
+        ),
+      ).toBeLessThanOrEqual(2);
+
+      if (wide) {
+        expectRectContains(layout.centerStage, layout.viewerHandRect);
+        expectRectContains(layout.centerStage, layout.turnBarRect);
+        expectRectContains(layout.centerStage, layout.centerSeal);
+        expectRectContains(layout.centerStage, layout.badges.top);
+        expectRectContains(layout.centerStage, layout.oppHands.top);
+        expectRectContains(layout.centerStage, layout.personaPockets.top);
+        expectRectContains(layout.centerStage, layout.riverTroughs.top);
+        expectRectContains(layout.centerStage, layout.riverTroughs.bottom);
+
+        expectRectContains(layout.leftWing, layout.badges.left);
+        expectRectContains(layout.leftWing, layout.personaPockets.left);
+        expectRectContains(layout.leftWing, layout.oppHands.left);
+        expectRectContains(layout.leftWing, layout.riverTroughs.left);
+        expectRectContains(layout.leftWing, layout.badges.bottom);
+
+        expectRectContains(layout.rightWing, layout.badges.right);
+        expectRectContains(layout.rightWing, layout.personaPockets.right);
+        expectRectContains(layout.rightWing, layout.oppHands.right);
+        expectRectContains(layout.rightWing, layout.riverTroughs.right);
+      }
+
+      // Opponent hands, badges, persona pockets, river troughs, and inner rivers
+      const riverSides = ["bottom", "top", "left", "right"] as const;
+      for (const side of riverSides) {
+        expectInsideBounds(layout.riverTroughs[side], width, height);
+        expectRectContains(layout.riverTroughs[side], layout.rivers[side]);
+      }
+
+      const sampleMeldW = 3 * layout.meldTileW + 2;
+      const sampleMelds: Rect[] = [
+        {
+          x: layout.melds.bottom.x - sampleMeldW,
+          y: layout.melds.bottom.y,
+          width: sampleMeldW,
+          height: layout.meldTileH,
+        },
+        {
+          x: layout.melds.top.x - sampleMeldW,
+          y: layout.melds.top.y,
+          width: sampleMeldW,
+          height: layout.meldTileH,
+        },
+        {
+          x: layout.melds.left.x,
+          y: layout.melds.left.y,
+          width: layout.meldTileH,
+          height: sampleMeldW,
+        },
+        {
+          x: layout.melds.right.x - layout.meldTileH,
+          y: layout.melds.right.y,
+          width: layout.meldTileH,
+          height: sampleMeldW,
+        },
+      ];
+      for (const meldRect of sampleMelds) {
+        expectInsideBounds(meldRect, width, height);
+      }
+
       const coreBoxes: Rect[] = [
+        layout.topLeftSafeRect,
+        layout.topRightSafeRect,
         layout.centerSeal,
+        layout.turnBarRect,
         layout.viewerHandRect,
         layout.oppHands.top,
         layout.oppHands.left,
         layout.oppHands.right,
-        tl,
-        tr,
-        bl,
-        br,
-        ...riverRects,
+        layout.badges.top,
+        layout.badges.right,
+        layout.badges.left,
+        layout.badges.bottom,
+        layout.personaPockets.top,
+        layout.personaPockets.left,
+        layout.personaPockets.right,
+        layout.riverTroughs.bottom,
+        layout.riverTroughs.top,
+        layout.riverTroughs.left,
+        layout.riverTroughs.right,
+        ...sampleMelds,
       ];
       for (let i = 0; i < coreBoxes.length; i += 1) {
+        expectInsideBounds(coreBoxes[i], width, height);
         for (let j = i + 1; j < coreBoxes.length; j += 1) {
           expect(rectsOverlap(coreBoxes[i], coreBoxes[j])).toBe(false);
         }
       }
-      // Viewer bottom meld anchor (1 group of 3 tiles) stays clear of badges, viewer hand, and bottom river
-      const sampleMeldW = 3 * layout.meldTileW + 2;
-      const bottomMeldBox: Rect = {
-        x: layout.melds.bottom.x - sampleMeldW,
-        y: layout.melds.bottom.y,
-        width: sampleMeldW,
-        height: layout.meldTileH,
-      };
-      expectInsideBounds(bottomMeldBox, width, height);
-      expect(rectsOverlap(bottomMeldBox, br)).toBe(false);
-      expect(rectsOverlap(bottomMeldBox, bl)).toBe(false);
-      expect(rectsOverlap(bottomMeldBox, layout.viewerHandRect)).toBe(false);
-      expect(rectsOverlap(bottomMeldBox, layout.rivers.bottom)).toBe(false);
     },
   );
 
-  it("computes exact 6-per-row bottom river slot coordinates via computeBottomRiverSlotPoint", () => {
+  it("computes 10-per-row vertical and 4-per-column side river slot coordinates with exact ghost preview parity", () => {
     const layout = computeTableLayout(1440, 900);
+
+    expect(layout.riverGrid.bottom.perLine).toBe(10);
+    expect(layout.riverGrid.top.perLine).toBe(10);
+    expect(layout.riverGrid.left.perLine).toBe(4);
+    expect(layout.riverGrid.right.perLine).toBe(4);
+
+    // Bottom 10-per-row slots (indices 0..19)
     const p0 = computeBottomRiverSlotPoint(layout, 0);
     const p1 = computeBottomRiverSlotPoint(layout, 1);
-    const p5 = computeBottomRiverSlotPoint(layout, 5);
-    const p6 = computeBottomRiverSlotPoint(layout, 6);
-    const p12 = computeBottomRiverSlotPoint(layout, 12);
+    const p9 = computeBottomRiverSlotPoint(layout, 9);
+    const p10 = computeBottomRiverSlotPoint(layout, 10);
 
     expect(p0.x).toBe(layout.rivers.bottom.x + layout.riverTileW / 2);
     expect(p0.y).toBe(layout.rivers.bottom.y + layout.riverTileH / 2);
     expect(p1.x - p0.x).toBe(layout.riverTileW + layout.riverGap);
     expect(p1.y).toBe(p0.y);
-    expect(p5.x + layout.riverTileW / 2).toBe(
+    expect(p9.x + layout.riverTileW / 2).toBe(
       layout.rivers.bottom.x + layout.rivers.bottom.width,
     );
+    expect(p10.x).toBe(p0.x);
+    expect(p10.y - p0.y).toBe(layout.riverTileH + layout.riverGap);
 
-    // Row 1 starts back at column 0 and steps down by riverTileH + riverGap
-    expect(p6.x).toBe(p0.x);
-    expect(p6.y - p0.y).toBe(layout.riverTileH + layout.riverGap);
+    expect(computeBottomRiverSlotPoint(layout, 13)).toEqual({
+      x: computeRiverSlotPoint(layout, "bottom", 13).x,
+      y: computeRiverSlotPoint(layout, "bottom", 13).y,
+    });
 
-    // Row 2
-    expect(p12.x).toBe(p0.x);
-    expect(p12.y - p6.y).toBe(layout.riverTileH + layout.riverGap);
-  });
+    // Side 4-per-col slots (indices 0..15)
+    const l0 = computeRiverSlotPoint(layout, "left", 0);
+    const l3 = computeRiverSlotPoint(layout, "left", 3);
+    const l4 = computeRiverSlotPoint(layout, "left", 4);
+    expect(l0.x).toBe(l3.x);
+    expect(l3.y - l0.y).toBe(3 * (layout.riverTileW + layout.riverGap));
+    expect(l4.y).toBe(l0.y);
+    expect(l0.x - l4.x).toBe(layout.riverTileH + layout.riverGap);
 
-  it("computes river slots, opponent hand slots, and viewer hand slots strictly inside their layout bounds", () => {
-    const layout = computeTableLayout(1280, 720);
-
-    // All 4 river sides stay within their river rect and have expected orientations
     const expectedRotations = {
       bottom: 0,
       top: Math.PI,
       left: Math.PI / 2,
       right: -Math.PI / 2,
     } as const;
+
     for (const side of ["bottom", "top", "left", "right"] as const) {
       const rect = layout.rivers[side];
       const horizontal = side === "bottom" || side === "top";
       const halfW = (horizontal ? layout.riverTileW : layout.riverTileH) / 2;
       const halfH = (horizontal ? layout.riverTileH : layout.riverTileW) / 2;
-      for (const idx of [0, 5, 6, 17]) {
+      const maxIndex = horizontal ? 19 : 15;
+      for (const idx of [0, 3, 4, 9, 10, maxIndex]) {
         const pt = computeRiverSlotPoint(layout, side, idx);
         expect(pt.rotation).toBe(expectedRotations[side]);
         expect(pt.x - halfW).toBeGreaterThanOrEqual(rect.x - 0.001);
@@ -215,12 +272,11 @@ describe("Scheme C four-corner minimal computeTableLayout", () => {
         expect(pt.y + halfH).toBeLessThanOrEqual(rect.y + rect.height + 0.001);
       }
     }
-    expect(computeBottomRiverSlotPoint(layout, 7)).toEqual({
-      x: computeRiverSlotPoint(layout, "bottom", 7).x,
-      y: computeRiverSlotPoint(layout, "bottom", 7).y,
-    });
+  });
 
-    // Opponent hands (14 tiles) stay inside oppHands bounds
+  it("computes opponent hand slots and viewer 13+1 hand slots inside layout bounds", () => {
+    const layout = computeTableLayout(1280, 720);
+
     for (const side of ["top", "left", "right"] as const) {
       const slots = computeOpponentHandSlots(layout, side, 14);
       expect(slots).toHaveLength(14);
@@ -235,7 +291,6 @@ describe("Scheme C four-corner minimal computeTableLayout", () => {
       }
     }
 
-    // Viewer 13+1 hand slots align with viewerHandRect and preserve drawnGap
     const fullHand = computeViewerHandSlots(layout, 13, true);
     expect(fullHand.closed).toHaveLength(13);
     expect(fullHand.drawn).not.toBeNull();
@@ -247,61 +302,30 @@ describe("Scheme C four-corner minimal computeTableLayout", () => {
     expect(fullHand.drawn!.x + fullHand.drawn!.width).toBe(
       layout.viewerHandRect.x + layout.viewerHandRect.width,
     );
-
-    const thirteenHand = computeViewerHandSlots(layout, 13, false);
-    expect(thirteenHand.closed).toHaveLength(13);
-    expect(thirteenHand.drawn).toBeNull();
   });
 
-  it("computes four-way directional center seal pointer geometry bounded within centerSeal", () => {
-    const layout = computeTableLayout(1440, 860);
+  it("computes four-way edge glow bars strictly inside the ultra-flat pill centerSeal", () => {
+    const layout = computeTableLayout(1440, 900);
     const seal = layout.centerSeal;
     const cx = seal.x + seal.width / 2;
     const cy = seal.y + seal.height / 2;
 
-    expect(computeCenterSealPointer(seal, null)).toBeNull();
+    const bars = computeCenterSealEdgeBars(seal);
 
-    const bottom = computeCenterSealPointer(seal, "bottom")!;
-    expect(bottom).not.toBeNull();
-    expect(bottom.slot).toBe("bottom");
-    expect(bottom.tip.y).toBeGreaterThan(cy);
-    expect(bottom.tip.y).toBeGreaterThan(bottom.baseLeft.y);
-    expect(bottom.tip.y).toBeGreaterThan(bottom.baseRight.y);
-    expect(Math.abs(bottom.tip.x - cx)).toBeLessThan(0.01);
+    // Top = 对门, Bottom = 自家, Left = 上家, Right = 下家
+    expect(bars.top.rect.y + bars.top.rect.height / 2).toBeLessThan(cy);
+    expect(bars.bottom.rect.y + bars.bottom.rect.height / 2).toBeGreaterThan(cy);
+    expect(bars.left.rect.x + bars.left.rect.width / 2).toBeLessThan(cx);
+    expect(bars.right.rect.x + bars.right.rect.width / 2).toBeGreaterThan(cx);
 
-    const right = computeCenterSealPointer(seal, "right")!;
-    expect(right.slot).toBe("right");
-    expect(right.tip.x).toBeGreaterThan(cx);
-    expect(right.tip.x).toBeGreaterThan(right.baseLeft.x);
-    expect(right.tip.x).toBeGreaterThan(right.baseRight.x);
-    expect(Math.abs(right.tip.y - cy)).toBeLessThan(0.01);
-
-    const top = computeCenterSealPointer(seal, "top")!;
-    expect(top.slot).toBe("top");
-    expect(top.tip.y).toBeLessThan(cy);
-    expect(top.tip.y).toBeLessThan(top.baseLeft.y);
-    expect(top.tip.y).toBeLessThan(top.baseRight.y);
-    expect(Math.abs(top.tip.x - cx)).toBeLessThan(0.01);
-
-    const left = computeCenterSealPointer(seal, "left")!;
-    expect(left.slot).toBe("left");
-    expect(left.tip.x).toBeLessThan(cx);
-    expect(left.tip.x).toBeLessThan(left.baseLeft.x);
-    expect(left.tip.x).toBeLessThan(left.baseRight.x);
-    expect(Math.abs(left.tip.y - cy)).toBeLessThan(0.01);
-
-    const sealLayout = computeCenterSealLayout(seal);
-    for (const ptr of [bottom, right, top, left]) {
-      expect(ptr.arcRadius).toBe(sealLayout.ringRadius);
-      expect(ptr.arcRadius).toBeGreaterThan(0);
-      expect(ptr.arcRadius).toBeLessThan(Math.min(seal.width, seal.height) / 2);
-      expect(ptr.arcEnd).toBeGreaterThan(ptr.arcStart);
-      for (const pt of [ptr.tip, ptr.baseLeft, ptr.baseRight]) {
-        expect(pt.x).toBeGreaterThanOrEqual(seal.x);
-        expect(pt.x).toBeLessThanOrEqual(seal.x + seal.width);
-        expect(pt.y).toBeGreaterThanOrEqual(seal.y);
-        expect(pt.y).toBeLessThanOrEqual(seal.y + seal.height);
-      }
+    for (const slot of ["top", "bottom", "left", "right"] as const) {
+      const bar = bars[slot];
+      expect(bar.slot).toBe(slot);
+      expectRectContains(seal, bar.rect);
+      expectRectContains(seal, bar.activeRect);
+      expect(
+        bar.activeRect.width * bar.activeRect.height,
+      ).toBeGreaterThan(bar.rect.width * bar.rect.height);
     }
   });
 });
