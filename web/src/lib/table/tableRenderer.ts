@@ -38,7 +38,7 @@ import {
   createPaperGrainFilter,
   type PaperGrainFilter,
 } from "./paperGrainFilter";
-import type { TileAtlas } from "./tileAtlas";
+import type { TileAtlas, TileBodyKind } from "./tileAtlas";
 import { formatCompactRoundTitle } from "./tiles";
 import {
   buildMeldRenderItems,
@@ -104,6 +104,7 @@ function addShadowedTilePair(
   height: number,
   rotation = 0,
   shadowOffsetY = 2,
+  body: TileBodyKind = "standing",
 ): ShadowedTilePair {
   const shadow = new Sprite(atlas.shadowTexture);
   shadow.anchor.set(0.5);
@@ -114,7 +115,12 @@ function addShadowedTilePair(
   shadow.alpha = 0.65;
   layer.addChild(shadow);
 
-  const texture = tile === null ? atlas.backTexture : atlas.getTileTexture(tile);
+  const texture =
+    tile === null
+      ? body === "laid"
+        ? atlas.laidBackTexture
+        : atlas.backTexture
+      : atlas.getTileTexture(tile, body);
   const sprite = new Sprite(texture);
   sprite.anchor.set(0.5);
   sprite.width = width;
@@ -135,6 +141,7 @@ function addShadowedTileSprite(
   height: number,
   rotation = 0,
   shadowOffsetY = 2,
+  body: TileBodyKind = "standing",
 ): Sprite {
   return addShadowedTilePair(
     layer,
@@ -146,6 +153,7 @@ function addShadowedTileSprite(
     height,
     rotation,
     shadowOffsetY,
+    body,
   ).sprite;
 }
 
@@ -507,6 +515,7 @@ export class TableSceneRenderer {
         th,
         rotation,
         1.5,
+        "laid",
       );
       const isHorizontal = rotation === 0 || Math.abs(rotation - Math.PI) < 0.01;
       const rw = isHorizontal ? tw : th;
@@ -650,6 +659,7 @@ export class TableSceneRenderer {
             mh,
             rotation,
             1.5,
+            "laid",
           );
         });
 
@@ -671,6 +681,7 @@ export class TableSceneRenderer {
             mh,
             rotation,
             1.5,
+            "laid",
           );
 
           const boxW = axis === "horizontal" ? mw : mh;
@@ -956,6 +967,7 @@ export class TableSceneRenderer {
         th,
         0,
         3,
+        "standing",
       );
 
       const selectRing = new Graphics();
@@ -1173,7 +1185,9 @@ export class TableSceneRenderer {
       .stroke({ width: 1.8, color: ACTIVE_GLOW, alpha: 0.86 });
     this.ghostLayer.addChild(frame);
 
-    const ghostSprite = new Sprite(this.atlas.getTileTexture(state.ghostTile));
+    const ghostSprite = new Sprite(
+      this.atlas.getTileTexture(state.ghostTile, "laid"),
+    );
     ghostSprite.anchor.set(0.5);
     ghostSprite.width = tw;
     ghostSprite.height = th;

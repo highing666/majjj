@@ -3,9 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Seat } from "../protocol/generated/Seat";
 import type { SeatInfo } from "../protocol/generated/SeatInfo";
 import type { TableSnapshot } from "../protocol/generated/TableSnapshot";
+import type { Tile } from "../protocol/generated/Tile";
 import { computeBottomRiverSlotPoint, computeTableLayout } from "./layout";
 import { TableSceneRenderer } from "./tableRenderer";
-import type { TileAtlas } from "./tileAtlas";
+import type { TileAtlas, TileBodyKind } from "./tileAtlas";
 
 function installCanvasDocumentStub(): () => void {
   const prevDocument = globalThis.document;
@@ -19,6 +20,9 @@ function installCanvasDocumentStub(): () => void {
     translate: noop,
     beginPath: noop,
     closePath: noop,
+    rect: noop,
+    fill: noop,
+    stroke: noop,
     clearRect: noop,
     fillRect: noop,
     fillText: noop,
@@ -67,16 +71,54 @@ function installCanvasDocumentStub(): () => void {
   };
 }
 
-function createStubAtlas(): TileAtlas {
+function createSpyAtlas() {
+  const standingTextures = new Map<Tile, Texture>();
+  const laidTextures = new Map<Tile, Texture>();
+  const backTexture = new Texture();
+  const laidBackTexture = new Texture();
+  const shadowTexture = new Texture();
+  const feltImpastoTexture = new Texture();
+  const feltBrushTexture = new Texture();
+  const calls: Array<{ tile: Tile; body: TileBodyKind | undefined }> = [];
+
+  for (let t = 0; t < 34; t += 1) {
+    standingTextures.set(t, new Texture());
+    laidTextures.set(t, new Texture());
+  }
+
+  const atlas: TileAtlas = {
+    width: 1440,
+    height: 1536,
+    backTexture,
+    laidBackTexture,
+    shadowTexture,
+    feltImpastoTexture,
+    feltBrushTexture,
+    getTileTexture(tile: Tile, body?: TileBodyKind): Texture {
+      calls.push({ tile, body });
+      if (body === "laid") {
+        return laidTextures.get(tile) ?? laidBackTexture;
+      }
+      return standingTextures.get(tile) ?? backTexture;
+    },
+    destroy() {
+      for (const tex of standingTextures.values()) tex.destroy(false);
+      for (const tex of laidTextures.values()) tex.destroy(false);
+      backTexture.destroy(false);
+      laidBackTexture.destroy(false);
+      shadowTexture.destroy(false);
+      feltImpastoTexture.destroy(false);
+      feltBrushTexture.destroy(false);
+    },
+  };
+
   return {
-    width: 1152,
-    height: 960,
-    backTexture: Texture.EMPTY,
-    shadowTexture: Texture.EMPTY,
-    feltImpastoTexture: Texture.EMPTY,
-    feltBrushTexture: Texture.EMPTY,
-    getTileTexture: () => Texture.EMPTY,
-    destroy: () => {},
+    atlas,
+    calls,
+    standingTextures,
+    laidTextures,
+    backTexture,
+    laidBackTexture,
   };
 }
 
@@ -247,7 +289,17 @@ function collectTexts(container: Container): string[] {
   return out;
 }
 
-describe("TableSceneRenderer Scheme B integration", () => {
+function collectLayerTextures(layer: Container): Set<Texture> {
+  const out = new Set<Texture>();
+  for (const child of layer.children) {
+    if ("texture" in child && child.texture instanceof Texture) {
+      out.add(child.texture);
+    }
+  }
+  return out;
+}
+
+describe("TableSceneRenderer standing vs laid bodies & Scheme B integration", () => {
   let restoreDoc: (() => void) | null = null;
 
   beforeEach(() => {
@@ -259,10 +311,71 @@ describe("TableSceneRenderer Scheme B integration", () => {
     restoreDoc = null;
   });
 
+  it("renders viewer hand with standing textures, rivers and melds with laid textures, and opponent concealed kongs with laidBackTexture", () => {
+    const spy = createSpyAtlas();
+    const stage = new Container();
+    const renderer = new TableSceneRenderer(stage, spy.atlas, {
+      onDiscard: () => {},
+    });
+
+    renderer.resize(1280, 720);
+    renderer.render({
+      snapshot: makeSnapshot(),
+      pendingAddedKong: { seat: "East", tile: 27 },
+      inputLocked: false,
+    });
+
+    // Layers in TableSceneRenderer order:
+    // 0 felt, 1 centerSeal, 2 river, 3 ghost, 4 meld, 5 opponentHand, 6 badge, 7 viewerHand, 8 effects
+    const riverTextures = collectLayerTextures(stage.children[2] as Container);
+    const meldTextures = collectLayerTextures(stage.children[4] as Container);
+    const opponentHandTextures = collectLayerTextures(stage.children[5] as Container);
+    const viewerHandTextures = collectLayerTextures(stage.children[7] as Container);
+
+    // Rivers use laid tile textures (tile 4 from bottom river, tile 13 from right river)
+    expect(riverTextures.has(spy.laidTextures.get(4)!)).toBe(true);
+    expect(riverTextures.has(spy.laidTextures.get(13)!)).toBe(true);
+    expect(riverTextures.has(spy.standingTextures.get(4)!)).toBe(false);
+    expect(riverTextures.has(spy.standingTextures.get(13)!)).toBe(false);
+
+    // Melds use laid tile textures (Pon of 27 + pendingAddedKong 27 + ConcealedKong 31) and laidBackTexture
+    expect(meldTextures.has(spy.laidTextures.get(27)!)).toBe(true);
+    expect(meldTextures.has(spy.laidTextures.get(31)!)).toBe(true);
+    expect(meldTextures.has(spy.laidBackTexture)).toBe(true);
+    expect(meldTextures.has(spy.standingTextures.get(27)!)).toBe(false);
+    expect(meldTextures.has(spy.backTexture)).toBe(false);
+
+    // Opponent concealed hands use standing backTexture
+    expect(opponentHandTextures.has(spy.backTexture)).toBe(true);
+    expect(opponentHandTextures.has(spy.laidBackTexture)).toBe(false);
+
+    // Viewer hand uses standing tile textures (e.g. closed 0, drawn 5)
+    expect(viewerHandTextures.has(spy.standingTextures.get(0)!)).toBe(true);
+    expect(viewerHandTextures.has(spy.standingTextures.get(5)!)).toBe(true);
+    expect(viewerHandTextures.has(spy.laidTextures.get(0)!)).toBe(false);
+    expect(viewerHandTextures.has(spy.laidTextures.get(5)!)).toBe(false);
+
+    // Hovering legal drawn tile renders laid ghost preview in ghostLayer
+    const viewerHandLayer = stage.children[7] as Container;
+    const drawnSprite = viewerHandLayer.children.find(
+      (child) =>
+        "texture" in child && child.texture === spy.standingTextures.get(5),
+    );
+    expect(drawnSprite).toBeDefined();
+    drawnSprite!.emit("pointerover", makePointerEvent());
+    const ghostTextures = collectLayerTextures(stage.children[3] as Container);
+    expect(ghostTextures.has(spy.laidTextures.get(5)!)).toBe(true);
+    expect(ghostTextures.has(spy.standingTextures.get(5)!)).toBe(false);
+
+    renderer.destroy();
+    spy.atlas.destroy();
+  });
+
   it("renders Scheme B theater layout, ultra-flat pill center seal, and wind-free relative badges", () => {
+    const spy = createSpyAtlas();
     const stage = new Container();
     const onDiscard = vi.fn();
-    const renderer = new TableSceneRenderer(stage, createStubAtlas(), {
+    const renderer = new TableSceneRenderer(stage, spy.atlas, {
       onDiscard,
     });
 
@@ -290,12 +403,14 @@ describe("TableSceneRenderer Scheme B integration", () => {
     expect(texts).toContain("离线托管");
 
     renderer.destroy();
+    spy.atlas.destroy();
   });
 
   it("aligns discard ghost preview with 10-per-row bottom river slot and commits desktop click discard", () => {
+    const spy = createSpyAtlas();
     const stage = new Container();
     const onDiscard = vi.fn();
-    const renderer = new TableSceneRenderer(stage, createStubAtlas(), {
+    const renderer = new TableSceneRenderer(stage, spy.atlas, {
       onDiscard,
     });
 
@@ -315,13 +430,8 @@ describe("TableSceneRenderer Scheme B integration", () => {
     );
     expect(expectedSlot).toEqual(expectedSameAsCompute);
 
-    // Find the interactive drawn tile sprite in viewerHandLayer
-    const viewerHandLayer = stage.children.find((child) =>
-      child.children.some((grand) => grand.eventMode === "static"),
-    ) as Container | undefined;
-    expect(viewerHandLayer).toBeDefined();
-
-    const interactiveSprites = viewerHandLayer!.children.filter(
+    const viewerHandLayer = stage.children[7] as Container;
+    const interactiveSprites = viewerHandLayer.children.filter(
       (c) => c.eventMode === "static",
     );
     expect(interactiveSprites.length).toBeGreaterThan(0);
@@ -329,13 +439,11 @@ describe("TableSceneRenderer Scheme B integration", () => {
     const targetSprite = interactiveSprites[interactiveSprites.length - 1];
     targetSprite.emit("pointerover", makePointerEvent());
 
-    // Ghost preview sprite should be positioned at slot 12 (row 1, col 2 of 10-per-row river)
     const ghostChildren = renderer.ghostLayer.children;
     const ghostSprite = ghostChildren[ghostChildren.length - 1];
     expect(ghostSprite.x).toBeCloseTo(expectedSlot.x, 1);
     expect(ghostSprite.y).toBeCloseTo(expectedSlot.y, 1);
 
-    // Clicking commits discard
     targetSprite.emit(
       "pointerdown",
       makePointerEvent(targetSprite.x, targetSprite.y),
@@ -346,12 +454,14 @@ describe("TableSceneRenderer Scheme B integration", () => {
     expect(onDiscard).toHaveBeenCalledWith(5, true);
 
     renderer.destroy();
+    spy.atlas.destroy();
   });
 
   it("supports touch tap-twice, swipe-up cancel snap-back, and narrow portrait fallback", () => {
+    const spy = createSpyAtlas();
     const stage = new Container();
     const onDiscard = vi.fn();
-    const renderer = new TableSceneRenderer(stage, createStubAtlas(), {
+    const renderer = new TableSceneRenderer(stage, spy.atlas, {
       onDiscard,
     });
 
@@ -365,9 +475,7 @@ describe("TableSceneRenderer Scheme B integration", () => {
 
     expect(renderer.getLayout()!.isWide).toBe(false);
 
-    const viewerHandLayer = stage.children.find((child) =>
-      child.children.some((grand) => grand.eventMode === "static"),
-    ) as Container;
+    const viewerHandLayer = stage.children[7] as Container;
     const interactiveSprites = viewerHandLayer.children.filter(
       (c) => c.eventMode === "static",
     );
@@ -396,5 +504,6 @@ describe("TableSceneRenderer Scheme B integration", () => {
     expect(onDiscard).toHaveBeenCalledWith(0, false);
 
     renderer.destroy();
+    spy.atlas.destroy();
   });
 });

@@ -1,11 +1,9 @@
 <svg viewBox="0 0 100 136" xmlns="http://www.w3.org/2000/svg">
-  <rect x="2.5" y="5.5" width="95" height="128" rx="11" fill="#1E5C5E"/>
-  <rect x="2.5" y="2.5" width="95" height="126" rx="10.5" fill="#F5EEDF" stroke="#181A20" stroke-width="3"/>
-  <rect x="4" y="3" width="92" height="6" rx="3" fill="#FFFDF5" opacity="0.72"/>
-  <rect x="4" y="119.5" width="92" height="9" rx="3" fill="#E4D8BE"/>
-  <g>
-      <rect x="20" y="23" width="60" height="84" rx="6" fill="none" stroke="#1C5296" stroke-width="5"/>
-      <rect x="27" y="30" width="46" height="70" rx="3" fill="none" stroke="#181A20" stroke-width="1.8" stroke-dasharray="6 4"/>
-      <path d="M20 36 L29 23 M71 23 L80 36 M20 94 L29 107 M71 107 L80 94" stroke="#1C5296" stroke-width="3" stroke-linecap="round"/>
-    </g>
+  <rect x="2.5" y="1.5" width="95" height="133" rx="11" fill="#186258" stroke="#091D1B" stroke-width="1.8"/>
+  <rect x="2.5" y="7.5" width="95" height="125" rx="10.5" fill="#F6EFE0" stroke="#1C1917" stroke-width="2.6"/>
+  <rect x="4" y="8.3" width="92" height="5.5" rx="3" fill="#FFFDF8" opacity="0.88"/>
+  <rect x="4" y="124.5" width="92" height="7.5" rx="3" fill="#E2D4B7"/>
+  <g transform="translate(0 8.50) scale(1 0.9308)">
+    <rect x="13" y="14" width="74" height="102" rx="7" fill="none" stroke="rgba(128, 114, 88, 0.22)" stroke-width="1.6"/>
+  </g>
 </svg>
