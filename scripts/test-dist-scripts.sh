@@ -512,4 +512,7 @@ EOF
 
 test_deploy_partner
 
+# 6. Windows llama-server deployment scripts offline contract tests
+node --test "$repo_root/scripts/windows-llm/test-scripts.mjs"
+
 echo "test-dist-scripts: OK"
