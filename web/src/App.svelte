@@ -48,6 +48,7 @@
   import SeatControlBar from "./lib/table/SeatControlBar.svelte";
   import SettlementModal from "./lib/table/SettlementModal.svelte";
   import TableCanvas from "./lib/table/TableCanvas.svelte";
+  import Issue56PrototypeHost from "./lib/table/prototype56/Issue56PrototypeHost.svelte";
   import TakeOverModal from "./lib/table/TakeOverModal.svelte";
   import { formatRelativeSeatParen } from "./lib/protocol/seats";
   import { formatRoundTitle } from "./lib/table/tiles";
@@ -55,6 +56,11 @@
   import type { WebGLRecoveryState } from "./lib/table/webglRecovery";
   import AudioResumeCapsule from "./lib/ui/AudioResumeCapsule.svelte";
   import SettingsModal from "./lib/ui/SettingsModal.svelte";
+
+  const showIssue56Prototype =
+    import.meta.env.DEV &&
+    typeof window !== "undefined" &&
+    !new URLSearchParams(window.location.search).has("live");
 
   const client = createTableClient();
   const preferencesStore = getBrowserDevicePreferencesStore();
@@ -93,6 +99,9 @@
   const initialNickname = client.getIdentity().nickname;
 
   $effect(() => {
+    if (showIssue56Prototype) {
+      return;
+    }
     const unsubscribeClient = client.subscribe((next) => {
       sessionState = next;
     });
@@ -266,6 +275,9 @@
   }
 </script>
 
+{#if showIssue56Prototype}
+  <Issue56PrototypeHost />
+{:else}
 <main class="app-shell" class:app-shell-match={presentedSnapshot?.phase === "InMatch"}>
   {#if shutdownState.phase === "stopped"}
     <div class="banner banner-warn" role="status">
@@ -671,6 +683,7 @@
     </span>
   </footer>
 </main>
+{/if}
 
 <style>
   .footer-status {
