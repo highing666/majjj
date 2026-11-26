@@ -52,3 +52,4 @@ cargo run --release -p mahjong-ai --bin bench-ai -- smoke
 ./scripts/check-core-boundaries.sh
 ./scripts/check-web-safeguards.sh
 ./scripts/check-glossary.sh
+./scripts/test-dist-scripts.sh

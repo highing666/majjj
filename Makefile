@@ -7,7 +7,7 @@ ifeq ($(UNAME_S),Darwin)
   endif
 endif
 
-.PHONY: fmt clippy test test-server bench-ai check-boundaries check-web-safeguards check-glossary check check-sandbox ts-bindings install-hooks web-install web-typecheck web-test web-build
+.PHONY: fmt clippy test test-server bench-ai check-boundaries check-web-safeguards check-glossary check check-sandbox ts-bindings install-hooks web-install web-typecheck web-test web-build dist-mac
 
 fmt:
 	cargo fmt --all -- --check
@@ -56,3 +56,11 @@ web-test:
 
 web-build:
 	npm --prefix web run build
+
+dist-mac: web-build
+	cargo build --release -p mahjong-server
+	cargo test -p mahjong-server --lib static_assets::tests
+	cargo test -p mahjong-server --test lifecycle_and_embed default_server_serves_embedded_assets_with_cache_headers_and_guards
+	@test -x target/release/mahjong-server
+	@echo "Embedded web/dist size: $$(du -sh web/dist | awk '{print $$1}')"
+	@echo "Single binary size: $$(ls -lh target/release/mahjong-server | awk '{print $$5, $$9}')"
