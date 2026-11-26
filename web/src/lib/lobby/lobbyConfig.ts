@@ -15,9 +15,10 @@ export const MATCH_MODE_OPTIONS: ReadonlyArray<ConfigOption<MatchMode>> = [
 ];
 
 export const SEATING_RULE_OPTIONS: ReadonlyArray<ConfigOption<SeatingRule>> = [
-  { value: "Random", label: "随机定座（默认）" },
-  { value: "FixedOpposite", label: "双人固定对家（东 / 西）" },
-  { value: "FixedAdjacent", label: "双人固定邻座（东 / 南）" },
+  { value: "KeepLobbySeats", label: "按大厅所选座次（默认）" },
+  { value: "Random", label: "随机定座" },
+  { value: "FixedOpposite", label: "双人固定对门" },
+  { value: "FixedAdjacent", label: "双人固定上下家" },
 ];
 
 export const AI_DIFFICULTY_OPTIONS: ReadonlyArray<ConfigOption<AiDifficulty>> = [

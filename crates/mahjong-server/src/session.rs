@@ -793,16 +793,6 @@ impl TableSession {
             }
         };
 
-        let seat_order = match self.config.seating {
-            SeatingRule::Random => {
-                let mut order = Seat::ALL;
-                shuffle_slice(&mut order, &mut self.rng);
-                order
-            }
-            SeatingRule::FixedOpposite => [Seat::East, Seat::West, Seat::South, Seat::North],
-            SeatingRule::FixedAdjacent => [Seat::East, Seat::South, Seat::West, Seat::North],
-        };
-
         let mut styles = [
             AiStyle::AggressiveFast,
             AiStyle::Balanced,
@@ -811,13 +801,42 @@ impl TableSession {
         shuffle_slice(&mut styles, &mut self.rng);
 
         let mut new_seats = Seat::ALL.map(SeatRecord::empty);
-        let human_count = humans.len();
-        for (idx, mut human_record) in humans.into_iter().enumerate() {
-            let target_seat = seat_order[idx];
-            human_record.info.seat = target_seat;
-            new_seats[target_seat.index()] = human_record;
-        }
-        for (ai_idx, &target_seat) in seat_order[human_count..].iter().enumerate() {
+        let ai_target_seats: Vec<Seat> = match self.config.seating {
+            SeatingRule::KeepLobbySeats => {
+                for human_record in humans {
+                    let seat_idx = human_record.info.seat.index();
+                    new_seats[seat_idx] = human_record;
+                }
+                Seat::ALL
+                    .into_iter()
+                    .filter(|seat| new_seats[seat.index()].info.kind == SeatKind::Empty)
+                    .collect()
+            }
+            SeatingRule::Random | SeatingRule::FixedOpposite | SeatingRule::FixedAdjacent => {
+                let seat_order = match self.config.seating {
+                    SeatingRule::Random => {
+                        let mut order = Seat::ALL;
+                        shuffle_slice(&mut order, &mut self.rng);
+                        order
+                    }
+                    SeatingRule::FixedOpposite => {
+                        [Seat::East, Seat::West, Seat::South, Seat::North]
+                    }
+                    SeatingRule::FixedAdjacent => {
+                        [Seat::East, Seat::South, Seat::West, Seat::North]
+                    }
+                    SeatingRule::KeepLobbySeats => unreachable!(),
+                };
+                let human_count = humans.len();
+                for (idx, mut human_record) in humans.into_iter().enumerate() {
+                    let target_seat = seat_order[idx];
+                    human_record.info.seat = target_seat;
+                    new_seats[target_seat.index()] = human_record;
+                }
+                seat_order[human_count..].to_vec()
+            }
+        };
+        for (ai_idx, target_seat) in ai_target_seats.into_iter().enumerate() {
             let style = styles[ai_idx % styles.len()];
             new_seats[target_seat.index()] = SeatRecord {
                 info: SeatInfo {

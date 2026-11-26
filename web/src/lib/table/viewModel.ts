@@ -7,22 +7,37 @@ import type { PublicSeatView } from "../protocol/generated/PublicSeatView";
 import type { RevealedMeld } from "../protocol/generated/RevealedMeld";
 import type { Seat } from "../protocol/generated/Seat";
 import type { SeatInfo } from "../protocol/generated/SeatInfo";
-import type { SeatKind } from "../protocol/generated/SeatKind";
 import type { Tile } from "../protocol/generated/Tile";
 import { parseMeld, type MeldKind } from "../protocol/melds";
-import { ALL_SEATS, seatIndex, seatLabel, seatShortWind } from "../protocol/seats";
+import {
+  ALL_SEATS,
+  getRelativeSeats,
+  resolveSeatNickname,
+  seatLabel,
+  seatRelativeRole,
+  seatRelativeShortRole,
+  seatRelativeSlot,
+  seatShortWind,
+  type RelativeRole,
+  type RelativeRoleShort,
+  type RelativeSeats,
+  type RelativeSlot,
+  type SeatDisplayEntry,
+} from "../protocol/seats";
 import type { PendingAddedKong } from "../session/reducer";
 import { getTileLabel } from "./tiles";
 
-export interface RelativeSeats {
-  bottom: Seat;
-  right: Seat;
-  top: Seat;
-  left: Seat;
-}
-
-export type RelativeSlot = keyof RelativeSeats;
-export type RelativeRole = "自家" | "下家" | "对家" | "上家";
+export {
+  getRelativeSeats,
+  seatRelativeRole,
+  seatRelativeShortRole,
+  seatRelativeSlot,
+  type RelativeRole,
+  type RelativeRoleShort,
+  type RelativeSeats,
+  type RelativeSlot,
+  type SeatDisplayEntry,
+};
 
 export interface MeldTileSlot {
   tile: Tile | null;
@@ -81,55 +96,8 @@ export interface MatchStandingRow {
 }
 
 /**
- * Maps canonical seats counter-clockwise relative to `viewer` (`bottom` -> `right` -> `top` -> `left`).
- */
-export function getRelativeSeats(viewer: Seat): RelativeSeats {
-  const idx = seatIndex(viewer);
-  return {
-    bottom: ALL_SEATS[idx],
-    right: ALL_SEATS[(idx + 1) % 4],
-    top: ALL_SEATS[(idx + 2) % 4],
-    left: ALL_SEATS[(idx + 3) % 4],
-  };
-}
-
-const SLOT_TO_ROLE: Record<RelativeSlot, RelativeRole> = {
-  bottom: "自家",
-  right: "下家",
-  top: "对家",
-  left: "上家",
-};
-
-/**
- * Maps `target` seat to its viewer-relative canvas slot (`bottom` / `right` / `top` / `left`).
- */
-export function seatRelativeSlot(viewer: Seat, target: Seat): RelativeSlot {
-  const rel = getRelativeSeats(viewer);
-  if (target === rel.bottom) {
-    return "bottom";
-  }
-  if (target === rel.right) {
-    return "right";
-  }
-  if (target === rel.top) {
-    return "top";
-  }
-  return "left";
-}
-
-/**
- * Returns the viewer-relative role label for `target`.
- */
-export function seatRelativeRole(viewer: Seat, target: Seat): RelativeRole {
-  return SLOT_TO_ROLE[seatRelativeSlot(viewer, target)];
-}
-
-export type SeatDisplayEntry =
-  | { nickname: string; kind: SeatKind }
-  | { nickname: string; seat_kind: SeatKind };
-
-/**
  * Formats a canonical seat display title (`东座 · 房主`, `南座 · AI 2`, or `西座`).
+ * Retained temporarily for #60/#61 migration compatibility.
  */
 export function formatSeatDisplayName(
   seat: Seat,
@@ -140,10 +108,7 @@ export function formatSeatDisplayName(
     SeatDisplayEntry,
   ] | null,
 ): string {
-  const idx = seatIndex(seat);
-  const info = seats?.[idx];
-  const seatKind = info ? ("kind" in info ? info.kind : info.seat_kind) : null;
-  const name = info?.nickname || (seatKind === "Ai" ? `AI ${idx + 1}` : "");
+  const name = resolveSeatNickname(seat, seats);
   return name ? `${seatLabel(seat)} · ${name}` : seatLabel(seat);
 }
 

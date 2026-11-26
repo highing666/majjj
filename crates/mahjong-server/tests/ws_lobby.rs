@@ -51,6 +51,7 @@ async fn hello_issues_credentials_and_handles_ping_and_request_snapshot() {
     let snap = recv_snapshot(&mut ws).await;
     assert!(!snap.table_id.is_empty());
     assert_eq!(snap.phase, TablePhase::Lobby);
+    assert_eq!(snap.config.seating, SeatingRule::KeepLobbySeats);
     assert_eq!(snap.your_seat, None);
     let token = snap
         .seat_token

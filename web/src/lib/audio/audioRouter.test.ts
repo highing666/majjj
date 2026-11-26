@@ -422,7 +422,7 @@ describe("AudioEventRouter", () => {
     );
     expect(played.at(-1)).toMatchObject({ slot: "discard_heavy", pan: -0.35 });
 
-    // 3. Tsumogiri in endgame (wall <= 24) -> discard_heavy; West (对家) -> 0
+    // 3. Tsumogiri in endgame (wall <= 24) -> discard_heavy; West (对门) -> 0
     const endgameDiscard: PlayerEvent = {
       seq: 3,
       kind: { TileDiscarded: { seat: "West", tile: 2, is_tsumogiri: true } },

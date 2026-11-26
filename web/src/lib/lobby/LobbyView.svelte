@@ -5,8 +5,8 @@
   import type { Seat } from "../protocol/generated/Seat";
   import type { SeatInfo } from "../protocol/generated/SeatInfo";
   import type { TableSnapshot } from "../protocol/generated/TableSnapshot";
-  import { seatLabel } from "../protocol/seats";
   import LobbyConfigFields from "./LobbyConfigFields.svelte";
+  import { buildLobbyTableViewModel, type LobbyTableSlot } from "./lobbyTable";
 
   interface Props {
     snapshot: TableSnapshot;
@@ -121,7 +121,8 @@
     };
   });
 
-  const isSeated = $derived(snapshot.your_seat !== null);
+  const tableModel = $derived(buildLobbyTableViewModel(snapshot));
+  const isSeated = $derived(tableModel.isSeated);
   const humanCount = $derived(
     snapshot.seats.filter((seatInfo) => seatInfo.kind === "Human").length,
   );
@@ -199,9 +200,74 @@
     if (seatInfo.kind === "Ai") {
       return "AI 玩家";
     }
-    return "空位 · 开局由 AI 自动补位";
+    return "空位 · 开局补 AI";
   }
 </script>
+
+{#snippet seatCard(slot: LobbyTableSlot)}
+  {@const seatInfo = slot.seatInfo}
+  <article
+    class="seat-card ring-slot-{slot.slot}"
+    class:seat-mine={slot.isMine}
+  >
+    <div class="seat-top">
+      <strong class="seat-name">{slot.label}</strong>
+      <div class="seat-tags">
+        {#if slot.isMine}
+          <span class="tag tag-self">本机</span>
+        {/if}
+        {#if seatInfo.kind === "Human"}
+          <span
+            class="tag"
+            class:tag-online={seatInfo.connected}
+            class:tag-offline={!seatInfo.connected}
+          >
+            {seatInfo.connected ? "在线" : "离线"}
+          </span>
+        {:else if seatInfo.kind === "Empty"}
+          <span class="tag">AI 补位</span>
+        {:else}
+          <span class="tag">AI</span>
+        {/if}
+      </div>
+    </div>
+
+    <p class="seat-occupant">{describeSeatStatus(seatInfo)}</p>
+
+    <div class="seat-actions">
+      {#if slot.isMine}
+        <button
+          class="btn btn-subtle"
+          type="button"
+          onclick={onLeaveSeat}
+          {disabled}
+        >
+          离座
+        </button>
+      {:else if seatInfo.kind === "Empty"}
+        <button
+          class="btn btn-jade"
+          type="button"
+          onclick={() => onJoinSeat(slot.seat)}
+          {disabled}
+        >
+          {isSeated ? "换到此座" : "入座"}
+        </button>
+      {:else if !isSeated && seatInfo.kind === "Human" && !seatInfo.connected && onTakeOverSeat}
+        <button
+          class="btn btn-primary"
+          type="button"
+          onclick={() => onTakeOverSeat(seatInfo)}
+          {disabled}
+        >
+          接管离线座位
+        </button>
+      {:else}
+        <button class="btn" type="button" disabled>已占用</button>
+      {/if}
+    </div>
+  </article>
+{/snippet}
 
 <section class="lobby-grid">
   <div class="lobby-main">
@@ -284,69 +350,26 @@
         {/if}
       </form>
 
-      <div class="seats-grid">
-        {#each snapshot.seats as seatInfo (seatInfo.seat)}
-          {@const isMine = snapshot.your_seat === seatInfo.seat}
-          <article class="seat-card" class:seat-mine={isMine}>
-            <div class="seat-top">
-              <strong class="seat-name">{seatLabel(seatInfo.seat)}</strong>
-              <div class="seat-tags">
-                {#if isMine}
-                  <span class="tag tag-self">本机</span>
-                {/if}
-                {#if seatInfo.kind === "Human"}
-                  <span
-                    class="tag"
-                    class:tag-online={seatInfo.connected}
-                    class:tag-offline={!seatInfo.connected}
-                  >
-                    {seatInfo.connected ? "在线" : "离线"}
-                  </span>
-                {:else if seatInfo.kind === "Empty"}
-                  <span class="tag">AI 自动补位</span>
-                {:else}
-                  <span class="tag">AI</span>
-                {/if}
-              </div>
-            </div>
-
-            <p class="seat-occupant">{describeSeatStatus(seatInfo)}</p>
-
-            <div class="seat-actions">
-              {#if isMine}
-                <button
-                  class="btn btn-subtle"
-                  type="button"
-                  onclick={onLeaveSeat}
-                  {disabled}
-                >
-                  离座
-                </button>
-              {:else if seatInfo.kind === "Empty"}
-                <button
-                  class="btn btn-jade"
-                  type="button"
-                  onclick={() => onJoinSeat(seatInfo.seat)}
-                  {disabled}
-                >
-                  {isSeated ? "换到此座" : "入座"}
-                </button>
-              {:else if !isSeated && seatInfo.kind === "Human" && !seatInfo.connected && onTakeOverSeat}
-                <button
-                  class="btn btn-primary"
-                  type="button"
-                  onclick={() => onTakeOverSeat(seatInfo)}
-                  {disabled}
-                >
-                  接管离线座位
-                </button>
-              {:else}
-                <button class="btn" type="button" disabled>已占用</button>
-              {/if}
-            </div>
-          </article>
-        {/each}
+      <div class="ring-table" aria-label="四边环桌选座">
+        <div class="ring-row-single">
+          {@render seatCard(tableModel.slots.top)}
+        </div>
+        <div class="ring-row-middle">
+          {@render seatCard(tableModel.slots.left)}
+          <div class="ring-center-badge" aria-label="逆时针出牌顺序">
+            <span class="ring-arrow" aria-hidden="true">↺</span>
+            <span class="ring-direction">逆时针</span>
+          </div>
+          {@render seatCard(tableModel.slots.right)}
+        </div>
+        <div class="ring-row-single">
+          {@render seatCard(tableModel.slots.bottom)}
+        </div>
       </div>
+
+      {#if tableModel.shuffleNotice}
+        <p class="shuffle-notice" role="status">{tableModel.shuffleNotice}</p>
+      {/if}
     </div>
 
     <div class="card">
@@ -575,10 +598,68 @@
     font-weight: 600;
   }
 
-  .seats-grid {
+  .ring-table {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px;
+    border-radius: 14px;
+    border: 1px solid var(--border);
+    background: #f6efe4;
+  }
+
+  .ring-row-single {
+    display: flex;
+    justify-content: center;
+  }
+
+  .ring-row-single .seat-card {
+    width: min(62%, 230px);
+  }
+
+  .ring-row-middle {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 12px;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    align-items: center;
+    gap: 10px;
+  }
+
+  .ring-center-badge {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    width: 60px;
+    height: 60px;
+    border-radius: 999px;
+    border: 1px dashed var(--border);
+    background: #fffaf2;
+    color: var(--ink-muted);
+    user-select: none;
+  }
+
+  .ring-arrow {
+    font-size: 18px;
+    line-height: 1;
+    color: var(--accent);
+  }
+
+  .ring-direction {
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1;
+  }
+
+  .shuffle-notice {
+    margin: 10px 0 0;
+    padding: 8px 12px;
+    border-radius: 10px;
+    border: 1px solid #ecc69e;
+    background: #fff4e5;
+    color: #8a4b08;
+    font-size: 13px;
+    font-weight: 500;
   }
 
   .seat-card {
@@ -589,6 +670,7 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
+    min-width: 0;
   }
 
   .seat-mine {
@@ -728,8 +810,52 @@
   }
 
   @media (max-width: 540px) {
-    .seats-grid {
-      grid-template-columns: 1fr;
+    .ring-table {
+      padding: 8px;
+      gap: 8px;
+    }
+
+    .ring-row-single .seat-card {
+      width: min(64%, 200px);
+    }
+
+    .ring-row-middle {
+      grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+      gap: 6px;
+    }
+
+    .ring-center-badge {
+      width: 46px;
+      height: 46px;
+    }
+
+    .ring-arrow {
+      font-size: 15px;
+    }
+
+    .ring-direction {
+      font-size: 10px;
+    }
+
+    .seat-card {
+      padding: 8px;
+      gap: 6px;
+    }
+
+    .seat-name {
+      font-size: 14px;
+    }
+
+    .seat-occupant {
+      font-size: 13px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .seat-actions .btn {
+      padding: 6px 8px;
+      font-size: 12px;
     }
 
     .nickname-row {

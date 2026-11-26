@@ -81,7 +81,7 @@ describe("semanticEvents", () => {
     expect(mappedAttempt).toMatchObject({
       type: "AddedKongAttempted",
       seat: "West",
-      relativeRole: "对家",
+      relativeRole: "对门",
       voicePackId: "pack-west",
       wallRemaining: 31,
       meldKind: "AddedKong",
@@ -185,7 +185,7 @@ describe("semanticEvents", () => {
       },
       {
         seat: "West",
-        relativeRole: "对家",
+        relativeRole: "对门",
         winKind: "Ron",
         totalFan: 4,
         voicePackId: "pack-west",

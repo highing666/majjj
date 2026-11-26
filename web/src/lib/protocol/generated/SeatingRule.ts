@@ -3,4 +3,4 @@
 /**
  * Seating assignment rule applied when starting a match.
  */
-export type SeatingRule = "Random" | "FixedOpposite" | "FixedAdjacent";
+export type SeatingRule = "KeepLobbySeats" | "Random" | "FixedOpposite" | "FixedAdjacent";
