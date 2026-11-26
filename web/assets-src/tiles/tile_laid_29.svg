@@ -1,0 +1,9 @@
+<svg viewBox="0 0 100 136" xmlns="http://www.w3.org/2000/svg">
+  
+  <rect x="2.5" y="2.5" width="95" height="131" rx="10.5" fill="#F6EFE0" stroke="#1C1917" stroke-width="2.6"/>
+  <rect x="4" y="3.3" width="92" height="5.5" rx="3" fill="#FFFDF8" opacity="0.88"/>
+  <rect x="4" y="126.5" width="92" height="6.5" rx="3" fill="#E2D4B7"/>
+  <g transform="translate(0 2.50) scale(1 0.9846)">
+    <text x="50" y="89" text-anchor="middle" font-family="'Kaiti SC','STKaiti','BiauKai','Songti SC',serif" font-weight="900" font-size="63" fill="#1C1917">西</text>
+  </g>
+</svg>
