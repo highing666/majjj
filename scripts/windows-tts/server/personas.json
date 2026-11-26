@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "sample_rate": 24000,
+  "personas": {
+    "QuickHothead": {
+      "voice_pack_id": "quick_hothead",
+      "display_name": "急眼快攻哥",
+      "speaker": "Eric",
+      "language": "Chinese",
+      "dialect_note": "活泼微哑川渝男声，语速偏快、急性子催牌感强",
+      "aliases": ["quick_hothead", "quick_rush", "Eric", "急眼快攻哥"]
+    },
+    "TeaSarcasm": {
+      "voice_pack_id": "tea_sarcasm",
+      "display_name": "阴阳茶艺师",
+      "speaker": "Serena",
+      "language": "Chinese",
+      "dialect_note": "温婉年轻女声，客气语调配刻薄台词形成反差茶艺感",
+      "aliases": ["tea_sarcasm", "Serena", "阴阳茶艺师"]
+    },
+    "StubbornBlamer": {
+      "voice_pack_id": "stubborn_blamer",
+      "display_name": "嘴硬死磕王",
+      "speaker": "Dylan",
+      "language": "Chinese",
+      "dialect_note": "清亮京片子青年男声，贫嘴不服输、死磕甩锅感鲜明",
+      "aliases": ["stubborn_blamer", "Dylan", "嘴硬死磕王"]
+    },
+    "ChaosInstigator": {
+      "voice_pack_id": "chaos_instigator",
+      "display_name": "拱火乐子人",
+      "speaker": "Vivian",
+      "language": "Chinese",
+      "dialect_note": "明亮带锋芒年轻女声，跳脱轻快、煽风点火补刀感强",
+      "aliases": ["chaos_instigator", "Vivian", "拱火乐子人"]
+    },
+    "TiltedMaster": {
+      "voice_pack_id": "tilted_master",
+      "display_name": "红温老雀神",
+      "speaker": "Uncle_Fu",
+      "language": "Chinese",
+      "dialect_note": "沉稳低沉老成男声，平时端架子指导牌技、破防反差大",
+      "aliases": ["tilted_master", "Uncle_Fu", "红温老雀神"]
+    }
+  },
+  "moods": {
+    "Smug": {
+      "anchor_zh": "得意欠揍",
+      "instruct": "用得意洋洋、挑衅欠揍、带着轻笑的语气说，语速稍快。",
+      "paralinguistic_hint": "[laughter]"
+    },
+    "Mocking": {
+      "anchor_zh": "阴阳嘲讽",
+      "instruct": "用阴阳怪气、假装客气实则拉长尾音讽刺挖苦的语气说。",
+      "paralinguistic_hint": "<strong>"
+    },
+    "Tilted": {
+      "anchor_zh": "红温破防",
+      "instruct": "用气急败坏、情绪激动、音量提高且语速急促的愤怒语气说。",
+      "paralinguistic_hint": "[breath]"
+    },
+    "Nervous": {
+      "anchor_zh": "心虚紧绷",
+      "instruct": "用紧张心虚、略带犹豫磕绊、声音压低且不自信的语气说。",
+      "paralinguistic_hint": "[breath]"
+    },
+    "Plotting": {
+      "anchor_zh": "阴险憋大招",
+      "instruct": "用压低声音、阴险狡黠、慢条斯理藏着算计的神秘语气说。",
+      "paralinguistic_hint": ""
+    },
+    "Deadpan": {
+      "anchor_zh": "无语装淡定",
+      "instruct": "用面无表情、语调平淡毫无起伏、冷漠敷衍的吐槽语气说。",
+      "paralinguistic_hint": ""
+    }
+  }
+}

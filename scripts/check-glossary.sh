@@ -17,13 +17,9 @@ scan_targets=(
   web/scripts/
   scripts/windows-llm/
   docs/windows-llm-deployment.md
+  scripts/windows-tts/
+  docs/windows-tts-deployment.md
 )
-if [[ -d scripts/windows-tts ]]; then
-  scan_targets+=(scripts/windows-tts/)
-fi
-if [[ -f docs/windows-tts-deployment.md ]]; then
-  scan_targets+=(docs/windows-tts-deployment.md)
-fi
 
 if grep -rnE "$forbidden_zh|$forbidden_rob|$forbidden_en" "${scan_targets[@]}"; then
   echo "ERROR: forbidden GLOSSARY.md synonym found under scanned source/script/doc targets" >&2
