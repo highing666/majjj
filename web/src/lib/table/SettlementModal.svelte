@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { ActiveBanterMap } from "../presentation/presentationQueue";
   import type { HandSettlement } from "../protocol/generated/HandSettlement";
   import type { MatchMode } from "../protocol/generated/MatchMode";
   import type { Seat } from "../protocol/generated/Seat";
@@ -12,6 +13,7 @@
     seatRelativeShortRole,
   } from "../protocol/seats";
   import { kongKindLabel, winKindLabel } from "../protocol/settlements";
+  import PostHandBanterStrip from "./PostHandBanterStrip.svelte";
   import TileBadge from "./TileBadge.svelte";
   import { formatRoundTitle, getTileLabel } from "./tiles";
   import {
@@ -27,6 +29,8 @@
     yourSeat: Seat | null;
     readySeats: [boolean, boolean, boolean, boolean] | null;
     canConfirmNextHand: boolean;
+    activeBubbles?: ActiveBanterMap | null;
+    reducedEffects?: boolean;
     disabled?: boolean;
     destructivePending?: boolean;
     onConfirmNextHand: () => void;
@@ -41,6 +45,8 @@
     yourSeat,
     readySeats,
     canConfirmNextHand,
+    activeBubbles = null,
+    reducedEffects = false,
     disabled = false,
     destructivePending = false,
     onConfirmNextHand,
@@ -106,6 +112,15 @@
       </div>
       <span class="tag tag-outcome">{outcomeBadge}</span>
     </header>
+
+    {#if activeBubbles}
+      <PostHandBanterStrip
+        {seats}
+        {yourSeat}
+        {activeBubbles}
+        {reducedEffects}
+      />
+    {/if}
 
     {#if settlement.outcome === "DrawGame"}
       <div class="outcome-box draw-box">

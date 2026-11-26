@@ -4,8 +4,10 @@ import type { SeatInfo } from "../protocol/generated/SeatInfo";
 import type { TableSnapshot } from "../protocol/generated/TableSnapshot";
 import {
   getPersonaMeta,
+  getPersonaMoodMeta,
   PERSONA_LIST,
   type PersonaMeta,
+  type PersonaMoodMeta,
 } from "../protocol/personas";
 import {
   getRelativeSeats,
@@ -33,6 +35,13 @@ export interface LobbyTableSlot {
   personaOptions: readonly LobbyPersonaOption[];
 }
 
+export interface LobbyPersonaRosterItem {
+  readonly meta: PersonaMeta;
+  readonly moodMeta: PersonaMoodMeta;
+  readonly assignedSeat: Seat | null;
+  readonly assignedSlotLabel: string | null;
+}
+
 export interface LobbyTableViewModel {
   slots: {
     top: LobbyTableSlot;
@@ -40,6 +49,10 @@ export interface LobbyTableViewModel {
     right: LobbyTableSlot;
     bottom: LobbyTableSlot;
   };
+  /** All 5 built-in personas for visual lobby preview before selection. */
+  personaRoster: readonly LobbyPersonaRosterItem[];
+  /** Non-human seats eligible to receive a persona assignment, in counter-clockwise ring order. */
+  assignableSeats: readonly LobbyTableSlot[];
   isSeated: boolean;
   shuffleNotice: string | null;
 }
@@ -107,13 +120,41 @@ export function buildLobbyTableViewModel(
       ? "当前已选「随机定座」，开始对局后将重新随机洗座。"
       : null;
 
+  const slots = {
+    top: makeSlot("top"),
+    left: makeSlot("left"),
+    right: makeSlot("right"),
+    bottom: makeSlot("bottom"),
+  };
+  const orderedSlots: LobbyTableSlot[] = [
+    slots.bottom,
+    slots.right,
+    slots.top,
+    slots.left,
+  ];
+  const assignableSeats = orderedSlots.filter(
+    (entry) => entry.seatInfo.kind !== "Human",
+  );
+  const assignedMap = new Map<PersonaId, LobbyTableSlot>();
+  for (const entry of assignableSeats) {
+    if (entry.seatInfo.persona_id !== null) {
+      assignedMap.set(entry.seatInfo.persona_id, entry);
+    }
+  }
+  const personaRoster: LobbyPersonaRosterItem[] = PERSONA_LIST.map((meta) => {
+    const assigned = assignedMap.get(meta.id) ?? null;
+    return {
+      meta,
+      moodMeta: getPersonaMoodMeta(meta.initialMood),
+      assignedSeat: assigned?.seat ?? null,
+      assignedSlotLabel: assigned?.label ?? null,
+    };
+  });
+
   return {
-    slots: {
-      top: makeSlot("top"),
-      left: makeSlot("left"),
-      right: makeSlot("right"),
-      bottom: makeSlot("bottom"),
-    },
+    slots,
+    personaRoster,
+    assignableSeats,
     isSeated,
     shuffleNotice,
   };

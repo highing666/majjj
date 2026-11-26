@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   computeBanterBubbleAnchor,
   computeQuickEmoteDockRect,
+  isCompactQuickEmoteDock,
+  rectToPercentStyle,
 } from "./banterLayout";
 import { computeTableLayout, type Rect } from "./layout";
 import type { RelativeSlot } from "./viewModel";
@@ -80,5 +82,34 @@ describe("banterLayout — comic speech bubble anchors", () => {
         `${vp.name} quick-emote dock must never overlap bottom badge`,
       ).toBe(false);
     }
+  });
+
+  it("single-sources compact quick-emote breakpoint and percentage CSS rect styles", () => {
+    const desktop = computeTableLayout(1440, 900);
+    const phoneLandscape = computeTableLayout(844, 390);
+    const portrait = computeTableLayout(390, 844);
+
+    expect(isCompactQuickEmoteDock(desktop)).toBe(false);
+    expect(isCompactQuickEmoteDock(phoneLandscape)).toBe(true);
+    expect(isCompactQuickEmoteDock(portrait)).toBe(true);
+
+    const styleWithHeight = rectToPercentStyle(desktop, {
+      x: 144,
+      y: 90,
+      width: 288,
+      height: 180,
+    });
+    expect(styleWithHeight).toBe(
+      "left: 10.000%; top: 10.000%; width: 20.000%; height: 20.000%;",
+    );
+
+    const styleWithoutHeight = rectToPercentStyle(
+      desktop,
+      { x: 144, y: 90, width: 288, height: 180 },
+      false,
+    );
+    expect(styleWithoutHeight).toBe(
+      "left: 10.000%; top: 10.000%; width: 20.000%;",
+    );
   });
 });

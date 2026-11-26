@@ -4,12 +4,12 @@ use std::fs;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use common::{
     connect_and_hello, http_get, http_post_raw, recv_event_batch, recv_snapshot, send_msg, tiles,
-    TempDirGuard, WsClient,
+    ScriptedLlmClient, TempDirGuard, WsClient,
 };
 use hyper::header::CACHE_CONTROL;
 use hyper::StatusCode;
@@ -17,10 +17,7 @@ use mahjong_ai::AiDifficulty;
 use mahjong_core::{
     build_preset_wall, MatchMode, PlayerAction, PlayerEventKind, PresetWallProvider, Seat, Tile,
 };
-use mahjong_server::llm::{
-    BanterGenerationRequest, BanterOutput, LlmClient, LlmError, LlmFuture, LlmHealthStatus,
-    MemoryNoteRequest,
-};
+use mahjong_server::llm::{BanterGenerationRequest, BanterOutput};
 use mahjong_server::persona::{PersonaId, PersonaMood};
 use mahjong_server::persona_memory::{
     ClearPersonaMemoryResponse, PersonaMemoryNoteTrigger, PersonaMemoryResponse,
@@ -30,77 +27,29 @@ use mahjong_server::protocol::{ClientMessage, SeatingRule, TablePace, TablePhase
 use mahjong_server::session::{BoxedWallProvider, TableOptions};
 use mahjong_server::{PacingMode, ServerConfig, ServerHandle};
 
-#[derive(Debug, Default)]
-struct RecordingLlmClient {
-    banter_requests: Mutex<Vec<BanterGenerationRequest>>,
-    memory_note_requests: Mutex<Vec<MemoryNoteRequest>>,
-    note_seq: AtomicU64,
-}
-
-impl RecordingLlmClient {
-    fn new() -> Arc<Self> {
-        Arc::new(Self::default())
-    }
-
-    fn banter_requests(&self) -> Vec<BanterGenerationRequest> {
-        self.banter_requests.lock().expect("lock banter").clone()
-    }
-
-    fn clear_banter_requests(&self) {
-        self.banter_requests.lock().expect("lock banter").clear();
-    }
-}
-
-impl LlmClient for RecordingLlmClient {
-    fn endpoint(&self) -> &str {
-        "http://recording-memory-llm.local:8080"
-    }
-
-    fn health_check(&self) -> LlmFuture<'_, Result<LlmHealthStatus, LlmError>> {
-        Box::pin(async {
-            Ok(LlmHealthStatus {
-                endpoint: "http://recording-memory-llm.local:8080".to_string(),
-                model_id: "stub-memory-qwen".to_string(),
-            })
-        })
-    }
-
-    fn generate_banter(
-        &self,
-        request: BanterGenerationRequest,
-    ) -> LlmFuture<'_, Result<BanterOutput, LlmError>> {
-        self.banter_requests
-            .lock()
-            .expect("lock banter")
-            .push(request);
-        Box::pin(async {
+fn recording_memory_llm() -> Arc<ScriptedLlmClient> {
+    let note_seq = Arc::new(AtomicU64::new(0));
+    ScriptedLlmClient::with_handlers(
+        |_| {
             Ok(BanterOutput {
                 mood: PersonaMood::Mocking,
                 text: "上回的账我都给你记在小本本上了！".to_string(),
             })
-        })
-    }
-
-    fn generate_memory_note(
-        &self,
-        request: MemoryNoteRequest,
-    ) -> LlmFuture<'_, Result<String, LlmError>> {
-        let idx = self.note_seq.fetch_add(1, Ordering::Relaxed) + 1;
-        let is_wang = request.user_prompt.contains("「小王」");
-        let is_li = request.user_prompt.contains("「老李」");
-        self.memory_note_requests
-            .lock()
-            .expect("lock notes")
-            .push(request);
-        let note = if is_wang {
-            format!("小王大番账#{idx}：回头必讨回来")
-        } else if is_li {
-            format!("老李秘密恩怨#{idx}：绝不能外传")
-        } else {
-            format!("牌桌恩怨记录#{idx}")
-        };
-        Box::pin(async move { Ok(note) })
-    }
+        },
+        move |request| {
+            let idx = note_seq.fetch_add(1, Ordering::Relaxed) + 1;
+            let is_wang = request.user_prompt.contains("「小王」");
+            let is_li = request.user_prompt.contains("「老李」");
+            let note = if is_wang {
+                format!("小王大番账#{idx}：回头必讨回来")
+            } else if is_li {
+                format!("老李秘密恩怨#{idx}：绝不能外传")
+            } else {
+                format!("牌桌恩怨记录#{idx}")
+            };
+            Ok(note)
+        },
+    )
 }
 
 fn high_fan_east_tsumo_wall() -> Vec<Tile> {
@@ -115,7 +64,7 @@ async fn spawn_memory_server(
     data_dir: PathBuf,
     seed: u64,
     walls: Vec<Vec<Tile>>,
-    llm: Arc<RecordingLlmClient>,
+    llm: Arc<ScriptedLlmClient>,
 ) -> ServerHandle {
     let factory = Arc::new(move || {
         BoxedWallProvider(Box::new(PresetWallProvider::new(Seat::East, walls.clone())))
@@ -185,12 +134,12 @@ async fn wait_for_memory_notes(
 }
 
 async fn wait_for_banter_requests(
-    llm: &RecordingLlmClient,
+    llm: &ScriptedLlmClient,
     min_requests: usize,
 ) -> Vec<BanterGenerationRequest> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
     loop {
-        let reqs = llm.banter_requests();
+        let reqs = llm.captured();
         if reqs.len() >= min_requests {
             return reqs;
         }
@@ -277,7 +226,7 @@ async fn persona_memory_persists_across_restart_injects_scoped_banter_context_an
     let data_dir = temp.path().join("data");
 
     // 1. First server run: 小王 plays one high-fan FreeTable match -> ledger + 2 grudge notes (HighFan + MatchFinished).
-    let llm1 = RecordingLlmClient::new();
+    let llm1 = recording_memory_llm();
     let server1 = spawn_memory_server(
         data_dir.clone(),
         101,
@@ -321,7 +270,7 @@ async fn persona_memory_persists_across_restart_injects_scoped_banter_context_an
     server1.shutdown().await;
 
     // 2. Restart server on the same data_dir: memory must survive restart intact!
-    let llm2 = RecordingLlmClient::new();
+    let llm2 = recording_memory_llm();
     let server2 = spawn_memory_server(
         data_dir.clone(),
         102,
@@ -351,7 +300,7 @@ async fn persona_memory_persists_across_restart_injects_scoped_banter_context_an
 
     // 4. Now 小王 sits back down for a new match:
     // Banter prompt MUST include 小王's historical ledger & grudge notes, and MUST NOT leak 老李!
-    llm2.clear_banter_requests();
+    llm2.clear_captured();
     play_single_high_fan_free_table(addr2, "c-wang-2", "小王").await;
     let wang_banter = wait_for_banter_requests(&llm2, 1).await;
     assert!(
@@ -410,7 +359,7 @@ async fn persona_memory_persists_across_restart_injects_scoped_banter_context_an
     server2.shutdown().await;
 
     // 7. Restarting after clear still sees empty memory.
-    let llm3 = RecordingLlmClient::new();
+    let llm3 = recording_memory_llm();
     let server3 = spawn_memory_server(data_dir.clone(), 103, vec![], Arc::clone(&llm3)).await;
     let after_restart = fetch_persona_memory(server3.addr()).await;
     assert_eq!(after_restart.total_pairs, 0);
@@ -420,7 +369,7 @@ async fn persona_memory_persists_across_restart_injects_scoped_banter_context_an
     // 8. Corrupt persona_memory.json on disk must NOT block server startup.
     fs::write(data_dir.join("persona_memory.json"), "{not-valid-json")
         .expect("write corrupt persona_memory.json");
-    let llm4 = RecordingLlmClient::new();
+    let llm4 = recording_memory_llm();
     let server4 = spawn_memory_server(data_dir.clone(), 104, vec![], Arc::clone(&llm4)).await;
     let recovered = fetch_persona_memory(server4.addr()).await;
     assert_eq!(recovered.total_pairs, 0);
@@ -447,7 +396,7 @@ async fn rolling_eight_note_cap_evicts_oldest_notes_over_disk_and_http() {
         }
     }
 
-    let llm = RecordingLlmClient::new();
+    let llm = recording_memory_llm();
     let server = spawn_memory_server(
         data_dir.clone(),
         201,

@@ -49,6 +49,7 @@
   let qrError = $state<string | null>(null);
   let copiedLabel = $state<string | null>(null);
   let recentNicknames = $state<string[]>([]);
+  let activePersonaSeat = $state<Seat | null>(null);
 
   $effect(() => {
     let cancelled = false;
@@ -136,6 +137,34 @@
   const canConfigure = $derived(isSeated && !disabled);
   const canStartMatch = $derived(isSeated && humanCount >= 1 && !disabled);
 
+  const resolvedPersonaTargetSeat = $derived.by<Seat | null>(() => {
+    const assignable = tableModel.assignableSeats;
+    if (assignable.length === 0) {
+      return null;
+    }
+    if (
+      activePersonaSeat !== null &&
+      assignable.some((entry) => entry.seat === activePersonaSeat)
+    ) {
+      return activePersonaSeat;
+    }
+    const firstUnassigned = assignable.find(
+      (entry) => entry.seatInfo.persona_id === null,
+    );
+    return (firstUnassigned ?? assignable[0]).seat;
+  });
+
+  const resolvedPersonaTargetLabel = $derived.by<string | null>(() => {
+    if (resolvedPersonaTargetSeat === null) {
+      return null;
+    }
+    return (
+      tableModel.assignableSeats.find(
+        (entry) => entry.seat === resolvedPersonaTargetSeat,
+      )?.label ?? null
+    );
+  });
+
   function handleNicknameSubmit(event: SubmitEvent): void {
     event.preventDefault();
     applyNickname();
@@ -214,6 +243,33 @@
     const raw = (event.currentTarget as HTMLSelectElement).value;
     onSetSeatPersona(seat, raw === "" ? null : (raw as PersonaId));
   }
+
+  function handleRosterAssign(
+    personaId: PersonaId,
+    currentlyAssignedSeat: Seat | null,
+  ): void {
+    if (!onSetSeatPersona || !canConfigure) {
+      return;
+    }
+    if (currentlyAssignedSeat !== null) {
+      // Clicking an already-assigned persona either clears it (if on active target)
+      // or reassigns it to the selected target seat.
+      if (
+        resolvedPersonaTargetSeat === null ||
+        currentlyAssignedSeat === resolvedPersonaTargetSeat
+      ) {
+        onSetSeatPersona(currentlyAssignedSeat, null);
+        activePersonaSeat = currentlyAssignedSeat;
+        return;
+      }
+      onSetSeatPersona(currentlyAssignedSeat, null);
+      onSetSeatPersona(resolvedPersonaTargetSeat, personaId);
+      return;
+    }
+    if (resolvedPersonaTargetSeat !== null) {
+      onSetSeatPersona(resolvedPersonaTargetSeat, personaId);
+    }
+  }
 </script>
 
 {#snippet seatCard(slot: LobbyTableSlot)}
@@ -221,6 +277,9 @@
   <article
     class="seat-card ring-slot-{slot.slot}"
     class:seat-mine={slot.isMine}
+    class:seat-persona-target={canConfigure &&
+      seatInfo.kind !== "Human" &&
+      resolvedPersonaTargetSeat === slot.seat}
   >
     <div class="seat-top">
       <strong class="seat-name">{slot.label}</strong>
@@ -424,6 +483,106 @@
       {#if tableModel.shuffleNotice}
         <p class="shuffle-notice" role="status">{tableModel.shuffleNotice}</p>
       {/if}
+
+      <section class="persona-roster-section" aria-label="5 位毒舌牌友角色预览">
+        <div class="persona-roster-head">
+          <div>
+            <h2>5 位毒舌牌友阵容</h2>
+            <p class="subtitle">
+              开桌前预览全部角色头像、性格与默认牌风；留空座次开局自动随机不重复补位。
+            </p>
+          </div>
+          {#if tableModel.assignableSeats.length > 0 && onSetSeatPersona}
+            <div class="roster-target-bar" role="group" aria-label="当前待指定AI座次">
+              <span class="roster-target-label">点击角色分配到：</span>
+              {#each tableModel.assignableSeats as target (target.seat)}
+                <button
+                  class="target-seat-chip"
+                  class:target-seat-chip-active={resolvedPersonaTargetSeat === target.seat}
+                  type="button"
+                  disabled={!canConfigure}
+                  onclick={() => (activePersonaSeat = target.seat)}
+                >
+                  {target.label}
+                </button>
+              {/each}
+              {#if resolvedPersonaTargetSeat !== null && tableModel.assignableSeats.find((s) => s.seat === resolvedPersonaTargetSeat)?.seatInfo.persona_id !== null}
+                <button
+                  class="target-seat-chip target-seat-reset"
+                  type="button"
+                  disabled={!canConfigure}
+                  onclick={() =>
+                    resolvedPersonaTargetSeat !== null &&
+                    onSetSeatPersona(resolvedPersonaTargetSeat, null)}
+                >
+                  重置随机
+                </button>
+              {/if}
+            </div>
+          {/if}
+        </div>
+
+        <div class="persona-roster-grid">
+          {#each tableModel.personaRoster as entry (entry.meta.id)}
+            {@const isAssigned = entry.assignedSeat !== null}
+            {@const isAssignedToTarget =
+              isAssigned && entry.assignedSeat === resolvedPersonaTargetSeat}
+            <article
+              class="roster-card"
+              class:roster-card-assigned={isAssigned}
+              class:roster-card-target={isAssignedToTarget}
+              style="--persona-accent: {entry.meta.accentHex};"
+            >
+              <div class="roster-card-top">
+                <PersonaAvatar
+                  personaId={entry.meta.id}
+                  mood={entry.meta.initialMood}
+                  size={48}
+                />
+                <div class="roster-card-meta">
+                  <strong class="roster-name">{entry.meta.name}</strong>
+                  <div class="roster-badges">
+                    <span class="tag tag-persona-style">{entry.meta.styleLabel}</span>
+                    <span
+                      class="roster-mood-chip"
+                      style="background: {entry.moodMeta.badgeBg}; color: {entry.moodMeta.badgeFg};"
+                    >
+                      {entry.moodMeta.label}
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <p class="roster-tagline">{entry.meta.tagline}</p>
+              <div class="roster-card-foot">
+                {#if isAssigned}
+                  <span class="tag tag-online">已分配 · {entry.assignedSlotLabel}</span>
+                {:else}
+                  <span class="roster-idle-note">待选 / 随机池</span>
+                {/if}
+                {#if onSetSeatPersona && tableModel.assignableSeats.length > 0}
+                  <button
+                    class="btn btn-subtle roster-assign-btn"
+                    type="button"
+                    disabled={!canConfigure}
+                    onclick={() =>
+                      handleRosterAssign(entry.meta.id, entry.assignedSeat)}
+                  >
+                    {#if isAssignedToTarget}
+                      取消指定
+                    {:else if isAssigned && resolvedPersonaTargetLabel !== null}
+                      调至{resolvedPersonaTargetLabel}
+                    {:else if resolvedPersonaTargetLabel !== null}
+                      安排至{resolvedPersonaTargetLabel}
+                    {:else}
+                      指定
+                    {/if}
+                  </button>
+                {/if}
+              </div>
+            </article>
+          {/each}
+        </div>
+      </section>
     </div>
 
     <div class="card">
@@ -840,6 +999,163 @@
 
   .seat-actions .btn {
     width: 100%;
+  }
+
+  .seat-persona-target {
+    box-shadow: 0 0 0 2px rgba(232, 93, 63, 0.35);
+    border-color: var(--accent);
+  }
+
+  .persona-roster-section {
+    margin-top: 16px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .persona-roster-head {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .roster-target-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .roster-target-label {
+    font-size: 12px;
+    color: var(--ink-muted);
+    font-weight: 600;
+  }
+
+  .target-seat-chip {
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 3px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    background: var(--bg-muted);
+    color: var(--ink);
+    cursor: pointer;
+  }
+
+  .target-seat-chip:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .target-seat-chip-active {
+    border-color: var(--accent);
+    background: #fff3e8;
+    color: var(--accent);
+  }
+
+  .target-seat-reset {
+    border-style: dashed;
+  }
+
+  .persona-roster-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(185px, 1fr));
+    gap: 10px;
+  }
+
+  .roster-card {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px;
+    border-radius: 12px;
+    border: 1.5px solid var(--border);
+    border-left: 4px solid var(--persona-accent, var(--accent));
+    background: #fffdf9;
+    min-width: 0;
+  }
+
+  .roster-card-assigned {
+    background: #fff8ef;
+    border-color: var(--persona-accent, var(--accent));
+  }
+
+  .roster-card-target {
+    box-shadow: 0 2px 10px rgba(232, 93, 63, 0.16);
+  }
+
+  .roster-card-top {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    min-width: 0;
+  }
+
+  .roster-card-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .roster-name {
+    font-size: 14px;
+    line-height: 1.2;
+    color: var(--ink);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .roster-badges {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .roster-mood-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 6px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 800;
+    line-height: 1.35;
+    white-space: nowrap;
+  }
+
+  .roster-tagline {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.38;
+    color: var(--ink-muted);
+    flex: 1 1 auto;
+  }
+
+  .roster-card-foot {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    padding-top: 4px;
+    border-top: 1px dashed var(--border);
+  }
+
+  .roster-idle-note {
+    font-size: 11px;
+    color: var(--ink-muted);
+  }
+
+  .roster-assign-btn {
+    padding: 3px 9px;
+    font-size: 12px;
   }
 
   .config-field {

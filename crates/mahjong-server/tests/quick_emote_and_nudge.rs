@@ -1,169 +1,56 @@
 mod common;
 
 use std::net::{IpAddr, Ipv4Addr};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use common::{
-    connect_and_hello, http_get, no_reaction_wall, recv_msg, recv_snapshot, send_msg, TempDirGuard,
+    connect_and_hello, http_get, no_reaction_wall, recv_msg, recv_snapshot, send_msg, yield_tasks,
+    ScriptedLlmClient, TempDirGuard, VirtualClient,
 };
 use hyper::StatusCode;
 use mahjong_ai::AiDifficulty;
 use mahjong_core::{MatchMode, PlayerAction, PresetWallProvider, Seat};
 use mahjong_server::banter::{QUICK_EMOTE_COOLDOWN, SLOW_THINK_NUDGE_DELAY};
 use mahjong_server::history_dto::PreferencesData;
-use mahjong_server::llm::{
-    BanterGenerationRequest, BanterOutput, LlmClient, LlmError, LlmFuture, LlmHealthStatus,
-};
+use mahjong_server::llm::{BanterGenerationRequest, BanterOutput, LlmError};
 use mahjong_server::pacing::PacingMode;
 use mahjong_server::persona::PersonaMood;
 use mahjong_server::protocol::{
     ClientMessage, QuickEmote, SeatKind, SeatingRule, ServerMessage, TablePace, TablePhase,
-    TableSnapshot,
 };
-use mahjong_server::session::{
-    BoxedWallProvider, OutboundSignal, TableOptions, TableRuntime, WallProviderFactory,
-};
+use mahjong_server::session::{BoxedWallProvider, TableOptions, TableRuntime, WallProviderFactory};
 use mahjong_server::ServerConfig;
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::Notify;
 
-#[derive(Debug)]
-struct RecordingLlmClient {
-    captured: Mutex<Vec<BanterGenerationRequest>>,
-    gate: Option<Arc<Notify>>,
+fn emote_nudge_responder(request: &BanterGenerationRequest) -> Result<BanterOutput, LlmError> {
+    let user_prompt = &request.user_prompt;
+    let (mood, text) = if user_prompt.contains("慢思考催牌调侃") {
+        (
+            PersonaMood::Mocking,
+            "哟，这手牌是要算出花来吗？慢慢想别着急！".to_string(),
+        )
+    } else if user_prompt.contains("快捷互动回应") {
+        let matched_label = QuickEmote::ALL
+            .iter()
+            .find(|e| user_prompt.contains(e.label()))
+            .map_or("快捷互动", |e| e.label());
+        (
+            PersonaMood::Smug,
+            format!("还「{matched_label}」呢？有本事下巡别点炮！"),
+        )
+    } else {
+        (PersonaMood::Plotting, "开局手气稳得一批！".to_string())
+    };
+    Ok(BanterOutput { mood, text })
 }
 
-impl RecordingLlmClient {
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
-            captured: Mutex::new(Vec::new()),
-            gate: None,
-        })
-    }
-
-    fn gated(gate: Arc<Notify>) -> Arc<Self> {
-        Arc::new(Self {
-            captured: Mutex::new(Vec::new()),
-            gate: Some(gate),
-        })
-    }
-
-    fn captured_prompts(&self) -> Vec<BanterGenerationRequest> {
-        self.captured.lock().expect("lock captured").clone()
-    }
+fn recording_emote_llm() -> Arc<ScriptedLlmClient> {
+    ScriptedLlmClient::with_banter_fn(emote_nudge_responder)
 }
 
-impl LlmClient for RecordingLlmClient {
-    fn endpoint(&self) -> &str {
-        "http://test-quick-emote-llm.local:8080"
-    }
-
-    fn health_check(&self) -> LlmFuture<'_, Result<LlmHealthStatus, LlmError>> {
-        Box::pin(async {
-            Ok(LlmHealthStatus {
-                endpoint: "http://test-quick-emote-llm.local:8080".to_string(),
-                model_id: "test-qwen".to_string(),
-            })
-        })
-    }
-
-    fn generate_banter(
-        &self,
-        request: BanterGenerationRequest,
-    ) -> LlmFuture<'_, Result<BanterOutput, LlmError>> {
-        let user_prompt = request.user_prompt.clone();
-        self.captured.lock().expect("lock captured").push(request);
-        let gate = self.gate.clone();
-        Box::pin(async move {
-            if let Some(notify) = gate {
-                notify.notified().await;
-            }
-            let (mood, text) = if user_prompt.contains("慢思考催牌调侃") {
-                (
-                    PersonaMood::Mocking,
-                    "哟，这手牌是要算出花来吗？慢慢想别着急！".to_string(),
-                )
-            } else if user_prompt.contains("快捷互动回应") {
-                let matched_label = QuickEmote::ALL
-                    .iter()
-                    .find(|e| user_prompt.contains(e.label()))
-                    .map_or("快捷互动", |e| e.label());
-                (
-                    PersonaMood::Smug,
-                    format!("还「{matched_label}」呢？有本事下巡别点炮！"),
-                )
-            } else {
-                (PersonaMood::Plotting, "开局手气稳得一批！".to_string())
-            };
-            Ok(BanterOutput { mood, text })
-        })
-    }
-}
-
-struct VirtualClient {
-    conn_id: u64,
-    tx: mpsc::UnboundedSender<OutboundSignal>,
-    rx: mpsc::UnboundedReceiver<OutboundSignal>,
-}
-
-impl VirtualClient {
-    async fn connect(runtime: &TableRuntime, client_id: &str, nickname: &str) -> Self {
-        let conn_id = runtime.allocate_conn_id().await;
-        let (tx, rx) = mpsc::unbounded_channel();
-        let mut client = Self { conn_id, tx, rx };
-        client
-            .send(
-                runtime,
-                &ClientMessage::Hello {
-                    client_id: client_id.to_string(),
-                    nickname: nickname.to_string(),
-                    table_id: None,
-                    seat_token: None,
-                },
-            )
-            .await;
-        let _ = client.recv_snapshot().await;
-        client
-    }
-
-    async fn send(&self, runtime: &TableRuntime, msg: &ClientMessage) {
-        let raw = serde_json::to_string(msg).expect("serialize ClientMessage");
-        let _ = runtime
-            .handle_raw_text(self.conn_id, &raw, true, &self.tx)
-            .await;
-    }
-
-    fn drain_all(&mut self) -> Vec<ServerMessage> {
-        let mut out = Vec::new();
-        while let Ok(sig) = self.rx.try_recv() {
-            match sig {
-                OutboundSignal::Message(m) => out.push(*m),
-                OutboundSignal::ReplaceAndClose => out.push(ServerMessage::SessionReplaced),
-            }
-        }
-        out
-    }
-
-    async fn recv_snapshot(&mut self) -> TableSnapshot {
-        loop {
-            match self.rx.recv().await.expect("outbound msg") {
-                OutboundSignal::Message(msg) => match *msg {
-                    ServerMessage::TableSnapshot(snap) => return snap,
-                    ServerMessage::LobbyUpdated { .. } | ServerMessage::TableBanter { .. } => {
-                        continue
-                    }
-                    other => panic!("expected TableSnapshot, got {other:?}"),
-                },
-                OutboundSignal::ReplaceAndClose => panic!("unexpected SessionReplaced"),
-            }
-        }
-    }
-}
-
-async fn yield_tasks() {
-    for _ in 0..12 {
-        tokio::task::yield_now().await;
-    }
+fn gated_emote_llm(gate: Arc<Notify>) -> Arc<ScriptedLlmClient> {
+    ScriptedLlmClient::with_gated_banter_fn(gate, emote_nudge_responder)
 }
 
 fn no_reaction_factory() -> WallProviderFactory {
@@ -178,7 +65,7 @@ fn no_reaction_factory() -> WallProviderFactory {
 
 #[tokio::test(start_paused = true)]
 async fn virtual_clock_quick_emote_cooldown_and_all_six_emote_ai_replies() {
-    let llm = RecordingLlmClient::new();
+    let llm = recording_emote_llm();
     let options = TableOptions::with_wall_factory(101, no_reaction_factory())
         .with_pacing(PacingMode::Immediate)
         .with_llm_client(llm.clone());
@@ -306,7 +193,7 @@ async fn virtual_clock_quick_emote_cooldown_and_all_six_emote_ai_replies() {
 
         // Immediate rapid spam within cooldown MUST be rejected with ActionRejected without broadcast or AI call.
         tokio::time::advance(Duration::from_millis(500)).await;
-        let prompts_before = llm.captured_prompts().len();
+        let prompts_before = llm.captured().len();
         east.send(
             &runtime,
             &ClientMessage::SendQuickEmote {
@@ -331,7 +218,7 @@ async fn virtual_clock_quick_emote_cooldown_and_all_six_emote_ai_replies() {
             "cooldown-rejected emote must not broadcast to peers: {spam_south:?}"
         );
         assert_eq!(
-            llm.captured_prompts().len(),
+            llm.captured().len(),
             prompts_before,
             "cooldown-rejected emote must not invoke LLM"
         );
@@ -342,7 +229,7 @@ async fn virtual_clock_quick_emote_cooldown_and_all_six_emote_ai_replies() {
 async fn virtual_clock_slow_think_nudge_fires_once_never_auto_plays_resets_on_action_and_respects_toggle(
 ) {
     let temp = TempDirGuard::new("majjj_nudge_virtual");
-    let llm = RecordingLlmClient::new();
+    let llm = recording_emote_llm();
     let options = TableOptions::with_wall_factory(202, no_reaction_factory())
         .with_pacing(PacingMode::Immediate)
         .with_data_dir(temp.path())
@@ -615,7 +502,7 @@ async fn virtual_clock_slow_think_nudge_fires_once_never_auto_plays_resets_on_ac
 #[tokio::test(start_paused = true)]
 async fn virtual_clock_in_flight_quick_emote_reply_is_dropped_after_seat_takeover() {
     let gate = Arc::new(Notify::new());
-    let llm = RecordingLlmClient::gated(Arc::clone(&gate));
+    let llm = gated_emote_llm(Arc::clone(&gate));
     let options = TableOptions::with_wall_factory(303, no_reaction_factory())
         .with_pacing(PacingMode::Immediate)
         .with_llm_client(llm.clone());
@@ -691,7 +578,7 @@ async fn virtual_clock_in_flight_quick_emote_reply_is_dropped_after_seat_takeove
 #[tokio::test]
 async fn real_ws_quick_emotes_broadcast_trigger_ai_replies_and_nudge_persists_across_restart() {
     let temp = TempDirGuard::new("majjj_ws_quick_emote");
-    let llm = RecordingLlmClient::new();
+    let llm = recording_emote_llm();
 
     let server = ServerConfig::default()
         .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))

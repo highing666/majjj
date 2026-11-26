@@ -129,28 +129,20 @@ pub fn analyze_hand_facts(view: &PlayerView, previous: Option<&HandFacts>) -> Ha
     let expected_waiting = 4usize.saturating_sub(existing_melds) * 3 + 1;
     let expected_turn = expected_waiting + 1;
 
+    let ctx = HandAnalysisCtx {
+        counts: &counts,
+        existing_melds,
+        allow_quad,
+        remaining: &remaining,
+        meld_summary: &meld_summary,
+        scoring_rules,
+        wall_remaining: view.wall_remaining,
+    };
+
     if total_closed == expected_turn {
-        analyze_turn_hand(
-            &counts,
-            existing_melds,
-            allow_quad,
-            &remaining,
-            &meld_summary,
-            scoring_rules,
-            view.wall_remaining,
-            previous,
-        )
+        analyze_turn_hand(&ctx, previous)
     } else if total_closed == expected_waiting {
-        analyze_waiting_hand(
-            &counts,
-            existing_melds,
-            allow_quad,
-            &remaining,
-            &meld_summary,
-            scoring_rules,
-            view.wall_remaining,
-            previous,
-        )
+        analyze_waiting_hand(&ctx, previous)
     } else {
         // Defensive fallback for irregular/partial test views (never panics).
         let (breakdown, mask) = shanten::necessary_tiles_mask(&counts, existing_melds, allow_quad);
@@ -177,26 +169,27 @@ pub fn analyze_hand_facts(view: &PlayerView, previous: Option<&HandFacts>) -> Ha
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn analyze_waiting_hand(
-    counts: &[u8; Tile::COUNT],
+struct HandAnalysisCtx<'a> {
+    counts: &'a [u8; Tile::COUNT],
     existing_melds: usize,
     allow_quad: bool,
-    remaining: &[u8; Tile::COUNT],
-    meld_summary: &MeldSummary,
+    remaining: &'a [u8; Tile::COUNT],
+    meld_summary: &'a MeldSummary,
     scoring_rules: ScoringRules,
     wall_remaining: u8,
-    previous: Option<&HandFacts>,
-) -> HandFacts {
-    let (breakdown, mask) = shanten::necessary_tiles_mask(counts, existing_melds, allow_quad);
+}
+
+fn analyze_waiting_hand(ctx: &HandAnalysisCtx<'_>, previous: Option<&HandFacts>) -> HandFacts {
+    let (breakdown, mask) =
+        shanten::necessary_tiles_mask(ctx.counts, ctx.existing_melds, ctx.allow_quad);
     let waits = if breakdown.min == 0 {
         collect_waits(
-            counts,
+            ctx.counts,
             mask,
-            remaining,
-            meld_summary,
-            scoring_rules,
-            wall_remaining,
+            ctx.remaining,
+            ctx.meld_summary,
+            ctx.scoring_rules,
+            ctx.wall_remaining,
         )
     } else {
         Vec::new()
@@ -206,13 +199,13 @@ fn analyze_waiting_hand(
     let ukeire = if is_tenpai {
         waits.iter().map(|w| u16::from(w.remaining_visible)).sum()
     } else {
-        shanten::ukeire_from_mask(mask, remaining)
+        shanten::ukeire_from_mask(mask, ctx.remaining)
     };
 
     let potential_directions = if is_tenpai {
         directions_from_waits(&waits)
     } else {
-        detect_potential_directions(counts, meld_summary, breakdown, allow_quad)
+        detect_potential_directions(ctx.counts, ctx.meld_summary, breakdown, ctx.allow_quad)
     };
 
     let (progression, stalled_streak) =
@@ -225,7 +218,7 @@ fn analyze_waiting_hand(
         thirteen_orphans_shanten: breakdown.thirteen_orphans,
         is_winning: false,
         is_tenpai,
-        is_menqing: meld_summary.is_menqing,
+        is_menqing: ctx.meld_summary.is_menqing,
         best_discard: None,
         ukeire,
         waits,
@@ -235,28 +228,19 @@ fn analyze_waiting_hand(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn analyze_turn_hand(
-    counts: &[u8; Tile::COUNT],
-    existing_melds: usize,
-    allow_quad: bool,
-    remaining: &[u8; Tile::COUNT],
-    meld_summary: &MeldSummary,
-    scoring_rules: ScoringRules,
-    wall_remaining: u8,
-    previous: Option<&HandFacts>,
-) -> HandFacts {
-    let breakdown = shanten::compute_shanten_breakdown(counts, existing_melds, allow_quad);
+fn analyze_turn_hand(ctx: &HandAnalysisCtx<'_>, previous: Option<&HandFacts>) -> HandFacts {
+    let breakdown =
+        shanten::compute_shanten_breakdown(ctx.counts, ctx.existing_melds, ctx.allow_quad);
 
     // Check if the 14-3m hand is already a complete winning hand (`shanten == -1`).
     if breakdown.min == -1 {
         let win_input = ScoringInput {
             win_kind: WinKind::Tsumo,
             turn_source: Some(TurnSource::NormalDraw),
-            wall_remaining: wall_remaining.max(1),
+            wall_remaining: ctx.wall_remaining.max(1),
         };
         if let Some(win_eval) =
-            scoring::evaluate_win(counts, meld_summary, win_input, scoring_rules)
+            scoring::evaluate_win(ctx.counts, ctx.meld_summary, win_input, ctx.scoring_rules)
         {
             let potential_directions = directions_from_fan_mask(win_eval.fan_mask);
             let (progression, stalled_streak) = compute_progression(-1, true, false, 0, previous);
@@ -267,7 +251,7 @@ fn analyze_turn_hand(
                 thirteen_orphans_shanten: breakdown.thirteen_orphans,
                 is_winning: true,
                 is_tenpai: false,
-                is_menqing: meld_summary.is_menqing,
+                is_menqing: ctx.meld_summary.is_menqing,
                 best_discard: None,
                 ukeire: 0,
                 waits: Vec::new(),
@@ -279,7 +263,7 @@ fn analyze_turn_hand(
     }
 
     // Evaluate every candidate discard to find the best post-discard state.
-    let mut work = *counts;
+    let mut work = *ctx.counts;
     let mut best_choice: Option<PostDiscardCandidate> = None;
 
     for idx in 0..Tile::COUNT {
@@ -288,15 +272,16 @@ fn analyze_turn_hand(
         }
         let tile = Tile::new(idx as u8).expect("idx bounded by Tile::COUNT");
         work[idx] -= 1;
-        let (post_bd, post_mask) = shanten::necessary_tiles_mask(&work, existing_melds, allow_quad);
+        let (post_bd, post_mask) =
+            shanten::necessary_tiles_mask(&work, ctx.existing_melds, ctx.allow_quad);
         let post_waits = if post_bd.min == 0 {
             collect_waits(
                 &work,
                 post_mask,
-                remaining,
-                meld_summary,
-                scoring_rules,
-                wall_remaining,
+                ctx.remaining,
+                ctx.meld_summary,
+                ctx.scoring_rules,
+                ctx.wall_remaining,
             )
         } else {
             Vec::new()
@@ -308,7 +293,7 @@ fn analyze_turn_hand(
                 .map(|w| u16::from(w.remaining_visible))
                 .sum()
         } else {
-            shanten::ukeire_from_mask(post_mask, remaining)
+            shanten::ukeire_from_mask(post_mask, ctx.remaining)
         };
         let max_wait_fan = post_waits.iter().map(|w| w.winning_fan).max().unwrap_or(0);
         let post_counts = work;
@@ -352,9 +337,9 @@ fn analyze_turn_hand(
     } else {
         detect_potential_directions(
             &chosen.post_counts,
-            meld_summary,
+            ctx.meld_summary,
             chosen.breakdown,
-            allow_quad,
+            ctx.allow_quad,
         )
     };
     let (progression, stalled_streak) = compute_progression(
@@ -372,7 +357,7 @@ fn analyze_turn_hand(
         thirteen_orphans_shanten: chosen.breakdown.thirteen_orphans,
         is_winning: false,
         is_tenpai: chosen.is_tenpai,
-        is_menqing: meld_summary.is_menqing,
+        is_menqing: ctx.meld_summary.is_menqing,
         best_discard: Some(chosen.discard),
         ukeire: chosen.ukeire,
         waits: chosen.waits,

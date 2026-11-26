@@ -1,12 +1,14 @@
 <script lang="ts">
   import LobbyConfigFields from "../lobby/LobbyConfigFields.svelte";
   import { matchModeLabel } from "../lobby/lobbyConfig";
+  import type { ActiveBanterMap } from "../presentation/presentationQueue";
   import type { HandSettlement } from "../protocol/generated/HandSettlement";
   import type { LobbyConfig } from "../protocol/generated/LobbyConfig";
   import type { MatchSummary } from "../protocol/generated/MatchSummary";
   import type { Seat } from "../protocol/generated/Seat";
   import type { SeatInfo } from "../protocol/generated/SeatInfo";
   import { formatRelativeSeatDisplay } from "../protocol/seats";
+  import PostHandBanterStrip from "./PostHandBanterStrip.svelte";
   import { getOfflineHumanTakeOverSeats } from "./seatControl";
   import TileBadge from "./TileBadge.svelte";
   import { formatRoundTitle, getTileLabel } from "./tiles";
@@ -22,6 +24,8 @@
     seats: [SeatInfo, SeatInfo, SeatInfo, SeatInfo];
     yourSeat: Seat | null;
     lastSettlement: HandSettlement | null;
+    activeBubbles?: ActiveBanterMap | null;
+    reducedEffects?: boolean;
     disabled?: boolean;
     onUpdateConfig: (config: LobbyConfig) => void;
     onStartMatch: () => void;
@@ -36,6 +40,8 @@
     seats,
     yourSeat,
     lastSettlement,
+    activeBubbles = null,
+    reducedEffects = false,
     disabled = false,
     onUpdateConfig,
     onStartMatch,
@@ -73,6 +79,15 @@
       {/if}
     </div>
   </header>
+
+  {#if activeBubbles}
+    <PostHandBanterStrip
+      {seats}
+      {yourSeat}
+      {activeBubbles}
+      {reducedEffects}
+    />
+  {/if}
 
   {#if offlineTakeOverSeats.length > 0 && onTakeOverSeat}
     <div class="offline-takeover-box" role="status">

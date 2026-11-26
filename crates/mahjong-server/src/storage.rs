@@ -89,6 +89,25 @@ pub fn normalize_nickname(raw: &str) -> String {
     raw.trim().to_string()
 }
 
+/// Collapses control whitespace (`\r`, `\n`, `\t`) into single spaces and trims outer whitespace.
+#[must_use]
+pub(crate) fn normalize_single_line_text(raw: &str) -> String {
+    let mut normalized = String::with_capacity(raw.len());
+    let mut prev_space = false;
+    for ch in raw.trim().chars() {
+        if matches!(ch, '\r' | '\n' | '\t') {
+            if !prev_space && !normalized.is_empty() {
+                normalized.push(' ');
+                prev_space = true;
+            }
+        } else {
+            normalized.push(ch);
+            prev_space = ch == ' ';
+        }
+    }
+    normalized.trim().to_string()
+}
+
 pub(crate) fn atomic_write_bytes(target: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
     let parent = target.parent().ok_or_else(|| {
         std::io::Error::new(

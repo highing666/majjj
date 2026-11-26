@@ -1,7 +1,11 @@
 <script lang="ts">
   import type { QuickEmote } from "../protocol/generated/QuickEmote";
   import { QUICK_EMOTE_LIST } from "../protocol/personas";
-  import { computeQuickEmoteDockRect } from "./banterLayout";
+  import {
+    computeQuickEmoteDockRect,
+    isCompactQuickEmoteDock,
+    rectToPercentStyle,
+  } from "./banterLayout";
   import type { TableLayout } from "./layout";
   import {
     createQuickEmoteCooldown,
@@ -38,21 +42,18 @@
   );
 
   const isCompact = $derived(
-    tableLayout === null ||
-      tableLayout.isShortLandscape ||
-      isPortrait ||
-      tableLayout.rightWing.width < 190,
+    tableLayout === null || isCompactQuickEmoteDock(tableLayout),
   );
 
   const dockStyle = $derived.by(() => {
     if (!tableLayout) {
       return "";
     }
-    const rect = computeQuickEmoteDockRect(tableLayout);
-    const leftPct = (rect.x / tableLayout.width) * 100;
-    const topPct = (rect.y / tableLayout.height) * 100;
-    const widthPct = (rect.width / tableLayout.width) * 100;
-    return `left: ${leftPct.toFixed(3)}%; top: ${topPct.toFixed(3)}%; width: ${widthPct.toFixed(3)}%;`;
+    return rectToPercentStyle(
+      tableLayout,
+      computeQuickEmoteDockRect(tableLayout),
+      false,
+    );
   });
 
   const cooldownLabel = $derived(

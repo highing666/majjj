@@ -985,4 +985,138 @@ describe("PresentationQueue", () => {
 
     queue.dispose();
   });
+
+  it("preserves settlement banter across BetweenHands and Finished transitions, accepts post-Finished chain replies, and clears on HandStarted", () => {
+    const queue = createPresentationQueue({ banterDurationMs: 5000 });
+    const snap = makeSnapshot(5, "Standard");
+    snap.seats[1] = {
+      ...snap.seats[1],
+      kind: "Ai",
+      persona_id: "QuickHothead",
+      mood: "Smug",
+      nickname: "急眼快攻哥",
+    };
+    snap.seats[2] = {
+      ...snap.seats[2],
+      kind: "Ai",
+      persona_id: "TeaSarcasm",
+      mood: "Mocking",
+      nickname: "阴阳茶艺师",
+    };
+    queue.enqueueServerMessage({ TableSnapshot: snap });
+
+    // 1. HandSettled transitions into BetweenHands; settlement banter arrives and stays visible once modal opens.
+    queue.enqueueServerMessage({
+      EventBatch: {
+        from_seq: 6,
+        to_seq: 6,
+        events: [
+          {
+            seq: 6,
+            kind: { HandSettled: { settlement: makeSettlement("DrawGame") } },
+          },
+        ],
+        updated_legal_actions: ["ConfirmNextHand"],
+      },
+    });
+    queue.enqueueServerMessage({
+      TableBanter: {
+        seat: "South",
+        persona_id: "QuickHothead",
+        mood: "Tilted",
+        text: "这也能荒庄？气死我了！",
+        event_seq: 6,
+        reply_to_seat: null,
+      },
+    });
+    expect(queue.skipActiveImpact()).toBe(true);
+    expect(queue.getState().settlementVisible).toBe(true);
+    expect(queue.getState().activeBubbles.South?.text).toBe("这也能荒庄？气死我了！");
+
+    // 2. Follow-up reply arrives while SettlementModal is open.
+    queue.enqueueServerMessage({
+      TableBanter: {
+        seat: "West",
+        persona_id: "TeaSarcasm",
+        mood: "Mocking",
+        text: "急眼哥别破防嘛。",
+        event_seq: 6,
+        reply_to_seat: "South",
+      },
+    });
+    expect(queue.getState().activeBubbles.South?.text).toBe("这也能荒庄？气死我了！");
+    expect(queue.getState().activeBubbles.West?.replyToSeat).toBe("South");
+
+    // 3. Starting the next hand clears stale settlement bubbles cleanly.
+    queue.enqueueServerMessage({
+      EventBatch: {
+        from_seq: 7,
+        to_seq: 7,
+        events: [
+          {
+            seq: 7,
+            kind: {
+              HandStarted: {
+                wind_round: "East",
+                hand_number: 2,
+                dealer: "South",
+                dealer_streak: 0,
+                wall_remaining: 83,
+                hand: {
+                  closed_tiles: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+                  drawn_tile: null,
+                },
+                scores: [0, 0, 0, 0],
+              },
+            },
+          },
+        ],
+        updated_legal_actions: [],
+      },
+    });
+    expect(queue.getState().activeBubbles.South).toBeNull();
+    expect(queue.getState().activeBubbles.West).toBeNull();
+
+    // 4. Final-hand MatchFinished + TableSnapshot(Finished) preserves existing bubbles AND accepts post-Finished banter!
+    queue.enqueueServerMessage({
+      TableBanter: {
+        seat: "South",
+        persona_id: "QuickHothead",
+        mood: "Tilted",
+        text: "终局居然被你绝杀！",
+        event_seq: 8,
+        reply_to_seat: null,
+      },
+    });
+    const finishedSnap = makeSnapshot(9, "Standard");
+    finishedSnap.phase = "Finished";
+    finishedSnap.seats = snap.seats;
+    finishedSnap.player_view!.phase = "MatchFinished";
+    finishedSnap.player_view!.match_summary = {
+      mode: "EastOnly",
+      hands_played: 4,
+      initial_scores: [0, 0, 0, 0],
+      final_scores: [24, -8, -8, -8],
+      net_deltas: [24, -8, -8, -8],
+    };
+    queue.enqueueServerMessage({ TableSnapshot: finishedSnap });
+    expect(queue.getState().snapshot?.phase).toBe("Finished");
+    expect(queue.getState().activeBubbles.South?.text).toBe("终局居然被你绝杀！");
+
+    // Post-Finished follow-up reply arrives for MatchSummaryView.
+    queue.enqueueServerMessage({
+      TableBanter: {
+        seat: "West",
+        persona_id: "TeaSarcasm",
+        mood: "Smug",
+        text: "哈哈这回账算清了吧！",
+        event_seq: 8,
+        reply_to_seat: "South",
+      },
+    });
+    expect(queue.getState().activeBubbles.West?.text).toBe("哈哈这回账算清了吧！");
+    expect(queue.getState().snapshot?.seats[2].mood).toBe("Smug");
+
+    queue.dispose();
+  });
 });

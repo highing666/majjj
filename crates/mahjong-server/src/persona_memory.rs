@@ -15,7 +15,7 @@ use crate::llm::MemoryNoteRequest;
 use crate::persona::PersonaId;
 use crate::protocol::{SeatInfo, SeatKind};
 use crate::session::SeatRecord;
-use crate::storage::{atomic_write_bytes, normalize_nickname};
+use crate::storage::{atomic_write_bytes, normalize_nickname, normalize_single_line_text};
 
 /// Current schema version for `persona_memory.json` and HTTP responses.
 pub const PERSONA_MEMORY_SCHEMA_VERSION: u32 = 1;
@@ -179,26 +179,41 @@ impl Default for PersistedPersonaMemory {
 /// Normalizes whitespace and clamps a grudge note to `<= 30` Unicode characters.
 #[must_use]
 pub fn normalize_grudge_note(raw: &str) -> String {
-    let mut cleaned = String::with_capacity(raw.len());
-    let mut prev_space = false;
-    for ch in raw.trim().chars() {
-        if matches!(ch, '\r' | '\n' | '\t') {
-            if !prev_space && !cleaned.is_empty() {
-                cleaned.push(' ');
-                prev_space = true;
-            }
-        } else {
-            cleaned.push(ch);
-            prev_space = ch == ' ';
-        }
-    }
-    cleaned
-        .trim()
+    normalize_single_line_text(raw)
         .chars()
         .take(MAX_GRUDGE_NOTE_CHARS)
         .collect::<String>()
         .trim()
         .to_string()
+}
+
+struct SeatedParticipants {
+    ai: Vec<(Seat, PersonaId)>,
+    humans: Vec<(Seat, String)>,
+}
+
+fn extract_ai_and_human_seats<'a>(
+    seats: impl IntoIterator<Item = &'a SeatInfo>,
+) -> SeatedParticipants {
+    let mut ai = Vec::new();
+    let mut humans = Vec::new();
+    for info in seats {
+        match info.kind {
+            SeatKind::Ai => {
+                if let Some(pid) = info.persona_id {
+                    ai.push((info.seat, pid));
+                }
+            }
+            SeatKind::Human => {
+                let norm = normalize_nickname(&info.nickname);
+                if !norm.is_empty() {
+                    humans.push((info.seat, norm));
+                }
+            }
+            SeatKind::Empty => {}
+        }
+    }
+    SeatedParticipants { ai, humans }
 }
 
 /// Persistent cross-match store for `PersonaMemory` (`牌友记忆`).
@@ -243,23 +258,10 @@ impl PersonaMemoryStore {
         settlement: &HandSettlement,
         timestamp_ms: u64,
     ) {
-        let ai_seats: Vec<(Seat, PersonaId)> = seats
-            .iter()
-            .filter_map(|info| {
-                (info.kind == SeatKind::Ai)
-                    .then_some(info.persona_id)
-                    .flatten()
-                    .map(|pid| (info.seat, pid))
-            })
-            .collect();
-        let human_seats: Vec<(Seat, String)> = seats
-            .iter()
-            .filter(|info| info.kind == SeatKind::Human)
-            .filter_map(|info| {
-                let norm = normalize_nickname(&info.nickname);
-                (!norm.is_empty()).then_some((info.seat, norm))
-            })
-            .collect();
+        let SeatedParticipants {
+            ai: ai_seats,
+            humans: human_seats,
+        } = extract_ai_and_human_seats(seats.iter());
 
         if ai_seats.is_empty() || human_seats.is_empty() {
             return;
@@ -664,23 +666,10 @@ pub(crate) fn plan_memorable_hand_note_jobs(
     };
 
     let tile_zh = format_tile_zh(*winning_tile);
-    let ai_seats: Vec<(Seat, PersonaId)> = seats
-        .iter()
-        .filter_map(|slot| {
-            (slot.info.kind == SeatKind::Ai)
-                .then_some(slot.info.persona_id)
-                .flatten()
-                .map(|pid| (slot.info.seat, pid))
-        })
-        .collect();
-    let human_seats: Vec<(Seat, String)> = seats
-        .iter()
-        .filter(|slot| slot.info.kind == SeatKind::Human)
-        .filter_map(|slot| {
-            let norm = normalize_nickname(&slot.info.nickname);
-            (!norm.is_empty()).then_some((slot.info.seat, norm))
-        })
-        .collect();
+    let SeatedParticipants {
+        ai: ai_seats,
+        humans: human_seats,
+    } = extract_ai_and_human_seats(seats.iter().map(|s| &s.info));
 
     let mut jobs = Vec::new();
     for &(ai_seat, persona_id) in &ai_seats {
@@ -743,23 +732,10 @@ pub(crate) fn plan_match_finished_note_jobs(
         return Vec::new();
     }
 
-    let ai_seats: Vec<(Seat, PersonaId)> = seats
-        .iter()
-        .filter_map(|slot| {
-            (slot.info.kind == SeatKind::Ai)
-                .then_some(slot.info.persona_id)
-                .flatten()
-                .map(|pid| (slot.info.seat, pid))
-        })
-        .collect();
-    let human_seats: Vec<(Seat, String)> = seats
-        .iter()
-        .filter(|slot| slot.info.kind == SeatKind::Human)
-        .filter_map(|slot| {
-            let norm = normalize_nickname(&slot.info.nickname);
-            (!norm.is_empty()).then_some((slot.info.seat, norm))
-        })
-        .collect();
+    let SeatedParticipants {
+        ai: ai_seats,
+        humans: human_seats,
+    } = extract_ai_and_human_seats(seats.iter().map(|s| &s.info));
 
     let mut jobs = Vec::new();
     for &(ai_seat, persona_id) in &ai_seats {
