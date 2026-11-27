@@ -252,6 +252,10 @@
   );
 
   $effect(() => {
+    presentationQueue.setHideAiBanterText(hideAiBanterText);
+  });
+
+  $effect(() => {
     const seats = snapshot?.seats;
     if (seats) {
       audioRouter.preloadVoicePacks(seats.map((entry) => entry.voice_pack_id));

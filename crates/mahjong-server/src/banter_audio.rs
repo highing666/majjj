@@ -241,8 +241,22 @@ fn format_tts_unavailable_message(err_display: &str) -> String {
     format!("局域网台词语音服务暂不可用（{err_display}），已自动退回漫画气泡与角色语音包")
 }
 
-/// Cohesive TTS availability, monotonic `banter_id`, and 15 s cooldown backoff coordinator
-/// owned by `TableSession`.
+/// Outcome returned when committing an in-flight TTS synthesis result.
+#[derive(Debug)]
+pub(crate) struct TtsCommitOutcome {
+    pub schedule_probe_at: Option<Instant>,
+    pub next_job: Option<PendingTtsJob>,
+}
+
+/// Outcome returned when enqueueing a new TTS job into the single-in-flight + 1-slot scheduler.
+#[derive(Debug)]
+pub(crate) struct TtsEnqueueOutcome {
+    pub dispatch_now: Option<PendingTtsJob>,
+    pub superseded: Option<PendingTtsJob>,
+}
+
+/// Cohesive TTS availability, monotonic `banter_id`, single-in-flight + 1-slot latest-wins
+/// serialization, and 15 s cooldown backoff coordinator owned by `TableSession`.
 pub(crate) struct TtsSessionState {
     enabled: bool,
     available: bool,
@@ -252,6 +266,8 @@ pub(crate) struct TtsSessionState {
     last_error: Option<String>,
     next_banter_seq: u64,
     seat_banter_generation: [u64; 4],
+    in_flight: bool,
+    pending_slot: Option<PendingTtsJob>,
 }
 
 impl TtsSessionState {
@@ -269,6 +285,8 @@ impl TtsSessionState {
             },
             next_banter_seq: 1,
             seat_banter_generation: [0; 4],
+            in_flight: false,
+            pending_slot: None,
         }
     }
 
@@ -282,6 +300,8 @@ impl TtsSessionState {
             last_error: Some(format_tts_unavailable_message(err_display)),
             next_banter_seq: 1,
             seat_banter_generation: [0; 4],
+            in_flight: false,
+            pending_slot: None,
         }
     }
 
@@ -303,6 +323,58 @@ impl TtsSessionState {
         for gen in &mut self.seat_banter_generation {
             *gen += 1;
         }
+        self.pending_slot = None;
+    }
+
+    pub(crate) fn clear_pending_slot(&mut self) {
+        self.pending_slot = None;
+    }
+
+    pub(crate) fn clear_pending_slot_for_seat(&mut self, seat: Seat) {
+        if self
+            .pending_slot
+            .as_ref()
+            .is_some_and(|job| job.guard.seat == seat)
+        {
+            self.pending_slot = None;
+        }
+    }
+
+    pub(crate) fn enqueue_or_dispatch(
+        &mut self,
+        job: PendingTtsJob,
+        now: Instant,
+    ) -> TtsEnqueueOutcome {
+        if !self.should_dispatch(now) {
+            return TtsEnqueueOutcome {
+                dispatch_now: None,
+                superseded: None,
+            };
+        }
+        if !self.in_flight {
+            self.in_flight = true;
+            return TtsEnqueueOutcome {
+                dispatch_now: Some(job),
+                superseded: None,
+            };
+        }
+        let superseded = self.pending_slot.replace(job);
+        TtsEnqueueOutcome {
+            dispatch_now: None,
+            superseded,
+        }
+    }
+
+    pub(crate) fn finish_in_flight(&mut self) {
+        self.in_flight = false;
+    }
+
+    pub(crate) fn mark_in_flight(&mut self) {
+        self.in_flight = true;
+    }
+
+    pub(crate) fn take_pending_slot(&mut self) -> Option<PendingTtsJob> {
+        self.pending_slot.take()
     }
 
     pub(crate) fn current_status_notice(&self) -> Option<ServerMessage> {
@@ -346,6 +418,7 @@ impl TtsSessionState {
 
         self.available = false;
         self.consecutive_failures = 0;
+        self.pending_slot = None;
         let next_probe = now + TTS_COOLDOWN_DURATION;
         self.cooldown_until = Some(next_probe);
         let message = format_tts_unavailable_message(err_display);
@@ -436,48 +509,127 @@ impl TableSession {
         })
     }
 
+    fn emit_tts_fallback_if_fresh(&self, guard: &TtsGuard, reason: &str) {
+        if self.is_tts_guard_fresh(guard) {
+            eprintln!("warning: TTS fallback for {}: {reason}", guard.banter_id);
+            self.broadcast_all(ServerMessage::TableBanterAudioFallback {
+                banter_id: guard.banter_id.clone(),
+                seat: guard.seat,
+            });
+        } else {
+            eprintln!(
+                "warning: TTS dropped stale banter {}: {reason}",
+                guard.banter_id
+            );
+        }
+    }
+
+    pub(crate) fn enqueue_tts_job(
+        &mut self,
+        job: PendingTtsJob,
+        now: Instant,
+    ) -> Option<PendingTtsJob> {
+        let outcome = self.tts.enqueue_or_dispatch(job, now);
+        if let Some(superseded) = outcome.superseded {
+            self.emit_tts_fallback_if_fresh(&superseded.guard, "superseded in single pending slot");
+        }
+        outcome.dispatch_now
+    }
+
+    fn promote_pending_tts_job(&mut self, now: Instant) -> Option<PendingTtsJob> {
+        let mut next = self.tts.take_pending_slot()?;
+        if !self.is_tts_guard_fresh(&next.guard) {
+            eprintln!(
+                "warning: TTS dropped stale queued banter {}",
+                next.guard.banter_id
+            );
+            return None;
+        }
+        if !self.tts.should_dispatch(now) {
+            return None;
+        }
+        let elapsed_ms = u32::try_from(
+            now.saturating_duration_since(next.dispatched_at)
+                .as_millis(),
+        )
+        .unwrap_or(u32::MAX);
+        let remaining_ms = next.deadline_ms.saturating_sub(elapsed_ms);
+        if remaining_ms == 0 {
+            self.emit_tts_fallback_if_fresh(&next.guard, "expired while waiting in pending slot");
+            return None;
+        }
+        next.request.deadline_ms = remaining_ms;
+        self.tts.mark_in_flight();
+        Some(next)
+    }
+
     pub(crate) fn commit_tts_result(
         &mut self,
         guard: TtsGuard,
         dispatched_at: Instant,
         deadline_ms: u32,
         result: Result<TtsAudioOutput, TtsError>,
-    ) -> Option<Instant> {
+    ) -> TtsCommitOutcome {
         let now = Instant::now();
-        match result {
+        self.tts.finish_in_flight();
+        let schedule_probe_at = match result {
             Err(err) => {
-                eprintln!(
-                    "warning: TTS synthesis failed for {}: {err}",
-                    guard.banter_id
-                );
-                let (notice, probe_at) = self.tts.record_synthesis_failure(&err.to_string(), now);
-                if let Some(notice) = notice {
-                    self.broadcast_all(notice);
+                if err.is_service_outage() {
+                    eprintln!(
+                        "warning: TTS synthesis outage error for {}: {err}",
+                        guard.banter_id
+                    );
+                    let (notice, probe_at) =
+                        self.tts.record_synthesis_failure(&err.to_string(), now);
+                    if let Some(notice) = notice {
+                        self.broadcast_all(notice);
+                    } else {
+                        self.emit_tts_fallback_if_fresh(&guard, &err.to_string());
+                    }
+                    probe_at
+                } else {
+                    self.emit_tts_fallback_if_fresh(&guard, &err.to_string());
+                    None
                 }
-                probe_at
             }
             Ok(audio) => {
                 self.tts.record_synthesis_success();
-                let within_deadline = now.saturating_duration_since(dispatched_at)
-                    <= Duration::from_millis(u64::from(deadline_ms));
-                if !within_deadline || !self.is_tts_guard_fresh(&guard) {
-                    return None;
-                }
-                let inserted = self
-                    .banter_audio_cache
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .insert(guard.banter_id.clone(), audio.wav_bytes, now);
-                if inserted {
-                    self.broadcast_all(ServerMessage::TableBanterAudioReady {
-                        audio_url: format!("/api/banter-audio/{}", guard.banter_id),
-                        banter_id: guard.banter_id,
-                        seat: guard.seat,
-                        duration_ms: audio.duration_ms,
-                    });
+                if self.is_tts_guard_fresh(&guard) {
+                    let within_deadline = now.saturating_duration_since(dispatched_at)
+                        <= Duration::from_millis(u64::from(deadline_ms));
+                    if within_deadline {
+                        let inserted = self
+                            .banter_audio_cache
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .insert(guard.banter_id.clone(), audio.wav_bytes, now);
+                        if inserted {
+                            self.broadcast_all(ServerMessage::TableBanterAudioReady {
+                                audio_url: format!("/api/banter-audio/{}", guard.banter_id),
+                                banter_id: guard.banter_id,
+                                seat: guard.seat,
+                                duration_ms: audio.duration_ms,
+                            });
+                        }
+                    } else {
+                        self.emit_tts_fallback_if_fresh(
+                            &guard,
+                            &format!("completed past {deadline_ms}ms deadline"),
+                        );
+                    }
+                } else {
+                    eprintln!(
+                        "warning: TTS dropped stale completed banter {}",
+                        guard.banter_id
+                    );
                 }
                 None
             }
+        };
+        let next_job = self.promote_pending_tts_job(now);
+        TtsCommitOutcome {
+            schedule_probe_at,
+            next_job,
         }
     }
 

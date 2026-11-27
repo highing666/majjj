@@ -3,17 +3,20 @@ mod common;
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::{no_reaction_wall, tile, tiles};
+use common::{no_reaction_wall, tile, tiles, PlannedReply, ScriptedLlmClient};
 
 use mahjong_ai::{AiDifficulty, DecisionBudget};
 use mahjong_core::{
     build_preset_wall, HandOutcome, MatchMode, MeldView, PlayerAction, PlayerEventKind,
     PresetWallProvider, PublicPhase, Seat, Tile, WinKind,
 };
+use mahjong_server::llm::BanterOutput;
 use mahjong_server::pacing::{
-    action_delay_range_ms, discard_release_delay, hand_start_buffer, meld_follow_up_min,
-    overlapped_wait, PacingMode,
+    action_delay_range_ms, discard_release_delay, hand_start_buffer, long_think_chance_percent,
+    meld_follow_up_min, overlapped_wait, persona_pacing_multiplier_percent,
+    sample_humanized_delay_ms, PacingMode, LONG_THINK_RANGE_MS,
 };
+use mahjong_server::persona::{PersonaId, PersonaMood};
 use mahjong_server::protocol::{
     ClientMessage, LobbyConfig, SeatingRule, ServerMessage, TablePace, TablePhase, TableSnapshot,
 };
@@ -79,7 +82,7 @@ fn pacing_table_matches_spec_for_standard_fast_and_immediate() {
             },
             TablePace::Standard
         ),
-        Some((380, 580))
+        Some((1400, 2600))
     );
     assert_eq!(
         action_delay_range_ms(
@@ -89,7 +92,7 @@ fn pacing_table_matches_spec_for_standard_fast_and_immediate() {
             },
             TablePace::Fast
         ),
-        Some((230, 350))
+        Some((600, 1200))
     );
 
     assert_eq!(
@@ -100,7 +103,7 @@ fn pacing_table_matches_spec_for_standard_fast_and_immediate() {
             },
             TablePace::Standard
         ),
-        Some((520, 850))
+        Some((2000, 4000))
     );
     assert_eq!(
         action_delay_range_ms(
@@ -110,7 +113,7 @@ fn pacing_table_matches_spec_for_standard_fast_and_immediate() {
             },
             TablePace::Fast
         ),
-        Some((310, 510))
+        Some((900, 1800))
     );
 
     for meld_action in [
@@ -125,11 +128,11 @@ fn pacing_table_matches_spec_for_standard_fast_and_immediate() {
     ] {
         assert_eq!(
             action_delay_range_ms(meld_action, TablePace::Standard),
-            Some((420, 680))
+            Some((1200, 2200))
         );
         assert_eq!(
             action_delay_range_ms(meld_action, TablePace::Fast),
-            Some((250, 410))
+            Some((600, 1100))
         );
     }
 
@@ -140,11 +143,11 @@ fn pacing_table_matches_spec_for_standard_fast_and_immediate() {
     ] {
         assert_eq!(
             action_delay_range_ms(win_action, TablePace::Standard),
-            Some((350, 550))
+            Some((900, 1600))
         );
         assert_eq!(
             action_delay_range_ms(win_action, TablePace::Fast),
-            Some((210, 330))
+            Some((500, 900))
         );
     }
 
@@ -1137,14 +1140,14 @@ async fn assert_dealer_ai_hand_started_buffer(
 
 #[tokio::test(start_paused = true)]
 async fn hand_started_applies_buffer_before_dealer_ai_first_discard_standard() {
-    // Standard: 650ms buffer + [520..850]ms 手切 = [1170..1500]ms
-    assert_dealer_ai_hand_started_buffer(TablePace::Standard, 1170, 1500).await;
+    // Standard: 650ms buffer + clamped 手切 [2000..4000]ms (or long think [5000..9000]ms) = [2650..9650]ms
+    assert_dealer_ai_hand_started_buffer(TablePace::Standard, 2650, 9650).await;
 }
 
 #[tokio::test(start_paused = true)]
 async fn hand_started_applies_buffer_before_dealer_ai_first_discard_fast() {
-    // Fast: 400ms buffer + [310..510]ms 手切 = [710..910]ms
-    assert_dealer_ai_hand_started_buffer(TablePace::Fast, 710, 910).await;
+    // Fast: 400ms buffer + [900..1800]ms 手切 (no long think, no persona multiplier) = [1300..2200]ms
+    assert_dealer_ai_hand_started_buffer(TablePace::Fast, 1300, 2200).await;
 }
 
 async fn assert_ai_tsumogiri_and_tedashi_and_live_pace_switch() {
@@ -1187,7 +1190,7 @@ async fn assert_ai_tsumogiri_and_tedashi_and_live_pace_switch() {
     let _ = clients[0].recv_event_batch().await;
     let south_draw_at = tokio::time::Instant::now();
 
-    // South AI 摸切s F -> [380..580]ms in Standard.
+    // South AI 摸切s F -> clamped Standard 摸切 [1400..2600]ms.
     let (_, _, ev_south_disc, _) = clients[0].recv_event_batch().await;
     assert!(matches!(
         ev_south_disc[0].kind,
@@ -1201,11 +1204,11 @@ async fn assert_ai_tsumogiri_and_tedashi_and_live_pace_switch() {
         .duration_since(south_draw_at)
         .as_millis() as u64;
     assert!(
-        (380..=580).contains(&south_elapsed),
+        (1400..=2600).contains(&south_elapsed),
         "Standard AI 摸切 took {south_elapsed}ms"
     );
 
-    // West TileDrawn at +200ms -> switch live to Fast before West finishes, or check Standard 手切 first:
+    // West TileDrawn at +200ms -> clamped Standard 手切 [2000..4000]ms (or long think [5000..9000]ms).
     let _ = clients[0].recv_event_batch().await;
     let west_draw_at = tokio::time::Instant::now();
     let (_, _, ev_west_disc, _) = clients[0].recv_event_batch().await;
@@ -1221,7 +1224,7 @@ async fn assert_ai_tsumogiri_and_tedashi_and_live_pace_switch() {
         .duration_since(west_draw_at)
         .as_millis() as u64;
     assert!(
-        (520..=850).contains(&west_elapsed),
+        (2000..=4000).contains(&west_elapsed) || (5000..=9000).contains(&west_elapsed),
         "Standard AI 手切 took {west_elapsed}ms"
     );
 
@@ -1247,7 +1250,7 @@ async fn assert_ai_tsumogiri_and_tedashi_and_live_pace_switch() {
             is_tsumogiri: true,
             ..
         } => assert!(
-            (230..=350).contains(&north_elapsed),
+            (600..=1200).contains(&north_elapsed),
             "Fast AI 摸切 took {north_elapsed}ms"
         ),
         PlayerEventKind::TileDiscarded {
@@ -1255,7 +1258,7 @@ async fn assert_ai_tsumogiri_and_tedashi_and_live_pace_switch() {
             is_tsumogiri: false,
             ..
         } => assert!(
-            (310..=510).contains(&north_elapsed),
+            (900..=1800).contains(&north_elapsed),
             "Fast AI 手切 took {north_elapsed}ms"
         ),
         ref other => panic!("unexpected North event {other:?}"),
@@ -1345,12 +1348,13 @@ async fn assert_ai_pon_and_followup_floor(
 
 #[tokio::test(start_paused = true)]
 async fn ai_pon_and_meld_followup_floor_standard() {
-    assert_ai_pon_and_followup_floor(TablePace::Standard, (420, 680), 700, 850).await;
+    // Clamped Standard 鸣牌 [1200..2200]ms; follow-up 手切 [2000..4000]ms or long think [5000..9000]ms.
+    assert_ai_pon_and_followup_floor(TablePace::Standard, (1200, 2200), 2000, 9000).await;
 }
 
 #[tokio::test(start_paused = true)]
 async fn ai_pon_and_meld_followup_floor_fast() {
-    assert_ai_pon_and_followup_floor(TablePace::Fast, (250, 410), 420, 510).await;
+    assert_ai_pon_and_followup_floor(TablePace::Fast, (600, 1100), 900, 1800).await;
 }
 
 #[tokio::test(start_paused = true)]
@@ -1404,7 +1408,7 @@ async fn ai_concealed_kong_and_followup_floor_standard() {
         .duration_since(draw_at)
         .as_millis() as u64;
     assert!(
-        (420..=680).contains(&kong_ms),
+        (1200..=2200).contains(&kong_ms),
         "Standard AI ConcealedKong took {kong_ms}ms"
     );
 
@@ -1421,7 +1425,7 @@ async fn ai_concealed_kong_and_followup_floor_standard() {
         .duration_since(kong_at)
         .as_millis() as u64;
     assert!(
-        (700..=850).contains(&followup_ms),
+        (1400..=9000).contains(&followup_ms),
         "Standard AI ConcealedKong follow-up took {followup_ms}ms"
     );
 }
@@ -1533,12 +1537,13 @@ async fn assert_ai_win_timing(pace: TablePace, expected_range: (u64, u64)) {
 
 #[tokio::test(start_paused = true)]
 async fn ai_ron_and_tsumo_match_win_window_standard() {
-    assert_ai_win_timing(TablePace::Standard, (350, 550)).await;
+    // Clamped Standard 胡牌 [900..1600]ms
+    assert_ai_win_timing(TablePace::Standard, (900, 1600)).await;
 }
 
 #[tokio::test(start_paused = true)]
 async fn ai_ron_and_tsumo_match_win_window_fast() {
-    assert_ai_win_timing(TablePace::Fast, (210, 330)).await;
+    assert_ai_win_timing(TablePace::Fast, (500, 900)).await;
 }
 
 #[tokio::test(start_paused = true)]
@@ -1712,7 +1717,7 @@ async fn ai_rob_kong_hu_matches_win_window_standard() {
         .duration_since(attempt_at)
         .as_millis() as u64;
     assert!(
-        (350..=550).contains(&rob_ms),
+        (900..=1600).contains(&rob_ms),
         "Standard AI RobKongHu took {rob_ms}ms"
     );
 }
@@ -1766,5 +1771,305 @@ async fn disband_and_rematch_while_ai_is_thinking_never_pollute_new_match() {
     assert!(
         clients[0].try_recv_msg().is_none(),
         "stale AI task from disbanded match must not emit into new match"
+    );
+}
+
+#[test]
+fn standard_tedashi_long_think_scales_with_wall_progress_and_persona_multipliers_stay_bounded() {
+    assert_eq!(LONG_THINK_RANGE_MS, (5000, 9000));
+    assert_eq!(long_think_chance_percent(70), 15);
+    assert_eq!(long_think_chance_percent(40), 20);
+    assert_eq!(long_think_chance_percent(20), 25);
+
+    assert_eq!(
+        persona_pacing_multiplier_percent(Some(PersonaId::QuickHothead)),
+        80
+    );
+    assert_eq!(
+        persona_pacing_multiplier_percent(Some(PersonaId::TeaSarcasm)),
+        100
+    );
+    assert_eq!(
+        persona_pacing_multiplier_percent(Some(PersonaId::ChaosInstigator)),
+        100
+    );
+    assert_eq!(
+        persona_pacing_multiplier_percent(Some(PersonaId::StubbornBlamer)),
+        115
+    );
+    assert_eq!(
+        persona_pacing_multiplier_percent(Some(PersonaId::TiltedMaster)),
+        115
+    );
+    assert_eq!(persona_pacing_multiplier_percent(None), 100);
+
+    let tedashi = PlayerAction::Discard {
+        tile: tile("5m"),
+        from_drawn: false,
+    };
+    let tsumogiri = PlayerAction::Discard {
+        tile: tile("5m"),
+        from_drawn: true,
+    };
+
+    let mut early_long = 0usize;
+    let mut late_long = 0usize;
+    let mut fast_long = 0usize;
+    let mut tsumogiri_long = 0usize;
+    let mut quick_sum = 0u64;
+    let mut tilted_sum = 0u64;
+
+    for seed in 0..1000u64 {
+        let early = sample_humanized_delay_ms(
+            tedashi,
+            TablePace::Standard,
+            Some(PersonaId::TeaSarcasm),
+            70,
+            seed,
+        )
+        .expect("standard tedashi");
+        assert!(
+            (2000..=4000).contains(&early) || (5000..=9000).contains(&early),
+            "neutral Standard tedashi out of range: {early}"
+        );
+        if early >= 5000 {
+            early_long += 1;
+        }
+
+        let late = sample_humanized_delay_ms(
+            tedashi,
+            TablePace::Standard,
+            Some(PersonaId::TeaSarcasm),
+            20,
+            seed,
+        )
+        .expect("standard late tedashi");
+        if late >= 5000 {
+            late_long += 1;
+        }
+
+        let fast = sample_humanized_delay_ms(
+            tedashi,
+            TablePace::Fast,
+            Some(PersonaId::TiltedMaster),
+            10,
+            seed,
+        )
+        .expect("fast tedashi");
+        assert!(
+            (900..=1800).contains(&fast),
+            "Fast tedashi must stay in [900..1800] without long think or persona multiplier: {fast}"
+        );
+        if fast >= 5000 {
+            fast_long += 1;
+        }
+
+        let ts = sample_humanized_delay_ms(
+            tsumogiri,
+            TablePace::Standard,
+            Some(PersonaId::TiltedMaster),
+            10,
+            seed,
+        )
+        .expect("standard tsumogiri");
+        assert!(
+            (1400..=2600).contains(&ts),
+            "TiltedMaster tsumogiri must stay clamped within [1400..2600]: {ts}"
+        );
+        if ts >= 5000 {
+            tsumogiri_long += 1;
+        }
+
+        let quick = sample_humanized_delay_ms(
+            tedashi,
+            TablePace::Standard,
+            Some(PersonaId::QuickHothead),
+            40,
+            seed,
+        )
+        .expect("quick tedashi");
+        let tilted = sample_humanized_delay_ms(
+            tedashi,
+            TablePace::Standard,
+            Some(PersonaId::TiltedMaster),
+            40,
+            seed,
+        )
+        .expect("tilted tedashi");
+        assert!(
+            (2000..=4000).contains(&quick) || (5000..=9000).contains(&quick),
+            "QuickHothead tedashi must stay clamped in [2000..4000] or [5000..9000]: {quick}"
+        );
+        assert!(
+            (2000..=4000).contains(&tilted) || (5000..=9000).contains(&tilted),
+            "TiltedMaster tedashi must stay clamped in [2000..4000] or [5000..9000]: {tilted}"
+        );
+        quick_sum += quick;
+        tilted_sum += tilted;
+
+        assert_eq!(
+            sample_humanized_delay_ms(
+                PlayerAction::Pass,
+                TablePace::Standard,
+                Some(PersonaId::TiltedMaster),
+                10,
+                seed,
+            ),
+            None,
+            "Pass must remain zero-delay for anti-leakage"
+        );
+    }
+
+    assert!(
+        (110..=190).contains(&early_long),
+        "expected ~15% early long thinks out of 1000, got {early_long}"
+    );
+    assert!(
+        (210..=290).contains(&late_long),
+        "expected ~25% late long thinks out of 1000, got {late_long}"
+    );
+    assert!(late_long > early_long);
+    assert_eq!(fast_long, 0);
+    assert_eq!(tsumogiri_long, 0);
+    assert!(
+        tilted_sum > quick_sum,
+        "TiltedMaster average ({tilted_sum}) must be slower than QuickHothead ({quick_sum})"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn post_sync_banter_ai_turn_refreshes_started_at_and_never_instant_discards() {
+    // South AI holds 55m 123s 567p 99p 23m E -> East discards 5m -> South Pons 5m.
+    // Highlight sync banter takes 1400ms (just under 1500ms HIGHLIGHT_SYNC_CAP).
+    // After sync_banter finishes, South's follow-up discard MUST still wait its full Fast
+    // humanized window [900..1800]ms (NOT 0ms from a stale pre-banter started_at!).
+    let wall = build_preset_wall(
+        &tiles("5m 1m 4m 7m 1s 4s 7s 1p 4p 7p E S W N"),
+        &tiles("5m 5m 1s 2s 3s 5p 6p 7p 9p 9p 2m 3m E"),
+        &tiles("2m 3m 6m 8m 9m 2s 8s 9s 2p 3p 5p E S"),
+        &tiles("2m 3m 6m 8m 9m 2s 8s 9s 2p 3p 5p W N"),
+        &tiles("C F B"),
+        &[],
+    )
+    .expect("valid wall");
+    let factory: WallProviderFactory = Arc::new(move || {
+        BoxedWallProvider(Box::new(PresetWallProvider::single(
+            Seat::East,
+            wall.clone(),
+        )))
+    });
+    let llm = ScriptedLlmClient::from_replies(vec![
+        // Opening banter (async)
+        PlannedReply::Immediate(Ok(BanterOutput {
+            mood: PersonaMood::Deadpan,
+            text: "开局先看看手气怎么样。".to_string(),
+        })),
+        // Highlight Pon banter taking 1400ms inside 1500ms HIGHLIGHT_SYNC_CAP!
+        PlannedReply::Delayed(
+            Duration::from_millis(1400),
+            Ok(BanterOutput {
+                mood: PersonaMood::Smug,
+                text: "五万碰走，节奏归我了！".to_string(),
+            }),
+        ),
+    ]);
+    let runtime = TableRuntime::try_with_options_and_threads(
+        0,
+        None,
+        TableOptions::with_wall_factory(29, factory)
+            .with_ai_budget(DecisionBudget::Deterministic { max_samples: 8 })
+            .with_llm_client(llm),
+        1,
+    )
+    .expect("create runtime");
+    let mut east = TestClient::connect(&runtime, "h0", "East").await;
+    east.send(
+        &runtime,
+        &ClientMessage::JoinSeat {
+            seat: Some(Seat::East),
+        },
+    )
+    .await;
+    let _ = east.recv_snapshot().await;
+    east.send(
+        &runtime,
+        &ClientMessage::UpdateLobbyConfig {
+            mode: MatchMode::FreeTable,
+            seating: SeatingRule::KeepLobbySeats,
+            ai_difficulty: AiDifficulty::Strong,
+            pace: TablePace::Fast,
+        },
+    )
+    .await;
+    east.drain_pending();
+    east.send(&runtime, &ClientMessage::StartMatch).await;
+    let snap = east.recv_snapshot().await;
+
+    // Advance slightly so opening banter settles cleanly.
+    tokio::time::advance(Duration::from_millis(50)).await;
+    tokio::task::yield_now().await;
+    east.drain_pending();
+
+    east.send(
+        &runtime,
+        &ClientMessage::SubmitAction {
+            expected_seq: snap.seq,
+            client_action_id: "e-5m".to_string(),
+            action: PlayerAction::Discard {
+                tile: tile("5m"),
+                from_drawn: false,
+            },
+        },
+    )
+    .await;
+    let _ = east.recv_event_batch().await; // TileDiscarded(5m)
+    let (_, _, ev_pon, _) = east.recv_event_batch().await; // South MeldDeclared(Pon)
+    assert!(matches!(
+        ev_pon[0].kind,
+        PlayerEventKind::MeldDeclared {
+            seat: Seat::South,
+            meld: MeldView::Pon { .. },
+            ..
+        }
+    ));
+
+    // Wait for the 1400ms highlight TableBanter to arrive.
+    loop {
+        match east.recv_msg().await {
+            ServerMessage::TableBanter { text, .. } if text.contains("五万碰走") => break,
+            ServerMessage::EventBatch { events, .. } => {
+                panic!("South discarded before sync_banter finished: {events:?}");
+            }
+            _ => continue,
+        }
+    }
+    let banter_landed_at = tokio::time::Instant::now();
+
+    // Now wait for South's follow-up discard (skipping any async follow-up TableBanter):
+    // must take full Fast 手切 [900..1800]ms AFTER banter landed!
+    let ev_follow = loop {
+        match east.recv_msg().await {
+            ServerMessage::EventBatch { events, .. } => break events,
+            ServerMessage::TableBanter { .. }
+            | ServerMessage::TableBanterAudioReady { .. }
+            | ServerMessage::TableBanterAudioFallback { .. }
+            | ServerMessage::LobbyUpdated { .. }
+            | ServerMessage::TtsStatusNotice { .. } => continue,
+            other => panic!("unexpected message waiting for follow-up discard: {other:?}"),
+        }
+    };
+    assert!(matches!(
+        ev_follow[0].kind,
+        PlayerEventKind::TileDiscarded {
+            seat: Seat::South,
+            ..
+        }
+    ));
+    let elapsed_after_banter_ms = tokio::time::Instant::now()
+        .duration_since(banter_landed_at)
+        .as_millis() as u64;
+    assert!(
+        (900..=1800).contains(&elapsed_after_banter_ms),
+        "post-sync_banter AI follow-up must wait full [900..1800]ms (not 0ms!), got {elapsed_after_banter_ms}ms"
     );
 }

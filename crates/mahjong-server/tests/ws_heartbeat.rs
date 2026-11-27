@@ -239,7 +239,10 @@ async fn valid_inbound_frames_refresh_liveness_while_invalid_frames_do_not() {
             ServerMessage::EventBatch { .. } => saw_event_batch = true,
             ServerMessage::ServerPing { .. }
             | ServerMessage::LobbyUpdated { .. }
-            | ServerMessage::TableBanter { .. } => {}
+            | ServerMessage::TableBanter { .. }
+            | ServerMessage::TableBanterAudioReady { .. }
+            | ServerMessage::TableBanterAudioFallback { .. }
+            | ServerMessage::TtsStatusNotice { .. } => {}
             other => panic!("unexpected message on active connection: {other:?}"),
         }
     }

@@ -1708,4 +1708,140 @@ describe("PresentationQueue", () => {
 
     queue.dispose();
   });
+
+  it("defaults banter duration to 5500ms, ignores TableBanterAudioFallback when bubbles are visible, and restores/resets full 5500ms timer when hidden", () => {
+    const scheduled = new Map<number, { cb: () => void; delayMs: number }>();
+    let nextTimerId = 1;
+
+    const queue = createPresentationQueue({
+      scheduler: {
+        setTimeout(cb, delayMs) {
+          const id = nextTimerId++;
+          scheduled.set(id, { cb, delayMs });
+          return id;
+        },
+        clearTimeout(handle) {
+          scheduled.delete(handle as number);
+        },
+      },
+    });
+
+    const snap = makeSnapshot(3, "Standard");
+    snap.seats[1] = {
+      ...snap.seats[1],
+      kind: "Ai",
+      persona_id: "QuickHothead",
+      mood: "Smug",
+      nickname: "急眼快攻哥",
+    };
+    queue.enqueueServerMessage({ TableSnapshot: snap });
+
+    // 1. When hideAiBanterText is OFF (default), TableBanterAudioFallback is a complete no-op
+    // and never resets or extends the visible bubble's 5500ms timer.
+    queue.enqueueServerMessage({
+      TableBanter: {
+        banter_id: "b-vis-1",
+        seat: "South",
+        persona_id: "QuickHothead",
+        mood: "Smug",
+        text: "默认可见气泡不受单句回退影响！",
+        event_seq: 4,
+        reply_to_seat: null,
+      },
+    });
+    expect(queue.getState().activeBubbles.South?.audioFallback).toBe(false);
+    const [visibleTimerId] = [...scheduled.keys()];
+    expect(scheduled.get(visibleTimerId!)?.delayMs).toBe(5500);
+
+    queue.enqueueServerMessage({
+      TableBanterAudioFallback: {
+        banter_id: "b-vis-1",
+        seat: "South",
+      },
+    });
+    expect(queue.getState().activeBubbles.South?.audioFallback).toBe(false);
+    expect([...scheduled.keys()]).toEqual([visibleTimerId]);
+
+    // 2. When hideAiBanterText is ON, matching TableBanterAudioFallback marks audioFallback=true
+    // and resets a full 5500ms timer (while mismatched banter_id is ignored).
+    queue.setHideAiBanterText(true);
+    queue.enqueueServerMessage({
+      TableBanter: {
+        banter_id: "b-fb-1",
+        seat: "South",
+        persona_id: "QuickHothead",
+        mood: "Smug",
+        text: "这句长台词超时后必须回显且重置停留计时！",
+        event_seq: 5,
+        reply_to_seat: null,
+      },
+    });
+    expect(queue.getState().activeBubbles.South?.audioFallback).toBe(false);
+    const [initialTimerId] = [...scheduled.keys()];
+    expect(scheduled.get(initialTimerId!)?.delayMs).toBe(5500);
+
+    queue.enqueueServerMessage({
+      TableBanterAudioFallback: {
+        banter_id: "b-wrong",
+        seat: "South",
+      },
+    });
+    expect(queue.getState().activeBubbles.South?.audioFallback).toBe(false);
+    expect([...scheduled.keys()]).toEqual([initialTimerId]);
+
+    queue.enqueueServerMessage({
+      TableBanterAudioFallback: {
+        banter_id: "b-fb-1",
+        seat: "South",
+      },
+    });
+    expect(queue.getState().activeBubbles.South?.audioFallback).toBe(true);
+    expect(scheduled.has(initialTimerId!)).toBe(false);
+    expect(scheduled.size).toBe(1);
+    const [resetTimerId] = [...scheduled.keys()];
+    expect(scheduled.get(resetTimerId!)?.delayMs).toBe(5500);
+
+    const resetTimer = scheduled.get(resetTimerId!)!;
+    scheduled.delete(resetTimerId!);
+    resetTimer.cb();
+    expect(queue.getState().activeBubbles.South).toBeNull();
+
+    // 3. Even if Fast-pace (4290ms) or settlement hidden bubble expired BEFORE a late
+    // TableBanterAudioFallback arrives (e.g. at 5000ms or 6500ms), fallback restores it
+    // with audioFallback=true and starts a fresh full 5500ms timer!
+    const fastSnap = makeSnapshot(6, "Fast");
+    fastSnap.seats[1] = snap.seats[1];
+    queue.enqueueServerMessage({ TableSnapshot: fastSnap });
+    queue.enqueueServerMessage({
+      TableBanter: {
+        banter_id: "b-late-fb",
+        seat: "South",
+        persona_id: "QuickHothead",
+        mood: "Tilted",
+        text: "快捷档超时晚到也要把隐藏气泡补回显！",
+        event_seq: 7,
+        reply_to_seat: null,
+      },
+    });
+    const [fastBaseTimerId] = [...scheduled.keys()];
+    expect(scheduled.get(fastBaseTimerId!)?.delayMs).toBe(4290);
+    const fastBaseTimer = scheduled.get(fastBaseTimerId!)!;
+    scheduled.delete(fastBaseTimerId!);
+    fastBaseTimer.cb();
+    expect(queue.getState().activeBubbles.South).toBeNull();
+
+    queue.enqueueServerMessage({
+      TableBanterAudioFallback: {
+        banter_id: "b-late-fb",
+        seat: "South",
+      },
+    });
+    expect(queue.getState().activeBubbles.South?.banterId).toBe("b-late-fb");
+    expect(queue.getState().activeBubbles.South?.audioFallback).toBe(true);
+    expect(scheduled.size).toBe(1);
+    const [restoredTimerId] = [...scheduled.keys()];
+    expect(scheduled.get(restoredTimerId!)?.delayMs).toBe(5500);
+
+    queue.dispose();
+  });
 });

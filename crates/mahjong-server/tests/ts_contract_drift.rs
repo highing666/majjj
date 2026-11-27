@@ -425,6 +425,10 @@ fn frozen_server_protocol_types_roundtrip_serde_json_without_loss() {
             audio_url: "/api/banter-audio/b-1".to_string(),
             duration_ms: 1420,
         },
+        ServerMessage::TableBanterAudioFallback {
+            banter_id: "b-2".to_string(),
+            seat: Seat::West,
+        },
         ServerMessage::QuickEmoteBroadcast {
             seat: Seat::East,
             emote: QuickEmote::DealerRigged,

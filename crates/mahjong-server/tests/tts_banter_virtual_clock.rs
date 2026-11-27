@@ -411,9 +411,9 @@ async fn settlement_quick_emote_and_slow_think_nudge_use_expected_deadlines() {
         }
     });
     let tts = ScriptedTtsClient::new(true, vec![]);
-    // Settlement synthesis takes 3500ms (> 2500ms in-hand cap, <= 5000ms settlement cap) -> MUST succeed!
+    // Settlement synthesis takes 5500ms (> 5000ms in-hand cap, <= 6500ms settlement cap) -> MUST succeed!
     tts.set_settlement_delay(
-        Duration::from_millis(3500),
+        Duration::from_millis(5500),
         TtsAudioOutput {
             wav_bytes: wav_settle.clone(),
             duration_ms: 2100,
@@ -473,8 +473,8 @@ async fn settlement_quick_emote_and_slow_think_nudge_use_expected_deadlines() {
         })
         .expect("settlement TableBanter");
 
-    // Advance 3500ms -> still within 5000ms settlement deadline -> audio ready!
-    tokio::time::advance(Duration::from_millis(3500)).await;
+    // Advance 5500ms -> still within 6500ms settlement deadline -> audio ready!
+    tokio::time::advance(Duration::from_millis(5500)).await;
     yield_tasks().await;
     let after_settle_tts = east.drain_all();
     assert!(
@@ -483,7 +483,7 @@ async fn settlement_quick_emote_and_slow_think_nudge_use_expected_deadlines() {
             ServerMessage::TableBanterAudioReady { banter_id, duration_ms: 2100, .. }
                 if banter_id == &settle_banter_id
         )),
-        "settlement audio taking 3500ms must succeed under 5000ms deadline: {after_settle_tts:?}"
+        "settlement audio taking 5500ms must succeed under 6500ms deadline: {after_settle_tts:?}"
     );
     assert_eq!(
         runtime.get_banter_audio(&settle_banter_id).as_deref(),
@@ -495,32 +495,35 @@ async fn settlement_quick_emote_and_slow_think_nudge_use_expected_deadlines() {
         captured.len() > in_hand_tts_count,
         "expected settlement TTS call(s), got {captured:?}"
     );
+    assert_eq!(TTS_IN_HAND_DEADLINE_MS, 5000);
+    assert_eq!(TTS_SETTLEMENT_DEADLINE_MS, 6500);
     for req in &captured[..in_hand_tts_count] {
         assert_eq!(
             req.deadline_ms, TTS_IN_HAND_DEADLINE_MS,
-            "all in-hand banter must use 2500ms deadline: {req:?}"
+            "all in-hand banter must use 5000ms deadline: {req:?}"
         );
     }
     for req in &captured[in_hand_tts_count..] {
         assert_eq!(
             req.deadline_ms, TTS_SETTLEMENT_DEADLINE_MS,
-            "all settlement banter and follow-ups must use 5000ms deadline: {req:?}"
+            "all settlement banter and follow-ups must use 6500ms deadline: {req:?}"
         );
     }
 }
 
 #[tokio::test(start_paused = true)]
 async fn stale_tts_is_discarded_on_deadline_same_seat_override_next_hand_takeover_and_disband() {
-    // Part A: In-hand deadline_ms (2500ms) expiry drops late audio.
+    // Part A: In-hand deadline_ms (5000ms) expiry drops late audio and emits TableBanterAudioFallback
+    // without tripping TtsStatusNotice.
     {
         let llm = ScriptedLlmClient::from_outputs(vec![BanterOutput {
             mood: PersonaMood::Smug,
-            text: "超过两秒半的语音必须丢弃".to_string(),
+            text: "超过五秒的语音必须静默回退".to_string(),
         }]);
         let tts = ScriptedTtsClient::new(
             true,
             vec![PlannedTtsReply::Delayed(
-                Duration::from_millis(3000),
+                Duration::from_millis(5500),
                 Ok(TtsAudioOutput {
                     wav_bytes: make_sample_wav(0x44, 1000),
                     duration_ms: 1000,
@@ -547,14 +550,27 @@ async fn stale_tts_is_discarded_on_deadline_same_seat_override_next_hand_takeove
         yield_tasks().await;
         let _ = east.drain_all();
 
-        tokio::time::advance(Duration::from_millis(3500)).await;
+        tokio::time::advance(Duration::from_millis(6000)).await;
         yield_tasks().await;
         let msgs = east.drain_all();
         assert!(
             !msgs
                 .iter()
                 .any(|m| matches!(m, ServerMessage::TableBanterAudioReady { .. })),
-            "expired >2500ms TTS must NOT broadcast TableBanterAudioReady: {msgs:?}"
+            "expired >5000ms TTS must NOT broadcast TableBanterAudioReady: {msgs:?}"
+        );
+        assert!(
+            msgs.iter().any(|m| matches!(
+                m,
+                ServerMessage::TableBanterAudioFallback { banter_id, .. } if banter_id == "b-1"
+            )),
+            "expired >5000ms TTS must emit TableBanterAudioFallback for hidden-bubble recovery: {msgs:?}"
+        );
+        assert!(
+            !msgs
+                .iter()
+                .any(|m| matches!(m, ServerMessage::TtsStatusNotice { .. })),
+            "timeout must NOT trip TtsStatusNotice: {msgs:?}"
         );
         assert!(runtime.get_banter_audio("b-1").is_none());
     }
@@ -649,7 +665,8 @@ async fn stale_tts_is_discarded_on_deadline_same_seat_override_next_hand_takeove
             ServerMessage::TableBanter { banter_id, seat: Seat::South, .. } if banter_id == "b-1"
         )));
 
-        // Advance 500ms (still within 2500ms deadline) and trigger quick emote -> South emits b-2!
+        // Advance 500ms (still within 5000ms deadline) and trigger quick emote -> South emits b-2!
+        // Because b-1 is still in-flight, b-2 waits in the single pending slot (serialized, not sent concurrently).
         tokio::time::advance(Duration::from_millis(500)).await;
         east.send(
             &runtime,
@@ -662,19 +679,34 @@ async fn stale_tts_is_discarded_on_deadline_same_seat_override_next_hand_takeove
         let second_msgs = east.drain_all();
         assert!(second_msgs.iter().any(|m| matches!(
             m,
-            ServerMessage::TableBanterAudioReady { banter_id, seat: Seat::South, .. } if banter_id == "b-2"
+            ServerMessage::TableBanter { banter_id, seat: Seat::South, .. } if banter_id == "b-2"
         )));
+        assert!(
+            !second_msgs.iter().any(|m| matches!(
+                m,
+                ServerMessage::TableBanterAudioReady { banter_id, .. } if banter_id == "b-2"
+            )),
+            "b-2 must wait for in-flight b-1 under single-in-flight serialization: {second_msgs:?}"
+        );
 
-        // Now release b-1's gated TTS -> MUST be silently discarded because South moved to b-2!
+        // Now release b-1's gated TTS -> b-1 is discarded as stale (South moved to b-2),
+        // AND b-2 immediately promotes from the pending slot and broadcasts TableBanterAudioReady!
         gate_old.notify_waiters();
         yield_tasks().await;
-        let stale_msgs = east.drain_all();
+        let after_release = east.drain_all();
         assert!(
-            !stale_msgs.iter().any(|m| matches!(
+            !after_release.iter().any(|m| matches!(
                 m,
                 ServerMessage::TableBanterAudioReady { banter_id, .. } if banter_id == "b-1"
             )),
-            "superseded same-seat TTS b-1 must be discarded: {stale_msgs:?}"
+            "superseded same-seat TTS b-1 must be discarded: {after_release:?}"
+        );
+        assert!(
+            after_release.iter().any(|m| matches!(
+                m,
+                ServerMessage::TableBanterAudioReady { banter_id, seat: Seat::South, .. } if banter_id == "b-2"
+            )),
+            "queued b-2 must promote immediately after b-1 finishes: {after_release:?}"
         );
         assert!(runtime.get_banter_audio("b-1").is_none());
         assert!(runtime.get_banter_audio("b-2").is_some());
@@ -1216,4 +1248,337 @@ async fn runtime_audio_cache_respects_lru_ttl_and_no_tts_emits_banter_id_only() 
         m,
         ServerMessage::TableBanterAudioReady { .. } | ServerMessage::TtsStatusNotice { .. }
     )));
+}
+
+#[tokio::test(start_paused = true)]
+async fn timeout_and_deadline_exceeded_emit_fallback_without_tripping_circuit_breaker() {
+    let llm = ScriptedLlmClient::with_banter_fn(|_| {
+        Ok(BanterOutput {
+            mood: PersonaMood::Smug,
+            text: "超时和408都不能误报服务不可用！".to_string(),
+        })
+    });
+    let tts = ScriptedTtsClient::new(
+        true,
+        vec![
+            // #1: Exceeds 5000ms in-hand deadline -> Timeout
+            PlannedTtsReply::Delayed(
+                Duration::from_millis(5500),
+                Ok(TtsAudioOutput {
+                    wav_bytes: make_sample_wav(0x71, 800),
+                    duration_ms: 800,
+                }),
+            ),
+            // #2: Upstream 408 DeadlineExceeded
+            PlannedTtsReply::Immediate(Err(TtsError::DeadlineExceeded {
+                endpoint: "http://virtual-tts.local:8081".to_string(),
+            })),
+            // #3: Explicit Timeout error
+            PlannedTtsReply::Immediate(Err(TtsError::Timeout {
+                endpoint: "http://virtual-tts.local:8081".to_string(),
+                timeout_ms: 5000,
+            })),
+            // #4: Succeeds immediately (proves breaker never tripped!)
+            PlannedTtsReply::Immediate(Ok(TtsAudioOutput {
+                wav_bytes: make_sample_wav(0x74, 800),
+                duration_ms: 910,
+            })),
+        ],
+    );
+
+    let wall = no_reaction_wall();
+    let factory: WallProviderFactory = Arc::new(move || {
+        BoxedWallProvider(Box::new(PresetWallProvider::single(
+            Seat::East,
+            wall.clone(),
+        )))
+    });
+    let runtime = TableRuntime::with_options(
+        8789,
+        None,
+        TableOptions::with_wall_factory(601, factory)
+            .with_pacing(PacingMode::Immediate)
+            .with_llm_client(llm)
+            .with_tts_client(tts.clone()),
+    );
+    let mut east = VirtualClient::connect(&runtime, "e1", "小王").await;
+    let mut west = VirtualClient::connect(&runtime, "w1", "阿西").await;
+    let mut north = VirtualClient::connect(&runtime, "n1", "阿北").await;
+    east.send(
+        &runtime,
+        &ClientMessage::JoinSeat {
+            seat: Some(Seat::East),
+        },
+    )
+    .await;
+    let _ = east.recv_snapshot().await;
+    west.send(
+        &runtime,
+        &ClientMessage::JoinSeat {
+            seat: Some(Seat::West),
+        },
+    )
+    .await;
+    let _ = west.recv_snapshot().await;
+    north
+        .send(
+            &runtime,
+            &ClientMessage::JoinSeat {
+                seat: Some(Seat::North),
+            },
+        )
+        .await;
+    let _ = north.recv_snapshot().await;
+    east.send(&runtime, &ClientMessage::StartMatch).await;
+    let _ = east.recv_snapshot().await;
+    yield_tasks().await;
+    let _ = east.drain_all();
+
+    // #1 completes late at 5500ms (> 5000ms in-hand deadline) -> TableBanterAudioFallback("b-1"), zero TtsStatusNotice.
+    tokio::time::advance(Duration::from_millis(5600)).await;
+    yield_tasks().await;
+    let m1 = east.drain_all();
+    assert!(
+        m1.iter().any(|m| matches!(
+            m,
+            ServerMessage::TableBanterAudioFallback { banter_id, seat: Seat::South }
+                if banter_id == "b-1"
+        )),
+        "timeout #1 must emit TableBanterAudioFallback(b-1): {m1:?}"
+    );
+    assert!(
+        !m1.iter()
+            .any(|m| matches!(m, ServerMessage::TtsStatusNotice { .. })),
+        "timeout #1 must not emit TtsStatusNotice: {m1:?}"
+    );
+
+    // #2 returns 408 DeadlineExceeded -> TableBanterAudioFallback("b-2"), zero TtsStatusNotice.
+    east.send(
+        &runtime,
+        &ClientMessage::SendQuickEmote {
+            emote: QuickEmote::IsThatIt,
+        },
+    )
+    .await;
+    yield_tasks().await;
+    let m2 = east.drain_all();
+    assert!(
+        m2.iter().any(|m| matches!(
+            m,
+            ServerMessage::TableBanterAudioFallback { banter_id, seat: Seat::South }
+                if banter_id == "b-2"
+        )),
+        "408 #2 must emit TableBanterAudioFallback(b-2): {m2:?}"
+    );
+    assert!(
+        !m2.iter()
+            .any(|m| matches!(m, ServerMessage::TtsStatusNotice { .. })),
+        "408 #2 must not emit TtsStatusNotice: {m2:?}"
+    );
+
+    // #3 returns Timeout -> TableBanterAudioFallback("b-3"), still zero TtsStatusNotice!
+    tokio::time::advance(Duration::from_secs(5)).await;
+    east.send(
+        &runtime,
+        &ClientMessage::SendQuickEmote {
+            emote: QuickEmote::HurryUp,
+        },
+    )
+    .await;
+    yield_tasks().await;
+    let m3 = east.drain_all();
+    assert!(
+        m3.iter().any(|m| matches!(
+            m,
+            ServerMessage::TableBanterAudioFallback { banter_id, seat: Seat::South }
+                if banter_id == "b-3"
+        )),
+        "timeout #3 must emit TableBanterAudioFallback(b-3): {m3:?}"
+    );
+    assert!(
+        !m3.iter()
+            .any(|m| matches!(m, ServerMessage::TtsStatusNotice { .. })),
+        "3 consecutive timeouts/408s must NEVER trip circuit breaker: {m3:?}"
+    );
+
+    // #4 still dispatches immediately and succeeds!
+    tokio::time::advance(Duration::from_secs(5)).await;
+    east.send(
+        &runtime,
+        &ClientMessage::SendQuickEmote {
+            emote: QuickEmote::NicePlay,
+        },
+    )
+    .await;
+    yield_tasks().await;
+    let m4 = east.drain_all();
+    assert!(
+        m4.iter().any(|m| matches!(
+            m,
+            ServerMessage::TableBanterAudioReady { banter_id, duration_ms: 910, .. }
+                if banter_id == "b-4"
+        )),
+        "synthesis #4 must succeed without cooldown after timeouts: {m4:?}"
+    );
+    assert_eq!(tts.captured().len(), 4);
+}
+
+#[tokio::test(start_paused = true)]
+async fn single_in_flight_slot_supersedes_queued_line_and_emits_fallback() {
+    let gate_first = Arc::new(Notify::new());
+    let llm = ScriptedLlmClient::with_banter_fn(|_| {
+        Ok(BanterOutput {
+            mood: PersonaMood::Smug,
+            text: "单在途加一槽最新顶替测试！".to_string(),
+        })
+    });
+    let tts = ScriptedTtsClient::new(
+        true,
+        vec![
+            PlannedTtsReply::Gated(
+                Arc::clone(&gate_first),
+                Ok(TtsAudioOutput {
+                    wav_bytes: make_sample_wav(0x81, 800),
+                    duration_ms: 810,
+                }),
+            ),
+            PlannedTtsReply::Immediate(Ok(TtsAudioOutput {
+                wav_bytes: make_sample_wav(0x83, 800),
+                duration_ms: 830,
+            })),
+        ],
+    );
+
+    let wall = no_reaction_wall();
+    let factory: WallProviderFactory = Arc::new(move || {
+        BoxedWallProvider(Box::new(PresetWallProvider::single(
+            Seat::East,
+            wall.clone(),
+        )))
+    });
+    let runtime = TableRuntime::with_options(
+        8789,
+        None,
+        TableOptions::with_wall_factory(602, factory)
+            .with_pacing(PacingMode::Immediate)
+            .with_llm_client(llm)
+            .with_tts_client(tts.clone()),
+    );
+    let mut east = VirtualClient::connect(&runtime, "e1", "小王").await;
+    let mut west = VirtualClient::connect(&runtime, "w1", "阿西").await;
+    east.send(
+        &runtime,
+        &ClientMessage::JoinSeat {
+            seat: Some(Seat::East),
+        },
+    )
+    .await;
+    let _ = east.recv_snapshot().await;
+    west.send(
+        &runtime,
+        &ClientMessage::JoinSeat {
+            seat: Some(Seat::West),
+        },
+    )
+    .await;
+    let _ = west.recv_snapshot().await;
+    east.send(
+        &runtime,
+        &ClientMessage::SetSeatPersona {
+            seat: Seat::South,
+            persona_id: Some(PersonaId::QuickHothead),
+        },
+    )
+    .await;
+    east.send(
+        &runtime,
+        &ClientMessage::SetSeatPersona {
+            seat: Seat::North,
+            persona_id: Some(PersonaId::TeaSarcasm),
+        },
+    )
+    .await;
+    east.send(&runtime, &ClientMessage::StartMatch).await;
+    let _ = east.recv_snapshot().await;
+    let _ = west.recv_snapshot().await;
+    yield_tasks().await;
+    let open_msgs = east.drain_all();
+    let _ = west.drain_all();
+    let b1_id = open_msgs
+        .iter()
+        .find_map(|m| match m {
+            ServerMessage::TableBanter { banter_id, .. } => Some(banter_id.clone()),
+            _ => None,
+        })
+        .expect("opening banter b-1");
+    assert_eq!(b1_id, "b-1");
+    assert_eq!(tts.captured().len(), 1);
+
+    // While b-1 is gated in-flight, East sends a quick emote -> both South (b-2) and North (b-3)
+    // reply simultaneously. Only b-1 stays in-flight; b-3 supersedes b-2 in the single pending slot
+    // and emits TableBanterAudioFallback for b-2 immediately!
+    tokio::time::advance(Duration::from_millis(200)).await;
+    east.send(
+        &runtime,
+        &ClientMessage::SendQuickEmote {
+            emote: QuickEmote::IsThatIt,
+        },
+    )
+    .await;
+    yield_tasks().await;
+    let after_emote = east.drain_all();
+    let _ = west.drain_all();
+    let emitted_banters: Vec<(String, Seat)> = after_emote
+        .iter()
+        .filter_map(|m| match m {
+            ServerMessage::TableBanter {
+                banter_id, seat, ..
+            } => Some((banter_id.clone(), *seat)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        emitted_banters.len(),
+        2,
+        "expected both South and North AI seats to reply: {after_emote:?}"
+    );
+    let (b2_id, b2_seat) = &emitted_banters[0];
+    let (b3_id, b3_seat) = &emitted_banters[1];
+    assert_ne!(b2_seat, b3_seat);
+    assert_eq!(
+        tts.captured().len(),
+        1,
+        "must keep strictly 1 in-flight request while b-1 is running"
+    );
+    assert!(
+        after_emote.iter().any(|m| matches!(
+            m,
+            ServerMessage::TableBanterAudioFallback { banter_id, seat }
+                if banter_id == b2_id && seat == b2_seat
+        )),
+        "superseded queued {b2_id} must emit TableBanterAudioFallback immediately: {after_emote:?}"
+    );
+
+    // Release b-1 -> b-1 finishes on the upstream stub (discarded as stale because its seat
+    // already spoke again during the quick emote), AND b-3 promotes directly (b-2 was NEVER sent!).
+    gate_first.notify_waiters();
+    yield_tasks().await;
+    let after_release = east.drain_all();
+    assert!(
+        !after_release.iter().any(|m| matches!(
+            m,
+            ServerMessage::TableBanterAudioReady { banter_id, .. } if banter_id == "b-1"
+        )),
+        "b-1 was superseded by same-seat emote reply and must not broadcast stale audio: {after_release:?}"
+    );
+    assert!(
+        after_release.iter().any(|m| matches!(
+            m,
+            ServerMessage::TableBanterAudioReady { banter_id, duration_ms: 830, .. }
+                if banter_id == b3_id
+        )),
+        "latest queued {b3_id} must promote and finish after b-1: {after_release:?}"
+    );
+    let sent_ids: Vec<String> = tts.captured().into_iter().map(|r| r.request_id).collect();
+    assert_eq!(sent_ids, vec!["b-1".to_string(), b3_id.clone()]);
 }

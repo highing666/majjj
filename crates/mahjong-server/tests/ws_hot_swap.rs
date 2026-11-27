@@ -41,7 +41,11 @@ where
     loop {
         match recv_msg(ws).await {
             ServerMessage::LobbyUpdated { phase, seats, .. } if pred(&seats) => return phase,
-            ServerMessage::LobbyUpdated { .. } | ServerMessage::TableBanter { .. } => continue,
+            ServerMessage::LobbyUpdated { .. }
+            | ServerMessage::TableBanter { .. }
+            | ServerMessage::TableBanterAudioReady { .. }
+            | ServerMessage::TableBanterAudioFallback { .. }
+            | ServerMessage::TtsStatusNotice { .. } => continue,
             other => panic!("expected matching LobbyUpdated, got {other:?}"),
         }
     }
