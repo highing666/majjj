@@ -236,7 +236,12 @@ impl TestClient {
     async fn send(&self, runtime: &TableRuntime, msg: &ClientMessage) {
         let raw = serde_json::to_string(msg).expect("serialize ClientMessage");
         let _ = runtime
-            .handle_raw_text(self.conn_id, &raw, true, &self.tx)
+            .handle_raw_text(
+                self.conn_id,
+                &raw,
+                mahjong_server::ClientTrustTier::Loopback,
+                &self.tx,
+            )
             .await;
     }
 

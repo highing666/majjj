@@ -12,9 +12,14 @@ export interface ShutdownResponseLike {
   status: number;
 }
 
+export interface ShutdownRequestInit {
+  method?: string;
+  headers?: Record<string, string>;
+}
+
 export type ShutdownFetch = (
   input: string,
-  init?: { method?: string },
+  init?: ShutdownRequestInit,
 ) => Promise<ShutdownResponseLike>;
 
 export interface ShutdownState {
@@ -47,7 +52,7 @@ export function canShowShutdownControl(
 
 function defaultFetch(
   input: string,
-  init?: { method?: string },
+  init?: ShutdownRequestInit,
 ): Promise<ShutdownResponseLike> {
   return fetch(input, init);
 }
@@ -131,7 +136,10 @@ export function createShutdownController(
       emit();
 
       try {
-        const res = await fetchFn("/api/shutdown", { method: "POST" });
+        const res = await fetchFn("/api/shutdown", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        });
         if (res.ok) {
           phase = "stopped";
           errorMessage = null;

@@ -11,12 +11,25 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use mahjong_core::{HandOutcome, WinKind};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use thiserror::Error;
 
 use crate::history_dto::{
     ClearHistoryResponse, HandRecord, HistoryExportResponse, MatchRecord, PlayerStats,
     PreferencesData, StatsResponse, HISTORY_SCHEMA_VERSION,
 };
 use crate::protocol::{LobbyConfig, SeatKind, TablePace};
+use crate::public_url::{normalize_optional_public_url, PublicUrlError};
+
+/// Error returned when validating or persisting `public_url_override` in `preferences.json`.
+#[derive(Debug, Error)]
+pub enum PublicUrlSaveError {
+    /// Provided custom public origin failed strict origin validation.
+    #[error(transparent)]
+    Invalid(#[from] PublicUrlError),
+    /// Atomic write of `preferences.json` failed on disk.
+    #[error("保存自定义公网入口失败：{0}")]
+    Io(#[from] std::io::Error),
+}
 
 const PREFERENCES_FILE: &str = "preferences.json";
 const HANDS_FILE: &str = "hands.jsonl";
@@ -255,6 +268,17 @@ fn load_preferences(path: &Path) -> Result<PreferencesData, std::io::Error> {
                 }
                 deduped.truncate(MAX_RECENT_NICKNAMES);
                 prefs.recent_nicknames = deduped;
+                if let Some(raw_public_url) = prefs.public_url_override.take() {
+                    match normalize_optional_public_url(Some(&raw_public_url)) {
+                        Ok(normalized) => prefs.public_url_override = normalized,
+                        Err(err) => {
+                            eprintln!(
+                                "warning: ignoring invalid public_url_override in {}: {err}",
+                                path.display()
+                            );
+                        }
+                    }
+                }
                 Ok(prefs)
             }
             Err(err) => {
@@ -602,26 +626,46 @@ impl HistoryStore {
         self.save_preferences();
     }
 
+    /// Validates, normalizes, and atomically persists `public_url_override` in `preferences.json`.
+    /// Passing `None` or blank whitespace clears the stored override.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PublicUrlSaveError::Invalid`] if `raw` is not a valid `http://` or `https://` origin,
+    /// or [`PublicUrlSaveError::Io`] if persisting `preferences.json` fails on disk.
+    pub fn set_public_url_override(
+        &mut self,
+        raw: Option<&str>,
+    ) -> Result<Option<String>, PublicUrlSaveError> {
+        let normalized = normalize_optional_public_url(raw)?;
+        if self.preferences.public_url_override == normalized {
+            return Ok(normalized);
+        }
+        let mut updated = self.preferences.clone();
+        updated.public_url_override.clone_from(&normalized);
+        if let Some(dir) = &self.data_dir {
+            save_preferences_strict(dir, &updated)?;
+        }
+        self.preferences = updated;
+        Ok(normalized)
+    }
+
     fn save_preferences(&self) {
         let Some(dir) = &self.data_dir else {
             return;
         };
         let path = dir.join(PREFERENCES_FILE);
-        match serde_json::to_vec_pretty(&self.preferences) {
-            Ok(mut bytes) => {
-                bytes.push(b'\n');
-                if let Err(err) = atomic_write_bytes(&path, &bytes) {
-                    eprintln!("warning: failed to persist {}: {err}", path.display());
-                }
-            }
-            Err(err) => {
-                eprintln!(
-                    "warning: failed to serialize preferences for {}: {err}",
-                    path.display()
-                );
-            }
+        if let Err(err) = save_preferences_strict(dir, &self.preferences) {
+            eprintln!("warning: failed to persist {}: {err}", path.display());
         }
     }
+}
+
+fn save_preferences_strict(dir: &Path, prefs: &PreferencesData) -> Result<(), std::io::Error> {
+    let path = dir.join(PREFERENCES_FILE);
+    let mut bytes = serde_json::to_vec_pretty(prefs).map_err(std::io::Error::other)?;
+    bytes.push(b'\n');
+    atomic_write_bytes(&path, &bytes)
 }
 
 #[cfg(test)]

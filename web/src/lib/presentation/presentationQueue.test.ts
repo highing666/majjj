@@ -113,6 +113,7 @@ function makeSnapshot(
       local_hostname_url: null,
     },
     host_is_loopback: true,
+    client_is_remote: false,
   };
 }
 

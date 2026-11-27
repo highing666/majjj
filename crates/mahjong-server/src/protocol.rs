@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::persona::{PersonaId, PersonaMood};
+use crate::public_url::PublicUrlSource;
 
 /// Top-level lifecycle phase of a single active `TableSession`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, TS)]
@@ -139,6 +140,56 @@ pub struct PendingDestructiveOp {
     pub confirmed_seats: Vec<Seat>,
 }
 
+/// Request payload for `POST /api/remote-auth`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct RemoteAuthRequest {
+    /// 8-character table invite passcode (`入桌口令`).
+    pub code: String,
+}
+
+/// Response payload for `POST /api/remote-auth`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct RemoteAuthResponse {
+    /// Whether authentication succeeded and a session cookie was issued.
+    pub authenticated: bool,
+    /// Clear Chinese status or error message.
+    pub message: String,
+    /// Cooldown seconds returned when rate-limited (`429 Too Many Requests`).
+    pub retry_after_secs: Option<u32>,
+}
+
+/// Request payload for `POST /api/remote-access/public-url`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct SetPublicUrlRequest {
+    /// Normalized `http://` or `https://` origin to persist in `preferences.json`, or `None`/blank to clear.
+    pub public_url: Option<String>,
+}
+
+/// Response payload for Loopback-only host remote-access control endpoints (`GET/POST /api/remote-access*`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct RemoteAccessStatusResponse {
+    /// Whether `远程联机` is currently enabled.
+    pub enabled: bool,
+    /// Active 8-character `入桌口令` (`Some` only when `enabled == true`).
+    pub passcode: Option<String>,
+    /// Live count of currently connected remote WebSocket clients.
+    pub active_remote_connections: u32,
+    /// Effective custom public origin override (`CLI/ENV > preferences.json`), if configured.
+    pub public_url_override: Option<String>,
+    /// Origin source of `public_url_override` (`"cli"`, `"preferences"`, or `"none"`).
+    pub public_url_source: PublicUrlSource,
+    /// Custom public origin currently persisted in `preferences.json` (independent of CLI override).
+    pub persisted_public_url: Option<String>,
+    /// Preferred stable public IPv6 URL (`http://[<ipv6>]:<port>`), if discovered.
+    pub preferred_ipv6_url: Option<String>,
+    /// All discovered global-unicast public IPv6 URLs ordered with stable addresses first.
+    pub ipv6_urls: Vec<String>,
+    /// Resolved preferred invite base URL (`public_url_override` > `preferred_ipv6_url`).
+    pub invite_base_url: Option<String>,
+    /// Full shareable invite URL with `?code=<passcode>` when enabled and a base URL is available.
+    pub invite_url: Option<String>,
+}
+
 /// Response payload for `GET /api/health`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct HealthResponse {
@@ -241,6 +292,8 @@ pub struct TableSnapshot {
     pub lan_urls: LanUrlInfo,
     /// Whether this client connected via loopback (`127.0.0.1` / `::1`).
     pub host_is_loopback: bool,
+    /// Whether this client connected from a public/remote trust tier (`Remote`).
+    pub client_is_remote: bool,
 }
 
 /// Client-to-server WebSocket JSON messages.
@@ -350,6 +403,8 @@ pub enum ServerMessage {
     },
     /// Sent to an older connection when a newer tab replaces it with the same credential.
     SessionReplaced,
+    /// Sent to connected remote clients immediately before closing when the host disables `远程联机`.
+    RemoteAccessDisabled { message: String },
     /// Non-fatal protocol or validation notice sent to the requesting client.
     ErrorNotice { message: String },
     /// Comic speech bubble banter line emitted by an AI table persona (`牌桌台词`).

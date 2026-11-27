@@ -67,4 +67,8 @@ lan_urls: LanUrlInfo,
 /**
  * Whether this client connected via loopback (`127.0.0.1` / `::1`).
  */
-host_is_loopback: boolean, };
+host_is_loopback: boolean, 
+/**
+ * Whether this client connected from a public/remote trust tier (`Remote`).
+ */
+client_is_remote: boolean, };

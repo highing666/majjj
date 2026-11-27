@@ -270,6 +270,7 @@ function makeSnapshot(overrides: Partial<TableSnapshot> = {}): TableSnapshot {
       local_hostname_url: "http://Mac.local:8789",
     },
     host_is_loopback: true,
+    client_is_remote: false,
     ...overrides,
   };
 }
@@ -947,6 +948,49 @@ describe("TableClient", () => {
       { SetSlowThinkNudge: { enabled: false } },
       { SetSlowThinkNudge: { enabled: true } },
     ]);
+
+    client.dispose();
+  });
+
+  it("stops auto-reconnect permanently when RemoteAccessDisabled is received", () => {
+    const sockets: MockWebSocket[] = [];
+    const client = createTableClient({
+      wsUrl: "ws://majjj.example.com:8789/ws",
+      storage: createMemoryStorage(),
+      createWebSocket: (url) => {
+        const ws = new MockWebSocket(url);
+        sockets.push(ws);
+        return ws;
+      },
+      windowEvents: null,
+    });
+
+    client.connect();
+    expect(sockets).toHaveLength(1);
+    sockets[0].emitOpen();
+    sockets[0].emitServerMessage({
+      TableSnapshot: makeSnapshot({
+        host_is_loopback: false,
+        client_is_remote: true,
+      }),
+    });
+
+    sockets[0].emitServerMessage({
+      RemoteAccessDisabled: {
+        message: "宿主已关闭远程联机，连接已断开",
+      },
+    });
+
+    expect(client.getState().connectionStatus).toBe("disconnected");
+    expect(client.getState().remoteAccessDisabledMessage).toBe(
+      "宿主已关闭远程联机，连接已断开",
+    );
+    expect(sockets[0].closeCalls).toBe(1);
+
+    // Even after long timers or explicit connect(), client must NOT reconnect.
+    vi.advanceTimersByTime(60_000);
+    client.connect();
+    expect(sockets).toHaveLength(1);
 
     client.dispose();
   });

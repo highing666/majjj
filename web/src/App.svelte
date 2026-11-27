@@ -42,6 +42,14 @@
   import type { TablePace } from "./lib/protocol/generated/TablePace";
   import type { Tile } from "./lib/protocol/generated/Tile";
   import { seatIndex } from "./lib/protocol/seats";
+  import {
+    buildRemoteToolbarLabel,
+    createRemoteAccessActions,
+    createRemoteAccessController,
+    type RemoteAccessActions,
+    type RemoteAccessState,
+  } from "./lib/remote/remoteAccessController";
+  import RemoteAccessModal from "./lib/remote/RemoteAccessModal.svelte";
   import { createTableClient } from "./lib/session/client";
   import type { SessionState } from "./lib/session/reducer";
   import DestructiveOpModal from "./lib/table/DestructiveOpModal.svelte";
@@ -98,10 +106,17 @@
   const shutdownController = createShutdownController({
     onShutdownSuccess: () => client.dispose(),
   });
+  const remoteAccessController = createRemoteAccessController();
+  const remoteAccessActions: RemoteAccessActions = createRemoteAccessActions(
+    remoteAccessController,
+  );
   const historyController = createHistoryController();
   const ttsNoticeController = createTtsNoticeController();
   let sessionState = $state<SessionState>(client.getState());
   let shutdownState = $state<ShutdownState>(shutdownController.getState());
+  let remoteAccessState = $state<RemoteAccessState>(
+    remoteAccessController.getState(),
+  );
   let historyState = $state<HistoryState>(historyController.getState());
   let ttsNoticeState = $state<TtsNoticeViewState>(
     ttsNoticeController.getState(),
@@ -119,6 +134,7 @@
     audioRouter.getActiveBanterVoice(),
   );
   let settingsOpen = $state(false);
+  let remoteAccessModalOpen = $state(false);
   let lastSyncedVoicePackKey: string | null = null;
   let takeOverTarget = $state<{
     seatInfo: SeatInfo;
@@ -132,6 +148,9 @@
     });
     const unsubscribeShutdown = shutdownController.subscribe((next) => {
       shutdownState = next;
+    });
+    const unsubscribeRemoteAccess = remoteAccessController.subscribe((next) => {
+      remoteAccessState = next;
     });
     const unsubscribeHistory = historyController.subscribe((next) => {
       historyState = next;
@@ -190,6 +209,7 @@
       unsubscribePrefs();
       unsubscribeTtsNotice();
       unsubscribeHistory();
+      unsubscribeRemoteAccess();
       unsubscribeShutdown();
       unsubscribeClient();
       viewportDisplay.dispose();
@@ -213,6 +233,7 @@
   });
 
   const snapshot = $derived(sessionState.snapshot);
+  const isRemote = $derived(snapshot?.client_is_remote === true);
 
   const activeSeatVoicePackId = $derived.by<HumanVoicePackId | null>(() => {
     if (!snapshot || snapshot.your_seat === null) {
@@ -260,7 +281,28 @@
   });
 
   $effect(() => {
-    shutdownController.syncHostIsLoopback(snapshot?.host_is_loopback === true);
+    const isLoopback = snapshot?.host_is_loopback === true;
+    shutdownController.syncHostIsLoopback(isLoopback);
+    remoteAccessController.syncHostIsLoopback(isLoopback);
+    historyController.syncClientIsRemote(isRemote);
+    if (!isLoopback) {
+      remoteAccessModalOpen = false;
+    }
+  });
+
+  $effect(() => {
+    if (
+      !remoteAccessState.visible ||
+      (!remoteAccessState.status?.enabled && !remoteAccessModalOpen)
+    ) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      void remoteAccessController.refresh();
+    }, 5000);
+    return () => {
+      window.clearInterval(timer);
+    };
   });
 
   $effect(() => {
@@ -281,6 +323,7 @@
   );
   const actionsDisabled = $derived(
     sessionState.replacedByNewTab ||
+      sessionState.remoteAccessDisabledMessage !== null ||
       sessionState.connectionStatus !== "connected",
   );
   const yourSeatAiAssisted = $derived(
@@ -317,16 +360,19 @@
   const connectionStatusText = $derived(
     shutdownState.phase === "stopped"
       ? "本机服务已关闭"
-      : sessionState.replacedByNewTab
-        ? "已被新标签页接管"
-        : sessionState.connectionStatus === "connected"
-          ? "已连接"
-          : sessionState.connectionStatus === "connecting"
-            ? "连接中"
-            : "已断开",
+      : sessionState.remoteAccessDisabledMessage !== null
+        ? "宿主已关闭远程联机"
+        : sessionState.replacedByNewTab
+          ? "已被新标签页接管"
+          : sessionState.connectionStatus === "connected"
+            ? "已连接"
+            : sessionState.connectionStatus === "connecting"
+              ? "连接中"
+              : "已断开",
   );
   const hasModalOpen = $derived(
     settingsOpen ||
+      remoteAccessModalOpen ||
       historyState.open ||
       takeOverTarget !== null ||
       viewportState.showRotateOverlay ||
@@ -416,6 +462,14 @@
     }
   }
 
+  function openRemoteAccessModal(): void {
+    if (!remoteAccessState.visible) {
+      return;
+    }
+    remoteAccessModalOpen = true;
+    void remoteAccessController.refresh();
+  }
+
   function openTakeOverModal(seatInfo: SeatInfo, kind: TakeOverKind): void {
     takeOverTarget = { seatInfo, kind };
   }
@@ -438,6 +492,18 @@
         {/if}
       </div>
       <button class="btn" type="button" onclick={reloadPage}>刷新页面</button>
+    </div>
+  {:else if sessionState.remoteAccessDisabledMessage !== null}
+    <div class="banner banner-danger" class:banner-floating={compact} role="alert">
+      <div>
+        <strong>宿主已关闭远程联机</strong>
+        {#if !compact}
+          <div>
+            {sessionState.remoteAccessDisabledMessage}，已停止自动重连。如需重新入桌，请联系宿主重新开启远程联机并获取新的入桌口令。
+          </div>
+        {/if}
+      </div>
+      <button class="btn" type="button" onclick={reloadPage}>刷新检查</button>
     </div>
   {:else if sessionState.replacedByNewTab}
     <div class="banner banner-danger" class:banner-floating={compact} role="alert">
@@ -513,7 +579,11 @@
   {#if presentedSnapshot === null}
     <section class="card placeholder-card">
       <h1>麻将牌局 · Majjj</h1>
-      <p>正在获取当前牌桌状态，请稍候…</p>
+      <p>
+        {sessionState.remoteAccessDisabledMessage !== null
+          ? "宿主已关闭远程联机，当前会话已断开。"
+          : "正在获取当前牌桌状态，请稍候…"}
+      </p>
     </section>
   {:else if presentedSnapshot.phase === "Lobby"}
     <LobbyView
@@ -528,8 +598,12 @@
       onSetSeatVoicePack={handleSelectHumanVoicePack}
       onStartMatch={() => client.startMatch()}
       onOpenSettings={() => (settingsOpen = true)}
-      onOpenHistory={() => void historyController.open()}
-      onTakeOverSeat={(seatInfo) => openTakeOverModal(seatInfo, "offline_human")}
+      onOpenHistory={isRemote ? undefined : () => void historyController.open()}
+      onTakeOverSeat={isRemote
+        ? undefined
+        : (seatInfo) => openTakeOverModal(seatInfo, "offline_human")}
+      {remoteAccessState}
+      {remoteAccessActions}
     />
   {:else if presentedSnapshot.phase === "InMatch"}
     <section class="match-shell" class:match-shell-immersive={isSeatedMatch}>
@@ -598,6 +672,12 @@
               handleSetPace(currentPace === "Fast" ? "Standard" : "Fast")}
             onOpenSettings={() => (settingsOpen = true)}
             onDisband={() => client.requestDisbandMatch()}
+            showRemoteAccess={remoteAccessState.visible}
+            remoteAccessEnabled={remoteAccessState.status?.enabled === true}
+            remoteToolbarLabel={buildRemoteToolbarLabel(
+              remoteAccessState.status,
+            )}
+            onOpenRemoteAccess={openRemoteAccessModal}
             onToggleAiAssist={(seat, enabled) => client.toggleAiAssist(seat, enabled)}
             onAction={handleActionBar}
             onSendQuickEmote={(emote) => client.sendQuickEmote(emote)}
@@ -653,9 +733,27 @@
           </div>
         {/if}
         <section class="card placeholder-card">
-          <h1>对局进行中</h1>
+          <div class="observer-header">
+            <h1>对局进行中</h1>
+            {#if activeSnap.host_is_loopback && remoteAccessState.visible}
+              <button
+                class="btn btn-subtle observer-remote-btn"
+                class:observer-remote-btn-on={remoteAccessState.status?.enabled === true}
+                type="button"
+                aria-label="打开远程联机管理面板"
+                onclick={openRemoteAccessModal}
+              >
+                {#if remoteAccessState.status?.enabled === true}
+                  <span class="observer-remote-dot" aria-hidden="true"></span>
+                {/if}
+                {buildRemoteToolbarLabel(remoteAccessState.status)}
+              </button>
+            {/if}
+          </div>
           <p class="placeholder-note">
-            当前本机未入座。你可以直接接管 AI 座位立即加入本小局，或经确认后接管已离线人类座位继续对局。
+            {activeSnap.client_is_remote
+              ? "当前本机未入座。你可以经确认后接管空余 AI 座位中途加入本小局。"
+              : "当前本机未入座。你可以直接接管 AI 座位立即加入本小局，或经确认后接管已离线人类座位继续对局。"}
           </p>
           <div class="observer-seats-grid">
             {#each takeOverItems as item (item.seatInfo.seat)}
@@ -725,17 +823,21 @@
       {hideAiBanterText}
       reducedEffects={renderQualityState.reducedEffects}
       disabled={actionsDisabled}
+      clientIsRemote={activeSnap.client_is_remote}
       onUpdateConfig={(config) => client.updateLobbyConfig(config)}
       onStartMatch={() => client.startMatch()}
       onReturnToLobby={() => client.returnToLobby()}
-      onOpenHistory={() => void historyController.open()}
-      onTakeOverSeat={(seatInfo) => openTakeOverModal(seatInfo, "offline_human")}
+      onOpenHistory={isRemote ? undefined : () => void historyController.open()}
+      onTakeOverSeat={isRemote
+        ? undefined
+        : (seatInfo) => openTakeOverModal(seatInfo, "offline_human")}
     />
   {:else}
     {@const activeSnap = snapshot ?? presentedSnapshot}
     {@const offlineTakeOverSeats = getOfflineHumanTakeOverSeats(
       activeSnap.seats,
       activeSnap.your_seat,
+      activeSnap.client_is_remote,
     )}
     <section class="card placeholder-card">
       <h1>对局已结束</h1>
@@ -804,6 +906,13 @@
     onResetPreferences={() => preferencesStore.reset()}
     onChangePace={handleSettingsPaceChange}
     onClose={() => (settingsOpen = false)}
+  />
+
+  <RemoteAccessModal
+    open={remoteAccessModalOpen}
+    state={remoteAccessState}
+    actions={remoteAccessActions}
+    onClose={() => (remoteAccessModalOpen = false)}
   />
 
   <HistoryModal
@@ -895,6 +1004,37 @@
   .placeholder-card h1 {
     margin: 0;
     font-size: 22px;
+  }
+
+  .observer-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .observer-remote-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 11px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .observer-remote-btn-on {
+    background: var(--jade-soft);
+    border-color: #6bc4a2;
+    color: var(--jade);
+  }
+
+  .observer-remote-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--jade);
   }
 
   .placeholder-note {

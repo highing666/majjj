@@ -65,6 +65,7 @@ function sampleExport(): HistoryExportResponse {
       llm_base_url: null,
       tts_base_url: null,
       slow_think_nudge_enabled: true,
+      public_url_override: null,
     },
     matches: [],
     hands: [],
@@ -142,6 +143,7 @@ describe("historyClient", () => {
       llm_base_url: null,
       tts_base_url: null,
       slow_think_nudge_enabled: true,
+      public_url_override: null,
     };
     const fetchFn = vi
       .fn<HistoryFetch>()
@@ -433,5 +435,23 @@ describe("historyController", () => {
     expect(controller.getState().personaMemory).toEqual(emptyMemory);
     expect(controller.getState().clearMemoryNotice).toContain("1 组牌友记忆");
     expect(controller.getState().clearMemoryNotice).toContain("2 条恩怨小本本");
+  });
+
+  it("never issues any /api/* requests when client_is_remote is true", async () => {
+    const fetchFn = vi.fn<HistoryFetch>();
+    const controller = createHistoryController({ fetchFn });
+    controller.syncClientIsRemote(true);
+
+    await controller.open();
+    await controller.refresh();
+    await controller.refreshPersonaMemory();
+    expect(await controller.requestExport()).toBe(false);
+    controller.requestClear();
+    expect(await controller.confirmClear()).toBe(false);
+    controller.requestClearMemory();
+    expect(await controller.confirmClearMemory()).toBe(false);
+
+    expect(controller.getState().open).toBe(false);
+    expect(fetchFn).not.toHaveBeenCalled();
   });
 });

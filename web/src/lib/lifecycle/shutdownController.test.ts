@@ -67,7 +67,10 @@ describe("shutdownController", () => {
 
     expect(result).toBe(true);
     expect(fetchFn).toHaveBeenCalledTimes(1);
-    expect(fetchFn).toHaveBeenCalledWith("/api/shutdown", { method: "POST" });
+    expect(fetchFn).toHaveBeenCalledWith("/api/shutdown", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
     expect(onShutdownSuccess).toHaveBeenCalledTimes(1);
     expect(controller.getState()).toEqual({
       visible: false,

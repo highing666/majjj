@@ -96,6 +96,7 @@ fi
 
 # 1. Fail-fast static & frontend checks
 ./scripts/check-glossary.sh
+./scripts/check-doc-privacy.sh
 
 if [ "$run_rust" -eq 1 ]; then
   cargo fmt --all -- --check
@@ -116,6 +117,14 @@ fi
 
 # 2. Heavier Rust clippy, crate boundary checks (after clippy warms cargo cache), tests & AI smoke gate
 if [ "$run_rust" -eq 1 ]; then
+  if [ ! -d "web/dist" ]; then
+    if [ -d "web/node_modules" ]; then
+      (cd web && npm run build)
+    else
+      echo "ERROR: web/dist not found (required by rust-embed in mahjong-server). Run 'npm ci --offline --prefix web && npm --prefix web run build' first." >&2
+      exit 1
+    fi
+  fi
   cargo clippy --workspace --all-targets -- -D warnings
   ./scripts/check-core-boundaries.sh
 

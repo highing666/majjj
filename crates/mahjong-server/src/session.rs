@@ -49,8 +49,9 @@ use crate::protocol::{
     SeatInfo, SeatKind, SeatingRule, ServerMessage, TablePhase, TableSnapshot,
 };
 use crate::seat_control::HandAttribution;
+use crate::security::ClientTrustTier;
 use crate::server::ServerError;
-use crate::storage::{current_unix_ms, normalize_nickname, HistoryStore};
+use crate::storage::{current_unix_ms, normalize_nickname, HistoryStore, PublicUrlSaveError};
 use crate::tts::{
     TtsClient, TtsSynthesisRequest, TTS_IN_HAND_DEADLINE_MS, TTS_SETTLEMENT_DEADLINE_MS,
 };
@@ -386,7 +387,7 @@ pub(crate) struct ClientConnection {
     pub(crate) seat_token: String,
     pub(crate) nickname: String,
     pub(crate) seat: Option<Seat>,
-    pub(crate) host_is_loopback: bool,
+    pub(crate) trust_tier: ClientTrustTier,
     pub(crate) tx: mpsc::UnboundedSender<OutboundSignal>,
 }
 
@@ -597,7 +598,7 @@ impl TableSession {
     ) {
         self.handle_hello(
             conn_id,
-            true,
+            ClientTrustTier::Loopback,
             tx,
             HelloParams {
                 client_id: client_id.to_string(),
@@ -651,6 +652,13 @@ impl TableSession {
             }
             _ => None,
         };
+        let host_is_loopback = conn.trust_tier.is_loopback();
+        let client_is_remote = conn.trust_tier.is_remote();
+        let lan_urls = if client_is_remote {
+            LanUrlInfo::default()
+        } else {
+            self.lan_urls()
+        };
         TableSnapshot {
             table_id: self.table_id.clone(),
             phase: self.phase,
@@ -664,8 +672,9 @@ impl TableSession {
             pending_destructive_op: self.pending_destructive_op.clone(),
             seq: self.seq,
             server_version: env!("CARGO_PKG_VERSION").to_string(),
-            lan_urls: self.lan_urls(),
-            host_is_loopback: conn.host_is_loopback,
+            lan_urls,
+            host_is_loopback,
+            client_is_remote,
         }
     }
 
@@ -734,7 +743,7 @@ impl TableSession {
     fn handle_hello(
         &mut self,
         conn_id: u64,
-        host_is_loopback: bool,
+        trust_tier: ClientTrustTier,
         tx: &mpsc::UnboundedSender<OutboundSignal>,
         params: HelloParams,
     ) {
@@ -811,7 +820,7 @@ impl TableSession {
             seat_token: seat_token.clone(),
             nickname,
             seat: restored_seat,
-            host_is_loopback,
+            trust_tier,
             tx: tx.clone(),
         };
         let snapshot = self.build_snapshot(&conn);
@@ -2556,6 +2565,19 @@ impl TableRuntime {
         session.history.preferences().clone()
     }
 
+    /// Validates and atomically updates `public_url_override` in `preferences.json`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PublicUrlSaveError`] if validation or disk persistence fails.
+    pub async fn set_public_url_override(
+        &self,
+        raw: Option<&str>,
+    ) -> Result<Option<String>, PublicUrlSaveError> {
+        let mut session = self.inner.lock().await;
+        session.history.set_public_url_override(raw)
+    }
+
     /// Exports full preferences, matches, and hands JSON backup for `GET /api/history/export`.
     pub async fn history_export(&self) -> HistoryExportResponse {
         let session = self.inner.lock().await;
@@ -2593,7 +2615,7 @@ impl TableRuntime {
         &self,
         conn_id: u64,
         raw_text: &str,
-        host_is_loopback: bool,
+        trust_tier: ClientTrustTier,
         tx: &mpsc::UnboundedSender<OutboundSignal>,
     ) -> HandleOutcome {
         let msg: ClientMessage = match serde_json::from_str(raw_text) {
@@ -2627,7 +2649,7 @@ impl TableRuntime {
                 } => {
                     session.handle_hello(
                         conn_id,
-                        host_is_loopback,
+                        trust_tier,
                         tx,
                         HelloParams {
                             client_id,

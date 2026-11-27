@@ -33,6 +33,7 @@ export interface SessionState {
   pendingActionId: string | null;
   pendingAddedKong: PendingAddedKong | null;
   replacedByNewTab: boolean;
+  remoteAccessDisabledMessage: string | null;
   lastRejectedReason: string | null;
   lastErrorNotice: string | null;
   llmStatusNotice: LlmStatusNoticeState | null;
@@ -59,6 +60,7 @@ export function createInitialSessionState(): SessionState {
     pendingActionId: null,
     pendingAddedKong: null,
     replacedByNewTab: false,
+    remoteAccessDisabledMessage: null,
     lastRejectedReason: null,
     lastErrorNotice: null,
     llmStatusNotice: null,
@@ -485,6 +487,17 @@ export function reduceServerMessage(
       state: {
         ...state,
         replacedByNewTab: true,
+        pendingActionId: null,
+      },
+      effects: [{ type: "stop_reconnect" }],
+    };
+  }
+
+  if ("RemoteAccessDisabled" in message) {
+    return {
+      state: {
+        ...state,
+        remoteAccessDisabledMessage: message.RemoteAccessDisabled.message,
         pendingActionId: null,
       },
       effects: [{ type: "stop_reconnect" }],

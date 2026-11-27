@@ -128,6 +128,7 @@ function makeSnapshot(overrides: Partial<TableSnapshot> = {}): TableSnapshot {
       local_hostname_url: "http://MacBook.local:8789",
     },
     host_is_loopback: true,
+    client_is_remote: false,
     ...overrides,
   };
 }
@@ -1309,6 +1310,34 @@ describe("session reducer — TableBanter and LlmStatusNotice", () => {
     expect(ownRes.state.lastRejectedReason).toBeNull();
     expect(ownRes.state.snapshot?.slow_think_nudge_enabled).toBe(false);
     expect(ownRes.effects).toEqual([]);
+  });
+
+  it("records remoteAccessDisabledMessage and emits stop_reconnect on RemoteAccessDisabled", () => {
+    const start = reduceServerMessage(createInitialSessionState(), {
+      TableSnapshot: makeSnapshot({
+        host_is_loopback: false,
+        client_is_remote: true,
+        lan_urls: {
+          preferred_ipv4_url: null,
+          ipv4_urls: [],
+          local_hostname_url: null,
+        },
+      }),
+    }).state;
+
+    const res = reduceServerMessage(
+      { ...start, pendingActionId: "act-pending" },
+      {
+        RemoteAccessDisabled: {
+          message: "宿主已关闭远程联机，连接已断开",
+        },
+      },
+    );
+    expect(res.state.remoteAccessDisabledMessage).toBe(
+      "宿主已关闭远程联机，连接已断开",
+    );
+    expect(res.state.pendingActionId).toBeNull();
+    expect(res.effects).toEqual([{ type: "stop_reconnect" }]);
   });
 });
 

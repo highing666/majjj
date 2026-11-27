@@ -106,6 +106,7 @@ mode="\${STUB_CURL_MODE:-down}"
 include_code=0
 method="GET"
 url=""
+has_json_ct=0
 while [ "\$#" -gt 0 ]; do
   case "\$1" in
     -w)
@@ -116,7 +117,13 @@ while [ "\$#" -gt 0 ]; do
       shift
       method="\$1"
       ;;
-    --max-time|-o|-H|-d|--data)
+    -H)
+      shift
+      if [ "\$1" = "Content-Type: application/json" ]; then
+        has_json_ct=1
+      fi
+      ;;
+    --max-time|-o|-d|--data)
       shift
       ;;
     http://*|https://*)
@@ -143,6 +150,10 @@ emit_resp() {
 case "\$mode" in
   healthy)
     if [ "\$method" = "POST" ] && [[ "\$url" == */api/shutdown ]]; then
+      if [ "\$has_json_ct" -ne 1 ]; then
+        emit_resp 415 '{"error":"Content-Type must be application/json"}'
+        exit 22
+      fi
       printf 'shutdown_requested\n' >> "$log_dir/calls.log"
       rm -f "$log_dir/server_ready"
       emit_resp 200 '{"ok":true}'
@@ -391,7 +402,11 @@ done
 src="\${args[0]}"
 dest="\${args[1]}"
 printf 'scp src=%s dest=%s\n' "\$src" "\$dest" >> "$root/logs/calls.log"
-remote_spec="\${dest#*:}"
+if [[ "\$dest" == *"]:"* ]]; then
+  remote_spec="\${dest#*]:}"
+else
+  remote_spec="\${dest#*:}"
+fi
 # Strip matching outer single quotes if present
 remote_spec="\${remote_spec#\'}"
 remote_spec="\${remote_spec%\'}"
@@ -526,6 +541,38 @@ EOF
     "$repo_root/scripts/deploy-partner.sh" --bin "$root/bin-v2" --sync-app
   cmp -s "$root/bin-v2" "$remote_bin_dir/majjj" || fail "--bin --sync-app must update binary"
   [ -x "$remote_app/Contents/MacOS/Majjj" ] || fail "--bin --sync-app must also sync Majjj.app"
+  assert_file_contains "$root/logs/calls.log" "http://partner.local:8789/api/health" ".local host health URL must remain unbracketed"
+
+  # 5i. Bare IPv6 host brackets /api/health URL and scp destination while keeping ssh target clean
+  : > "$root/logs/calls.log"
+  PATH="$root/bin:$PATH" \
+    MAJJJ_DEPLOY_CONFIG="$root/deploy.local" \
+    STUB_CURL_MODE="healthy" \
+    "$repo_root/scripts/deploy-partner.sh" --host 2001:db8::1 --user partner --bin "$root/bin-v1"
+  assert_file_contains "$root/logs/calls.log" "http://[2001:db8::1]:8789/api/health" "bare IPv6 host must be bracketed in health URL"
+  assert_file_contains "$root/logs/calls.log" "ssh target=partner@2001:db8::1" "bare IPv6 ssh target must remain unbracketed"
+  assert_file_contains "$root/logs/calls.log" "dest=partner@[2001:db8::1]:" "bare IPv6 scp destination must be bracketed"
+  cmp -s "$root/bin-v1" "$remote_bin_dir/majjj" || fail "bare IPv6 deploy must update binary"
+
+  # 5j. Already-bracketed IPv6 host avoids double brackets and strips brackets for ssh
+  : > "$root/logs/calls.log"
+  PATH="$root/bin:$PATH" \
+    MAJJJ_DEPLOY_CONFIG="$root/deploy.local" \
+    STUB_CURL_MODE="healthy" \
+    "$repo_root/scripts/deploy-partner.sh" --host "[2001:db8::1]" --user partner --bin "$root/bin-v2"
+  assert_file_contains "$root/logs/calls.log" "http://[2001:db8::1]:8789/api/health" "bracketed IPv6 host must not double-bracket health URL"
+  assert_file_contains "$root/logs/calls.log" "ssh target=partner@2001:db8::1" "bracketed IPv6 ssh target must strip outer brackets"
+  assert_file_contains "$root/logs/calls.log" "dest=partner@[2001:db8::1]:" "bracketed IPv6 scp destination must stay single-bracketed"
+
+  # 5k. IPv4 host preserves exact unbracketed health URL, ssh, and scp behavior
+  : > "$root/logs/calls.log"
+  PATH="$root/bin:$PATH" \
+    MAJJJ_DEPLOY_CONFIG="$root/deploy.local" \
+    STUB_CURL_MODE="healthy" \
+    "$repo_root/scripts/deploy-partner.sh" --host 192.168.1.20 --user partner --bin "$root/bin-v1"
+  assert_file_contains "$root/logs/calls.log" "http://192.168.1.20:8789/api/health" "IPv4 host health URL must remain unbracketed"
+  assert_file_contains "$root/logs/calls.log" "ssh target=partner@192.168.1.20" "IPv4 ssh target must remain unbracketed"
+  assert_file_contains "$root/logs/calls.log" "dest=partner@192.168.1.20:" "IPv4 scp destination must remain unbracketed"
 }
 
 test_deploy_partner
@@ -557,5 +604,26 @@ resolve_python3() {
 python3_bin="$(resolve_python3)" || fail "no working python3 interpreter found for windows-tts unit tests"
 "$python3_bin" -B -m unittest discover -s "$repo_root/scripts/windows-tts/server" -p "test_*.py" -v
 "$python3_bin" -B -m unittest "$repo_root/scripts/windows-tts/test_voice_pack_pipeline.py" -v
+
+# 8. Documentation IPv6 privacy guardrail self-test
+"$repo_root/scripts/check-doc-privacy.sh" >/dev/null
+test_doc_privacy() {
+  local root
+  root="$(make_test_env doc-privacy)"
+  trap 'rm -rf "$root"' RETURN
+
+  cat > "$root/clean.md" <<'EOF'
+Allowed ranges: 2000::/3, fe80::/10, fc00::/7, 2001:db8:abcd:1234::10, ::1
+EOF
+  "$repo_root/scripts/check-doc-privacy.sh" "$root/clean.md" >/dev/null || fail "check-doc-privacy.sh must allow RFC 3849 and 2000::/3"
+
+  cat > "$root/leak.md" <<'EOF'
+Accidental public IPv6: http://[2001:4860:4860::8888]:8789
+EOF
+  if "$repo_root/scripts/check-doc-privacy.sh" "$root/leak.md" >/dev/null 2>&1; then
+    fail "check-doc-privacy.sh must reject non-RFC global unicast IPv6 literals"
+  fi
+}
+test_doc_privacy
 
 echo "test-dist-scripts: OK"

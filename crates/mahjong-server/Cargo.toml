@@ -8,6 +8,7 @@ license.workspace = true
 axum = { version = "0.8", features = ["ws"] }
 clap = { version = "4", features = ["derive", "env"] }
 futures-util = "0.3"
+getrandom = "0.3"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
@@ -20,14 +21,19 @@ rayon.workspace = true
 rust-embed.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+socket2 = "0.6"
 thiserror.workspace = true
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync", "time", "signal", "fs"] }
 ts-rs.workspace = true
 uuid = { version = "1", features = ["v4"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
 tokio-tungstenite = "0.26"
+tower = { version = "0.5", features = ["util"] }
 
 [lints]
 workspace = true
