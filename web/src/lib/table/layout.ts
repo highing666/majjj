@@ -82,6 +82,37 @@ export interface SeatBadgeLayout {
 export const MELD_TILE_GAP = 1;
 export const MELD_GROUP_GAP = 8;
 const OPP_HAND_GAP = 1;
+const TILE_ASPECT = 1.35;
+
+const LANDSCAPE_LAYOUT_PROFILE = {
+  wingRatioDesktop: 0.145,
+  wingMinDesktop: 176,
+  wingMaxDesktop: 214,
+  wingRatioCompact: 0.132,
+  wingMinCompact: 102,
+  wingMaxCompact: 128,
+  handTileCap: 88,
+  handHeightFraction: 0.138,
+  handGapDesktop: 3,
+  handGapCompact: 1,
+  drawnGapDesktop: 18,
+  drawnGapCompact: 8,
+  riverTileCap: 46,
+  meldTileCap: 38,
+  perLineVDesktop: 10,
+  perLineVCompact: 10,
+  perLineHDesktop: 6,
+  perLineHCompact: 5,
+  maxLinesHDesktop: 2,
+  maxLinesHCompact: 2,
+} as const;
+
+export interface TableLayoutOptions {
+  bottomMeldTileCount?: number;
+  bottomMeldGroupCount?: number;
+  viewerClosedCount?: number;
+  viewerHasDrawn?: boolean;
+}
 
 export interface TableLayout {
   width: number;
@@ -153,6 +184,9 @@ export interface TableLayout {
 }
 
 function clamp(value: number, min: number, max: number): number {
+  if (max < min) {
+    return min;
+  }
   return Math.min(max, Math.max(min, value));
 }
 
@@ -165,6 +199,36 @@ function createTrough(inner: Rect, padX: number, padY: number): Rect {
   };
 }
 
+function computeMeldSpan(
+  tileCount: number,
+  groupCount: number,
+  tileW: number,
+): number {
+  if (tileCount <= 0) {
+    return 0;
+  }
+  const groups = Math.max(1, groupCount);
+  return (
+    tileCount * tileW +
+    Math.max(0, tileCount - groups) * MELD_TILE_GAP +
+    Math.max(0, groups - 1) * MELD_GROUP_GAP
+  );
+}
+
+function computeViewerHandSpan(
+  closedCount: number,
+  hasDrawn: boolean,
+  tileW: number,
+  handGap: number,
+  drawnGap: number,
+): number {
+  return (
+    closedCount * tileW +
+    Math.max(0, closedCount - 1) * handGap +
+    (hasDrawn ? drawnGap + tileW : 0)
+  );
+}
+
 interface ViewerHandRectParams {
   centerX: number;
   height: number;
@@ -172,6 +236,8 @@ interface ViewerHandRectParams {
   handTileW: number;
   handGap: number;
   drawnGap: number;
+  closedCount?: number;
+  hasDrawn?: boolean;
 }
 
 function buildViewerHandRect(params: ViewerHandRectParams): {
@@ -179,10 +245,25 @@ function buildViewerHandRect(params: ViewerHandRectParams): {
   bottomHandY: number;
   viewerHandRect: Rect;
 } {
-  const { centerX, height, bottomPad, handTileW, handGap, drawnGap } = params;
-  const handTileH = Math.round(handTileW * 1.36);
+  const {
+    centerX,
+    height,
+    bottomPad,
+    handTileW,
+    handGap,
+    drawnGap,
+    closedCount = 13,
+    hasDrawn = true,
+  } = params;
+  const handTileH = Math.round(handTileW * TILE_ASPECT);
   const bottomHandY = height - bottomPad - handTileH;
-  const fullHandW = 13 * handTileW + 12 * handGap + drawnGap + handTileW;
+  const fullHandW = computeViewerHandSpan(
+    closedCount,
+    hasDrawn,
+    handTileW,
+    handGap,
+    drawnGap,
+  );
   return {
     handTileH,
     bottomHandY,
@@ -234,7 +315,7 @@ function buildRiverLayoutBoxes(params: RiverLayoutBoxesParams): {
     troughPadX,
     troughPadY,
   } = params;
-  const riverTileH = Math.round(riverTileW * 1.36);
+  const riverTileH = Math.round(riverTileW * TILE_ASPECT);
 
   const wideRiverW = perLineV * riverTileW + (perLineV - 1) * riverGap;
   const wideRiverH = maxLinesV * riverTileH + (maxLinesV - 1) * riverGap;
@@ -293,8 +374,8 @@ function computeTopSafeZones(
   topRightSafeRect: Rect;
   safeBottom: number;
 } {
-  const safeY = isShortLandscape ? 6 : 8;
-  const safeH = isShortLandscape ? 22 : 28;
+  const safeY = isShortLandscape ? 5 : 7;
+  const safeH = isShortLandscape ? 20 : 26;
   const leftW = clamp(Math.round(width * 0.16), 96, 176);
   const rightW = clamp(Math.round(width * 0.26), 144, 256);
   return {
@@ -312,26 +393,34 @@ function computeTopSafeZones(
 function computeLandscapeTheaterLayout(
   width: number,
   height: number,
+  options: TableLayoutOptions = {},
 ): TableLayout {
+  const profile = LANDSCAPE_LAYOUT_PROFILE;
   const isShortLandscape = height <= SHORT_LANDSCAPE_MAX_HEIGHT;
-  const margin = isShortLandscape ? 8 : width >= 1024 ? 14 : 10;
-  const colGap = isShortLandscape ? 6 : 10;
-  const bottomPad = isShortLandscape ? 6 : 12;
+  const margin = isShortLandscape ? 6 : width >= 1024 ? 12 : 8;
+  const colGap = isShortLandscape ? 5 : 8;
+  const bottomPad = isShortLandscape ? 4 : 10;
 
   const { topLeftSafeRect, topRightSafeRect, safeBottom } = computeTopSafeZones(
     width,
     margin,
     isShortLandscape,
   );
-  const wingTop = safeBottom + (isShortLandscape ? 4 : 8);
+  const wingTop = safeBottom + (isShortLandscape ? 3 : 6);
   const theaterH = height - wingTop - bottomPad;
 
   const wingW =
-    width >= 1000
-      ? clamp(Math.round(width * 0.19), 188, 256)
-      : width >= 700
-        ? clamp(Math.round(width * 0.19), 146, 188)
-        : clamp(Math.round(width * 0.18), 100, 132);
+    width >= 1024
+      ? clamp(
+          Math.round(width * profile.wingRatioDesktop),
+          profile.wingMinDesktop,
+          profile.wingMaxDesktop,
+        )
+      : clamp(
+          Math.round(width * profile.wingRatioCompact),
+          profile.wingMinCompact,
+          profile.wingMaxCompact,
+        );
   const centerW = width - margin * 2 - wingW * 2 - colGap * 2;
 
   const leftWing: Rect = { x: margin, y: wingTop, width: wingW, height: theaterH };
@@ -349,70 +438,202 @@ function computeLandscapeTheaterLayout(
   };
   const centerCx = Math.round(centerStage.x + centerW / 2);
 
-  // Viewer 13+1 hand maximized inside centerStage
-  const handGap = centerW >= 540 ? 3 : centerW >= 400 ? 2 : 1;
-  const drawnGap = centerW >= 540 ? 16 : centerW >= 400 ? 10 : 6;
-  const maxHandWByCenter = Math.floor(
-    (centerW - 8 - 12 * handGap - drawnGap) / 14,
+  // Compact bottom-left 自家 badge & reclaimed bottom corridor extending up to rightWing
+  const viewerCardH = isShortLandscape ? 22 : 32;
+  const bottomBadgeW = isShortLandscape
+    ? clamp(Math.round(wingW * 0.94), 90, 112)
+    : clamp(Math.round(wingW * 0.78), 126, 156);
+  const bottomBadge: Rect = {
+    x: leftWing.x,
+    y: height - bottomPad - viewerCardH,
+    width: bottomBadgeW,
+    height: viewerCardH,
+  };
+
+  const bottomSideGap = isShortLandscape ? 6 : 10;
+  const bottomCorridorLeft = bottomBadge.x + bottomBadge.width + bottomSideGap;
+  const bottomCorridorRight = rightWing.x - bottomSideGap;
+  const actualCorridorW = Math.max(120, bottomCorridorRight - bottomCorridorLeft);
+  const totalBottomCorridorW = Math.max(260, actualCorridorW);
+
+  const handGap = isShortLandscape
+    ? profile.handGapCompact
+    : width >= 1024
+      ? profile.handGapDesktop
+      : Math.max(1, profile.handGapDesktop - 1);
+  let drawnGap = isShortLandscape
+    ? profile.drawnGapCompact
+    : width >= 1024
+      ? profile.drawnGapDesktop
+      : Math.round(profile.drawnGapDesktop * 0.72);
+
+  const maxHandWByCorridor = Math.floor(
+    (totalBottomCorridorW - 12 * handGap - drawnGap) / 14,
   );
-  const handTileW = clamp(
-    Math.min(maxHandWByCenter, Math.round(height * 0.115)),
-    Math.min(20, maxHandWByCenter),
-    62,
+  const maxHandWByHeight = Math.round(
+    (height * (isShortLandscape ? 0.185 : profile.handHeightFraction)) /
+      TILE_ASPECT,
   );
-  const { handTileH, bottomHandY, viewerHandRect } = buildViewerHandRect({
-    centerX: centerCx,
-    height,
-    bottomPad,
+  let handTileW = clamp(
+    Math.min(
+      maxHandWByCorridor,
+      Math.max(maxHandWByHeight, Math.round(height * 0.095)),
+    ),
+    Math.min(24, maxHandWByCorridor),
+    profile.handTileCap,
+  );
+
+  // Meld tile sizing (capped at 38px on desktop, proportional floor on very narrow viewports)
+  const minMeldW = Math.min(
+    isShortLandscape ? 18 : 22,
+    Math.max(12, Math.round(handTileW * 0.6)),
+  );
+  let meldTileW = clamp(
+    Math.round(handTileW * 0.52),
+    minMeldW,
+    profile.meldTileCap,
+  );
+
+  // Dynamic bottom-right meld reservation & strict zero-overlap corridor fit for 0..4 melds
+  const meldTiles = Math.max(0, Math.floor(options.bottomMeldTileCount ?? 0));
+  const meldGroups =
+    meldTiles > 0 ? Math.max(1, Math.floor(options.bottomMeldGroupCount ?? 1)) : 0;
+  let meldSepGap = meldTiles > 0 ? (isShortLandscape ? 8 : 14) : 0;
+
+  const hasDrawn = options.viewerHasDrawn ?? true;
+  const effectiveClosed = clamp(
+    Math.floor(options.viewerClosedCount ?? 13),
+    hasDrawn ? 0 : 1,
+    13,
+  );
+  const handTileCount = effectiveClosed + (hasDrawn ? 1 : 0);
+
+  const calcMeldReserve = (mw: number, sep: number): number =>
+    meldTiles > 0 ? computeMeldSpan(meldTiles, meldGroups, mw) + sep : 0;
+
+  if (
+    computeViewerHandSpan(effectiveClosed, hasDrawn, handTileW, handGap, drawnGap) +
+      calcMeldReserve(meldTileW, meldSepGap) >
+    actualCorridorW
+  ) {
+    const fixedHandGaps =
+      Math.max(0, effectiveClosed - 1) * handGap + (hasDrawn ? drawnGap : 0);
+    const availForHand = actualCorridorW - calcMeldReserve(meldTileW, meldSepGap);
+    const maxFitHandW = Math.floor((availForHand - fixedHandGaps) / handTileCount);
+
+    if (maxFitHandW >= Math.min(18, handTileW)) {
+      handTileW = Math.max(10, Math.min(handTileW, maxFitHandW));
+    } else {
+      const meldFixedGaps =
+        meldTiles > 0
+          ? Math.max(0, meldTiles - meldGroups) * MELD_TILE_GAP +
+            Math.max(0, meldGroups - 1) * MELD_GROUP_GAP +
+            meldSepGap
+          : 0;
+      const budget = Math.max(
+        handTileCount * 10 + meldTiles * 8,
+        actualCorridorW - fixedHandGaps - meldFixedGaps,
+      );
+      const currentSum = handTileCount * handTileW + meldTiles * meldTileW;
+      if (currentSum > 0 && budget < currentSum) {
+        const scale = budget / currentSum;
+        meldTileW = Math.max(10, Math.floor(meldTileW * scale));
+        const remForHand =
+          actualCorridorW - calcMeldReserve(meldTileW, meldSepGap) - fixedHandGaps;
+        handTileW = Math.max(
+          10,
+          Math.min(handTileW, Math.floor(remForHand / handTileCount)),
+        );
+      }
+      if (
+        computeViewerHandSpan(effectiveClosed, hasDrawn, handTileW, handGap, drawnGap) +
+          calcMeldReserve(meldTileW, meldSepGap) >
+        actualCorridorW
+      ) {
+        drawnGap = Math.max(4, Math.min(drawnGap, 6));
+        meldSepGap = meldTiles > 0 ? Math.min(meldSepGap, 6) : 0;
+        const tightHandGaps =
+          Math.max(0, effectiveClosed - 1) * handGap + (hasDrawn ? drawnGap : 0);
+        const rem =
+          actualCorridorW - calcMeldReserve(meldTileW, meldSepGap) - tightHandGaps;
+        handTileW = Math.max(8, Math.min(handTileW, Math.floor(rem / handTileCount)));
+      }
+    }
+  }
+
+  const handTileH = Math.round(handTileW * TILE_ASPECT);
+  const bottomHandY = height - bottomPad - handTileH;
+  const meldTileH = Math.round(meldTileW * TILE_ASPECT);
+  const bottomMeldTotalW = calcMeldReserve(meldTileW, meldSepGap);
+  const bottomMeldAnchor: Point = {
+    x: rightWing.x - bottomSideGap,
+    y: height - bottomPad - meldTileH,
+  };
+
+  // Center viewer hand inside reclaimed bottom corridor (yielding right width to bottom melds)
+  const fullHandW = computeViewerHandSpan(
+    effectiveClosed,
+    hasDrawn,
     handTileW,
     handGap,
     drawnGap,
-  });
+  );
+  const availableHandRight = bottomCorridorRight - bottomMeldTotalW;
+  const idealX = Math.round(centerCx - fullHandW / 2);
+  const viewerHandX = clamp(
+    idealX,
+    bottomCorridorLeft,
+    Math.max(bottomCorridorLeft, availableHandRight - fullHandW),
+  );
+  const viewerHandRect: Rect = {
+    x: viewerHandX,
+    y: bottomHandY,
+    width: fullHandW,
+    height: handTileH,
+  };
+  const handCenterX = Math.round(viewerHandRect.x + viewerHandRect.width / 2);
 
-  // Turn bar / ActionBar dock centered directly above viewer hand
-  const turnBarH = isShortLandscape ? 20 : 28;
-  const turnBarGap = isShortLandscape ? 4 : 8;
+  // Turn bar / ActionBar dock follows viewer hand center while clamped strictly inside centerStage
+  const turnBarH = isShortLandscape ? 19 : 26;
+  const turnBarGap = isShortLandscape ? 4 : 7;
   const turnBarW = Math.min(
     centerW - 8,
-    clamp(Math.round(centerW * 0.62), 180, 420),
+    clamp(Math.round(centerW * 0.62), 180, 440),
+  );
+  const turnBarMinX = centerStage.x + 4;
+  const turnBarMaxX = Math.max(
+    turnBarMinX,
+    centerStage.x + centerStage.width - 4 - turnBarW,
   );
   const turnBarRect: Rect = {
-    x: Math.round(centerCx - turnBarW / 2),
+    x: clamp(Math.round(handCenterX - turnBarW / 2), turnBarMinX, turnBarMaxX),
     y: bottomHandY - turnBarGap - turnBarH,
     width: turnBarW,
     height: turnBarH,
   };
 
-  // Top theater band: 对门 inline badge + concealed hand + #63 top pocket
+  // Top theater band: 对门 inline badge + concealed hand + persona pocket
   const oppGap = OPP_HAND_GAP;
   const oppHandTileW = clamp(
-    Math.round(handTileW * 0.44),
+    Math.round(handTileW * 0.36),
     12,
     isShortLandscape ? 16 : 24,
   );
-  const oppHandTileH = Math.round(oppHandTileW * 1.36);
+  const oppHandTileH = Math.round(oppHandTileW * TILE_ASPECT);
   const topOppW = 14 * oppHandTileW + 13 * oppGap;
-  const topBandH = Math.max(oppHandTileH, isShortLandscape ? 22 : 28);
+  const topBandH = Math.max(oppHandTileH, isShortLandscape ? 20 : 28);
   const topBandGap = centerW >= 460 ? 8 : 4;
   const availTopFlank = Math.max(40, centerW - topOppW - topBandGap * 2);
-  const topBadgeW = clamp(
-    Math.round(availTopFlank * 0.52),
-    64,
-    160,
-  );
-  const topPocketW = clamp(
-    availTopFlank - topBadgeW,
-    40,
-    152,
-  );
+  const topBadgeW = clamp(Math.round(availTopFlank * 0.52), 64, 160);
+  const topPocketW = clamp(availTopFlank - topBadgeW, 44, 152);
   const topGroupW = topBadgeW + topBandGap + topOppW + topBandGap + topPocketW;
   const topGroupX = Math.round(centerCx - topGroupW / 2);
 
   const topBadge: Rect = {
     x: topGroupX,
-    y: wingTop + Math.round((topBandH - (isShortLandscape ? 20 : 26)) / 2),
+    y: wingTop + Math.round((topBandH - (isShortLandscape ? 19 : 26)) / 2),
     width: topBadgeW,
-    height: isShortLandscape ? 20 : 26,
+    height: isShortLandscape ? 19 : 26,
   };
   const topOppRect: Rect = {
     x: topBadge.x + topBadge.width + topBandGap,
@@ -427,13 +648,10 @@ function computeLandscapeTheaterLayout(
     height: topBadge.height,
   };
 
-  // Wing badges, #63 persona pockets, bottom-left 自家 dashboard, bottom-right melds
-  const meldTileW = clamp(Math.round(handTileW * 0.48), 14, 28);
-  const meldTileH = Math.round(meldTileW * 1.36);
-  const wingBadgeH = isShortLandscape ? 20 : 28;
-  const wingPocketH = isShortLandscape ? 20 : 38;
-  const wingInnerGap = isShortLandscape ? 3 : 6;
-  const viewerCardH = isShortLandscape ? 24 : 34;
+  // Wing badges & persona pockets (strictly preserved at top of wings, never occluded)
+  const wingBadgeH = isShortLandscape ? 19 : 26;
+  const wingPocketH = isShortLandscape ? 20 : 36;
+  const wingInnerGap = isShortLandscape ? 3 : 5;
 
   const leftBadge: Rect = {
     x: leftWing.x,
@@ -447,13 +665,6 @@ function computeLandscapeTheaterLayout(
     width: wingW,
     height: wingPocketH,
   };
-  const bottomBadge: Rect = {
-    x: leftWing.x,
-    y: height - bottomPad - viewerCardH,
-    width: wingW,
-    height: viewerCardH,
-  };
-
   const rightBadge: Rect = {
     x: rightWing.x,
     y: wingTop,
@@ -467,23 +678,24 @@ function computeLandscapeTheaterLayout(
     height: wingPocketH,
   };
 
-  const bottomMeldAnchor: Point = {
-    x: rightWing.x + rightWing.width - 2,
-    y: height - bottomPad - meldTileH,
-  };
-
+  // QuickEmoteBar sits at bottom of rightWing (64px compact / 84px desktop)
+  const quickEmoteReserveH =
+    isShortLandscape || width < 700 || wingW < 190 ? 68 : 88;
   const wingMidTop = leftPocket.y + leftPocket.height + wingInnerGap + 2;
   const leftMidBottom = bottomBadge.y - wingInnerGap - 2;
-  const rightMidBottom = bottomMeldAnchor.y - wingInnerGap - 2;
-  const wingMidH = Math.min(leftMidBottom, rightMidBottom) - wingMidTop;
+  const rightMidBottom = height - bottomPad - quickEmoteReserveH - wingInnerGap;
+  const wingMidH = Math.max(
+    96,
+    Math.min(leftMidBottom, rightMidBottom) - wingMidTop,
+  );
 
   const maxSideTileByH = Math.floor((wingMidH - 13 * oppGap) / 14);
   const oppSideTileW = clamp(
-    Math.min(Math.round(oppHandTileW * 0.85), maxSideTileByH),
-    11,
-    18,
+    Math.min(Math.round(oppHandTileW * 0.8), maxSideTileByH),
+    10,
+    17,
   );
-  const oppSideTileH = Math.round(oppSideTileW * 1.36);
+  const oppSideTileH = Math.round(oppSideTileW * TILE_ASPECT);
   const sideOppSpan = 14 * oppSideTileW + 13 * oppGap;
 
   const leftOppRect: Rect = {
@@ -499,18 +711,18 @@ function computeLandscapeTheaterLayout(
     height: sideOppSpan,
   };
 
-  // Dedicated top meld strip inside centerStage above riverTroughs.top prevents multi-meld overlap
-  const topMeldY = wingTop + topBandH + (isShortLandscape ? 4 : 10);
-  const topMeldBandH = meldTileH + (isShortLandscape ? 4 : 7);
+  // Dedicated top meld strip strictly taller than meldTileH so top melds never touch riverTroughs.top
+  const topMeldY = wingTop + topBandH + (isShortLandscape ? 3 : 7);
+  const topMeldBandH = meldTileH + (isShortLandscape ? 3 : 6);
 
-  // River sizing across centerStage (10/row) and wings (4/col)
+  // River sizing across centerStage (10/row) and wings (6/col desktop, 5/col compact, 2 cols)
   const playTop = topMeldY + topMeldBandH;
-  const playBottom = turnBarRect.y - (isShortLandscape ? 4 : 10);
-  const playH = playBottom - playTop;
+  const playBottom = turnBarRect.y - (isShortLandscape ? 3 : 7);
+  const playH = Math.max(60, playBottom - playTop);
   const cy = Math.round(playTop + playH / 2);
 
-  const sealH = isShortLandscape ? 22 : 30;
-  const sealW = clamp(Math.round(centerW * 0.26), 120, 184);
+  const sealH = isShortLandscape ? 20 : 28;
+  const sealW = clamp(Math.round(centerW * 0.24), 116, 178);
   const centerSeal: Rect = {
     x: Math.round(centerCx - sealW / 2),
     y: Math.round(cy - sealH / 2),
@@ -519,12 +731,22 @@ function computeLandscapeTheaterLayout(
   };
 
   const riverGap = isShortLandscape ? 1 : 2;
-  const sealGap = isShortLandscape ? 4 : 8;
-  const troughPadX = isShortLandscape ? 4 : 6;
-  const troughPadY = isShortLandscape ? 3 : 5;
+  const sealGap = isShortLandscape ? 3 : 6;
+  const troughPadX = isShortLandscape ? 3 : 5;
+  const troughPadY = isShortLandscape ? 2 : 4;
+  const sideMeldGap = isShortLandscape ? 4 : 6;
 
+  const perLineV = isShortLandscape
+    ? profile.perLineVCompact
+    : profile.perLineVDesktop;
   const maxLinesV = height >= 640 ? 3 : 2;
-  const maxLinesH = width >= 1000 ? 4 : 3;
+  const perLineH = isShortLandscape
+    ? profile.perLineHCompact
+    : profile.perLineHDesktop;
+  const maxLinesH = isShortLandscape
+    ? profile.maxLinesHCompact
+    : profile.maxLinesHDesktop;
+
   const availPerVerticalRiverH = Math.floor(
     (playH - sealH - sealGap * 2 - troughPadY * 4) / 2,
   );
@@ -532,27 +754,34 @@ function computeLandscapeTheaterLayout(
     (availPerVerticalRiverH - (maxLinesV - 1) * riverGap) / maxLinesV,
   );
   const maxRiverW_Center = Math.floor(
-    (centerW - troughPadX * 2 - 9 * riverGap - 8) / 10,
+    (centerW - troughPadX * 2 - (perLineV - 1) * riverGap - 8) / perLineV,
   );
 
-  const wingRiverGap = isShortLandscape ? 4 : 8;
+  const wingRiverGap = isShortLandscape ? 3 : 6;
   const availWingRiverW = wingW - oppSideTileH - wingRiverGap;
+  // Reserve vertical space in wings so side melds below side river troughs stay above QuickEmoteBar
+  const sampleSideMeldH = computeMeldSpan(3, 1, meldTileW);
+  const availSideRiverH = Math.max(
+    perLineH * 14,
+    wingMidH - troughPadY * 2 - sideMeldGap - sampleSideMeldH,
+  );
   const maxRiverW_WingV = Math.floor(
-    (wingMidH - troughPadY * 2 - 3 * riverGap) / 4,
+    (availSideRiverH - (perLineH - 1) * riverGap) / perLineH,
   );
   const maxRiverH_WingH = Math.floor(
     (availWingRiverW - troughPadX * 2 - (maxLinesH - 1) * riverGap) / maxLinesH,
   );
 
+  const rawMaxRiverW = Math.min(
+    Math.floor(maxRiverH_V / TILE_ASPECT),
+    maxRiverW_Center,
+    maxRiverW_WingV,
+    Math.floor(maxRiverH_WingH / TILE_ASPECT),
+  );
   const riverTileW = clamp(
-    Math.min(
-      Math.floor(maxRiverH_V / 1.36),
-      maxRiverW_Center,
-      maxRiverW_WingV,
-      Math.floor(maxRiverH_WingH / 1.36),
-    ),
-    14,
-    34,
+    rawMaxRiverW,
+    Math.min(15, Math.max(12, rawMaxRiverW)),
+    profile.riverTileCap,
   );
   const { riverTileH, rivers, riverTroughs, riverGrid } = buildRiverLayoutBoxes({
     centerX: centerCx,
@@ -562,9 +791,9 @@ function computeLandscapeTheaterLayout(
     sideRiverY: wingMidTop + troughPadY,
     riverTileW,
     riverGap,
-    perLineV: 10,
+    perLineV,
     maxLinesV,
-    perLineH: 4,
+    perLineH,
     maxLinesH,
     sealGap,
     troughPadX,
@@ -574,7 +803,8 @@ function computeLandscapeTheaterLayout(
   return {
     width,
     height,
-    cx: centerCx,
+    // Keep `cx` aligned with viewer hand center so hand-relative guides and slots stay aligned
+    cx: handCenterX,
     cy,
     margin,
     topMargin: wingTop,
@@ -625,16 +855,16 @@ function computeLandscapeTheaterLayout(
     melds: {
       bottom: bottomMeldAnchor,
       right: {
-        x: rightOppRect.x - 6,
-        y: riverTroughs.right.y + riverTroughs.right.height + 6,
+        x: rightOppRect.x - 5,
+        y: riverTroughs.right.y + riverTroughs.right.height + sideMeldGap,
       },
       top: {
         x: centerStage.x + centerStage.width - 2,
         y: topMeldY,
       },
       left: {
-        x: leftOppRect.x + leftOppRect.width + 6,
-        y: riverTroughs.left.y + riverTroughs.left.height + 6,
+        x: leftOppRect.x + leftOppRect.width + 5,
+        y: riverTroughs.left.y + riverTroughs.left.height + sideMeldGap,
       },
     },
   };
@@ -643,6 +873,7 @@ function computeLandscapeTheaterLayout(
 function computePortraitFallbackLayout(
   width: number,
   height: number,
+  options: TableLayoutOptions = {},
 ): TableLayout {
   const margin = 8;
   const bottomPad = 10;
@@ -668,7 +899,7 @@ function computePortraitFallbackLayout(
     height: topBadgeH,
   };
 
-  // Viewer 13+1 hand across full portrait width
+  // Viewer hand across full portrait width
   const handGap = 1;
   const drawnGap = 6;
   const maxHandW = Math.floor((width - margin * 2 - 12 * handGap - drawnGap) / 14);
@@ -677,6 +908,12 @@ function computePortraitFallbackLayout(
     Math.min(19, maxHandW),
     36,
   );
+  const hasDrawn = options.viewerHasDrawn ?? true;
+  const effectiveClosed = clamp(
+    Math.floor(options.viewerClosedCount ?? 13),
+    hasDrawn ? 0 : 1,
+    13,
+  );
   const { handTileH, bottomHandY, viewerHandRect } = buildViewerHandRect({
     centerX: width / 2,
     height,
@@ -684,6 +921,8 @@ function computePortraitFallbackLayout(
     handTileW,
     handGap,
     drawnGap,
+    closedCount: effectiveClosed,
+    hasDrawn,
   });
 
   const turnBarH = 24;
@@ -695,15 +934,40 @@ function computePortraitFallbackLayout(
     height: turnBarH,
   };
 
-  const meldTileW = clamp(Math.round(handTileW * 0.65), 14, 22);
-  const meldTileH = Math.round(meldTileW * 1.36);
+  let meldTileW = clamp(Math.round(handTileW * 0.65), 14, 22);
+  let bottomBadgeW = clamp(Math.round(width * 0.4), 116, 156);
+  const meldTiles = Math.max(0, Math.floor(options.bottomMeldTileCount ?? 0));
+  const meldGroups =
+    meldTiles > 0 ? Math.max(1, Math.floor(options.bottomMeldGroupCount ?? 1)) : 0;
+  if (meldTiles > 0) {
+    const portraitMeldGap = 6;
+    const rawSpan = computeMeldSpan(meldTiles, meldGroups, meldTileW);
+    const availForMeld = width - margin * 2 - bottomBadgeW - portraitMeldGap;
+    if (rawSpan > availForMeld) {
+      const minBadgeW = 88;
+      const maxMeldW = width - margin * 2 - minBadgeW - portraitMeldGap;
+      if (rawSpan <= maxMeldW) {
+        bottomBadgeW = width - margin * 2 - portraitMeldGap - rawSpan;
+      } else {
+        bottomBadgeW = minBadgeW;
+        const fixedMeldGaps =
+          Math.max(0, meldTiles - meldGroups) * MELD_TILE_GAP +
+          Math.max(0, meldGroups - 1) * MELD_GROUP_GAP;
+        meldTileW = Math.max(
+          8,
+          Math.floor((maxMeldW - fixedMeldGaps) / meldTiles),
+        );
+      }
+    }
+  }
+  const meldTileH = Math.round(meldTileW * TILE_ASPECT);
   const bottomRowH = Math.max(24, meldTileH);
   const bottomRowY = turnBarRect.y - 6 - bottomRowH;
 
   const bottomBadge: Rect = {
     x: margin,
     y: bottomRowY + Math.round((bottomRowH - 24) / 2),
-    width: clamp(Math.round(width * 0.4), 116, 156),
+    width: bottomBadgeW,
     height: 24,
   };
   const bottomMeldAnchor: Point = {
@@ -714,7 +978,7 @@ function computePortraitFallbackLayout(
   // Top opponent concealed row
   const oppGap = OPP_HAND_GAP;
   const oppHandTileW = clamp(Math.round(handTileW * 0.56), 13, 18);
-  const oppHandTileH = Math.round(oppHandTileW * 1.36);
+  const oppHandTileH = Math.round(oppHandTileW * TILE_ASPECT);
   const topOppW = 14 * oppHandTileW + 13 * oppGap;
   const topOppRect: Rect = {
     x: Math.round(width / 2 - topOppW / 2),
@@ -772,7 +1036,7 @@ function computePortraitFallbackLayout(
     11,
     15,
   );
-  const oppSideTileH = Math.round(oppSideTileW * 1.36);
+  const oppSideTileH = Math.round(oppSideTileW * TILE_ASPECT);
   const sideOppSpan = 14 * oppSideTileW + 13 * oppGap;
 
   const leftOppRect: Rect = {
@@ -820,8 +1084,8 @@ function computePortraitFallbackLayout(
   const riverTileW = clamp(
     Math.min(
       maxRiverW_Center,
-      Math.floor(maxRiverH_Wing / 1.36),
-      Math.floor(maxRiverH_Center / 1.36),
+      Math.floor(maxRiverH_Wing / TILE_ASPECT),
+      Math.floor(maxRiverH_Center / TILE_ASPECT),
     ),
     14,
     20,
@@ -913,19 +1177,20 @@ function computePortraitFallbackLayout(
 }
 
 /**
- * Computes responsive Scheme B three-column theater layout coordinates for Mac wide and iPhone viewports,
- * with graceful narrow-portrait fallback. Guarantees zero overlap and strict canvas containment.
+ * Computes responsive cross-column enlarged theater layout coordinates for Mac wide and iPhone viewports
+ * (ADR-0013), with graceful narrow-portrait fallback. Guarantees zero overlap and strict canvas containment.
  */
 export function computeTableLayout(
   rawWidth: number,
   rawHeight: number,
+  options: TableLayoutOptions = {},
 ): TableLayout {
   const width = Math.max(320, Math.round(rawWidth));
   const height = Math.max(280, Math.round(rawHeight));
   const isWide = width >= height || width >= NARROW_PORTRAIT_MAX_WIDTH;
   return isWide
-    ? computeLandscapeTheaterLayout(width, height)
-    : computePortraitFallbackLayout(width, height);
+    ? computeLandscapeTheaterLayout(width, height, options)
+    : computePortraitFallbackLayout(width, height, options);
 }
 
 /**
@@ -1091,7 +1356,7 @@ export function computeCenterSealEdgeBars(
 
 /**
  * Computes the center point and rotation of the `visibleIndex`-th slot in any seat's river
- * using that side's layout-declared `perLine` (10/row top & bottom, 4/col left & right on landscape).
+ * using that side's layout-declared `perLine` (10/row top & bottom, 6/col desktop or 5/col short landscape on left & right).
  */
 export function computeRiverSlotPoint(
   layout: TableLayout,
@@ -1208,7 +1473,8 @@ export function computeViewerHandSlots(
 
   const closedW = safeClosed * tw + Math.max(0, safeClosed - 1) * gap;
   const fullW = closedW + (hasDrawn ? drawnGap + tw : 0);
-  const startX = Math.round(layout.cx - fullW / 2);
+  const handCenter = layout.viewerHandRect.x + layout.viewerHandRect.width / 2;
+  const startX = Math.round(handCenter - fullW / 2);
 
   const closed: ViewerHandSlotGeometry[] = Array.from(
     { length: safeClosed },

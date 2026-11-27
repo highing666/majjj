@@ -312,7 +312,13 @@ export class TableSceneRenderer {
   }
 
   private notifyLayoutChange(layout: TableLayout): void {
-    const key = `${layout.width}x${layout.height}:${layout.turnBarRect.x},${layout.turnBarRect.y},${layout.turnBarRect.width},${layout.turnBarRect.height}`;
+    const key = [
+      `${layout.width}x${layout.height}`,
+      `${layout.handTileW}x${layout.riverTileW}x${layout.meldTileW}`,
+      `${layout.viewerHandRect.x},${layout.viewerHandRect.y},${layout.viewerHandRect.width}`,
+      `${layout.turnBarRect.x},${layout.turnBarRect.y},${layout.turnBarRect.width},${layout.turnBarRect.height}`,
+      `${layout.melds.bottom.x},${layout.melds.bottom.y},${layout.badges.bottom.width}`,
+    ].join(":");
     if (key === this.lastNotifiedLayoutKey) {
       return;
     }
@@ -331,7 +337,30 @@ export class TableSceneRenderer {
       return;
     }
 
-    const layout = computeTableLayout(this.width, this.height);
+    const relative = getRelativeSeats(view.viewer);
+    const seatByName = new Map<Seat, PublicSeatView>();
+    for (const s of view.seats) {
+      seatByName.set(s.seat, s);
+    }
+    const bottomSeatView = seatByName.get(relative.bottom);
+    const bottomMeldItems = bottomSeatView
+      ? buildMeldRenderItems(
+          bottomSeatView.melds,
+          params.pendingAddedKong,
+          relative.bottom,
+        )
+      : [];
+    const bottomMeldTileCount = bottomMeldItems.reduce(
+      (sum, item) => sum + item.tiles.length,
+      0,
+    );
+
+    const layout = computeTableLayout(this.width, this.height, {
+      bottomMeldTileCount,
+      bottomMeldGroupCount: bottomMeldItems.length,
+      viewerClosedCount: view.hand.closed_tiles.length,
+      viewerHasDrawn: view.hand.drawn_tile !== null,
+    });
     this.lastLayout = layout;
     this.notifyLayoutChange(layout);
 
@@ -342,11 +371,6 @@ export class TableSceneRenderer {
       reducedEffects: params.reducedEffects ?? false,
     });
 
-    const relative = getRelativeSeats(view.viewer);
-    const seatByName = new Map<Seat, PublicSeatView>();
-    for (const s of view.seats) {
-      seatByName.set(s.seat, s);
-    }
     const infoByName = new Map<Seat, SeatInfo>();
     for (const info of params.snapshot.seats) {
       infoByName.set(info.seat, info);

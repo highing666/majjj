@@ -208,7 +208,8 @@ describe("TableSceneRenderer standing vs laid bodies & Scheme B integration", ()
     expect(layout).not.toBeNull();
     expect(layout!.isWide).toBe(true);
     expect(layout!.riverGrid.bottom.perLine).toBe(10);
-    expect(layout!.riverGrid.left.perLine).toBe(4);
+    expect(layout!.riverGrid.left).toEqual({ perLine: 6, maxLines: 2 });
+    expect(layout!.riverGrid.right).toEqual({ perLine: 6, maxLines: 2 });
 
     const texts = collectTexts(stage).join(" | ");
     expect(texts).toContain("东2");
@@ -243,7 +244,12 @@ describe("TableSceneRenderer standing vs laid bodies & Scheme B integration", ()
     const layout = renderer.getLayout()!;
     const expectedSlot = computeBottomRiverSlotPoint(layout, 12);
     const expectedSameAsCompute = computeBottomRiverSlotPoint(
-      computeTableLayout(1280, 720),
+      computeTableLayout(1280, 720, {
+        bottomMeldTileCount: 7,
+        bottomMeldGroupCount: 2,
+        viewerClosedCount: 13,
+        viewerHasDrawn: true,
+      }),
       12,
     );
     expect(expectedSlot).toEqual(expectedSameAsCompute);
@@ -466,6 +472,114 @@ describe("TableSceneRenderer standing vs laid bodies & Scheme B integration", ()
     expect(hasStageWash()).toBe(false);
     expect(collectTexts(viewerHandLayer)).not.toContain("▼");
     expectFramelessAndFullBrightness(14);
+
+    renderer.destroy();
+    spy.atlas.destroy();
+  });
+
+  it("dynamically recomputes layout from viewer melds/hand count, notifies onLayoutChange, and keeps ghost slot aligned", () => {
+    const spy = createSpyTileAtlas();
+    const stage = new Container();
+    const onLayoutChange = vi.fn();
+    const renderer = new TableSceneRenderer(stage, spy.atlas, {
+      onDiscard: () => {},
+      onLayoutChange,
+    });
+
+    renderer.resize(1512, 982);
+    onLayoutChange.mockClear();
+
+    // 0 melds, 13+1 hand
+    const snap0 = makeSnapshot();
+    snap0.player_view!.seats[0].melds = [];
+    snap0.player_view!.hand.closed_tiles = [0, 1, 2, 3, 4, 9, 10, 11, 18, 19, 20, 27, 28];
+    snap0.player_view!.hand.drawn_tile = 5;
+    renderer.render({
+      snapshot: snap0,
+      pendingAddedKong: null,
+      inputLocked: false,
+    });
+    expect(onLayoutChange).toHaveBeenCalledTimes(0); // Matches initial 0-meld resize layout
+    const layout0 = renderer.getLayout()!;
+    expect(layout0.handTileW).toBe(74);
+    expect(layout0.viewerHandRect).toEqual(
+      computeTableLayout(1512, 982, {
+        bottomMeldTileCount: 0,
+        bottomMeldGroupCount: 0,
+        viewerClosedCount: 13,
+        viewerHasDrawn: true,
+      }).viewerHandRect,
+    );
+
+    // 2 melds (Pon 3 + ConcealedKong 4 = 7 tiles), 7+1 hand at SAME viewport size
+    const snap2 = makeSnapshot();
+    snap2.player_view!.hand.closed_tiles = [0, 1, 2, 9, 10, 11, 18];
+    snap2.player_view!.hand.drawn_tile = 5;
+    renderer.render({
+      snapshot: snap2,
+      pendingAddedKong: null,
+      inputLocked: false,
+    });
+    expect(onLayoutChange).toHaveBeenCalledTimes(1);
+    const layout2 = renderer.getLayout()!;
+    expect(layout2).toBe(onLayoutChange.mock.calls[0][0]);
+    expect(layout2.viewerHandRect).toEqual(
+      computeTableLayout(1512, 982, {
+        bottomMeldTileCount: 7,
+        bottomMeldGroupCount: 2,
+        viewerClosedCount: 7,
+        viewerHasDrawn: true,
+      }).viewerHandRect,
+    );
+    expect(layout2.viewerHandRect.width).toBeLessThan(layout0.viewerHandRect.width);
+
+    // Re-rendering identical state does not fire redundant onLayoutChange
+    renderer.render({
+      snapshot: snap2,
+      pendingAddedKong: null,
+      inputLocked: false,
+    });
+    expect(onLayoutChange).toHaveBeenCalledTimes(1);
+
+    // 4 kongs (16 tiles), 1+1 hand at SAME viewport size
+    const snap4 = makeSnapshot();
+    snap4.player_view!.seats[0].melds = [
+      { ExposedKong: { tile: 27, from_seat: "South", seq: 20 } },
+      { ConcealedKong: { tile: 31, seq: 21 } },
+      { ExposedKong: { tile: 28, from_seat: "West", seq: 22 } },
+      { AddedKong: { tile: 29, from_seat: "North", seq: 23 } },
+    ];
+    snap4.player_view!.hand.closed_tiles = [0];
+    snap4.player_view!.hand.drawn_tile = 5;
+    renderer.render({
+      snapshot: snap4,
+      pendingAddedKong: null,
+      inputLocked: false,
+    });
+    expect(onLayoutChange).toHaveBeenCalledTimes(2);
+    const layout4 = renderer.getLayout()!;
+    expect(layout4).toBe(onLayoutChange.mock.calls[1][0]);
+    expect(layout4.viewerHandRect).toEqual(
+      computeTableLayout(1512, 982, {
+        bottomMeldTileCount: 16,
+        bottomMeldGroupCount: 4,
+        viewerClosedCount: 1,
+        viewerHasDrawn: true,
+      }).viewerHandRect,
+    );
+
+    // Discard ghost landing remains aligned to bottom 10-per-row river slot #12
+    const expectedGhost = computeBottomRiverSlotPoint(layout4, 12);
+    expect(expectedGhost).toEqual(computeBottomRiverSlotPoint(layout0, 12));
+    const viewerHandLayer = stage.children[7] as Container;
+    const drawnSprite = viewerHandLayer.children.find(
+      (c) => "texture" in c && c.texture === spy.standingTextures.get(5),
+    );
+    expect(drawnSprite).toBeDefined();
+    drawnSprite!.emit("pointerover", makePointerEvent());
+    const ghostSprite = renderer.ghostLayer.children[renderer.ghostLayer.children.length - 1];
+    expect(ghostSprite.x).toBeCloseTo(expectedGhost.x, 1);
+    expect(ghostSprite.y).toBeCloseTo(expectedGhost.y, 1);
 
     renderer.destroy();
     spy.atlas.destroy();
