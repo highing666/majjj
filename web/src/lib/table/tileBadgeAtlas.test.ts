@@ -11,26 +11,33 @@ const ALL_SIZES: TileBadgeSize[] = ["xs", "sm", "md"];
 
 describe("projectTileBadgeAtlas", () => {
   it("matches expected badge proportions and worked CSS crop values for tile_laid_0 (一万)", () => {
-    // Independent worked example from tiles@2x.json:
-    // tile_laid_0.frame = { x: 580, y: 580, w: 136, h: 184 }, meta.size = { w: 1440, h: 1536 }
-    // At xs (22x30): scaleX = 22/136, scaleY = 30/184
+    // Independent worked example from 1920x2048 tiles@2x.json (10x8 grid, 192x256 cell, pad 4, 184x248 frame):
+    // tile_laid_0 is slot 34 (col=4, row=3) -> frame = { x: 772, y: 772, w: 184, h: 248 }
+    // At xs (22x30): scaleX = 22/184, scaleY = 30/248
     const xs = projectTileBadgeAtlas(0, true, "xs");
     expect(xs.width).toBe(22);
     expect(xs.height).toBe(30);
     expect(xs.frameKey).toBe("tile_laid_0");
     expect(xs.ariaLabel).toBe("一万");
-    expect(xs.backgroundWidth).toBeCloseTo((1440 * 22) / 136, 4);
-    expect(xs.backgroundHeight).toBeCloseTo((1536 * 30) / 184, 4);
-    expect(xs.offsetX).toBeCloseTo((580 * 22) / 136, 4);
-    expect(xs.offsetY).toBeCloseTo((580 * 30) / 184, 4);
+    expect(xs.atlasWidth).toBe(1920);
+    expect(xs.atlasHeight).toBe(2048);
+    expect(xs.frame).toEqual({ x: 772, y: 772, w: 184, h: 248 });
+    expect(xs.backgroundWidth).toBeCloseTo((1920 * 22) / 184, 4);
+    expect(xs.backgroundHeight).toBeCloseTo((2048 * 30) / 248, 4);
+    expect(xs.offsetX).toBeCloseTo((772 * 22) / 184, 4);
+    expect(xs.offsetY).toBeCloseTo((772 * 30) / 248, 4);
 
     const sm = projectTileBadgeAtlas(0, true, "sm");
-    expect(sm.width).toBe(26);
-    expect(sm.height).toBe(35);
+    expect(sm.width).toBe(30);
+    expect(sm.height).toBe(41);
+    expect(sm.backgroundWidth).toBeCloseTo((1920 * 30) / 184, 4);
+    expect(sm.backgroundHeight).toBeCloseTo((2048 * 41) / 248, 4);
 
     const md = projectTileBadgeAtlas(0, true, "md");
-    expect(md.width).toBe(32);
-    expect(md.height).toBe(43);
+    expect(md.width).toBe(38);
+    expect(md.height).toBe(52);
+    expect(md.backgroundWidth).toBeCloseTo((1920 * 38) / 184, 4);
+    expect(md.backgroundHeight).toBeCloseTo((2048 * 52) / 248, 4);
   });
 
   it("projects all 34 face-up tiles across xs/sm/md to in-bounds tile_laid frames with CSS sprite metrics and glossary labels", () => {

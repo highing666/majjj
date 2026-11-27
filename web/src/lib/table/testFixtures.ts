@@ -6,6 +6,7 @@ import type { Seat } from "../protocol/generated/Seat";
 import type { SeatInfo } from "../protocol/generated/SeatInfo";
 import type { TableSnapshot } from "../protocol/generated/TableSnapshot";
 import type { Tile } from "../protocol/generated/Tile";
+import { ATLAS_GRID } from "./atlasConstants";
 import type { TileAtlas, TileBodyKind } from "./tileAtlas";
 
 export function makeLobbyConfig(
@@ -218,8 +219,8 @@ export function createSpyTileAtlas() {
   }
 
   const atlas: TileAtlas = {
-    width: 1440,
-    height: 1536,
+    width: ATLAS_GRID.cols * ATLAS_GRID.cellW,
+    height: ATLAS_GRID.rows * ATLAS_GRID.cellH,
     backTexture,
     laidBackTexture,
     shadowTexture,

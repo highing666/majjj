@@ -1,9 +1,40 @@
-<svg viewBox="0 0 100 136" xmlns="http://www.w3.org/2000/svg">
-  <rect x="2.5" y="1.5" width="95" height="133" rx="11" fill="#186258" stroke="#091D1B" stroke-width="1.8"/>
-  <rect x="2.5" y="7.5" width="95" height="125" rx="10.5" fill="#F6EFE0" stroke="#1C1917" stroke-width="2.6"/>
-  <rect x="4" y="8.3" width="92" height="5.5" rx="3" fill="#FFFDF8" opacity="0.88"/>
-  <rect x="4" y="124.5" width="92" height="7.5" rx="3" fill="#E2D4B7"/>
-  <g transform="translate(0 8.50) scale(1 0.9308)">
-    <text x="50" y="89" text-anchor="middle" font-family="'Kaiti SC','STKaiti','BiauKai','Songti SC',serif" font-weight="900" font-size="63" fill="#1C1917">南</text>
+<svg viewBox="0 0 100 135" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="ivoryFaceGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FFFEFA"/>
+      <stop offset="75%" stop-color="#F8F3E8"/>
+      <stop offset="100%" stop-color="#ECE2CE"/>
+    </linearGradient>
+    <linearGradient id="ivoryWallGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#E7DBC5"/>
+      <stop offset="100%" stop-color="#D3C2A3"/>
+    </linearGradient>
+    <linearGradient id="jadeStandingGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1EA67A"/>
+      <stop offset="18%" stop-color="#0E7A56"/>
+      <stop offset="100%" stop-color="#074B34"/>
+    </linearGradient>
+    <linearGradient id="jadeBackFaceGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1EA67A"/>
+      <stop offset="50%" stop-color="#0E7A56"/>
+      <stop offset="100%" stop-color="#074B34"/>
+    </linearGradient>
+    <linearGradient id="jadeLipGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0E7A56"/>
+      <stop offset="60%" stop-color="#074B34"/>
+      <stop offset="100%" stop-color="#04291D"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="1.5" width="96" height="132" rx="11.5" fill="url(#jadeStandingGrad)"/>
+  <rect x="6" y="2.2" width="88" height="3.0" rx="1.5" fill="rgba(216, 255, 240, 0.26)"/>
+  <rect x="2" y="11.4" width="96" height="6" fill="rgba(4, 43, 30, 0.34)"/>
+  <rect x="2" y="14" width="96" height="119.5" rx="11.0" fill="url(#ivoryFaceGrad)" stroke="rgba(82, 69, 53, 0.28)" stroke-width="0.95"/>
+  <rect x="4" y="14" width="92" height="3.2" rx="1.6" fill="rgba(255, 255, 255, 0.88)"/>
+  <rect x="2" y="1.5" width="96" height="132" rx="11.5" fill="none" stroke="rgba(5, 51, 36, 0.65)" stroke-width="0.85"/>
+  <g transform="translate(6.20 24.69) scale(0.8760)">
+    <g transform="translate(50 56) scale(1.02 1.04)">
+    <text x="0.7" y="1.05" text-anchor="middle" dominant-baseline="central" font-family="'WeibeiTC-Bold','STKaitiTC-Black','Kaiti SC','STKaiti','Songti SC',serif" font-weight="900" font-size="74" fill="rgba(255, 255, 255, 0.78)" stroke="rgba(255, 255, 255, 0.78)" stroke-width="2.37" stroke-linejoin="round">南</text>
+    <text x="0" y="0" text-anchor="middle" dominant-baseline="central" font-family="'WeibeiTC-Bold','STKaitiTC-Black','Kaiti SC','STKaiti','Songti SC',serif" font-weight="900" font-size="74" fill="#16181D" stroke="#16181D" stroke-width="2.37" stroke-linejoin="round">南</text>
+  </g>
   </g>
 </svg>

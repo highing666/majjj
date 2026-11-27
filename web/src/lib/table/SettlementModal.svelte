@@ -140,7 +140,7 @@
         <div class="win-summary-row">
           <div class="win-tile-chip">
             <span>胡牌：</span>
-            <TileBadge tile={win.winning_tile} size="sm" highlighted />
+            <TileBadge tile={win.winning_tile} size="md" highlighted />
             <strong>{getTileLabel(win.winning_tile)}</strong>
           </div>
           {#if win.discarder !== null}
@@ -234,7 +234,7 @@
                   {#each melds as meld, mIdx (`${hand.seat}:m:${mIdx}`)}
                     <div class="meld-group">
                       {#each meld.tiles as slot, tIdx (`${hand.seat}:m:${mIdx}:${tIdx}`)}
-                        <TileBadge tile={slot.tile} faceUp={slot.faceUp} size="xs" />
+                        <TileBadge tile={slot.tile} faceUp={slot.faceUp} size="sm" />
                       {/each}
                     </div>
                   {/each}
@@ -242,11 +242,11 @@
               {/if}
               <div class="hand-cluster">
                 {#each hand.closed_tiles as tile, tIdx (`${hand.seat}:c:${tIdx}:${tile}`)}
-                  <TileBadge {tile} size="xs" />
+                  <TileBadge {tile} size="sm" />
                 {/each}
                 {#if hand.drawn_tile !== null}
                   <span class="drawn-sep"></span>
-                  <TileBadge tile={hand.drawn_tile} size="xs" highlighted />
+                  <TileBadge tile={hand.drawn_tile} size="sm" highlighted />
                 {/if}
               </div>
             </div>

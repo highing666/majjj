@@ -1,63 +1,190 @@
-<svg viewBox="0 0 100 136" xmlns="http://www.w3.org/2000/svg">
-  
-  <rect x="2.5" y="2.5" width="95" height="131" rx="10.5" fill="#F6EFE0" stroke="#1C1917" stroke-width="2.6"/>
-  <rect x="4" y="3.3" width="92" height="5.5" rx="3" fill="#FFFDF8" opacity="0.88"/>
-  <rect x="4" y="126.5" width="92" height="6.5" rx="3" fill="#E2D4B7"/>
-  <g transform="translate(0 2.50) scale(1 0.9846)">
-    <g transform="rotate(0 24 27)">
-    <rect x="19.72" y="14.50" width="8.57" height="25.00" rx="3.2" fill="#137449" stroke="rgba(18, 22, 24, 0.72)" stroke-width="1.1"/>
-    <rect x="18.08" y="12.00" width="11.83" height="4.6" rx="2.3" fill="#137449" stroke="rgba(18, 22, 24, 0.72)" stroke-width="1.1"/>
-    <rect x="18.08" y="24.70" width="11.83" height="4.6" rx="2.3" fill="#137449" stroke="rgba(18, 22, 24, 0.72)" stroke-width="1.1"/>
-    <rect x="18.08" y="37.40" width="11.83" height="4.6" rx="2.3" fill="#137449" stroke="rgba(18, 22, 24, 0.72)" stroke-width="1.1"/>
-    <line x1="22.98" y1="18.00" x2="22.98" y2="36.00" stroke="rgba(255, 252, 240, 0.7)" stroke-width="1.4" stroke-linecap="round"/>
-  </g><g transform="rotate(0 50 27)">
-    <rect x="45.72" y="14.50" width="8.57" height="25.00" rx="3.2" fill="#B92822" stroke="rgba(18, 22, 24, 0.72)" stroke-width="1.1"/>
-    <rect x="44.08" y="12.00" width="11.83" height="4.6" rx="2.3" fill="#B92822" stroke="rgba(18, 22, 24, 0.72)" stroke-width="1.1"/>
-    <rect x="44.08" y="24.70" width="11.83" height="4.6" rx="2.3" fill="#B92822" stroke="rgba(18, 22, 24, 0.72)" stroke-width="1.1"/>
-    <rect x="44.08" y="37.40" width="11.83" height="4.6" rx="2.3" fill="#B92822" stroke="rgba(18, 22, 24, 0.72)" stroke-width="1.1"/>
-    <line x1="48.98" y1="18.00" x2="48.98" y2="36.00" stroke="rgba(255, 252, 240, 0.7)" stroke-width="1.4" stroke-linecap="round"/>
-  </g><g transform="rotate(0 76 27)">
-    <rect x="71.72" y="14.50" width="8.57" height="25.00" rx="3.2" fill="#137449" stroke="rgba(18, 22, 24, 0.72)" stroke-width="1.1"/>
-    <rect x="70.08" y="12.00" width="11.83" height="4.6" rx="2.3" fill="#137449" stroke="rgba(18, 22, 24, 0.72)" stroke-width="1.1"/>
-    <rect x="70.08" y="24.70" width="11.83" height="4.6" rx="2.3" fill="#137449" stroke="rgba(18, 22, 24, 0.72)" stroke-width="1.1"/>
-    <rect x="70.08" y="37.40" width="11.83" height="4.6" rx="2.3" fill="#137449" stroke="rgba(18, 22, 24, 0.72)" stroke-width="1.1"/>
-    <line x1="74.98" y1="18.00" x2="74.98" y2="36.00" stroke="rgba(255, 252, 240, 0.7)" stroke-width="1.4" stroke-linecap="round"/>
-  </g><g transform="rotate(0 24 65)">
-    <rect x="19.72" y="52.50" width="8.57" height="25.00" rx="3.2" fill="#137449" stroke="rgba(18, 22, 24, 0.72)" stroke-width="1.1"/>
-    <rect x="18.08" y="50.00" width="11.83" height="4.6" rx="2.3" fill="#137449" stroke="rgba(18, 22, 24, 0.72)" stroke-width="1.1"/>
-    <rect x="18.08" y="62.70" width="11.83" height="4.6" rx="2.3" fill="#137449" stroke="rgba(18, 22, 24, 0.72)" stroke-width="1.1"/>
-    <rect x="18.08" y="75.40" width="11.83" height="4.6" rx="2.3" fill="#137449" stroke="rgba(18, 22, 24, 0.72)" stroke-width="1.1"/>
-    <line x1="22.98" y1="56.00" x2="22.98" y2="74.00" stroke="rgba(255, 252, 240, 0.7)" stroke-width="1.4" stroke-linecap="round"/>
-  </g><g transform="rotate(0 50 65)">
-    <rect x="45.72" y="52.50" width="8.57" height="25.00" rx="3.2" fill="#B92822" stroke="rgba(18, 22, 24, 0.72)" stroke-width="1.1"/>
-    <rect x="44.08" y="50.00" width="11.83" height="4.6" rx="2.3" fill="#B92822" stroke="rgba(18, 22, 24, 0.72)" stroke-width="1.1"/>
-    <rect x="44.08" y="62.70" width="11.83" height="4.6" rx="2.3" fill="#B92822" stroke="rgba(18, 22, 24, 0.72)" stroke-width="1.1"/>
-    <rect x="44.08" y="75.40" width="11.83" height="4.6" rx="2.3" fill="#B92822" stroke="rgba(18, 22, 24, 0.72)" stroke-width="1.1"/>
-    <line x1="48.98" y1="56.00" x2="48.98" y2="74.00" stroke="rgba(255, 252, 240, 0.7)" stroke-width="1.4" stroke-linecap="round"/>
-  </g><g transform="rotate(0 76 65)">
-    <rect x="71.72" y="52.50" width="8.57" height="25.00" rx="3.2" fill="#137449" stroke="rgba(18, 22, 24, 0.72)" stroke-width="1.1"/>
-    <rect x="70.08" y="50.00" width="11.83" height="4.6" rx="2.3" fill="#137449" stroke="rgba(18, 22, 24, 0.72)" stroke-width="1.1"/>
-    <rect x="70.08" y="62.70" width="11.83" height="4.6" rx="2.3" fill="#137449" stroke="rgba(18, 22, 24, 0.72)" stroke-width="1.1"/>
-    <rect x="70.08" y="75.40" width="11.83" height="4.6" rx="2.3" fill="#137449" stroke="rgba(18, 22, 24, 0.72)" stroke-width="1.1"/>
-    <line x1="74.98" y1="56.00" x2="74.98" y2="74.00" stroke="rgba(255, 252, 240, 0.7)" stroke-width="1.4" stroke-linecap="round"/>
-  </g><g transform="rotate(0 24 103)">
-    <rect x="19.72" y="90.50" width="8.57" height="25.00" rx="3.2" fill="#137449" stroke="rgba(18, 22, 24, 0.72)" stroke-width="1.1"/>
-    <rect x="18.08" y="88.00" width="11.83" height="4.6" rx="2.3" fill="#137449" stroke="rgba(18, 22, 24, 0.72)" stroke-width="1.1"/>
-    <rect x="18.08" y="100.70" width="11.83" height="4.6" rx="2.3" fill="#137449" stroke="rgba(18, 22, 24, 0.72)" stroke-width="1.1"/>
-    <rect x="18.08" y="113.40" width="11.83" height="4.6" rx="2.3" fill="#137449" stroke="rgba(18, 22, 24, 0.72)" stroke-width="1.1"/>
-    <line x1="22.98" y1="94.00" x2="22.98" y2="112.00" stroke="rgba(255, 252, 240, 0.7)" stroke-width="1.4" stroke-linecap="round"/>
-  </g><g transform="rotate(0 50 103)">
-    <rect x="45.72" y="90.50" width="8.57" height="25.00" rx="3.2" fill="#B92822" stroke="rgba(18, 22, 24, 0.72)" stroke-width="1.1"/>
-    <rect x="44.08" y="88.00" width="11.83" height="4.6" rx="2.3" fill="#B92822" stroke="rgba(18, 22, 24, 0.72)" stroke-width="1.1"/>
-    <rect x="44.08" y="100.70" width="11.83" height="4.6" rx="2.3" fill="#B92822" stroke="rgba(18, 22, 24, 0.72)" stroke-width="1.1"/>
-    <rect x="44.08" y="113.40" width="11.83" height="4.6" rx="2.3" fill="#B92822" stroke="rgba(18, 22, 24, 0.72)" stroke-width="1.1"/>
-    <line x1="48.98" y1="94.00" x2="48.98" y2="112.00" stroke="rgba(255, 252, 240, 0.7)" stroke-width="1.4" stroke-linecap="round"/>
-  </g><g transform="rotate(0 76 103)">
-    <rect x="71.72" y="90.50" width="8.57" height="25.00" rx="3.2" fill="#137449" stroke="rgba(18, 22, 24, 0.72)" stroke-width="1.1"/>
-    <rect x="70.08" y="88.00" width="11.83" height="4.6" rx="2.3" fill="#137449" stroke="rgba(18, 22, 24, 0.72)" stroke-width="1.1"/>
-    <rect x="70.08" y="100.70" width="11.83" height="4.6" rx="2.3" fill="#137449" stroke="rgba(18, 22, 24, 0.72)" stroke-width="1.1"/>
-    <rect x="70.08" y="113.40" width="11.83" height="4.6" rx="2.3" fill="#137449" stroke="rgba(18, 22, 24, 0.72)" stroke-width="1.1"/>
-    <line x1="74.98" y1="94.00" x2="74.98" y2="112.00" stroke="rgba(255, 252, 240, 0.7)" stroke-width="1.4" stroke-linecap="round"/>
+<svg viewBox="0 0 100 135" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="ivoryFaceGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FFFEFA"/>
+      <stop offset="75%" stop-color="#F8F3E8"/>
+      <stop offset="100%" stop-color="#ECE2CE"/>
+    </linearGradient>
+    <linearGradient id="ivoryWallGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#E7DBC5"/>
+      <stop offset="100%" stop-color="#D3C2A3"/>
+    </linearGradient>
+    <linearGradient id="jadeStandingGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1EA67A"/>
+      <stop offset="18%" stop-color="#0E7A56"/>
+      <stop offset="100%" stop-color="#074B34"/>
+    </linearGradient>
+    <linearGradient id="jadeBackFaceGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1EA67A"/>
+      <stop offset="50%" stop-color="#0E7A56"/>
+      <stop offset="100%" stop-color="#074B34"/>
+    </linearGradient>
+    <linearGradient id="jadeLipGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0E7A56"/>
+      <stop offset="60%" stop-color="#074B34"/>
+      <stop offset="100%" stop-color="#04291D"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="96" height="131.5" rx="11.5" fill="url(#jadeLipGrad)"/>
+  <rect x="2" y="2" width="96" height="122.0" rx="11.3" fill="url(#ivoryWallGrad)"/>
+  <rect x="2" y="2" width="96" height="111.5" rx="10.9" fill="url(#ivoryFaceGrad)" stroke="rgba(82, 69, 53, 0.28)" stroke-width="0.75"/>
+  <rect x="6" y="111.2" width="88" height="1.8" rx="0.9" fill="rgba(255, 255, 255, 0.76)"/>
+  <rect x="6" y="2" width="88" height="2.2" rx="1.1" fill="rgba(255, 255, 255, 0.88)"/>
+  <rect x="2" y="2" width="96" height="131.5" rx="11.5" fill="none" stroke="rgba(11, 43, 33, 0.36)" stroke-width="0.85"/>
+  <g transform="translate(6.20 8.69) scale(0.8760)">
+    <g transform="translate(22 21) rotate(0)">
+    <g transform="translate(0.7 0.95)"><g fill="rgba(255, 255, 255, 0.75)">
+    <path d="M -4.66 -12.80 Q -3.27 -7.50 -4.66 0 Q -3.27 7.50 -4.66 12.80 L 4.66 12.80 Q 3.27 7.50 4.66 0 Q 3.27 -7.50 4.66 -12.80 Z"/>
+    <rect x="-7.43" y="-15.00" width="14.87" height="4.35" rx="2.09"/>
+    <rect x="-8.03" y="-2.26" width="16.06" height="4.52" rx="2.09"/>
+    <rect x="-7.43" y="10.65" width="14.87" height="4.35" rx="2.09"/>
+  </g></g>
+    <g fill="#0C7D49">
+    <path d="M -4.66 -12.80 Q -3.27 -7.50 -4.66 0 Q -3.27 7.50 -4.66 12.80 L 4.66 12.80 Q 3.27 7.50 4.66 0 Q 3.27 -7.50 4.66 -12.80 Z"/>
+    <rect x="-7.43" y="-15.00" width="14.87" height="4.35" rx="2.09"/>
+    <rect x="-8.03" y="-2.26" width="16.06" height="4.52" rx="2.09"/>
+    <rect x="-7.43" y="10.65" width="14.87" height="4.35" rx="2.09"/>
+  </g>
+    <path d="M 0 -11.30 L 0 -2.83 M 0 2.83 L 0 11.30" stroke="#FFFEFA" stroke-width="2.02" stroke-linecap="round"/>
+    <path d="M -4.16 0 L 4.16 0" stroke="#FFFEFA" stroke-width="1.51" stroke-linecap="round"/>
+    <circle cx="0" cy="-12.82" r="1.07" fill="#FFFEFA"/>
+    <circle cx="0" cy="12.82" r="1.07" fill="#FFFEFA"/>
+  </g><g transform="translate(50 21) rotate(0)">
+    <g transform="translate(0.7 0.95)"><g fill="rgba(255, 255, 255, 0.75)">
+    <path d="M -4.66 -12.80 Q -3.27 -7.50 -4.66 0 Q -3.27 7.50 -4.66 12.80 L 4.66 12.80 Q 3.27 7.50 4.66 0 Q 3.27 -7.50 4.66 -12.80 Z"/>
+    <rect x="-7.43" y="-15.00" width="14.87" height="4.35" rx="2.09"/>
+    <rect x="-8.03" y="-2.26" width="16.06" height="4.52" rx="2.09"/>
+    <rect x="-7.43" y="10.65" width="14.87" height="4.35" rx="2.09"/>
+  </g></g>
+    <g fill="#C81D1D">
+    <path d="M -4.66 -12.80 Q -3.27 -7.50 -4.66 0 Q -3.27 7.50 -4.66 12.80 L 4.66 12.80 Q 3.27 7.50 4.66 0 Q 3.27 -7.50 4.66 -12.80 Z"/>
+    <rect x="-7.43" y="-15.00" width="14.87" height="4.35" rx="2.09"/>
+    <rect x="-8.03" y="-2.26" width="16.06" height="4.52" rx="2.09"/>
+    <rect x="-7.43" y="10.65" width="14.87" height="4.35" rx="2.09"/>
+  </g>
+    <path d="M 0 -11.30 L 0 -2.83 M 0 2.83 L 0 11.30" stroke="#FFFEFA" stroke-width="2.02" stroke-linecap="round"/>
+    <path d="M -4.16 0 L 4.16 0" stroke="#FFFEFA" stroke-width="1.51" stroke-linecap="round"/>
+    <circle cx="0" cy="-12.82" r="1.07" fill="#FFFEFA"/>
+    <circle cx="0" cy="12.82" r="1.07" fill="#FFFEFA"/>
+  </g><g transform="translate(78 21) rotate(0)">
+    <g transform="translate(0.7 0.95)"><g fill="rgba(255, 255, 255, 0.75)">
+    <path d="M -4.66 -12.80 Q -3.27 -7.50 -4.66 0 Q -3.27 7.50 -4.66 12.80 L 4.66 12.80 Q 3.27 7.50 4.66 0 Q 3.27 -7.50 4.66 -12.80 Z"/>
+    <rect x="-7.43" y="-15.00" width="14.87" height="4.35" rx="2.09"/>
+    <rect x="-8.03" y="-2.26" width="16.06" height="4.52" rx="2.09"/>
+    <rect x="-7.43" y="10.65" width="14.87" height="4.35" rx="2.09"/>
+  </g></g>
+    <g fill="#0C7D49">
+    <path d="M -4.66 -12.80 Q -3.27 -7.50 -4.66 0 Q -3.27 7.50 -4.66 12.80 L 4.66 12.80 Q 3.27 7.50 4.66 0 Q 3.27 -7.50 4.66 -12.80 Z"/>
+    <rect x="-7.43" y="-15.00" width="14.87" height="4.35" rx="2.09"/>
+    <rect x="-8.03" y="-2.26" width="16.06" height="4.52" rx="2.09"/>
+    <rect x="-7.43" y="10.65" width="14.87" height="4.35" rx="2.09"/>
+  </g>
+    <path d="M 0 -11.30 L 0 -2.83 M 0 2.83 L 0 11.30" stroke="#FFFEFA" stroke-width="2.02" stroke-linecap="round"/>
+    <path d="M -4.16 0 L 4.16 0" stroke="#FFFEFA" stroke-width="1.51" stroke-linecap="round"/>
+    <circle cx="0" cy="-12.82" r="1.07" fill="#FFFEFA"/>
+    <circle cx="0" cy="12.82" r="1.07" fill="#FFFEFA"/>
+  </g><g transform="translate(22 56) rotate(0)">
+    <g transform="translate(0.7 0.95)"><g fill="rgba(255, 255, 255, 0.75)">
+    <path d="M -4.66 -12.80 Q -3.27 -7.50 -4.66 0 Q -3.27 7.50 -4.66 12.80 L 4.66 12.80 Q 3.27 7.50 4.66 0 Q 3.27 -7.50 4.66 -12.80 Z"/>
+    <rect x="-7.43" y="-15.00" width="14.87" height="4.35" rx="2.09"/>
+    <rect x="-8.03" y="-2.26" width="16.06" height="4.52" rx="2.09"/>
+    <rect x="-7.43" y="10.65" width="14.87" height="4.35" rx="2.09"/>
+  </g></g>
+    <g fill="#0C7D49">
+    <path d="M -4.66 -12.80 Q -3.27 -7.50 -4.66 0 Q -3.27 7.50 -4.66 12.80 L 4.66 12.80 Q 3.27 7.50 4.66 0 Q 3.27 -7.50 4.66 -12.80 Z"/>
+    <rect x="-7.43" y="-15.00" width="14.87" height="4.35" rx="2.09"/>
+    <rect x="-8.03" y="-2.26" width="16.06" height="4.52" rx="2.09"/>
+    <rect x="-7.43" y="10.65" width="14.87" height="4.35" rx="2.09"/>
+  </g>
+    <path d="M 0 -11.30 L 0 -2.83 M 0 2.83 L 0 11.30" stroke="#FFFEFA" stroke-width="2.02" stroke-linecap="round"/>
+    <path d="M -4.16 0 L 4.16 0" stroke="#FFFEFA" stroke-width="1.51" stroke-linecap="round"/>
+    <circle cx="0" cy="-12.82" r="1.07" fill="#FFFEFA"/>
+    <circle cx="0" cy="12.82" r="1.07" fill="#FFFEFA"/>
+  </g><g transform="translate(50 56) rotate(0)">
+    <g transform="translate(0.7 0.95)"><g fill="rgba(255, 255, 255, 0.75)">
+    <path d="M -4.66 -12.80 Q -3.27 -7.50 -4.66 0 Q -3.27 7.50 -4.66 12.80 L 4.66 12.80 Q 3.27 7.50 4.66 0 Q 3.27 -7.50 4.66 -12.80 Z"/>
+    <rect x="-7.43" y="-15.00" width="14.87" height="4.35" rx="2.09"/>
+    <rect x="-8.03" y="-2.26" width="16.06" height="4.52" rx="2.09"/>
+    <rect x="-7.43" y="10.65" width="14.87" height="4.35" rx="2.09"/>
+  </g></g>
+    <g fill="#C81D1D">
+    <path d="M -4.66 -12.80 Q -3.27 -7.50 -4.66 0 Q -3.27 7.50 -4.66 12.80 L 4.66 12.80 Q 3.27 7.50 4.66 0 Q 3.27 -7.50 4.66 -12.80 Z"/>
+    <rect x="-7.43" y="-15.00" width="14.87" height="4.35" rx="2.09"/>
+    <rect x="-8.03" y="-2.26" width="16.06" height="4.52" rx="2.09"/>
+    <rect x="-7.43" y="10.65" width="14.87" height="4.35" rx="2.09"/>
+  </g>
+    <path d="M 0 -11.30 L 0 -2.83 M 0 2.83 L 0 11.30" stroke="#FFFEFA" stroke-width="2.02" stroke-linecap="round"/>
+    <path d="M -4.16 0 L 4.16 0" stroke="#FFFEFA" stroke-width="1.51" stroke-linecap="round"/>
+    <circle cx="0" cy="-12.82" r="1.07" fill="#FFFEFA"/>
+    <circle cx="0" cy="12.82" r="1.07" fill="#FFFEFA"/>
+  </g><g transform="translate(78 56) rotate(0)">
+    <g transform="translate(0.7 0.95)"><g fill="rgba(255, 255, 255, 0.75)">
+    <path d="M -4.66 -12.80 Q -3.27 -7.50 -4.66 0 Q -3.27 7.50 -4.66 12.80 L 4.66 12.80 Q 3.27 7.50 4.66 0 Q 3.27 -7.50 4.66 -12.80 Z"/>
+    <rect x="-7.43" y="-15.00" width="14.87" height="4.35" rx="2.09"/>
+    <rect x="-8.03" y="-2.26" width="16.06" height="4.52" rx="2.09"/>
+    <rect x="-7.43" y="10.65" width="14.87" height="4.35" rx="2.09"/>
+  </g></g>
+    <g fill="#0C7D49">
+    <path d="M -4.66 -12.80 Q -3.27 -7.50 -4.66 0 Q -3.27 7.50 -4.66 12.80 L 4.66 12.80 Q 3.27 7.50 4.66 0 Q 3.27 -7.50 4.66 -12.80 Z"/>
+    <rect x="-7.43" y="-15.00" width="14.87" height="4.35" rx="2.09"/>
+    <rect x="-8.03" y="-2.26" width="16.06" height="4.52" rx="2.09"/>
+    <rect x="-7.43" y="10.65" width="14.87" height="4.35" rx="2.09"/>
+  </g>
+    <path d="M 0 -11.30 L 0 -2.83 M 0 2.83 L 0 11.30" stroke="#FFFEFA" stroke-width="2.02" stroke-linecap="round"/>
+    <path d="M -4.16 0 L 4.16 0" stroke="#FFFEFA" stroke-width="1.51" stroke-linecap="round"/>
+    <circle cx="0" cy="-12.82" r="1.07" fill="#FFFEFA"/>
+    <circle cx="0" cy="12.82" r="1.07" fill="#FFFEFA"/>
+  </g><g transform="translate(22 91) rotate(0)">
+    <g transform="translate(0.7 0.95)"><g fill="rgba(255, 255, 255, 0.75)">
+    <path d="M -4.66 -12.80 Q -3.27 -7.50 -4.66 0 Q -3.27 7.50 -4.66 12.80 L 4.66 12.80 Q 3.27 7.50 4.66 0 Q 3.27 -7.50 4.66 -12.80 Z"/>
+    <rect x="-7.43" y="-15.00" width="14.87" height="4.35" rx="2.09"/>
+    <rect x="-8.03" y="-2.26" width="16.06" height="4.52" rx="2.09"/>
+    <rect x="-7.43" y="10.65" width="14.87" height="4.35" rx="2.09"/>
+  </g></g>
+    <g fill="#0C7D49">
+    <path d="M -4.66 -12.80 Q -3.27 -7.50 -4.66 0 Q -3.27 7.50 -4.66 12.80 L 4.66 12.80 Q 3.27 7.50 4.66 0 Q 3.27 -7.50 4.66 -12.80 Z"/>
+    <rect x="-7.43" y="-15.00" width="14.87" height="4.35" rx="2.09"/>
+    <rect x="-8.03" y="-2.26" width="16.06" height="4.52" rx="2.09"/>
+    <rect x="-7.43" y="10.65" width="14.87" height="4.35" rx="2.09"/>
+  </g>
+    <path d="M 0 -11.30 L 0 -2.83 M 0 2.83 L 0 11.30" stroke="#FFFEFA" stroke-width="2.02" stroke-linecap="round"/>
+    <path d="M -4.16 0 L 4.16 0" stroke="#FFFEFA" stroke-width="1.51" stroke-linecap="round"/>
+    <circle cx="0" cy="-12.82" r="1.07" fill="#FFFEFA"/>
+    <circle cx="0" cy="12.82" r="1.07" fill="#FFFEFA"/>
+  </g><g transform="translate(50 91) rotate(0)">
+    <g transform="translate(0.7 0.95)"><g fill="rgba(255, 255, 255, 0.75)">
+    <path d="M -4.66 -12.80 Q -3.27 -7.50 -4.66 0 Q -3.27 7.50 -4.66 12.80 L 4.66 12.80 Q 3.27 7.50 4.66 0 Q 3.27 -7.50 4.66 -12.80 Z"/>
+    <rect x="-7.43" y="-15.00" width="14.87" height="4.35" rx="2.09"/>
+    <rect x="-8.03" y="-2.26" width="16.06" height="4.52" rx="2.09"/>
+    <rect x="-7.43" y="10.65" width="14.87" height="4.35" rx="2.09"/>
+  </g></g>
+    <g fill="#C81D1D">
+    <path d="M -4.66 -12.80 Q -3.27 -7.50 -4.66 0 Q -3.27 7.50 -4.66 12.80 L 4.66 12.80 Q 3.27 7.50 4.66 0 Q 3.27 -7.50 4.66 -12.80 Z"/>
+    <rect x="-7.43" y="-15.00" width="14.87" height="4.35" rx="2.09"/>
+    <rect x="-8.03" y="-2.26" width="16.06" height="4.52" rx="2.09"/>
+    <rect x="-7.43" y="10.65" width="14.87" height="4.35" rx="2.09"/>
+  </g>
+    <path d="M 0 -11.30 L 0 -2.83 M 0 2.83 L 0 11.30" stroke="#FFFEFA" stroke-width="2.02" stroke-linecap="round"/>
+    <path d="M -4.16 0 L 4.16 0" stroke="#FFFEFA" stroke-width="1.51" stroke-linecap="round"/>
+    <circle cx="0" cy="-12.82" r="1.07" fill="#FFFEFA"/>
+    <circle cx="0" cy="12.82" r="1.07" fill="#FFFEFA"/>
+  </g><g transform="translate(78 91) rotate(0)">
+    <g transform="translate(0.7 0.95)"><g fill="rgba(255, 255, 255, 0.75)">
+    <path d="M -4.66 -12.80 Q -3.27 -7.50 -4.66 0 Q -3.27 7.50 -4.66 12.80 L 4.66 12.80 Q 3.27 7.50 4.66 0 Q 3.27 -7.50 4.66 -12.80 Z"/>
+    <rect x="-7.43" y="-15.00" width="14.87" height="4.35" rx="2.09"/>
+    <rect x="-8.03" y="-2.26" width="16.06" height="4.52" rx="2.09"/>
+    <rect x="-7.43" y="10.65" width="14.87" height="4.35" rx="2.09"/>
+  </g></g>
+    <g fill="#0C7D49">
+    <path d="M -4.66 -12.80 Q -3.27 -7.50 -4.66 0 Q -3.27 7.50 -4.66 12.80 L 4.66 12.80 Q 3.27 7.50 4.66 0 Q 3.27 -7.50 4.66 -12.80 Z"/>
+    <rect x="-7.43" y="-15.00" width="14.87" height="4.35" rx="2.09"/>
+    <rect x="-8.03" y="-2.26" width="16.06" height="4.52" rx="2.09"/>
+    <rect x="-7.43" y="10.65" width="14.87" height="4.35" rx="2.09"/>
+  </g>
+    <path d="M 0 -11.30 L 0 -2.83 M 0 2.83 L 0 11.30" stroke="#FFFEFA" stroke-width="2.02" stroke-linecap="round"/>
+    <path d="M -4.16 0 L 4.16 0" stroke="#FFFEFA" stroke-width="1.51" stroke-linecap="round"/>
+    <circle cx="0" cy="-12.82" r="1.07" fill="#FFFEFA"/>
+    <circle cx="0" cy="12.82" r="1.07" fill="#FFFEFA"/>
   </g>
   </g>
 </svg>
