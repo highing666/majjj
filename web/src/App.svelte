@@ -75,6 +75,18 @@
   import TableCanvas from "./lib/table/TableCanvas.svelte";
   import TakeOverModal from "./lib/table/TakeOverModal.svelte";
   import type { TableLayout } from "./lib/table/layout";
+  import { buildPrototypePreview } from "./lib/table/prototype/fixtures";
+  import PrototypeGalleryOverlay from "./lib/table/prototype/PrototypeGalleryOverlay.svelte";
+  import PrototypeSwitcher from "./lib/table/prototype/PrototypeSwitcher.svelte";
+  import { prototypeState } from "./lib/table/prototype/state.svelte";
+  import {
+    readPrototypeSceneFromUrl,
+    readPrototypeVariantFromUrl,
+    syncPrototypeUrlParams,
+    type PrototypeSceneId,
+    type PrototypeVariantId,
+  } from "./lib/table/prototype/variants";
+  import { getTileLabel } from "./lib/table/tiles";
   import {
     deriveTurnCueState,
     findLegalDiscardAction,
@@ -141,6 +153,35 @@
     kind: TakeOverKind;
   } | null>(null);
   const initialNickname = client.getIdentity().nickname;
+
+  // PROTOTYPE (throwaway for #78, Sub-shape A): dev-only variant & preview state mounted
+  // directly on the existing Majjj table host surface.
+  const isPrototypeDev = import.meta.env.DEV;
+  let protoVariant = $state<PrototypeVariantId>(readPrototypeVariantFromUrl());
+  let protoScene = $state<PrototypeSceneId>(
+    readPrototypeSceneFromUrl() ?? "self_draw",
+  );
+  let protoDiscardedTiles = $state<Array<{ tile: Tile; fromDrawn: boolean }>>([]);
+  let protoLastActionNote = $state<string | null>(null);
+
+  $effect(() => {
+    if (!isPrototypeDev) {
+      return;
+    }
+    prototypeState.setVariant(protoVariant);
+    syncPrototypeUrlParams(protoVariant, protoScene);
+  });
+
+  function handleSelectProtoVariant(next: PrototypeVariantId): void {
+    protoVariant = next;
+    protoLastActionNote = null;
+  }
+
+  function handleSelectProtoScene(next: PrototypeSceneId): void {
+    protoScene = next;
+    protoDiscardedTiles = [];
+    protoLastActionNote = null;
+  }
 
   $effect(() => {
     const unsubscribeClient = client.subscribe((next) => {
@@ -315,41 +356,119 @@
     }
   });
   const playerView = $derived(snapshot?.player_view ?? null);
-  const presentedSnapshot = $derived(
+  const livePresentedSnapshot = $derived(
     presentationState.snapshot ?? sessionState.snapshot,
+  );
+  const hasLiveMatch = $derived(
+    livePresentedSnapshot?.phase === "InMatch" &&
+      livePresentedSnapshot.player_view !== null,
+  );
+  const protoPreviewActive = $derived(
+    isPrototypeDev && (protoScene !== "live" || !hasLiveMatch),
+  );
+  const protoBundle = $derived.by(() => {
+    if (!protoPreviewActive) {
+      return null;
+    }
+    const effectiveScene = protoScene === "live" ? "self_draw" : protoScene;
+    const base = buildPrototypePreview(effectiveScene);
+    if (protoDiscardedTiles.length === 0 || !base.snapshot.player_view) {
+      return base;
+    }
+    const pv = base.snapshot.player_view;
+    const closed = [...pv.hand.closed_tiles];
+    let drawn = pv.hand.drawn_tile;
+    const extraRiver = [...pv.seats[0].river];
+    let seq = 200;
+    for (const d of protoDiscardedTiles) {
+      if (d.fromDrawn && drawn === d.tile) {
+        drawn = null;
+      } else {
+        const idx = closed.indexOf(d.tile);
+        if (idx >= 0) {
+          closed.splice(idx, 1);
+          if (drawn !== null) {
+            closed.push(drawn);
+            closed.sort((a, b) => a - b);
+            drawn = null;
+          }
+        }
+      }
+      extraRiver.push({
+        tile: d.tile,
+        seq: seq++,
+        is_tsumogiri: d.fromDrawn,
+        claimed_by: null,
+      });
+    }
+    const nextSeats = pv.seats.map((s, idx) =>
+      idx === 0
+        ? {
+            ...s,
+            hand_count: closed.length + (drawn !== null ? 1 : 0),
+            river: extraRiver,
+          }
+        : s,
+    ) as typeof pv.seats;
+    return {
+      ...base,
+      snapshot: {
+        ...base.snapshot,
+        player_view: {
+          ...pv,
+          hand: { closed_tiles: closed, drawn_tile: drawn },
+          seats: nextSeats,
+        },
+      },
+    };
+  });
+  const presentedSnapshot = $derived(
+    protoBundle ? protoBundle.snapshot : livePresentedSnapshot,
   );
   const presentedPlayerView = $derived(
     presentedSnapshot?.player_view ?? null,
   );
+  const effectiveActiveBubbles = $derived(
+    protoBundle ? protoBundle.activeBubbles : presentationState.activeBubbles,
+  );
   const actionsDisabled = $derived(
-    sessionState.replacedByNewTab ||
-      sessionState.remoteAccessDisabledMessage !== null ||
-      sessionState.connectionStatus !== "connected",
+    protoPreviewActive
+      ? false
+      : sessionState.replacedByNewTab ||
+          sessionState.remoteAccessDisabledMessage !== null ||
+          sessionState.connectionStatus !== "connected",
   );
   const yourSeatAiAssisted = $derived(
-    snapshot !== null &&
+    !protoPreviewActive &&
+      snapshot !== null &&
       snapshot.your_seat !== null &&
       snapshot.seats[seatIndex(snapshot.your_seat)].ai_assisted,
   );
   const inputLocked = $derived(
-    actionsDisabled ||
-      sessionState.pendingActionId !== null ||
-      yourSeatAiAssisted,
+    protoPreviewActive
+      ? false
+      : actionsDisabled ||
+          sessionState.pendingActionId !== null ||
+          yourSeatAiAssisted,
   );
   const turnCue = $derived(
     deriveTurnCueState({
       playerView: presentedPlayerView,
-      pendingAddedKong: presentationState.pendingAddedKong,
+      pendingAddedKong: protoPreviewActive
+        ? null
+        : presentationState.pendingAddedKong,
       inputLocked,
       reducedEffects: renderQualityState.reducedEffects,
     }),
   );
   const settlementVisible = $derived(
-    presentedSnapshot !== null &&
-      presentedSnapshot.phase === "InMatch" &&
-      presentationState.settlementVisible &&
-      presentedPlayerView?.phase === "BetweenHands" &&
-      presentedPlayerView.last_settlement !== null,
+    protoBundle
+      ? protoBundle.showSettlementModal
+      : presentedSnapshot !== null &&
+          presentedSnapshot.phase === "InMatch" &&
+          presentationState.settlementVisible &&
+          presentedPlayerView?.phase === "BetweenHands" &&
+          presentedPlayerView.last_settlement !== null,
   );
   const isSeatedMatch = $derived(
     presentedSnapshot?.phase === "InMatch" && presentedPlayerView !== null,
@@ -399,6 +518,11 @@
   }
 
   function handleCanvasDiscard(tile: Tile, fromDrawn: boolean): void {
+    if (protoPreviewActive) {
+      protoDiscardedTiles = [...protoDiscardedTiles, { tile, fromDrawn }];
+      protoLastActionNote = `原型试打：${getTileLabel(tile)}（${fromDrawn ? "摸切" : "手切"}）· 点场景按钮可重置`;
+      return;
+    }
     if (!playerView || inputLocked) {
       return;
     }
@@ -413,6 +537,10 @@
   }
 
   function handleActionBar(action: PlayerAction): void {
+    if (protoPreviewActive) {
+      protoLastActionNote = `原型操作条触发：${typeof action === "string" ? action : Object.keys(action)[0]}`;
+      return;
+    }
     if (inputLocked) {
       return;
     }
@@ -423,6 +551,10 @@
   }
 
   function handleConfirmNextHand(): void {
+    if (protoPreviewActive) {
+      handleSelectProtoScene("self_draw");
+      return;
+    }
     if (inputLocked) {
       return;
     }
@@ -616,11 +748,14 @@
         >
           <TableCanvas
             snapshot={presentedSnapshot}
-            pendingAddedKong={presentationState.pendingAddedKong}
+            pendingAddedKong={protoPreviewActive
+              ? null
+              : presentationState.pendingAddedKong}
             {inputLocked}
             confirmDiscard={devicePrefs.confirm_discard}
             paperGrainEnabled={renderQualityState.paperGrainEnabled}
             reducedEffects={renderQualityState.reducedEffects}
+            prototypeVariant={isPrototypeDev ? protoVariant : undefined}
             onDiscard={handleCanvasDiscard}
             onLayoutChange={(layout) => (tableLayout = layout)}
             onFrameTick={() => renderQuality.recordFrame()}
@@ -641,11 +776,13 @@
           />
 
           <MatchHud
-            seatSnapshot={snapshot ?? presentedSnapshot}
+            seatSnapshot={protoPreviewActive
+              ? presentedSnapshot
+              : (snapshot ?? presentedSnapshot)}
             {presentedSnapshot}
             playerView={presentedPlayerView}
             {tableLayout}
-            activeBubbles={presentationState.activeBubbles}
+            activeBubbles={effectiveActiveBubbles}
             {activeBanterVoice}
             {hideAiBanterText}
             reducedEffects={renderQualityState.reducedEffects}
@@ -655,16 +792,19 @@
             {actionsDisabled}
             {inputLocked}
             {hasModalOpen}
-            canTogglePace={!actionsDisabled &&
+            canTogglePace={!protoPreviewActive &&
+              !actionsDisabled &&
               (snapshot?.your_seat ?? presentedSnapshot.your_seat) !== null}
-            canDisband={!actionsDisabled &&
+            canDisband={!protoPreviewActive &&
+              !actionsDisabled &&
               snapshot !== null &&
               snapshot.your_seat !== null &&
               snapshot.pending_destructive_op === null}
             canSendQuickEmote={!actionsDisabled &&
-              snapshot !== null &&
-              snapshot.your_seat !== null &&
-              snapshot.phase === "InMatch"}
+              (protoPreviewActive ||
+                (snapshot !== null &&
+                  snapshot.your_seat !== null &&
+                  snapshot.phase === "InMatch"))}
             shouldSuppressEscape={() =>
               viewportDisplay.shouldSuppressActionBarEscape()}
             onToggleFullscreen={() => void viewportDisplay.toggleFullscreen()}
@@ -672,7 +812,7 @@
               handleSetPace(currentPace === "Fast" ? "Standard" : "Fast")}
             onOpenSettings={() => (settingsOpen = true)}
             onDisband={() => client.requestDisbandMatch()}
-            showRemoteAccess={remoteAccessState.visible}
+            showRemoteAccess={!protoPreviewActive && remoteAccessState.visible}
             remoteAccessEnabled={remoteAccessState.status?.enabled === true}
             remoteToolbarLabel={buildRemoteToolbarLabel(
               remoteAccessState.status,
@@ -680,10 +820,16 @@
             onOpenRemoteAccess={openRemoteAccessModal}
             onToggleAiAssist={(seat, enabled) => client.toggleAiAssist(seat, enabled)}
             onAction={handleActionBar}
-            onSendQuickEmote={(emote) => client.sendQuickEmote(emote)}
+            hideSeatControlBar={protoPreviewActive}
+            onSendQuickEmote={(emote) =>
+              protoPreviewActive
+                ? ((protoLastActionNote = `原型快捷互动：${emote}`), true)
+                : client.sendQuickEmote(emote)}
           >
             {#snippet floatingBanners()}
-              {@render statusBanners(true)}
+              {#if !protoPreviewActive}
+                {@render statusBanners(true)}
+              {/if}
             {/snippet}
           </MatchHud>
 
@@ -709,15 +855,15 @@
             fanCap={presentedPlayerView.rule_profile.fan_cap}
             yourSeat={presentedSnapshot.your_seat}
             readySeats={presentedPlayerView.ready_seats}
-            canConfirmNextHand={(playerView?.legal_actions ?? []).includes(
-              "ConfirmNextHand",
-            )}
-            activeBubbles={presentationState.activeBubbles}
+            canConfirmNextHand={protoPreviewActive ||
+              (playerView?.legal_actions ?? []).includes("ConfirmNextHand")}
+            activeBubbles={effectiveActiveBubbles}
             {activeBanterVoice}
             {hideAiBanterText}
             reducedEffects={renderQualityState.reducedEffects}
             disabled={inputLocked}
-            destructivePending={snapshot !== null &&
+            destructivePending={!protoPreviewActive &&
+              snapshot !== null &&
               snapshot.pending_destructive_op !== null}
             onConfirmNextHand={handleConfirmNextHand}
             onRequestEndFreeTable={() => client.requestEndFreeTable()}
@@ -930,7 +1076,7 @@
   />
 
   <AudioResumeCapsule
-    visible={audioStatus.needsResumeCapsule}
+    visible={!protoPreviewActive && audioStatus.needsResumeCapsule}
     onResume={() => audioRouter.unlockFromGesture()}
   />
 
@@ -984,6 +1130,27 @@
         />
       </span>
     </footer>
+  {/if}
+  {#if isPrototypeDev}
+    {#if protoScene === "gallery_34"}
+      <PrototypeGalleryOverlay
+        variant={protoVariant}
+        mode="gallery_34"
+        onClose={() => handleSelectProtoScene("self_draw")}
+      />
+    {:else if protoScene === "settlement_badge"}
+      <PrototypeGalleryOverlay variant={protoVariant} mode="badge_strip" />
+    {/if}
+
+    <PrototypeSwitcher
+      currentVariant={protoVariant}
+      currentScene={protoScene}
+      {hasLiveMatch}
+      {tableLayout}
+      lastActionNote={protoLastActionNote}
+      onSelectVariant={handleSelectProtoVariant}
+      onSelectScene={handleSelectProtoScene}
+    />
   {/if}
 </main>
 

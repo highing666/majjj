@@ -1,6 +1,8 @@
 <script lang="ts">
   import atlasPngUrl from "../../assets/atlas/tiles@2x.png";
   import type { Tile } from "../protocol/generated/Tile";
+  import { prototypeState } from "./prototype/state.svelte";
+  import { PROTOTYPE_VARIANTS } from "./prototype/variants";
   import {
     projectTileBadgeAtlas,
     type TileBadgeSize,
@@ -22,7 +24,17 @@
     highlighted = false,
   }: Props = $props();
 
-  const projection = $derived(projectTileBadgeAtlas(tile, faceUp, size));
+  const activeProtoVariant = $derived(
+    import.meta.env.DEV ? prototypeState.variant : undefined,
+  );
+  const resolvedAtlasUrl = $derived(
+    activeProtoVariant
+      ? PROTOTYPE_VARIANTS[activeProtoVariant].atlasPngUrl
+      : atlasPngUrl,
+  );
+  const projection = $derived(
+    projectTileBadgeAtlas(tile, faceUp, size, activeProtoVariant),
+  );
 </script>
 
 <span
@@ -33,7 +45,7 @@
   role="img"
   style:width={`${projection.width}px`}
   style:height={`${projection.height}px`}
-  style:background-image={`url("${atlasPngUrl}")`}
+  style:background-image={`url("${resolvedAtlasUrl}")`}
   style:background-size={projection.backgroundSize}
   style:background-position={projection.backgroundPosition}
   title={projection.ariaLabel}

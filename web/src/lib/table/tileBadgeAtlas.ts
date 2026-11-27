@@ -86,20 +86,32 @@ function isValidTileIndex(tile: Tile | null): tile is Tile {
  * atlas (`tiles@2x.json`), returning exact laid-tile or laid-back frame crop
  * metrics and a glossary-compliant Chinese `ariaLabel`.
  */
+import {
+  PROTOTYPE_TILE_BADGE_DIMENSIONS,
+  PROTOTYPE_VARIANTS,
+  type PrototypeVariantId,
+} from "./prototype/variants";
+
 export function projectTileBadgeAtlas(
   tile: Tile | null,
   faceUp: boolean,
   size: TileBadgeSize,
+  prototypeVariant?: PrototypeVariantId,
 ): TileBadgeProjection {
   const showFaceUp = faceUp && isValidTileIndex(tile);
   const frameKey = showFaceUp ? `tile_laid_${tile}` : LAID_BACK_FRAME_KEY;
   const ariaLabel = showFaceUp ? getTileLabel(tile) : "扣牌";
 
-  const dims = TILE_BADGE_DIMENSIONS[size];
-  const atlasWidth = ATLAS_DATA.meta.size.w;
-  const atlasHeight = ATLAS_DATA.meta.size.h;
+  const dims = prototypeVariant
+    ? PROTOTYPE_TILE_BADGE_DIMENSIONS[size]
+    : TILE_BADGE_DIMENSIONS[size];
+  const atlasData = prototypeVariant
+    ? (PROTOTYPE_VARIANTS[prototypeVariant].atlasMetaJson as unknown as AtlasMetaShape)
+    : ATLAS_DATA;
+  const atlasWidth = atlasData.meta.size.w;
+  const atlasHeight = atlasData.meta.size.h;
   const frameEntry =
-    ATLAS_DATA.frames[frameKey] ?? ATLAS_DATA.frames[LAID_BACK_FRAME_KEY];
+    atlasData.frames[frameKey] ?? atlasData.frames[LAID_BACK_FRAME_KEY];
   const frame = frameEntry.frame;
 
   const scaleX = dims.width / frame.w;

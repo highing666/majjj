@@ -5,6 +5,7 @@
   import type { PendingAddedKong } from "../session/reducer";
   import { TableSceneRenderer, type TableRenderParams } from "./tableRenderer";
   import type { TableLayout } from "./layout";
+  import type { PrototypeVariantId } from "./prototype/variants";
   import { loadTileAtlas, type TileAtlas } from "./tileAtlas";
   import { computeCanvasResolution, extractContentBoxSize } from "./viewModel";
   import {
@@ -19,6 +20,7 @@
     confirmDiscard?: boolean;
     paperGrainEnabled?: boolean;
     reducedEffects?: boolean;
+    prototypeVariant?: PrototypeVariantId;
     onDiscard: (tile: Tile, fromDrawn: boolean) => void;
     onTileHover?: (tile: Tile, fromDrawn: boolean) => void;
     onTileSelect?: (tile: Tile, fromDrawn: boolean) => void;
@@ -35,6 +37,7 @@
     confirmDiscard = false,
     paperGrainEnabled = true,
     reducedEffects = false,
+    prototypeVariant,
     onDiscard,
     onTileHover,
     onTileSelect,
@@ -46,6 +49,10 @@
 
   let hostEl = $state<HTMLDivElement | null>(null);
   let sceneRenderer = $state<TableSceneRenderer | null>(null);
+  let activeAtlasRef: { current: TileAtlas | null } = { current: null };
+  let loadedVariantRef: { current: PrototypeVariantId | undefined } = {
+    current: undefined,
+  };
   let recoveryState = $state<WebGLRecoveryState>({
     status: "active",
     restoreCount: 0,
@@ -60,6 +67,7 @@
     confirmDiscard,
     paperGrainEnabled,
     reducedEffects,
+    prototypeVariant,
   });
 
   let latestRenderParams: TableRenderParams | null = null;
@@ -127,12 +135,14 @@
         prevRenderer?.destroy();
         prevAtlas?.destroy();
 
-        const rebuiltAtlas = await loadTileAtlas();
+        const rebuiltAtlas = await loadTileAtlas(prototypeVariant);
         if (disposed || !app) {
           rebuiltAtlas.destroy();
           return;
         }
         atlas = rebuiltAtlas;
+        activeAtlasRef.current = rebuiltAtlas;
+        loadedVariantRef.current = prototypeVariant;
         const rect = container.getBoundingClientRect();
         currentWidth = Math.max(320, Math.round(rect.width || currentWidth));
         currentHeight = Math.max(280, Math.round(rect.height || currentHeight));
@@ -205,7 +215,8 @@
           return;
         }
 
-        const loadedAtlas = await loadTileAtlas();
+        const initialVariant = prototypeVariant;
+        const loadedAtlas = await loadTileAtlas(initialVariant);
         if (disposed) {
           loadedAtlas.destroy();
           nextApp.destroy(true);
@@ -214,6 +225,8 @@
 
         app = nextApp;
         atlas = loadedAtlas;
+        activeAtlasRef.current = loadedAtlas;
+        loadedVariantRef.current = initialVariant;
         const canvasEl = nextApp.canvas;
         canvasEl.style.width = "100%";
         canvasEl.style.height = "100%";
@@ -281,13 +294,42 @@
       if (renderer) {
         renderer.destroy();
       }
-      if (atlas) {
+      if (activeAtlasRef.current) {
+        activeAtlasRef.current.destroy();
+        activeAtlasRef.current = null;
+      } else if (atlas) {
         atlas.destroy();
       }
+      loadedVariantRef.current = undefined;
       if (app) {
         app.destroy(true);
       }
       container.replaceChildren();
+    };
+  });
+
+  $effect(() => {
+    const nextVariant = prototypeVariant;
+    const renderer = sceneRenderer;
+    if (!renderer || loadedVariantRef.current === nextVariant) {
+      return;
+    }
+    let cancelled = false;
+    const swap = async () => {
+      const nextAtlas = await loadTileAtlas(nextVariant);
+      if (cancelled || sceneRenderer !== renderer) {
+        nextAtlas.destroy();
+        return;
+      }
+      const prevAtlas = activeAtlasRef.current;
+      activeAtlasRef.current = nextAtlas;
+      loadedVariantRef.current = nextVariant;
+      renderer.setAtlas(nextAtlas);
+      prevAtlas?.destroy();
+    };
+    void swap();
+    return () => {
+      cancelled = true;
     };
   });
 

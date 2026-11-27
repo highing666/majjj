@@ -41,6 +41,8 @@ import {
   createPaperGrainFilter,
   type PaperGrainFilter,
 } from "./paperGrainFilter";
+import { computePrototypeTableLayout } from "./prototype/layoutVariants";
+import type { PrototypeVariantId } from "./prototype/variants";
 import type { TileAtlas, TileBodyKind } from "./tileAtlas";
 import { formatCompactRoundTitle } from "./tiles";
 import {
@@ -74,6 +76,7 @@ export interface TableRenderParams {
   confirmDiscard?: boolean;
   paperGrainEnabled?: boolean;
   reducedEffects?: boolean;
+  prototypeVariant?: PrototypeVariantId;
 }
 
 export interface TableRendererCallbacks {
@@ -196,7 +199,7 @@ export class TableSceneRenderer {
   private readonly badgeLayer = new Container();
   private readonly viewerHandLayer = new Container();
   readonly effectsLayer = new Container();
-  private readonly atlas: TileAtlas;
+  private atlas: TileAtlas;
   private readonly callbacks: TableRendererCallbacks;
 
   private width = 800;
@@ -290,6 +293,13 @@ export class TableSceneRenderer {
     return this.lastLayout;
   }
 
+  setAtlas(nextAtlas: TileAtlas): void {
+    this.atlas = nextAtlas;
+    if (this.lastParams !== null) {
+      this.render(this.lastParams);
+    }
+  }
+
   setPaperGrainEnabled(enabled: boolean): void {
     if (this.paperGrainFilter) {
       this.paperGrainFilter.enabled = enabled;
@@ -327,7 +337,7 @@ export class TableSceneRenderer {
   }
 
   private notifyLayoutChange(layout: TableLayout): void {
-    const key = `${layout.width}x${layout.height}:${layout.turnBarRect.x},${layout.turnBarRect.y},${layout.turnBarRect.width},${layout.turnBarRect.height}`;
+    const key = `${layout.width}x${layout.height}:${layout.handTileW}x${layout.riverTileW}x${layout.meldTileW}:${layout.viewerHandRect.x},${layout.turnBarRect.x},${layout.turnBarRect.y},${layout.turnBarRect.width},${layout.turnBarRect.height}`;
     if (key === this.lastNotifiedLayoutKey) {
       return;
     }
@@ -347,7 +357,37 @@ export class TableSceneRenderer {
       return;
     }
 
-    const layout = computeTableLayout(this.width, this.height);
+    const relative = getRelativeSeats(view.viewer);
+    const seatByName = new Map<Seat, PublicSeatView>();
+    for (const s of view.seats) {
+      seatByName.set(s.seat, s);
+    }
+    const bottomSeatView = seatByName.get(relative.bottom);
+    const bottomMeldItems = bottomSeatView
+      ? buildMeldRenderItems(
+          bottomSeatView.melds,
+          params.pendingAddedKong,
+          relative.bottom,
+        )
+      : [];
+    const bottomMeldTileCount = bottomMeldItems.reduce(
+      (sum, item) => sum + item.tiles.length,
+      0,
+    );
+
+    const layout = params.prototypeVariant
+      ? computePrototypeTableLayout(
+          this.width,
+          this.height,
+          params.prototypeVariant,
+          {
+            bottomMeldTileCount,
+            bottomMeldGroupCount: bottomMeldItems.length,
+            viewerClosedCount: view.hand.closed_tiles.length,
+            viewerHasDrawn: view.hand.drawn_tile !== null,
+          },
+        )
+      : computeTableLayout(this.width, this.height);
     this.lastLayout = layout;
     this.notifyLayoutChange(layout);
 
@@ -359,11 +399,6 @@ export class TableSceneRenderer {
     });
     this.currentTurnCue = turnCue;
 
-    const relative = getRelativeSeats(view.viewer);
-    const seatByName = new Map<Seat, PublicSeatView>();
-    for (const s of view.seats) {
-      seatByName.set(s.seat, s);
-    }
     const infoByName = new Map<Seat, SeatInfo>();
     for (const info of params.snapshot.seats) {
       infoByName.set(info.seat, info);
@@ -1013,46 +1048,50 @@ export class TableSceneRenderer {
       closed_tiles.length,
       hasDrawn,
     );
+    const isProtoNoFrame = Boolean(params.prototypeVariant);
 
-    // Layer 1: Hand tray & breathing gold border around viewerHandRect
-    const trayPadX = layout.isShortLandscape ? 6 : 10;
-    const trayPadY = layout.isShortLandscape ? 3 : 5;
-    const trayX = Math.max(2, layout.viewerHandRect.x - trayPadX);
-    const trayY = Math.max(2, layout.viewerHandRect.y - trayPadY);
-    const trayW = Math.min(
-      layout.width - trayX - 2,
-      layout.viewerHandRect.width + trayPadX * 2,
-    );
-    const trayH = Math.min(
-      layout.height - trayY - 2,
-      layout.viewerHandRect.height + trayPadY * 2,
-    );
+    // #78 prototype: Zero hand framing boxes (dropped turn-tray-idle, turn-tray-active,
+    // turn-tray-breath, post-pon-tile-highlight, and drawn-tile-glow/marker frames).
+    if (!isProtoNoFrame) {
+      const trayPadX = layout.isShortLandscape ? 6 : 10;
+      const trayPadY = layout.isShortLandscape ? 3 : 5;
+      const trayX = Math.max(2, layout.viewerHandRect.x - trayPadX);
+      const trayY = Math.max(2, layout.viewerHandRect.y - trayPadY);
+      const trayW = Math.min(
+        layout.width - trayX - 2,
+        layout.viewerHandRect.width + trayPadX * 2,
+      );
+      const trayH = Math.min(
+        layout.height - trayY - 2,
+        layout.viewerHandRect.height + trayPadY * 2,
+      );
 
-    if (turnCue.showStageWash) {
-      const breathGlow = new Graphics();
-      breathGlow.label = "turn-tray-breath";
-      breathGlow
-        .roundRect(trayX - 3, trayY - 3, trayW + 6, trayH + 6, 16)
-        .stroke({ width: 5, color: ACTIVE_GLOW, alpha: 0.55 });
-      breathGlow.alpha = turnCue.animateBreath ? 0.55 : 0.78;
-      this.viewerHandLayer.addChild(breathGlow);
-      this.trayBreathGlow = breathGlow;
+      if (turnCue.showStageWash) {
+        const breathGlow = new Graphics();
+        breathGlow.label = "turn-tray-breath";
+        breathGlow
+          .roundRect(trayX - 3, trayY - 3, trayW + 6, trayH + 6, 16)
+          .stroke({ width: 5, color: ACTIVE_GLOW, alpha: 0.55 });
+        breathGlow.alpha = turnCue.animateBreath ? 0.55 : 0.78;
+        this.viewerHandLayer.addChild(breathGlow);
+        this.trayBreathGlow = breathGlow;
 
-      const activeTray = new Graphics();
-      activeTray.label = "turn-tray-active";
-      activeTray
-        .roundRect(trayX, trayY, trayW, trayH, 14)
-        .fill({ color: ACTIVE_GLOW, alpha: 0.14 })
-        .stroke({ width: 2, color: ACTIVE_GLOW, alpha: 0.96 });
-      this.viewerHandLayer.addChild(activeTray);
-    } else {
-      const idleTray = new Graphics();
-      idleTray.label = "turn-tray-idle";
-      idleTray
-        .roundRect(trayX, trayY, trayW, trayH, 14)
-        .fill({ color: 0x081216, alpha: 0.45 })
-        .stroke({ width: 1.5, color: BRASS, alpha: 0.24 });
-      this.viewerHandLayer.addChild(idleTray);
+        const activeTray = new Graphics();
+        activeTray.label = "turn-tray-active";
+        activeTray
+          .roundRect(trayX, trayY, trayW, trayH, 14)
+          .fill({ color: ACTIVE_GLOW, alpha: 0.14 })
+          .stroke({ width: 2, color: ACTIVE_GLOW, alpha: 0.96 });
+        this.viewerHandLayer.addChild(activeTray);
+      } else {
+        const idleTray = new Graphics();
+        idleTray.label = "turn-tray-idle";
+        idleTray
+          .roundRect(trayX, trayY, trayW, trayH, 14)
+          .fill({ color: 0x081216, alpha: 0.45 })
+          .stroke({ width: 1.5, color: BRASS, alpha: 0.24 });
+        this.viewerHandLayer.addChild(idleTray);
+      }
     }
 
     const addInteractiveHandTile = (
@@ -1075,7 +1114,7 @@ export class TableSceneRenderer {
       const restX = geom.restX;
       const restY = geom.restY - liftY;
 
-      if (turnCue.highlightClosedHand && !fromDrawn) {
+      if (!isProtoNoFrame && turnCue.highlightClosedHand && !fromDrawn) {
         const postPonHighlight = new Graphics();
         postPonHighlight.label = "post-pon-tile-highlight";
         postPonHighlight
@@ -1164,27 +1203,29 @@ export class TableSceneRenderer {
         : 0;
       const visualY = baseY - drawnLiftY;
 
-      if (turnCue.highlightDrawnTile) {
-        const drawnGlow = new Graphics();
-        drawnGlow.label = "drawn-tile-glow";
-        drawnGlow
-          .roundRect(drawnX - 3.5, visualY - 3.5, tw + 7, th + 7, 8)
-          .stroke({ width: 4, color: ACTIVE_GLOW, alpha: 0.42 });
-        drawnGlow.alpha = turnCue.animateBreath ? 0.65 : 0.9;
-        this.viewerHandLayer.addChild(drawnGlow);
-        this.drawnHighlightGlow = drawnGlow;
+      if (!isProtoNoFrame) {
+        if (turnCue.highlightDrawnTile) {
+          const drawnGlow = new Graphics();
+          drawnGlow.label = "drawn-tile-glow";
+          drawnGlow
+            .roundRect(drawnX - 3.5, visualY - 3.5, tw + 7, th + 7, 8)
+            .stroke({ width: 4, color: ACTIVE_GLOW, alpha: 0.42 });
+          drawnGlow.alpha = turnCue.animateBreath ? 0.65 : 0.9;
+          this.viewerHandLayer.addChild(drawnGlow);
+          this.drawnHighlightGlow = drawnGlow;
 
-        const marker = new Graphics();
-        marker
-          .roundRect(drawnX - 2, visualY - 2, tw + 4, th + 4, 6)
-          .stroke({ width: 2.2, color: ACTIVE_GLOW, alpha: 0.98 });
-        this.viewerHandLayer.addChild(marker);
-      } else {
-        const marker = new Graphics();
-        marker
-          .roundRect(drawnX - 2, visualY - 2, tw + 4, th + 4, 6)
-          .stroke({ width: 1.5, color: BRASS, alpha: 0.55 });
-        this.viewerHandLayer.addChild(marker);
+          const marker = new Graphics();
+          marker
+            .roundRect(drawnX - 2, visualY - 2, tw + 4, th + 4, 6)
+            .stroke({ width: 2.2, color: ACTIVE_GLOW, alpha: 0.98 });
+          this.viewerHandLayer.addChild(marker);
+        } else {
+          const marker = new Graphics();
+          marker
+            .roundRect(drawnX - 2, visualY - 2, tw + 4, th + 4, 6)
+            .stroke({ width: 1.5, color: BRASS, alpha: 0.55 });
+          this.viewerHandLayer.addChild(marker);
+        }
       }
 
       addInteractiveHandTile(
@@ -1263,7 +1304,8 @@ export class TableSceneRenderer {
       });
     }
 
-    const isDimmed = Boolean(this.currentTurnCue?.dimViewerHand);
+    const isProtoNoDim = Boolean(this.lastParams?.prototypeVariant);
+    const isDimmed = !isProtoNoDim && Boolean(this.currentTurnCue?.dimViewerHand);
 
     for (const v of this.viewerHandVisuals) {
       const id = v.slot.slotId;
@@ -1272,11 +1314,18 @@ export class TableSceneRenderer {
       const isSelected = state.selectedSlotId === id;
       const isHovered = state.hoveredSlotId === id;
 
+      // #78 prototype: Never dim 自家 hand — always 100% brightness & original color.
       v.sprite.width = v.width;
       v.sprite.height = v.height;
       v.sprite.rotation = 0;
       v.sprite.tint = isDimmed ? 0xaebbc0 : 0xffffff;
-      v.sprite.alpha = isDimmed ? 0.82 : state.locked && !isLifting ? 0.86 : 1;
+      v.sprite.alpha = isProtoNoDim
+        ? 1
+        : isDimmed
+          ? 0.82
+          : state.locked && !isLifting
+            ? 0.86
+            : 1;
       v.shadow.position.set(v.restX, v.restY + 3);
       v.shadow.alpha = isDimmed ? 0.45 : 0.65;
       v.selectRing.visible = false;

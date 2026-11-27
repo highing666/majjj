@@ -23,6 +23,10 @@ import {
   toRgbaCss,
 } from "./atlasConstants";
 import {
+  PROTOTYPE_VARIANTS,
+  type PrototypeVariantId,
+} from "./prototype/variants";
+import {
   getDragonKind,
   getTileLabel,
   getTileNumeral,
@@ -108,10 +112,22 @@ async function loadImageTexture(
  * and seamless Piltover impasto felt textures (`felt-impasto@2x.png`, `felt-brush@2x.png`).
  * Falls back to `createTileAtlas()` in headless/test environments or if image decoding fails.
  */
-export async function loadTileAtlas(): Promise<TileAtlas> {
+export async function loadTileAtlas(
+  prototypeVariant?: PrototypeVariantId,
+): Promise<TileAtlas> {
   if (typeof Image === "undefined" || typeof document === "undefined") {
     return createTileAtlas();
   }
+
+  const targetPngUrl = prototypeVariant
+    ? PROTOTYPE_VARIANTS[prototypeVariant].atlasPngUrl
+    : atlasPngUrl;
+  const targetMetaJson = prototypeVariant
+    ? PROTOTYPE_VARIANTS[prototypeVariant].atlasMetaJson
+    : atlasMetaJson;
+  const targetLabel = prototypeVariant
+    ? `majjj-proto-${prototypeVariant}@2x`
+    : "majjj-tiles@2x";
 
   let atlasSource: ImageSource | null = null;
   let impastoSource: ImageSource | null = null;
@@ -123,7 +139,7 @@ export async function loadTileAtlas(): Promise<TileAtlas> {
 
   try {
     const [atlasLoaded, impastoLoaded, brushLoaded] = await Promise.all([
-      loadImageTexture(atlasPngUrl, "majjj-tiles@2x", 2),
+      loadImageTexture(targetPngUrl, targetLabel, 2),
       loadImageTexture(feltImpastoUrl, "majjj-felt-impasto@2x", 2),
       loadImageTexture(feltBrushUrl, "majjj-felt-brush@2x", 2),
     ]);
@@ -135,7 +151,7 @@ export async function loadTileAtlas(): Promise<TileAtlas> {
     brushSource = brushLoaded.source;
     feltBrushTexture = brushLoaded.texture;
 
-    const sheetData = atlasMetaJson as unknown as SpritesheetData;
+    const sheetData = targetMetaJson as unknown as SpritesheetData;
     sheet = new Spritesheet(atlasTexture, sheetData);
     await sheet.parse();
 

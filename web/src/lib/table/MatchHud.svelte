@@ -49,6 +49,7 @@
     onToggleAiAssist: (seat: Seat, enabled: boolean) => void;
     onAction: (action: PlayerAction) => void;
     onSendQuickEmote: (emote: QuickEmote) => boolean;
+    hideSeatControlBar?: boolean;
     floatingBanners?: Snippet;
   }
 
@@ -82,6 +83,7 @@
     onToggleAiAssist,
     onAction,
     onSendQuickEmote,
+    hideSeatControlBar = false,
     floatingBanners,
   }: Props = $props();
 
@@ -179,12 +181,14 @@
 
 <div class="match-floating-top">
   {@render floatingBanners?.()}
-  <SeatControlBar
-    snapshot={seatSnapshot}
-    disabled={actionsDisabled}
-    floating={true}
-    {onToggleAiAssist}
-  />
+  {#if !hideSeatControlBar}
+    <SeatControlBar
+      snapshot={seatSnapshot}
+      disabled={actionsDisabled}
+      floating={true}
+      {onToggleAiAssist}
+    />
+  {/if}
 </div>
 
 {#if playerView.phase === "Playing"}
