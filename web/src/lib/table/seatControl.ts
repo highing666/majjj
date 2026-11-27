@@ -63,6 +63,9 @@ export function buildOfflinePauseBanner(
     .map(formatPaused);
 
   if (pausedNames.length > 0 && assistedNames.length === 0) {
+    if (snapshot.client_is_remote) {
+      return `${pausedNames.join("、")} 已离线，牌桌已无限期暂停等待；请等待原玩家重连或由在座玩家暂交 AI 托管。`;
+    }
     return `${pausedNames.join("、")} 已离线，牌桌已无限期暂停等待；可手动开启「暂由 AI 托管」或跨设备接管该座。`;
   }
   if (pausedNames.length === 0 && assistedNames.length > 0) {
@@ -140,29 +143,39 @@ export function buildTakeOverSeatItems(
     return [];
   }
 
-  return snapshot.seats.map((seatInfo) => toTakeOverSeatItem(seatInfo, snapshot.seats, snapshot.phase));
+  return snapshot.seats.map((seatInfo) =>
+    toTakeOverSeatItem(
+      seatInfo,
+      snapshot.seats,
+      snapshot.phase,
+      snapshot.client_is_remote,
+    ),
+  );
 }
 
 /**
  * Returns offline human seats eligible for cross-device takeover when `yourSeat === null`
  * (used in `Finished` summary view where AI seat takeover does not apply).
+ * Remote clients are strictly forbidden from taking over any offline human seat.
  */
 export function getOfflineHumanTakeOverSeats(
   seats: readonly [SeatInfo, SeatInfo, SeatInfo, SeatInfo],
   yourSeat: Seat | null,
+  clientIsRemote = false,
 ): TakeOverSeatItem[] {
-  if (yourSeat !== null) {
+  if (yourSeat !== null || clientIsRemote) {
     return [];
   }
   return seats
     .filter((seatInfo) => seatInfo.kind === "Human" && !seatInfo.connected)
-    .map((seatInfo) => toTakeOverSeatItem(seatInfo, seats, "Finished"));
+    .map((seatInfo) => toTakeOverSeatItem(seatInfo, seats, "Finished", false));
 }
 
 function toTakeOverSeatItem(
   seatInfo: SeatInfo,
   seats: readonly [SeatInfo, SeatInfo, SeatInfo, SeatInfo],
   phase: TableSnapshot["phase"],
+  clientIsRemote = false,
 ): TakeOverSeatItem {
   const displayName = formatSeatlessDisplay(seatInfo.seat, seats);
   if (seatInfo.kind === "Human") {
@@ -170,9 +183,9 @@ function toTakeOverSeatItem(
       return {
         seatInfo,
         displayName,
-        takeOverKind: "offline_human",
+        takeOverKind: clientIsRemote ? null : "offline_human",
         statusLabel: seatInfo.ai_assisted ? "已离线 · AI 托管中" : "已离线",
-        actionLabel: "接管离线座位",
+        actionLabel: clientIsRemote ? null : "接管离线座位",
       };
     }
     return {

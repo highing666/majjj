@@ -17,6 +17,8 @@ pub mod persona;
 pub mod persona_memory;
 pub mod protocol;
 pub mod public_url;
+pub mod remote_access;
+mod remote_gate;
 mod seat_control;
 pub mod security;
 pub mod server;
@@ -36,6 +38,9 @@ pub use llm::{
     OpenAiLlmClient, DEFAULT_LLM_BASE_URL,
 };
 pub use pacing::PacingMode;
+pub use remote_access::{
+    RemoteAccessManager, RemoteAccessRuntimeStatus, RemoteAuthOutcome, REMOTE_SESSION_COOKIE_NAME,
+};
 pub use security::ClientTrustTier;
 pub use server::{HeartbeatConfig, ServerConfig, ServerError, ServerHandle, TestRouterHandle};
 pub use session::{BoxedWallProvider, TableOptions, WallProviderFactory};

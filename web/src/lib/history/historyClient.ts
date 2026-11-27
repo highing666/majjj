@@ -75,6 +75,7 @@ export interface HistoryControllerOptions {
 export interface HistoryController {
   getState(): HistoryState;
   subscribe(listener: HistoryListener): () => void;
+  syncClientIsRemote(isRemote: boolean): void;
   open(): Promise<void>;
   close(): void;
   refresh(): Promise<void>;
@@ -285,6 +286,7 @@ export function createHistoryController(
   const onTriggerDownload =
     options.onTriggerDownload ?? triggerBrowserJsonDownload;
   const listeners = new Set<HistoryListener>();
+  let clientIsRemote = false;
 
   let state: HistoryState = {
     open: false,
@@ -313,6 +315,9 @@ export function createHistoryController(
   }
 
   async function loadStats(): Promise<void> {
+    if (clientIsRemote) {
+      return;
+    }
     emit({ loading: true, errorMessage: null });
     try {
       const stats = await client.fetchStats();
@@ -325,6 +330,9 @@ export function createHistoryController(
   }
 
   async function loadPersonaMemory(): Promise<void> {
+    if (clientIsRemote) {
+      return;
+    }
     emit({ personaMemoryLoading: true, personaMemoryErrorMessage: null });
     try {
       const personaMemory = await client.fetchPersonaMemory();
@@ -370,6 +378,9 @@ export function createHistoryController(
         }
       },
       async confirm() {
+        if (clientIsRemote) {
+          return false;
+        }
         const phase = state[config.phaseKey];
         if (phase !== "confirming" && phase !== "error") {
           return false;
@@ -432,7 +443,22 @@ export function createHistoryController(
         listeners.delete(listener);
       };
     },
+    syncClientIsRemote(isRemote: boolean) {
+      clientIsRemote = isRemote;
+      if (isRemote && state.open) {
+        emit({
+          open: false,
+          clearPhase: "idle",
+          clearErrorMessage: null,
+          clearMemoryPhase: "idle",
+          clearMemoryErrorMessage: null,
+        });
+      }
+    },
     async open() {
+      if (clientIsRemote) {
+        return;
+      }
       emit({
         open: true,
         exportPhase: "idle",
@@ -466,7 +492,7 @@ export function createHistoryController(
       await loadStats();
     },
     async requestExport() {
-      if (state.exportPhase === "exporting") {
+      if (clientIsRemote || state.exportPhase === "exporting") {
         return false;
       }
       emit({

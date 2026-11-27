@@ -252,6 +252,10 @@ impl TableSession {
                 Self::send_error(&caller.tx, "cannot take over an online human seat");
             }
             SeatKind::Human => {
+                if caller.is_remote {
+                    Self::send_error(&caller.tx, "远程连接禁止接管离线人类座次，请原玩家自行重连");
+                    return;
+                }
                 self.take_over_offline_human_seat(caller_identity, seat);
             }
             SeatKind::Ai => {

@@ -22,7 +22,7 @@ use mahjong_server::llm::{
 use mahjong_server::persona::PersonaMood;
 use mahjong_server::protocol::{ClientMessage, HealthResponse, ServerMessage, TableSnapshot};
 use mahjong_server::session::{OutboundSignal, TableOptions, TableRuntime, WallProviderFactory};
-use mahjong_server::{PacingMode, ServerConfig, ServerHandle};
+use mahjong_server::{ClientTrustTier, PacingMode, ServerConfig, ServerHandle};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Notify};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
@@ -228,6 +228,7 @@ impl LlmClient for ScriptedLlmClient {
 #[allow(dead_code)]
 pub struct VirtualClient {
     pub conn_id: u64,
+    trust_tier: ClientTrustTier,
     tx: mpsc::UnboundedSender<OutboundSignal>,
     rx: mpsc::UnboundedReceiver<OutboundSignal>,
 }
@@ -235,9 +236,23 @@ pub struct VirtualClient {
 #[allow(dead_code)]
 impl VirtualClient {
     pub async fn connect(runtime: &TableRuntime, client_id: &str, nickname: &str) -> Self {
+        Self::connect_with_tier(runtime, client_id, nickname, ClientTrustTier::Loopback).await
+    }
+
+    pub async fn connect_with_tier(
+        runtime: &TableRuntime,
+        client_id: &str,
+        nickname: &str,
+        trust_tier: ClientTrustTier,
+    ) -> Self {
         let conn_id = runtime.allocate_conn_id().await;
         let (tx, rx) = mpsc::unbounded_channel();
-        let mut client = Self { conn_id, tx, rx };
+        let mut client = Self {
+            conn_id,
+            trust_tier,
+            tx,
+            rx,
+        };
         client
             .send(
                 runtime,
@@ -256,7 +271,7 @@ impl VirtualClient {
     pub async fn send(&self, runtime: &TableRuntime, msg: &ClientMessage) {
         let raw = serde_json::to_string(msg).expect("serialize ClientMessage");
         let _ = runtime
-            .handle_raw_text(self.conn_id, &raw, true, &self.tx)
+            .handle_raw_text(self.conn_id, &raw, self.trust_tier, &self.tx)
             .await;
     }
 

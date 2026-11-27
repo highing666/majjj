@@ -139,6 +139,24 @@ pub struct PendingDestructiveOp {
     pub confirmed_seats: Vec<Seat>,
 }
 
+/// Request payload for `POST /api/remote-auth`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct RemoteAuthRequest {
+    /// 8-character table invite passcode (`入桌口令`).
+    pub code: String,
+}
+
+/// Response payload for `POST /api/remote-auth`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct RemoteAuthResponse {
+    /// Whether authentication succeeded and a session cookie was issued.
+    pub authenticated: bool,
+    /// Clear Chinese status or error message.
+    pub message: String,
+    /// Cooldown seconds returned when rate-limited (`429 Too Many Requests`).
+    pub retry_after_secs: Option<u32>,
+}
+
 /// Response payload for `GET /api/health`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct HealthResponse {
@@ -241,6 +259,8 @@ pub struct TableSnapshot {
     pub lan_urls: LanUrlInfo,
     /// Whether this client connected via loopback (`127.0.0.1` / `::1`).
     pub host_is_loopback: bool,
+    /// Whether this client connected from a public/remote trust tier (`Remote`).
+    pub client_is_remote: bool,
 }
 
 /// Client-to-server WebSocket JSON messages.
@@ -350,6 +370,8 @@ pub enum ServerMessage {
     },
     /// Sent to an older connection when a newer tab replaces it with the same credential.
     SessionReplaced,
+    /// Sent to connected remote clients immediately before closing when the host disables `远程联机`.
+    RemoteAccessDisabled { message: String },
     /// Non-fatal protocol or validation notice sent to the requesting client.
     ErrorNotice { message: String },
     /// Comic speech bubble banter line emitted by an AI table persona (`牌桌台词`).

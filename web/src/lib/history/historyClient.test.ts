@@ -436,4 +436,22 @@ describe("historyController", () => {
     expect(controller.getState().clearMemoryNotice).toContain("1 组牌友记忆");
     expect(controller.getState().clearMemoryNotice).toContain("2 条恩怨小本本");
   });
+
+  it("never issues any /api/* requests when client_is_remote is true", async () => {
+    const fetchFn = vi.fn<HistoryFetch>();
+    const controller = createHistoryController({ fetchFn });
+    controller.syncClientIsRemote(true);
+
+    await controller.open();
+    await controller.refresh();
+    await controller.refreshPersonaMemory();
+    expect(await controller.requestExport()).toBe(false);
+    controller.requestClear();
+    expect(await controller.confirmClear()).toBe(false);
+    controller.requestClearMemory();
+    expect(await controller.confirmClearMemory()).toBe(false);
+
+    expect(controller.getState().open).toBe(false);
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
 });

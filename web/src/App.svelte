@@ -213,6 +213,7 @@
   });
 
   const snapshot = $derived(sessionState.snapshot);
+  const isRemote = $derived(snapshot?.client_is_remote === true);
 
   const activeSeatVoicePackId = $derived.by<HumanVoicePackId | null>(() => {
     if (!snapshot || snapshot.your_seat === null) {
@@ -261,6 +262,7 @@
 
   $effect(() => {
     shutdownController.syncHostIsLoopback(snapshot?.host_is_loopback === true);
+    historyController.syncClientIsRemote(isRemote);
   });
 
   $effect(() => {
@@ -281,6 +283,7 @@
   );
   const actionsDisabled = $derived(
     sessionState.replacedByNewTab ||
+      sessionState.remoteAccessDisabledMessage !== null ||
       sessionState.connectionStatus !== "connected",
   );
   const yourSeatAiAssisted = $derived(
@@ -317,13 +320,15 @@
   const connectionStatusText = $derived(
     shutdownState.phase === "stopped"
       ? "本机服务已关闭"
-      : sessionState.replacedByNewTab
-        ? "已被新标签页接管"
-        : sessionState.connectionStatus === "connected"
-          ? "已连接"
-          : sessionState.connectionStatus === "connecting"
-            ? "连接中"
-            : "已断开",
+      : sessionState.remoteAccessDisabledMessage !== null
+        ? "宿主已关闭远程联机"
+        : sessionState.replacedByNewTab
+          ? "已被新标签页接管"
+          : sessionState.connectionStatus === "connected"
+            ? "已连接"
+            : sessionState.connectionStatus === "connecting"
+              ? "连接中"
+              : "已断开",
   );
   const hasModalOpen = $derived(
     settingsOpen ||
@@ -439,6 +444,18 @@
       </div>
       <button class="btn" type="button" onclick={reloadPage}>刷新页面</button>
     </div>
+  {:else if sessionState.remoteAccessDisabledMessage !== null}
+    <div class="banner banner-danger" class:banner-floating={compact} role="alert">
+      <div>
+        <strong>宿主已关闭远程联机</strong>
+        {#if !compact}
+          <div>
+            {sessionState.remoteAccessDisabledMessage}，已停止自动重连。如需重新入桌，请联系宿主重新开启远程联机并获取新的入桌口令。
+          </div>
+        {/if}
+      </div>
+      <button class="btn" type="button" onclick={reloadPage}>刷新检查</button>
+    </div>
   {:else if sessionState.replacedByNewTab}
     <div class="banner banner-danger" class:banner-floating={compact} role="alert">
       <div>
@@ -513,7 +530,11 @@
   {#if presentedSnapshot === null}
     <section class="card placeholder-card">
       <h1>麻将牌局 · Majjj</h1>
-      <p>正在获取当前牌桌状态，请稍候…</p>
+      <p>
+        {sessionState.remoteAccessDisabledMessage !== null
+          ? "宿主已关闭远程联机，当前会话已断开。"
+          : "正在获取当前牌桌状态，请稍候…"}
+      </p>
     </section>
   {:else if presentedSnapshot.phase === "Lobby"}
     <LobbyView
@@ -528,8 +549,10 @@
       onSetSeatVoicePack={handleSelectHumanVoicePack}
       onStartMatch={() => client.startMatch()}
       onOpenSettings={() => (settingsOpen = true)}
-      onOpenHistory={() => void historyController.open()}
-      onTakeOverSeat={(seatInfo) => openTakeOverModal(seatInfo, "offline_human")}
+      onOpenHistory={isRemote ? undefined : () => void historyController.open()}
+      onTakeOverSeat={isRemote
+        ? undefined
+        : (seatInfo) => openTakeOverModal(seatInfo, "offline_human")}
     />
   {:else if presentedSnapshot.phase === "InMatch"}
     <section class="match-shell" class:match-shell-immersive={isSeatedMatch}>
@@ -655,7 +678,9 @@
         <section class="card placeholder-card">
           <h1>对局进行中</h1>
           <p class="placeholder-note">
-            当前本机未入座。你可以直接接管 AI 座位立即加入本小局，或经确认后接管已离线人类座位继续对局。
+            {activeSnap.client_is_remote
+              ? "当前本机未入座。你可以经确认后接管空余 AI 座位中途加入本小局。"
+              : "当前本机未入座。你可以直接接管 AI 座位立即加入本小局，或经确认后接管已离线人类座位继续对局。"}
           </p>
           <div class="observer-seats-grid">
             {#each takeOverItems as item (item.seatInfo.seat)}
@@ -725,17 +750,21 @@
       {hideAiBanterText}
       reducedEffects={renderQualityState.reducedEffects}
       disabled={actionsDisabled}
+      clientIsRemote={activeSnap.client_is_remote}
       onUpdateConfig={(config) => client.updateLobbyConfig(config)}
       onStartMatch={() => client.startMatch()}
       onReturnToLobby={() => client.returnToLobby()}
-      onOpenHistory={() => void historyController.open()}
-      onTakeOverSeat={(seatInfo) => openTakeOverModal(seatInfo, "offline_human")}
+      onOpenHistory={isRemote ? undefined : () => void historyController.open()}
+      onTakeOverSeat={isRemote
+        ? undefined
+        : (seatInfo) => openTakeOverModal(seatInfo, "offline_human")}
     />
   {:else}
     {@const activeSnap = snapshot ?? presentedSnapshot}
     {@const offlineTakeOverSeats = getOfflineHumanTakeOverSeats(
       activeSnap.seats,
       activeSnap.your_seat,
+      activeSnap.client_is_remote,
     )}
     <section class="card placeholder-card">
       <h1>对局已结束</h1>

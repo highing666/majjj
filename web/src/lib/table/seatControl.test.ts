@@ -73,6 +73,7 @@ function makeSnapshot(overrides: Partial<TableSnapshot> = {}): TableSnapshot {
       local_hostname_url: null,
     },
     host_is_loopback: true,
+    client_is_remote: false,
     ...overrides,
   };
 }
@@ -264,5 +265,39 @@ describe("seatControl view-model helpers", () => {
       "offline_human",
     );
     expect(namelessOfflineCopy.description).toContain("3号位");
+  });
+
+  it("hides offline human takeover for remote clients while keeping mid-match AI seat takeover", () => {
+    const remoteObserverInMatch = makeSnapshot({
+      your_seat: null,
+      host_is_loopback: false,
+      client_is_remote: true,
+    });
+
+    // Offline pause banner for remote clients must not suggest cross-device takeover.
+    const banner = buildOfflinePauseBanner(remoteObserverInMatch);
+    expect(banner).toContain("已离线");
+    expect(banner).not.toContain("跨设备接管");
+
+    const items = buildTakeOverSeatItems(remoteObserverInMatch);
+    // Offline human seat South MUST NOT be take-overable by a remote client.
+    expect(items.find((i) => i.seatInfo.seat === "South")).toMatchObject({
+      displayName: "南家",
+      takeOverKind: null,
+      statusLabel: "已离线",
+      actionLabel: null,
+    });
+    // AI seat West MUST remain take-overable mid-match by a remote client.
+    expect(items.find((i) => i.seatInfo.seat === "West")).toMatchObject({
+      displayName: "AI 3",
+      takeOverKind: "ai",
+      statusLabel: "AI 对局中",
+      actionLabel: "接管入座",
+    });
+
+    // Finished summary offline human helper returns empty list for remote clients.
+    expect(
+      getOfflineHumanTakeOverSeats(remoteObserverInMatch.seats, null, true),
+    ).toEqual([]);
   });
 });

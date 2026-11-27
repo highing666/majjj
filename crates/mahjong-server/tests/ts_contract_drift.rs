@@ -17,8 +17,8 @@ use mahjong_server::persona_memory::{
 };
 use mahjong_server::protocol::{
     ClientMessage, DestructiveOpKind, HealthResponse, LanUrlInfo, LobbyConfig,
-    PendingDestructiveOp, QuickEmote, SeatInfo, SeatKind, SeatingRule, ServerMessage, TablePace,
-    TablePhase, TableSnapshot,
+    PendingDestructiveOp, QuickEmote, RemoteAuthRequest, RemoteAuthResponse, SeatInfo, SeatKind,
+    SeatingRule, ServerMessage, TablePace, TablePhase, TableSnapshot,
 };
 use ts_rs::TS;
 
@@ -35,6 +35,8 @@ fn export_all_contract_types(out_dir: &Path) {
     ClientMessage::export_all_to(out_dir).expect("export ClientMessage bindings");
     ServerMessage::export_all_to(out_dir).expect("export ServerMessage bindings");
     HealthResponse::export_all_to(out_dir).expect("export HealthResponse bindings");
+    RemoteAuthRequest::export_all_to(out_dir).expect("export RemoteAuthRequest bindings");
+    RemoteAuthResponse::export_all_to(out_dir).expect("export RemoteAuthResponse bindings");
     StatsResponse::export_all_to(out_dir).expect("export StatsResponse bindings");
     HistoryExportResponse::export_all_to(out_dir).expect("export HistoryExportResponse bindings");
     ClearHistoryRequest::export_all_to(out_dir).expect("export ClearHistoryRequest bindings");
@@ -144,6 +146,8 @@ fn server_and_core_ts_bindings_match_committed_files_with_zero_drift() {
             "PublicPhase.ts",
             "PublicSeatView.ts",
             "QuickEmote.ts",
+            "RemoteAuthRequest.ts",
+            "RemoteAuthResponse.ts",
             "RevealedHand.ts",
             "RevealedMeld.ts",
             "RuleProfile.ts",
@@ -165,7 +169,7 @@ fn server_and_core_ts_bindings_match_committed_files_with_zero_drift() {
             "Wind.ts",
             "WinnerSettlement.ts",
         ],
-        "exact set of 64 exported server, history, persona memory, AI, persona, and core TypeScript files"
+        "exact set of 66 exported server, remote auth, history, persona memory, AI, persona, and core TypeScript files"
     );
 
     for (name, contents) in &expected_files {
@@ -368,6 +372,7 @@ fn frozen_server_protocol_types_roundtrip_serde_json_without_loss() {
         server_version: "0.1.0".to_string(),
         lan_urls,
         host_is_loopback: true,
+        client_is_remote: false,
     };
 
     let server_messages = [
@@ -391,6 +396,9 @@ fn frozen_server_protocol_types_roundtrip_serde_json_without_loss() {
         ServerMessage::ServerPing { ts_ms: 1234 },
         ServerMessage::ServerPong { ts_ms: 1234 },
         ServerMessage::SessionReplaced,
+        ServerMessage::RemoteAccessDisabled {
+            message: "宿主已关闭远程联机，连接已断开".to_string(),
+        },
         ServerMessage::ErrorNotice {
             message: "not enabled".to_string(),
         },
@@ -439,6 +447,22 @@ fn frozen_server_protocol_types_roundtrip_serde_json_without_loss() {
     let health_back: HealthResponse =
         serde_json::from_str(&serde_json::to_string(&health).unwrap()).unwrap();
     assert_eq!(health_back, health);
+
+    let auth_req = RemoteAuthRequest {
+        code: "ABCD2345".to_string(),
+    };
+    let auth_req_back: RemoteAuthRequest =
+        serde_json::from_str(&serde_json::to_string(&auth_req).unwrap()).unwrap();
+    assert_eq!(auth_req_back, auth_req);
+
+    let auth_resp = RemoteAuthResponse {
+        authenticated: false,
+        message: "尝试次数过多，请 60 秒后再试".to_string(),
+        retry_after_secs: Some(60),
+    };
+    let auth_resp_back: RemoteAuthResponse =
+        serde_json::from_str(&serde_json::to_string(&auth_resp).unwrap()).unwrap();
+    assert_eq!(auth_resp_back, auth_resp);
 
     let memory_resp = PersonaMemoryResponse {
         schema_version: 1,

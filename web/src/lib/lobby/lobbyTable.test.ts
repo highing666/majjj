@@ -54,6 +54,7 @@ function makeLobbySnapshot(
       local_hostname_url: null,
     },
     host_is_loopback: true,
+    client_is_remote: false,
     ...overrides,
   };
 }
@@ -280,5 +281,29 @@ describe("lobbyTable", () => {
       label: "清亮男声",
     });
     expect(vm.slots.right.humanVoicePackMeta).toBeNull();
+  });
+
+  it("hides LAN QR panel, preferences fetch, and offline human takeover when client_is_remote is true", () => {
+    const lanVm = buildLobbyTableViewModel(
+      makeLobbySnapshot({
+        your_seat: null,
+        host_is_loopback: false,
+        client_is_remote: false,
+      }),
+    );
+    expect(lanVm.showLanPanel).toBe(true);
+    expect(lanVm.shouldFetchPreferences).toBe(true);
+    expect(lanVm.canTakeOverOfflineHuman).toBe(true);
+
+    const remoteVm = buildLobbyTableViewModel(
+      makeLobbySnapshot({
+        your_seat: null,
+        host_is_loopback: false,
+        client_is_remote: true,
+      }),
+    );
+    expect(remoteVm.showLanPanel).toBe(false);
+    expect(remoteVm.shouldFetchPreferences).toBe(false);
+    expect(remoteVm.canTakeOverOfflineHuman).toBe(false);
   });
 });

@@ -60,6 +60,12 @@ export interface LobbyTableViewModel {
   assignableSeats: readonly LobbyTableSlot[];
   isSeated: boolean;
   shuffleNotice: string | null;
+  /** Whether the lobby should render the LAN QR / local network aside card (`false` for remote clients). */
+  showLanPanel: boolean;
+  /** Whether the lobby may fetch `/api/preferences` for recent nicknames (`false` for remote clients). */
+  shouldFetchPreferences: boolean;
+  /** Whether an unseated viewer may take over offline human seats (`false` for remote clients). */
+  canTakeOverOfflineHuman: boolean;
 }
 
 /**
@@ -161,11 +167,16 @@ export function buildLobbyTableViewModel(
     };
   });
 
+  const isRemote = snapshot.client_is_remote;
+
   return {
     slots,
     personaRoster,
     assignableSeats,
     isSeated,
     shuffleNotice,
+    showLanPanel: !isRemote,
+    shouldFetchPreferences: !isRemote,
+    canTakeOverOfflineHuman: !isRemote && !isSeated,
   };
 }

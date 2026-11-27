@@ -8,8 +8,8 @@ use std::time::Duration;
 use axum::body::Bytes;
 use axum::extract::ws::{Message as WsMessage, WebSocket};
 use axum::extract::{ConnectInfo, Path, Request, State, WebSocketUpgrade};
-use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri};
+use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, RETRY_AFTER, SET_COOKIE};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get, post};
@@ -29,8 +29,12 @@ use crate::lifecycle::{spawn_idle_shutdown_monitor, IdleTimeouts, WsConnectionTr
 use crate::llm::{resolve_llm_base_url, LlmClient, OpenAiLlmClient};
 use crate::net_bind::bind_tcp_listener;
 use crate::persona_memory::ClearPersonaMemoryRequest;
-use crate::protocol::{HealthResponse, ServerMessage};
+use crate::protocol::{HealthResponse, RemoteAuthRequest, RemoteAuthResponse, ServerMessage};
 use crate::public_url::{normalize_public_url, PublicUrlError};
+use crate::remote_access::{
+    build_session_set_cookie_header, RemoteAccessManager, RemoteAuthOutcome,
+};
+use crate::remote_gate::remote_gate_response;
 use crate::security::{
     classify_request_trust_tier, has_json_content_type, is_same_origin_ws_request,
     minimal_forbidden_response, unsupported_media_type_json_response, ClientTrustTier,
@@ -100,6 +104,8 @@ pub struct ServerConfig {
     pub tts_client: Option<Arc<dyn TtsClient>>,
     /// Optional explicit custom public origin override (`--public-url` / `MAJJJ_PUBLIC_URL`).
     pub public_url: Option<String>,
+    /// Whether `远程联机` starts enabled immediately on startup (`--allow-remote` / `MAJJJ_ALLOW_REMOTE`).
+    pub allow_remote: bool,
 }
 
 impl Default for ServerConfig {
@@ -121,6 +127,7 @@ impl Default for ServerConfig {
             no_tts: false,
             tts_client: None,
             public_url: None,
+            allow_remote: false,
         }
     }
 }
@@ -169,6 +176,7 @@ pub enum ServerError {
 pub struct ServerHandle {
     addr: SocketAddr,
     cli_public_url: Option<String>,
+    remote_access: RemoteAccessManager,
     shutdown_tx: watch::Sender<bool>,
     join_handle: Option<JoinHandle<Result<(), std::io::Error>>>,
 }
@@ -193,6 +201,12 @@ impl ServerHandle {
     #[must_use]
     pub fn cli_public_url(&self) -> Option<&str> {
         self.cli_public_url.as_deref()
+    }
+
+    /// Returns the live in-memory [`RemoteAccessManager`] controlling `远程联机` state.
+    #[must_use]
+    pub fn remote_access(&self) -> &RemoteAccessManager {
+        &self.remote_access
     }
 
     /// Waits until the server stops on its own (e.g. via `POST /api/shutdown` or idle auto-exit).
@@ -228,6 +242,8 @@ pub struct TestRouterHandle {
     pub router: Router,
     /// Receiver observing whether `POST /api/shutdown` triggered server shutdown.
     pub shutdown_rx: watch::Receiver<bool>,
+    /// Live in-memory remote access manager bound to `router`.
+    pub remote_access: RemoteAccessManager,
 }
 
 impl std::fmt::Debug for TestRouterHandle {
@@ -245,6 +261,7 @@ struct AppState {
     heartbeat: HeartbeatConfig,
     shutdown_tx: watch::Sender<bool>,
     ws_tracker: WsConnectionTracker,
+    remote_access: RemoteAccessManager,
 }
 
 impl ServerConfig {
@@ -363,6 +380,13 @@ impl ServerConfig {
         self
     }
 
+    /// Enables or disables initial `远程联机` state on server startup (`--allow-remote` / `MAJJJ_ALLOW_REMOTE`).
+    #[must_use]
+    pub fn with_allow_remote(mut self, allow_remote: bool) -> Self {
+        self.allow_remote = allow_remote;
+        self
+    }
+
     /// Binds the TCP socket immediately (failing on port conflicts without fallback) and
     /// spawns the Axum HTTP/WebSocket server on the current Tokio runtime.
     ///
@@ -402,10 +426,12 @@ impl ServerConfig {
         let (state, shutdown_rx) = self
             .init_app_state(options, static_assets, effective_port, None)
             .await?;
+        let remote_access = state.remote_access.clone();
         let router = build_router(state);
         Ok(TestRouterHandle {
             router,
             shutdown_rx,
+            remote_access,
         })
     }
 
@@ -501,6 +527,10 @@ impl ServerConfig {
         )?;
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let ws_tracker = WsConnectionTracker::new();
+        let remote_access = RemoteAccessManager::new();
+        if self.allow_remote {
+            let _ = remote_access.enable();
+        }
         let state = AppState {
             port,
             headless: self.headless,
@@ -509,6 +539,7 @@ impl ServerConfig {
             heartbeat: self.heartbeat,
             shutdown_tx,
             ws_tracker,
+            remote_access,
         };
         Ok((state, shutdown_rx))
     }
@@ -563,6 +594,7 @@ impl ServerConfig {
         };
 
         let shutdown_tx = state.shutdown_tx.clone();
+        let remote_access = state.remote_access.clone();
         let router = build_router(state);
 
         let join_handle = tokio::spawn(async move {
@@ -583,6 +615,7 @@ impl ServerConfig {
         Ok(ServerHandle {
             addr: local_addr,
             cli_public_url,
+            remote_access,
             shutdown_tx,
             join_handle: Some(join_handle),
         })
@@ -602,6 +635,7 @@ fn build_router(state: AppState) -> Router {
             post(persona_memory_clear_handler),
         )
         .route("/api/banter-audio/{banter_id}", get(banter_audio_handler))
+        .route("/api/remote-auth", post(remote_auth_handler))
         .route("/api/shutdown", post(shutdown_handler))
         .route("/api/{*rest}", any(api_not_found))
         .route("/api", any(api_not_found))
@@ -623,7 +657,7 @@ fn build_router(state: AppState) -> Router {
 }
 
 async fn trust_and_remote_guard_middleware(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     mut req: Request,
     next: Next,
 ) -> Response {
@@ -635,7 +669,30 @@ async fn trust_and_remote_guard_middleware(
     req.extensions_mut().insert(tier);
 
     if tier.is_remote() {
-        return minimal_forbidden_response();
+        if !state.remote_access.is_enabled() {
+            return minimal_forbidden_response();
+        }
+        let path = req.uri().path();
+        let method = req.method();
+        if *method == Method::POST && path == "/api/remote-auth" {
+            return next.run(req).await;
+        }
+        let authenticated = state.remote_access.has_valid_session_cookie(req.headers());
+        if !authenticated {
+            if *method == Method::GET && path == "/" {
+                return remote_gate_response();
+            }
+            return minimal_forbidden_response();
+        }
+        if path == "/api" || path.starts_with("/api/") {
+            let allowed_audio = *method == Method::GET
+                && path
+                    .strip_prefix("/api/banter-audio/")
+                    .is_some_and(|rest| !rest.is_empty() && !rest.contains('/'));
+            if !allowed_audio {
+                return minimal_forbidden_response();
+            }
+        }
     }
 
     next.run(req).await
@@ -803,6 +860,75 @@ async fn banter_audio_handler(
     response
 }
 
+async fn remote_auth_handler(
+    extensions: axum::http::Extensions,
+    headers: HeaderMap,
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Response {
+    if !state.remote_access.is_enabled() {
+        return minimal_forbidden_response();
+    }
+    if !has_json_content_type(&headers) {
+        return unsupported_media_type_json_response();
+    }
+    let Ok(req) = serde_json::from_slice::<RemoteAuthRequest>(&body) else {
+        return json_with_no_store(
+            StatusCode::BAD_REQUEST,
+            &RemoteAuthResponse {
+                authenticated: false,
+                message: "请求格式无效，请提供入桌口令".to_string(),
+                retry_after_secs: None,
+            },
+        );
+    };
+    let peer = extensions
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ConnectInfo(addr)| *addr);
+    match state
+        .remote_access
+        .verify_and_issue_session(&req.code, peer)
+    {
+        RemoteAuthOutcome::Disabled => minimal_forbidden_response(),
+        RemoteAuthOutcome::InvalidCode => json_with_no_store(
+            StatusCode::UNAUTHORIZED,
+            &RemoteAuthResponse {
+                authenticated: false,
+                message: "入桌口令错误，请检查后重试".to_string(),
+                retry_after_secs: None,
+            },
+        ),
+        RemoteAuthOutcome::RateLimited { retry_after_secs } => {
+            let mut response = json_with_no_store(
+                StatusCode::TOO_MANY_REQUESTS,
+                &RemoteAuthResponse {
+                    authenticated: false,
+                    message: format!("尝试次数过多，请 {retry_after_secs} 秒后再试"),
+                    retry_after_secs: Some(retry_after_secs),
+                },
+            );
+            if let Ok(val) = HeaderValue::from_str(&retry_after_secs.to_string()) {
+                response.headers_mut().insert(RETRY_AFTER, val);
+            }
+            response
+        }
+        RemoteAuthOutcome::Authenticated { session_token } => {
+            let mut response = json_with_no_store(
+                StatusCode::OK,
+                &RemoteAuthResponse {
+                    authenticated: true,
+                    message: "验证通过，正在进入牌桌".to_string(),
+                    retry_after_secs: None,
+                },
+            );
+            response
+                .headers_mut()
+                .insert(SET_COOKIE, build_session_set_cookie_header(&session_token));
+            response
+        }
+    }
+}
+
 async fn api_not_found() -> Response {
     StatusCode::NOT_FOUND.into_response()
 }
@@ -814,35 +940,65 @@ async fn ws_handler(
     State(state): State<AppState>,
 ) -> Response {
     let tier = extract_trust_tier(&extensions, &headers);
-    let host_is_loopback = tier.is_loopback();
     let runtime = state.session.clone();
     let heartbeat = state.heartbeat;
     let ws_tracker = state.ws_tracker.clone();
+    let remote_access = state.remote_access.clone();
     let shutdown_rx = state.shutdown_tx.subscribe();
     ws.on_upgrade(move |socket| {
         handle_ws_connection(
             socket,
             runtime,
-            host_is_loopback,
+            tier,
             heartbeat,
             ws_tracker,
+            remote_access,
             shutdown_rx,
         )
     })
 }
 
+async fn wait_remote_revocation(
+    rx: &mut Option<watch::Receiver<u64>>,
+) -> Result<(), watch::error::RecvError> {
+    match rx.as_mut() {
+        Some(revocation_rx) => revocation_rx.changed().await,
+        None => std::future::pending().await,
+    }
+}
+
 async fn handle_ws_connection(
     socket: WebSocket,
     runtime: TableRuntime,
-    host_is_loopback: bool,
+    trust_tier: ClientTrustTier,
     heartbeat: HeartbeatConfig,
     ws_tracker: WsConnectionTracker,
+    remote_access: RemoteAccessManager,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
     let _ws_guard = ws_tracker.enter();
+    let (_remote_ws_guard, mut remote_revocation_rx) = if trust_tier.is_remote() {
+        let (guard, rx) = remote_access.enter_remote_ws();
+        (Some(guard), Some(rx))
+    } else {
+        (None, None)
+    };
+    let (mut ws_tx, mut ws_rx) = socket.split();
+
+    if trust_tier.is_remote() && !remote_access.is_enabled() {
+        let _ = send_server_message(
+            &mut ws_tx,
+            &ServerMessage::RemoteAccessDisabled {
+                message: "宿主已关闭远程联机，连接已断开".to_string(),
+            },
+        )
+        .await;
+        close_ws_gracefully(&mut ws_tx).await;
+        return;
+    }
+
     let conn_id = runtime.allocate_conn_id().await;
     let (tx, mut rx) = mpsc::unbounded_channel::<OutboundSignal>();
-    let (mut ws_tx, mut ws_rx) = socket.split();
 
     let ping_period = heartbeat.ping_interval.max(Duration::from_millis(1));
     let activity_timeout = heartbeat.activity_timeout.max(Duration::from_millis(1));
@@ -866,6 +1022,19 @@ async fn handle_ws_connection(
                     break;
                 }
             }
+            res = wait_remote_revocation(&mut remote_revocation_rx) => {
+                if res.is_err() || !remote_access.is_enabled() {
+                    let _ = send_server_message(
+                        &mut ws_tx,
+                        &ServerMessage::RemoteAccessDisabled {
+                            message: "宿主已关闭远程联机，连接已断开".to_string(),
+                        },
+                    )
+                    .await;
+                    close_ws_gracefully(&mut ws_tx).await;
+                    break;
+                }
+            }
             outbound = rx.recv() => {
                 match outbound {
                     Some(OutboundSignal::Message(msg)) => {
@@ -885,7 +1054,7 @@ async fn handle_ws_connection(
                 match inbound {
                     Some(Ok(WsMessage::Text(text))) => {
                         let outcome = runtime
-                            .handle_raw_text(conn_id, text.as_str(), host_is_loopback, &tx)
+                            .handle_raw_text(conn_id, text.as_str(), trust_tier, &tx)
                             .await;
                         if outcome.valid_inbound_message {
                             timeout_sleep.as_mut().reset(Instant::now() + activity_timeout);
@@ -987,6 +1156,7 @@ mod tests {
 
     use super::{shutdown_handler, AppState, HeartbeatConfig};
     use crate::lifecycle::WsConnectionTracker;
+    use crate::remote_access::RemoteAccessManager;
     use crate::session::TableRuntime;
     use crate::static_assets::NoopStaticAssets;
 
@@ -1017,6 +1187,7 @@ mod tests {
             heartbeat: HeartbeatConfig::default(),
             shutdown_tx,
             ws_tracker: WsConnectionTracker::new(),
+            remote_access: RemoteAccessManager::new(),
         };
         (state, shutdown_rx)
     }

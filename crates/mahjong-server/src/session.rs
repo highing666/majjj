@@ -49,6 +49,7 @@ use crate::protocol::{
     SeatInfo, SeatKind, SeatingRule, ServerMessage, TablePhase, TableSnapshot,
 };
 use crate::seat_control::HandAttribution;
+use crate::security::ClientTrustTier;
 use crate::server::ServerError;
 use crate::storage::{current_unix_ms, normalize_nickname, HistoryStore, PublicUrlSaveError};
 use crate::tts::{
@@ -387,6 +388,7 @@ pub(crate) struct ClientConnection {
     pub(crate) nickname: String,
     pub(crate) seat: Option<Seat>,
     pub(crate) host_is_loopback: bool,
+    pub(crate) is_remote: bool,
     pub(crate) tx: mpsc::UnboundedSender<OutboundSignal>,
 }
 
@@ -597,7 +599,7 @@ impl TableSession {
     ) {
         self.handle_hello(
             conn_id,
-            true,
+            ClientTrustTier::Loopback,
             tx,
             HelloParams {
                 client_id: client_id.to_string(),
@@ -651,6 +653,11 @@ impl TableSession {
             }
             _ => None,
         };
+        let (lan_urls, host_is_loopback, client_is_remote) = if conn.is_remote {
+            (LanUrlInfo::default(), false, true)
+        } else {
+            (self.lan_urls(), conn.host_is_loopback, false)
+        };
         TableSnapshot {
             table_id: self.table_id.clone(),
             phase: self.phase,
@@ -664,8 +671,9 @@ impl TableSession {
             pending_destructive_op: self.pending_destructive_op.clone(),
             seq: self.seq,
             server_version: env!("CARGO_PKG_VERSION").to_string(),
-            lan_urls: self.lan_urls(),
-            host_is_loopback: conn.host_is_loopback,
+            lan_urls,
+            host_is_loopback,
+            client_is_remote,
         }
     }
 
@@ -734,7 +742,7 @@ impl TableSession {
     fn handle_hello(
         &mut self,
         conn_id: u64,
-        host_is_loopback: bool,
+        trust_tier: ClientTrustTier,
         tx: &mpsc::UnboundedSender<OutboundSignal>,
         params: HelloParams,
     ) {
@@ -811,7 +819,8 @@ impl TableSession {
             seat_token: seat_token.clone(),
             nickname,
             seat: restored_seat,
-            host_is_loopback,
+            host_is_loopback: trust_tier.is_loopback(),
+            is_remote: trust_tier.is_remote(),
             tx: tx.clone(),
         };
         let snapshot = self.build_snapshot(&conn);
@@ -2606,7 +2615,7 @@ impl TableRuntime {
         &self,
         conn_id: u64,
         raw_text: &str,
-        host_is_loopback: bool,
+        trust_tier: ClientTrustTier,
         tx: &mpsc::UnboundedSender<OutboundSignal>,
     ) -> HandleOutcome {
         let msg: ClientMessage = match serde_json::from_str(raw_text) {
@@ -2640,7 +2649,7 @@ impl TableRuntime {
                 } => {
                     session.handle_hello(
                         conn_id,
-                        host_is_loopback,
+                        trust_tier,
                         tx,
                         HelloParams {
                             client_id,

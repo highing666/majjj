@@ -89,6 +89,15 @@ struct Cli {
     /// Custom public origin override for remote invitation links (e.g. `http://majjj.example.com:8789`).
     #[arg(long, env = "MAJJJ_PUBLIC_URL", value_parser = parse_public_url)]
     public_url: Option<String>,
+
+    /// Enable remote table access (`远程联机`) immediately on startup (defaults to disabled).
+    #[arg(
+        long,
+        env = "MAJJJ_ALLOW_REMOTE",
+        default_value_t = false,
+        value_parser = clap::builder::BoolishValueParser::new()
+    )]
+    allow_remote: bool,
 }
 
 impl From<Cli> for ServerConfig {
@@ -103,7 +112,8 @@ impl From<Cli> for ServerConfig {
             .with_llm_url(cli.llm_url)
             .with_tts_url(cli.tts_url)
             .with_no_tts(cli.no_tts)
-            .with_public_url(cli.public_url);
+            .with_public_url(cli.public_url)
+            .with_allow_remote(cli.allow_remote);
         if let Some(bind) = cli.bind {
             cfg = cfg.with_bind(bind);
         }
@@ -226,6 +236,9 @@ async fn run_cli(config: ServerConfig) -> ExitCode {
     };
 
     println!("majjj listening on http://{}", handle.addr());
+    if let Some(passcode) = handle.remote_access().passcode() {
+        println!("remote access enabled (passcode: {passcode})");
+    }
     if !no_open {
         let url = format!("http://127.0.0.1:{}", handle.addr().port());
         open_browser_url(&url);
@@ -553,6 +566,44 @@ mod tests {
             env_err.is_err(),
             "invalid MAJJJ_PUBLIC_URL must be rejected"
         );
+    }
+
+    #[test]
+    fn cli_accepts_allow_remote_flag_and_truthy_env_overrides() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var("MAJJJ_ALLOW_REMOTE");
+
+        let default_cli =
+            Cli::try_parse_from(["mahjong-server"]).expect("parse default allow_remote");
+        assert!(!ServerConfig::from(default_cli).allow_remote);
+
+        let flag_cli = Cli::try_parse_from(["mahjong-server", "--allow-remote"])
+            .expect("parse --allow-remote");
+        assert!(ServerConfig::from(flag_cli).allow_remote);
+
+        for truthy in ["1", "true", "yes", "on"] {
+            std::env::set_var("MAJJJ_ALLOW_REMOTE", truthy);
+            let parsed = Cli::try_parse_from(["mahjong-server"]);
+            std::env::remove_var("MAJJJ_ALLOW_REMOTE");
+            let parsed =
+                parsed.unwrap_or_else(|err| panic!("parse MAJJJ_ALLOW_REMOTE={truthy}: {err}"));
+            assert!(
+                ServerConfig::from(parsed).allow_remote,
+                "MAJJJ_ALLOW_REMOTE={truthy} must enable remote access"
+            );
+        }
+
+        for falsy in ["0", "false", "no", "off"] {
+            std::env::set_var("MAJJJ_ALLOW_REMOTE", falsy);
+            let parsed = Cli::try_parse_from(["mahjong-server"]);
+            std::env::remove_var("MAJJJ_ALLOW_REMOTE");
+            let parsed =
+                parsed.unwrap_or_else(|err| panic!("parse MAJJJ_ALLOW_REMOTE={falsy}: {err}"));
+            assert!(
+                !ServerConfig::from(parsed).allow_remote,
+                "MAJJJ_ALLOW_REMOTE={falsy} must keep remote access disabled"
+            );
+        }
     }
 
     #[test]

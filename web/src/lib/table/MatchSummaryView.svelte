@@ -30,6 +30,7 @@
     hideAiBanterText?: boolean;
     reducedEffects?: boolean;
     disabled?: boolean;
+    clientIsRemote?: boolean;
     onUpdateConfig: (config: LobbyConfig) => void;
     onStartMatch: () => void;
     onReturnToLobby: () => void;
@@ -48,6 +49,7 @@
     hideAiBanterText = false,
     reducedEffects = false,
     disabled = false,
+    clientIsRemote = false,
     onUpdateConfig,
     onStartMatch,
     onReturnToLobby,
@@ -59,7 +61,7 @@
   const modeLabel = $derived(matchModeLabel(summary.mode));
   const canOperate = $derived(yourSeat !== null && !disabled);
   const offlineTakeOverSeats = $derived(
-    getOfflineHumanTakeOverSeats(seats, yourSeat),
+    getOfflineHumanTakeOverSeats(seats, yourSeat, clientIsRemote),
   );
 </script>
 

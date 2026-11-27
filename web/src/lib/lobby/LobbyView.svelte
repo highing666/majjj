@@ -58,6 +58,10 @@
   let activePersonaSeat = $state<Seat | null>(null);
 
   $effect(() => {
+    if (snapshot.client_is_remote) {
+      recentNicknames = [];
+      return;
+    }
     let cancelled = false;
     createHistoryClient()
       .fetchPreferences()
@@ -392,7 +396,7 @@
         >
           {isSeated ? "换到此座" : "入座"}
         </button>
-      {:else if !isSeated && seatInfo.kind === "Human" && !seatInfo.connected && onTakeOverSeat}
+      {:else if tableModel.canTakeOverOfflineHuman && seatInfo.kind === "Human" && !seatInfo.connected && onTakeOverSeat}
         <button
           class="btn btn-primary"
           type="button"
@@ -408,14 +412,16 @@
   </article>
 {/snippet}
 
-<section class="lobby-grid">
+<section class="lobby-grid" class:lobby-grid-single={!tableModel.showLanPanel}>
   <div class="lobby-main">
     <div class="card">
       <div class="section-head">
         <div>
           <h1>麻将牌局 · 开桌大厅</h1>
           <p class="subtitle">
-            家庭局域网直连牌桌，任一已入座玩家均可对等调整规则并开局。
+            {snapshot.client_is_remote
+              ? "受邀远程联机牌桌，任一已入座玩家均可对等调整规则并开局。"
+              : "家庭局域网直连牌桌，任一已入座玩家均可对等调整规则并开局。"}
           </p>
         </div>
         <div class="lobby-head-actions">
@@ -645,79 +651,81 @@
     </div>
   </div>
 
-  <aside class="card lan-panel">
-    <h2>手机扫码入桌</h2>
-    <p class="subtitle">
-      同一家庭 Wi-Fi 下的 iPhone 可直接用系统相机扫码，在 Safari 零安装打开。
-    </p>
+  {#if tableModel.showLanPanel}
+    <aside class="card lan-panel">
+      <h2>手机扫码入桌</h2>
+      <p class="subtitle">
+        同一家庭 Wi-Fi 下的 iPhone 可直接用系统相机扫码，在 Safari 零安装打开。
+      </p>
 
-    {#if activeIpv4Url}
-      <div class="qr-frame">
-        {#if qrDataUrl}
-          <img
-            class="qr-image"
-            src={qrDataUrl}
-            alt="局域网扫码入桌二维码"
-            width="220"
-            height="220"
-          />
-        {:else if qrError}
-          <p class="qr-fallback">{qrError}</p>
-        {:else}
-          <p class="qr-fallback">正在生成二维码…</p>
+      {#if activeIpv4Url}
+        <div class="qr-frame">
+          {#if qrDataUrl}
+            <img
+              class="qr-image"
+              src={qrDataUrl}
+              alt="局域网扫码入桌二维码"
+              width="220"
+              height="220"
+            />
+          {:else if qrError}
+            <p class="qr-fallback">{qrError}</p>
+          {:else}
+            <p class="qr-fallback">正在生成二维码…</p>
+          {/if}
+        </div>
+
+        {#if ipv4Urls.length > 1}
+          <label class="config-field">
+            <span class="field-label">备选局域网网卡 IP</span>
+            <select
+              class="select-input"
+              value={activeIpv4Url}
+              onchange={handleIpv4Switch}
+            >
+              {#each ipv4Urls as url (url)}
+                <option value={url}>{url}</option>
+              {/each}
+            </select>
+          </label>
         {/if}
-      </div>
 
-      {#if ipv4Urls.length > 1}
-        <label class="config-field">
-          <span class="field-label">备选局域网网卡 IP</span>
-          <select
-            class="select-input"
-            value={activeIpv4Url}
-            onchange={handleIpv4Switch}
-          >
-            {#each ipv4Urls as url (url)}
-              <option value={url}>{url}</option>
-            {/each}
-          </select>
-        </label>
+        <div class="url-box">
+          <span class="field-label">当前局域网 IPv4 地址</span>
+          <div class="url-row">
+            <code class="url-code">{activeIpv4Url}</code>
+            <button
+              class="btn btn-subtle copy-btn"
+              type="button"
+              onclick={() => copyUrl(activeIpv4Url, "ipv4")}
+            >
+              {copiedLabel === "ipv4" ? "已复制" : "复制"}
+            </button>
+          </div>
+        </div>
+      {:else}
+        <div class="qr-empty">
+          暂未检测到可用的私有局域网 IPv4 地址，请确认宿主机已连接家庭 Wi-Fi 或有线网。
+        </div>
       {/if}
 
-      <div class="url-box">
-        <span class="field-label">当前局域网 IPv4 地址</span>
-        <div class="url-row">
-          <code class="url-code">{activeIpv4Url}</code>
-          <button
-            class="btn btn-subtle copy-btn"
-            type="button"
-            onclick={() => copyUrl(activeIpv4Url, "ipv4")}
-          >
-            {copiedLabel === "ipv4" ? "已复制" : "复制"}
-          </button>
+      {#if localHostnameUrl}
+        <div class="url-box">
+          <span class="field-label">宿主机 .local 名称地址</span>
+          <div class="url-row">
+            <code class="url-code">{localHostnameUrl}</code>
+            <button
+              class="btn btn-subtle copy-btn"
+              type="button"
+              onclick={() => copyUrl(localHostnameUrl, "local")}
+            >
+              {copiedLabel === "local" ? "已复制" : "复制"}
+            </button>
+          </div>
         </div>
-      </div>
-    {:else}
-      <div class="qr-empty">
-        暂未检测到可用的私有局域网 IPv4 地址，请确认宿主机已连接家庭 Wi-Fi 或有线网。
-      </div>
-    {/if}
-
-    {#if localHostnameUrl}
-      <div class="url-box">
-        <span class="field-label">宿主机 .local 名称地址</span>
-        <div class="url-row">
-          <code class="url-code">{localHostnameUrl}</code>
-          <button
-            class="btn btn-subtle copy-btn"
-            type="button"
-            onclick={() => copyUrl(localHostnameUrl, "local")}
-          >
-            {copiedLabel === "local" ? "已复制" : "复制"}
-          </button>
-        </div>
-      </div>
-    {/if}
-  </aside>
+      {/if}
+    </aside>
+  {/if}
 </section>
 
 <style>
@@ -746,6 +754,10 @@
     grid-template-columns: minmax(0, 1.55fr) minmax(270px, 1fr);
     gap: 16px;
     align-items: start;
+  }
+
+  .lobby-grid-single {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .lobby-main {
