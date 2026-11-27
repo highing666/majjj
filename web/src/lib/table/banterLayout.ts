@@ -1,4 +1,9 @@
-import type { Rect, TableLayout } from "./layout";
+import {
+  computeQuickEmoteDockHeight,
+  isCompactQuickEmoteViewport,
+  type Rect,
+  type TableLayout,
+} from "./layout";
 import type { RelativeSlot } from "./viewModel";
 
 export type BanterTailPosition =
@@ -20,16 +25,20 @@ export interface BanterBubbleAnchor {
 const EDGE_PAD = 6;
 const GAP = 5;
 
+function toQuickEmoteInput(layout: TableLayout) {
+  return {
+    width: layout.width,
+    height: layout.height,
+    isShortLandscape: layout.isShortLandscape,
+    rightWingWidth: layout.rightWing.width,
+  };
+}
+
 /**
- * Single-sourced compact breakpoint shared by `computeQuickEmoteDockRect` and `QuickEmoteBar.svelte`.
+ * Single-sourced compact breakpoint shared by `layout.ts`, `computeQuickEmoteDockRect`, and `QuickEmoteBar.svelte`.
  */
 export function isCompactQuickEmoteDock(layout: TableLayout): boolean {
-  return (
-    layout.isShortLandscape ||
-    layout.height > layout.width ||
-    layout.width < 700 ||
-    layout.rightWing.width < 190
-  );
+  return isCompactQuickEmoteViewport(toQuickEmoteInput(layout));
 }
 
 /**
@@ -183,8 +192,9 @@ export function computeBanterBubbleAnchor(
  * that stays strictly clear of `viewerHandRect`, `turnBarRect`, and `badges.bottom`.
  */
 export function computeQuickEmoteDockRect(layout: TableLayout): Rect {
+  const dockH = computeQuickEmoteDockHeight(toQuickEmoteInput(layout));
+
   if (layout.height > layout.width) {
-    const dockH = 44;
     const width = Math.max(180, layout.width - EDGE_PAD * 2);
     const maxBottom = Math.min(
       layout.badges.bottom.y,
@@ -200,8 +210,6 @@ export function computeQuickEmoteDockRect(layout: TableLayout): Rect {
     };
   }
 
-  const compact = isCompactQuickEmoteDock(layout);
-  const dockH = compact ? 64 : 84;
   const width = clamp(
     layout.rightWing.width,
     92,

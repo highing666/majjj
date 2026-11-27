@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { computeQuickEmoteDockRect } from "./banterLayout";
 import {
   computeBottomRiverSlotPoint,
   computeCenterSealEdgeBars,
@@ -8,19 +9,15 @@ import {
   computeSeatBadgeLayout,
   computeTableLayout,
   computeViewerHandSlots,
-  MELD_GROUP_GAP,
-  MELD_TILE_GAP,
   type Rect,
 } from "./layout";
-
-function rectsOverlap(a: Rect, b: Rect): boolean {
-  return (
-    a.x < b.x + b.width &&
-    a.x + a.width > b.x &&
-    a.y < b.y + b.height &&
-    a.y + a.height > b.y
-  );
-}
+import {
+  ADR_0013_VIEWPORT_MATRIX,
+  computeBottomMeldRect,
+  computeTestMeldSpan,
+  rectsOverlap,
+  VIEWER_MELD_SCENARIOS,
+} from "./testFixtures";
 
 function expectInsideBounds(rect: Rect, width: number, height: number): void {
   expect(rect.x).toBeGreaterThanOrEqual(0);
@@ -36,40 +33,24 @@ function expectRectContains(outer: Rect, inner: Rect): void {
   expect(inner.y + inner.height).toBeLessThanOrEqual(outer.y + outer.height);
 }
 
-describe("Scheme B three-column theater computeTableLayout", () => {
-  it.each([
-    { name: "Mac wide 1440x900", width: 1440, height: 900, wide: true, minHandW: 54, minRiverW: 28 },
-    { name: "Mac laptop 1280x720", width: 1280, height: 720, wide: true, minHandW: 46, minRiverW: 24 },
-    { name: "desktop 1024x720", width: 1024, height: 720, wide: true, minHandW: 36, minRiverW: 20 },
-    { name: "iPhone landscape 844x390", width: 844, height: 390, wide: true, minHandW: 30, minRiverW: 18 },
-    { name: "compact landscape 760x340", width: 760, height: 340, wide: true, minHandW: 26, minRiverW: 16 },
-    { name: "SE landscape 568x320", width: 568, height: 320, wide: true, minHandW: 20, minRiverW: 14 },
-    { name: "iPhone portrait fallback 390x844", width: 390, height: 844, wide: false, minHandW: 23, minRiverW: 15 },
-    { name: "SE portrait fallback 320x568", width: 320, height: 568, wide: false, minHandW: 19, minRiverW: 14 },
-  ])(
-    "produces zero-overlap, in-bounds Scheme B layout on $name ($width x $height)",
-    ({ width, height, wide, minHandW, minRiverW }) => {
+describe("Cross-column enlarged theater computeTableLayout (ADR-0013)", () => {
+  it.each(ADR_0013_VIEWPORT_MATRIX)(
+    "produces enlarged, capped, zero-overlap layout on $name ($width x $height)",
+    ({ width, height, wide, minHandW, minRiverW, minMeldW }) => {
       const layout = computeTableLayout(width, height);
 
       expect(layout.isWide).toBe(wide);
       expect(layout.handTileW).toBeGreaterThanOrEqual(minHandW);
+      expect(layout.handTileW).toBeLessThanOrEqual(88);
       expect(layout.handTileH).toBeGreaterThan(layout.handTileW);
       expect(layout.riverTileW).toBeGreaterThanOrEqual(minRiverW);
+      expect(layout.riverTileW).toBeLessThanOrEqual(46);
       expect(layout.riverTileH).toBeGreaterThan(layout.riverTileW);
+      expect(layout.meldTileW).toBeGreaterThanOrEqual(minMeldW);
+      expect(layout.meldTileW).toBeLessThanOrEqual(38);
+      expect(layout.meldTileH).toBeGreaterThan(layout.meldTileW);
 
       // Three theater regions + top floating capsule safe areas stay in bounds and pairwise disjoint
-      for (const zone of [
-        layout.leftWing,
-        layout.centerStage,
-        layout.rightWing,
-        layout.topLeftSafeRect,
-        layout.topRightSafeRect,
-      ]) {
-        expectInsideBounds(zone, width, height);
-        expect(zone.width).toBeGreaterThan(0);
-        expect(zone.height).toBeGreaterThan(0);
-      }
-
       const theaterColumns = [
         layout.leftWing,
         layout.centerStage,
@@ -77,6 +58,11 @@ describe("Scheme B three-column theater computeTableLayout", () => {
         layout.topLeftSafeRect,
         layout.topRightSafeRect,
       ];
+      for (const zone of theaterColumns) {
+        expectInsideBounds(zone, width, height);
+        expect(zone.width).toBeGreaterThan(0);
+        expect(zone.height).toBeGreaterThan(0);
+      }
       for (let i = 0; i < theaterColumns.length; i += 1) {
         for (let j = i + 1; j < theaterColumns.length; j += 1) {
           expect(rectsOverlap(theaterColumns[i], theaterColumns[j])).toBe(false);
@@ -88,8 +74,20 @@ describe("Scheme B three-column theater computeTableLayout", () => {
         expect(layout.centerStage.x + layout.centerStage.width).toBeLessThan(layout.rightWing.x);
         expect(layout.riverGrid.top.perLine).toBe(10);
         expect(layout.riverGrid.bottom.perLine).toBe(10);
-        expect(layout.riverGrid.left.perLine).toBe(4);
-        expect(layout.riverGrid.right.perLine).toBe(4);
+        const expectedSidePerLine = layout.isShortLandscape ? 5 : 6;
+        expect(layout.riverGrid.left.perLine).toBe(expectedSidePerLine);
+        expect(layout.riverGrid.right.perLine).toBe(expectedSidePerLine);
+        expect(layout.riverGrid.left.maxLines).toBe(2);
+        expect(layout.riverGrid.right.maxLines).toBe(2);
+
+        // Compact bottom-left 自家 badge width (126..156 desktop, 90..112 short landscape)
+        if (layout.isShortLandscape) {
+          expect(layout.badges.bottom.width).toBeGreaterThanOrEqual(90);
+          expect(layout.badges.bottom.width).toBeLessThanOrEqual(112);
+        } else {
+          expect(layout.badges.bottom.width).toBeGreaterThanOrEqual(126);
+          expect(layout.badges.bottom.width).toBeLessThanOrEqual(156);
+        }
       } else {
         expect(layout.riverGrid.top.perLine).toBeGreaterThanOrEqual(4);
         expect(layout.riverGrid.bottom.perLine).toBeGreaterThanOrEqual(4);
@@ -109,7 +107,7 @@ describe("Scheme B three-column theater computeTableLayout", () => {
       expect(sealLayout.textY).toBeGreaterThan(layout.centerSeal.y);
       expect(sealLayout.textY).toBeLessThan(layout.centerSeal.y + layout.centerSeal.height);
 
-      // Viewer 13+1 hand + centered turnBarRect directly above hand
+      // Viewer 13+1 hand + turnBarRect directly above hand
       expectInsideBounds(layout.viewerHandRect, width, height);
       expectInsideBounds(layout.turnBarRect, width, height);
       expect(layout.viewerHandRect.y).toBe(layout.bottomHandY);
@@ -125,7 +123,15 @@ describe("Scheme B three-column theater computeTableLayout", () => {
       ).toBeLessThanOrEqual(2);
 
       if (wide) {
-        expectRectContains(layout.centerStage, layout.viewerHandRect);
+        // Viewer hand crosses out of centerStage into reclaimed bottom corridor while strictly
+        // clearing compact bottomBadge on the left and rightWing/QuickEmoteBar on the right
+        expect(layout.viewerHandRect.x).toBeGreaterThan(
+          layout.badges.bottom.x + layout.badges.bottom.width,
+        );
+        expect(layout.viewerHandRect.x + layout.viewerHandRect.width).toBeLessThan(
+          layout.rightWing.x,
+        );
+
         expectRectContains(layout.centerStage, layout.turnBarRect);
         expectRectContains(layout.centerStage, layout.centerSeal);
         expectRectContains(layout.centerStage, layout.badges.top);
@@ -146,78 +152,16 @@ describe("Scheme B three-column theater computeTableLayout", () => {
         expectRectContains(layout.rightWing, layout.riverTroughs.right);
       }
 
-      // Opponent hands, badges, persona pockets, river troughs, and inner rivers
+      // River troughs and inner rivers
       const riverSides = ["bottom", "top", "left", "right"] as const;
       for (const side of riverSides) {
         expectInsideBounds(layout.riverTroughs[side], width, height);
         expectRectContains(layout.riverTroughs[side], layout.rivers[side]);
       }
 
-      const sampleMeldW = 3 * layout.meldTileW + 2;
-      const sampleMelds: Rect[] = [
-        {
-          x: layout.melds.bottom.x - sampleMeldW,
-          y: layout.melds.bottom.y,
-          width: sampleMeldW,
-          height: layout.meldTileH,
-        },
-        {
-          x: layout.melds.top.x - sampleMeldW,
-          y: layout.melds.top.y,
-          width: sampleMeldW,
-          height: layout.meldTileH,
-        },
-        {
-          x: layout.melds.left.x,
-          y: layout.melds.left.y,
-          width: layout.meldTileH,
-          height: sampleMeldW,
-        },
-        {
-          x: layout.melds.right.x - layout.meldTileH,
-          y: layout.melds.right.y,
-          width: layout.meldTileH,
-          height: sampleMeldW,
-        },
-      ];
-      for (const meldRect of sampleMelds) {
-        expectInsideBounds(meldRect, width, height);
-      }
-
-      const coreBoxes: Rect[] = [
-        layout.topLeftSafeRect,
-        layout.topRightSafeRect,
-        layout.centerSeal,
-        layout.turnBarRect,
-        layout.viewerHandRect,
-        layout.oppHands.top,
-        layout.oppHands.left,
-        layout.oppHands.right,
-        layout.badges.top,
-        layout.badges.right,
-        layout.badges.left,
-        layout.badges.bottom,
-        layout.personaPockets.top,
-        layout.personaPockets.left,
-        layout.personaPockets.right,
-        layout.riverTroughs.bottom,
-        layout.riverTroughs.top,
-        layout.riverTroughs.left,
-        layout.riverTroughs.right,
-        ...sampleMelds,
-      ];
-      for (let i = 0; i < coreBoxes.length; i += 1) {
-        expectInsideBounds(coreBoxes[i], width, height);
-        for (let j = i + 1; j < coreBoxes.length; j += 1) {
-          expect(rectsOverlap(coreBoxes[i], coreBoxes[j])).toBe(false);
-        }
-      }
-
       // Multi-meld 对门 (2-4 melds, up to 4 tiles each): zero overlap with all core regions
       for (const meldCount of [2, 3, 4]) {
-        const kongMeldW = 4 * layout.meldTileW + 3 * MELD_TILE_GAP;
-        const totalTopMeldW =
-          meldCount * kongMeldW + (meldCount - 1) * MELD_GROUP_GAP;
+        const totalTopMeldW = computeTestMeldSpan(meldCount * 4, meldCount, layout.meldTileW);
         const multiTopMeldRect: Rect = {
           x: layout.melds.top.x - totalTopMeldW,
           y: layout.melds.top.y,
@@ -256,13 +200,160 @@ describe("Scheme B three-column theater computeTableLayout", () => {
     },
   );
 
-  it("computes 10-per-row vertical and 4-per-column side river slot coordinates with exact ghost preview parity", () => {
+  it("maintains strict in-bounds and zero-overlap across all viewports for 0..4 viewer melds (pons and kongs)", () => {
+    for (const vp of ADR_0013_VIEWPORT_MATRIX) {
+      for (const scenario of VIEWER_MELD_SCENARIOS) {
+        const {
+          bottomMeldTileCount,
+          bottomMeldGroupCount,
+          viewerClosedCount,
+          viewerHasDrawn,
+        } = scenario.options;
+        const layout = computeTableLayout(vp.width, vp.height, scenario.options);
+        const tag = `${vp.name} / ${scenario.label}`;
+
+        expect(layout.handTileW, `${tag} handTileW cap`).toBeLessThanOrEqual(88);
+        expect(layout.riverTileW, `${tag} riverTileW cap`).toBeLessThanOrEqual(46);
+        expect(layout.meldTileW, `${tag} meldTileW cap`).toBeLessThanOrEqual(38);
+        // Table center `cx` stays centered on the table regardless of viewer melds so feltBackdrop spotlight never drifts
+        expect(layout.cx, `${tag} cx stays at table center`).toBe(
+          Math.round(layout.centerStage.x + layout.centerStage.width / 2),
+        );
+
+        // Viewer hand slots align pixel-for-pixel with viewerHandRect
+        const handSlots = computeViewerHandSlots(layout, viewerClosedCount, viewerHasDrawn);
+        expect(handSlots.closed).toHaveLength(viewerClosedCount);
+        expect(handSlots.closed[0].x, `${tag} first hand tile x`).toBe(layout.viewerHandRect.x);
+        const lastTile = handSlots.drawn ?? handSlots.closed[handSlots.closed.length - 1];
+        expect(lastTile.x + lastTile.width, `${tag} last hand tile right`).toBe(
+          layout.viewerHandRect.x + layout.viewerHandRect.width,
+        );
+
+        const sampleMeldW = computeTestMeldSpan(3, 1, layout.meldTileW);
+        const coreBoxes: Array<[string, Rect]> = [
+          ["topLeftSafe", layout.topLeftSafeRect],
+          ["topRightSafe", layout.topRightSafeRect],
+          ["centerSeal", layout.centerSeal],
+          ["turnBar", layout.turnBarRect],
+          ["viewerHand", layout.viewerHandRect],
+          ["oppTop", layout.oppHands.top],
+          ["oppLeft", layout.oppHands.left],
+          ["oppRight", layout.oppHands.right],
+          ["badgeTop", layout.badges.top],
+          ["badgeRight", layout.badges.right],
+          ["badgeLeft", layout.badges.left],
+          ["badgeBottom", layout.badges.bottom],
+          ["pocketTop", layout.personaPockets.top],
+          ["pocketLeft", layout.personaPockets.left],
+          ["pocketRight", layout.personaPockets.right],
+          ["troughBottom", layout.riverTroughs.bottom],
+          ["troughTop", layout.riverTroughs.top],
+          ["troughLeft", layout.riverTroughs.left],
+          ["troughRight", layout.riverTroughs.right],
+          [
+            "topMeld",
+            {
+              x: layout.melds.top.x - sampleMeldW,
+              y: layout.melds.top.y,
+              width: sampleMeldW,
+              height: layout.meldTileH,
+            },
+          ],
+          [
+            "leftMeld",
+            {
+              x: layout.melds.left.x,
+              y: layout.melds.left.y,
+              width: layout.meldTileH,
+              height: sampleMeldW,
+            },
+          ],
+          [
+            "rightMeld",
+            {
+              x: layout.melds.right.x - layout.meldTileH,
+              y: layout.melds.right.y,
+              width: layout.meldTileH,
+              height: sampleMeldW,
+            },
+          ],
+        ];
+
+        if (vp.wide) {
+          // Landscape QuickEmoteBar sits inside rightWing and must never overlap any core region
+          coreBoxes.push(["quickEmoteDock", computeQuickEmoteDockRect(layout)]);
+        }
+
+        const bottomMeldRect = computeBottomMeldRect(
+          layout,
+          bottomMeldTileCount,
+          bottomMeldGroupCount,
+        );
+        if (bottomMeldRect !== null) {
+          coreBoxes.push(["bottomMelds", bottomMeldRect]);
+          if (vp.wide) {
+            expect(
+              layout.viewerHandRect.x + layout.viewerHandRect.width,
+              `${tag} viewerHand strictly left of bottomMelds`,
+            ).toBeLessThan(bottomMeldRect.x);
+            expect(
+              bottomMeldRect.x + bottomMeldRect.width,
+              `${tag} bottomMelds strictly left of rightWing`,
+            ).toBeLessThan(layout.rightWing.x);
+          }
+        }
+
+        for (const [name, box] of coreBoxes) {
+          expect(box.x, `${tag}/${name} x>=0`).toBeGreaterThanOrEqual(0);
+          expect(box.y, `${tag}/${name} y>=0`).toBeGreaterThanOrEqual(0);
+          expect(box.x + box.width, `${tag}/${name} right<=w`).toBeLessThanOrEqual(vp.width);
+          expect(box.y + box.height, `${tag}/${name} bottom<=h`).toBeLessThanOrEqual(vp.height);
+        }
+
+        for (let i = 0; i < coreBoxes.length; i += 1) {
+          for (let j = i + 1; j < coreBoxes.length; j += 1) {
+            expect(
+              rectsOverlap(coreBoxes[i][1], coreBoxes[j][1]),
+              `${tag}: ${coreBoxes[i][0]} overlaps ${coreBoxes[j][0]}`,
+            ).toBe(false);
+          }
+        }
+      }
+    }
+  });
+
+  it("reclaims horizontal width beyond centerStage for 14-tile viewer hand on wide screens", () => {
+    const mbp = computeTableLayout(1512, 982);
+    expect(mbp.handTileW).toBe(74);
+    expect(mbp.handTileH).toBe(100);
+    expect(mbp.riverTileW).toBe(46);
+    expect(mbp.riverTileH).toBe(62);
+    expect(mbp.meldTileW).toBe(38);
+    expect(mbp.meldTileH).toBe(51);
+    // 14 enlarged tiles exceed centerStage width and gracefully span the reclaimed bottom corridor
+    expect(mbp.viewerHandRect.width).toBeGreaterThan(mbp.centerStage.width);
+    expect(mbp.viewerHandRect.x).toBeGreaterThan(mbp.badges.bottom.x + mbp.badges.bottom.width);
+    expect(mbp.viewerHandRect.x + mbp.viewerHandRect.width).toBeLessThan(mbp.rightWing.x);
+
+    const mba = computeTableLayout(1470, 956);
+    expect(mba.handTileW).toBe(71);
+    expect(mba.handTileH).toBe(96);
+    expect(mba.riverTileW).toBe(46);
+    expect(mba.riverTileH).toBe(62);
+
+    const iphone13 = computeTableLayout(844, 390);
+    expect(iphone13.handTileW).toBeGreaterThanOrEqual(41);
+    const iphone17 = computeTableLayout(874, 402);
+    expect(iphone17.handTileW).toBeGreaterThanOrEqual(43);
+  });
+
+  it("computes 10-per-row vertical and 2-column side river slot coordinates with exact ghost preview parity", () => {
     const layout = computeTableLayout(1440, 900);
 
     expect(layout.riverGrid.bottom.perLine).toBe(10);
     expect(layout.riverGrid.top.perLine).toBe(10);
-    expect(layout.riverGrid.left.perLine).toBe(4);
-    expect(layout.riverGrid.right.perLine).toBe(4);
+    expect(layout.riverGrid.left).toEqual({ perLine: 6, maxLines: 2 });
+    expect(layout.riverGrid.right).toEqual({ perLine: 6, maxLines: 2 });
 
     // Bottom 10-per-row slots (indices 0..19)
     const p0 = computeBottomRiverSlotPoint(layout, 0);
@@ -285,14 +376,14 @@ describe("Scheme B three-column theater computeTableLayout", () => {
       y: computeRiverSlotPoint(layout, "bottom", 13).y,
     });
 
-    // Side 4-per-col slots (indices 0..15)
+    // Side 6-per-col, 2-col slots (indices 0..11) on desktop
     const l0 = computeRiverSlotPoint(layout, "left", 0);
-    const l3 = computeRiverSlotPoint(layout, "left", 3);
-    const l4 = computeRiverSlotPoint(layout, "left", 4);
-    expect(l0.x).toBe(l3.x);
-    expect(l3.y - l0.y).toBe(3 * (layout.riverTileW + layout.riverGap));
-    expect(l4.y).toBe(l0.y);
-    expect(l0.x - l4.x).toBe(layout.riverTileH + layout.riverGap);
+    const l5 = computeRiverSlotPoint(layout, "left", 5);
+    const l6 = computeRiverSlotPoint(layout, "left", 6);
+    expect(l0.x).toBe(l5.x);
+    expect(l5.y - l0.y).toBe(5 * (layout.riverTileW + layout.riverGap));
+    expect(l6.y).toBe(l0.y);
+    expect(l0.x - l6.x).toBe(layout.riverTileH + layout.riverGap);
 
     const expectedRotations = {
       bottom: 0,
@@ -303,11 +394,12 @@ describe("Scheme B three-column theater computeTableLayout", () => {
 
     for (const side of ["bottom", "top", "left", "right"] as const) {
       const rect = layout.rivers[side];
+      const grid = layout.riverGrid[side];
       const horizontal = side === "bottom" || side === "top";
       const halfW = (horizontal ? layout.riverTileW : layout.riverTileH) / 2;
       const halfH = (horizontal ? layout.riverTileH : layout.riverTileW) / 2;
-      const maxIndex = horizontal ? 19 : 15;
-      for (const idx of [0, 3, 4, 9, 10, maxIndex]) {
+      const maxIndex = grid.perLine * grid.maxLines - 1;
+      for (const idx of [0, grid.perLine - 1, grid.perLine, maxIndex]) {
         const pt = computeRiverSlotPoint(layout, side, idx);
         expect(pt.rotation).toBe(expectedRotations[side]);
         expect(pt.x - halfW).toBeGreaterThanOrEqual(rect.x - 0.001);
@@ -316,6 +408,11 @@ describe("Scheme B three-column theater computeTableLayout", () => {
         expect(pt.y + halfH).toBeLessThanOrEqual(rect.y + rect.height + 0.001);
       }
     }
+
+    // Short landscape uses 5-per-col, 2-col side rivers
+    const shortLayout = computeTableLayout(844, 390);
+    expect(shortLayout.riverGrid.left).toEqual({ perLine: 5, maxLines: 2 });
+    expect(shortLayout.riverGrid.right).toEqual({ perLine: 5, maxLines: 2 });
   });
 
   it("computes opponent hand slots and viewer 13+1 hand slots inside layout bounds", () => {

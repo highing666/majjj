@@ -894,7 +894,6 @@ describe("deriveTurnCueState (4-layer turn cue)", () => {
       showStageWash: true,
       animateBreath: true,
       highlightDrawnTile: true,
-      highlightClosedHand: false,
       turnPillText: "轮到你出牌",
       waitHintText: null,
       dimViewerHand: false,
@@ -905,7 +904,6 @@ describe("deriveTurnCueState (4-layer turn cue)", () => {
       "animateBreath",
       "centerEdgeGlowSlot",
       "dimViewerHand",
-      "highlightClosedHand",
       "highlightDrawnTile",
       "mode",
       "showStageWash",
@@ -945,7 +943,6 @@ describe("deriveTurnCueState (4-layer turn cue)", () => {
       showStageWash: true,
       animateBreath: true,
       highlightDrawnTile: false,
-      highlightClosedHand: true,
       turnPillText: "轮到你出牌 · 碰后请择牌打出",
       waitHintText: null,
       dimViewerHand: false,
@@ -984,7 +981,6 @@ describe("deriveTurnCueState (4-layer turn cue)", () => {
       showStageWash: true,
       animateBreath: true,
       highlightDrawnTile: false,
-      highlightClosedHand: false,
       turnPillText: null,
       waitHintText: null,
       dimViewerHand: false,
@@ -1024,7 +1020,7 @@ describe("deriveTurnCueState (4-layer turn cue)", () => {
     expect(tsumoCue.centerEdgeGlowSlot).toBe("bottom");
   });
 
-  it("derives idle with Layer 3 dimming and Layer 4 edge glow when waiting on another seat, locked, or pending added kong", () => {
+  it("derives idle without dimming viewer hand when waiting on another seat, locked, pending added kong, or non-playing", () => {
     const waitingView = makePlayerView({
       viewer: "East",
       phase: "Playing",
@@ -1051,14 +1047,13 @@ describe("deriveTurnCueState (4-layer turn cue)", () => {
       showStageWash: false,
       animateBreath: false,
       highlightDrawnTile: false,
-      highlightClosedHand: false,
       turnPillText: null,
       waitHintText: "等待上家行动…",
-      dimViewerHand: true,
+      dimViewerHand: false,
       centerEdgeGlowSlot: "left",
     });
 
-    // inputLocked suppresses active turn cues and dims viewer hand
+    // inputLocked suppresses active turn cues without dimming viewer hand
     const lockedOwnTurn = makePlayerView({
       viewer: "East",
       phase: "Playing",
@@ -1089,14 +1084,13 @@ describe("deriveTurnCueState (4-layer turn cue)", () => {
       showStageWash: false,
       animateBreath: false,
       highlightDrawnTile: false,
-      highlightClosedHand: false,
       turnPillText: null,
       waitHintText: null,
-      dimViewerHand: true,
+      dimViewerHand: false,
       centerEdgeGlowSlot: "bottom",
     });
 
-    // Pending AddedKong on viewer shows waitHintText while keeping RobKongHu action_prompt for opponents
+    // Pending AddedKong on viewer shows waitHintText without dimming viewer hand
     const pendingKongSelf = makePlayerView({
       viewer: "East",
       phase: "Playing",
@@ -1109,16 +1103,16 @@ describe("deriveTurnCueState (4-layer turn cue)", () => {
       },
       legal_actions: [],
     });
-    expect(
-      deriveTurnCueState({
-        playerView: pendingKongSelf,
-        pendingAddedKong: { seat: "East", tile: 27 },
-        inputLocked: false,
-        reducedEffects: false,
-      }).waitHintText,
-    ).toBe("补杠待确认…");
+    const pendingKongCue = deriveTurnCueState({
+      playerView: pendingKongSelf,
+      pendingAddedKong: { seat: "East", tile: 27 },
+      inputLocked: false,
+      reducedEffects: false,
+    });
+    expect(pendingKongCue.waitHintText).toBe("补杠待确认…");
+    expect(pendingKongCue.dimViewerHand).toBe(false);
 
-    // BetweenHands resets all cues and does not dim viewer hand
+    // BetweenHands, MatchFinished, and null playerView reset all cues with dimViewerHand: false
     const betweenHands = makePlayerView({
       phase: "BetweenHands",
       turn: {
@@ -1143,12 +1137,27 @@ describe("deriveTurnCueState (4-layer turn cue)", () => {
       showStageWash: false,
       animateBreath: false,
       highlightDrawnTile: false,
-      highlightClosedHand: false,
       turnPillText: null,
       waitHintText: null,
       dimViewerHand: false,
       centerEdgeGlowSlot: null,
     });
+
+    const finishedView = makePlayerView({
+      phase: "MatchFinished",
+      turn: {
+        wind_round: "East",
+        hand_number: 4,
+        dealer_streak: 0,
+        dealer: "North",
+        active_seat: null,
+      },
+      legal_actions: [],
+    });
+    expect(
+      deriveTurnCueState({ playerView: finishedView }).dimViewerHand,
+    ).toBe(false);
+    expect(deriveTurnCueState({ playerView: null }).dimViewerHand).toBe(false);
   });
 
   it("disables animateBreath in reducedEffects mode while keeping static highlights intact", () => {

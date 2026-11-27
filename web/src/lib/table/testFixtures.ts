@@ -6,6 +6,14 @@ import type { Seat } from "../protocol/generated/Seat";
 import type { SeatInfo } from "../protocol/generated/SeatInfo";
 import type { TableSnapshot } from "../protocol/generated/TableSnapshot";
 import type { Tile } from "../protocol/generated/Tile";
+import { ATLAS_GRID } from "./atlasConstants";
+import {
+  MELD_GROUP_GAP,
+  MELD_TILE_GAP,
+  type Rect,
+  type TableLayout,
+  type TableLayoutOptions,
+} from "./layout";
 import type { TileAtlas, TileBodyKind } from "./tileAtlas";
 
 export function makeLobbyConfig(
@@ -218,8 +226,8 @@ export function createSpyTileAtlas() {
   }
 
   const atlas: TileAtlas = {
-    width: 1440,
-    height: 1536,
+    width: ATLAS_GRID.cols * ATLAS_GRID.cellW,
+    height: ATLAS_GRID.rows * ATLAS_GRID.cellH,
     backTexture,
     laidBackTexture,
     shadowTexture,
@@ -250,5 +258,97 @@ export function createSpyTileAtlas() {
     laidTextures,
     backTexture,
     laidBackTexture,
+  };
+}
+
+export interface Adr0013ViewportSpec {
+  readonly name: string;
+  readonly width: number;
+  readonly height: number;
+  readonly wide: boolean;
+  readonly minHandW: number;
+  readonly minRiverW: number;
+  readonly minMeldW: number;
+}
+
+export const ADR_0013_VIEWPORT_MATRIX: readonly Adr0013ViewportSpec[] = [
+  // 4 core target devices from ADR-0013 / Spec #96 (full & browser/Safari-bar states)
+  { name: '14" MBP full 1512x982', width: 1512, height: 982, wide: true, minHandW: 74, minRiverW: 46, minMeldW: 38 },
+  { name: '14" MBP browser 1512x860', width: 1512, height: 860, wide: true, minHandW: 74, minRiverW: 46, minMeldW: 38 },
+  { name: '13" MBA M2 full 1470x956', width: 1470, height: 956, wide: true, minHandW: 71, minRiverW: 46, minMeldW: 37 },
+  { name: '13" MBA M2 browser 1470x835', width: 1470, height: 835, wide: true, minHandW: 71, minRiverW: 46, minMeldW: 37 },
+  { name: "iPhone 13 Pro full 844x390", width: 844, height: 390, wide: true, minHandW: 41, minRiverW: 28, minMeldW: 20 },
+  { name: "iPhone 13 Pro Safari 844x325", width: 844, height: 325, wide: true, minHandW: 41, minRiverW: 18, minMeldW: 20 },
+  { name: "iPhone 17 full 874x402", width: 874, height: 402, wide: true, minHandW: 43, minRiverW: 28, minMeldW: 21 },
+  { name: "iPhone 17 Safari 874x335", width: 874, height: 335, wide: true, minHandW: 43, minRiverW: 19, minMeldW: 21 },
+  // Standard / ultra-wide / tablet / compact landscape + narrow portrait fallbacks
+  { name: "desktop FHD 1920x1080", width: 1920, height: 1080, wide: true, minHandW: 88, minRiverW: 46, minMeldW: 38 },
+  { name: "Mac wide 1440x900", width: 1440, height: 900, wide: true, minHandW: 69, minRiverW: 46, minMeldW: 36 },
+  { name: "Mac laptop 1280x720", width: 1280, height: 720, wide: true, minHandW: 60, minRiverW: 46, minMeldW: 31 },
+  { name: "iPad landscape 1024x768", width: 1024, height: 768, wide: true, minHandW: 43, minRiverW: 40, minMeldW: 22 },
+  { name: "desktop 1024x720", width: 1024, height: 720, wide: true, minHandW: 43, minRiverW: 40, minMeldW: 22 },
+  { name: "compact landscape 760x340", width: 760, height: 340, wide: true, minHandW: 36, minRiverW: 20, minMeldW: 18 },
+  { name: "SE landscape 568x320", width: 568, height: 320, wide: true, minHandW: 22, minRiverW: 18, minMeldW: 12 },
+  { name: "iPhone portrait fallback 390x844", width: 390, height: 844, wide: false, minHandW: 23, minRiverW: 15, minMeldW: 14 },
+  { name: "SE portrait fallback 320x568", width: 320, height: 568, wide: false, minHandW: 19, minRiverW: 14, minMeldW: 12 },
+];
+
+export interface ViewerMeldScenario {
+  readonly label: string;
+  readonly options: Required<TableLayoutOptions>;
+}
+
+export const VIEWER_MELD_SCENARIOS: readonly ViewerMeldScenario[] = [
+  { label: "0 melds (13+1)", options: { bottomMeldTileCount: 0, bottomMeldGroupCount: 0, viewerClosedCount: 13, viewerHasDrawn: true } },
+  { label: "1 pon (10+1)", options: { bottomMeldTileCount: 3, bottomMeldGroupCount: 1, viewerClosedCount: 10, viewerHasDrawn: true } },
+  { label: "1 pon post-pon (10+0)", options: { bottomMeldTileCount: 3, bottomMeldGroupCount: 1, viewerClosedCount: 10, viewerHasDrawn: false } },
+  { label: "1 kong (10+1)", options: { bottomMeldTileCount: 4, bottomMeldGroupCount: 1, viewerClosedCount: 10, viewerHasDrawn: true } },
+  { label: "2 pons (7+1)", options: { bottomMeldTileCount: 6, bottomMeldGroupCount: 2, viewerClosedCount: 7, viewerHasDrawn: true } },
+  { label: "2 kongs (7+1)", options: { bottomMeldTileCount: 8, bottomMeldGroupCount: 2, viewerClosedCount: 7, viewerHasDrawn: true } },
+  { label: "3 pons (4+1)", options: { bottomMeldTileCount: 9, bottomMeldGroupCount: 3, viewerClosedCount: 4, viewerHasDrawn: true } },
+  { label: "3 kongs (4+1)", options: { bottomMeldTileCount: 12, bottomMeldGroupCount: 3, viewerClosedCount: 4, viewerHasDrawn: true } },
+  { label: "4 pons (1+1)", options: { bottomMeldTileCount: 12, bottomMeldGroupCount: 4, viewerClosedCount: 1, viewerHasDrawn: true } },
+  { label: "4 kongs (1+1)", options: { bottomMeldTileCount: 16, bottomMeldGroupCount: 4, viewerClosedCount: 1, viewerHasDrawn: true } },
+];
+
+export function rectsOverlap(a: Rect, b: Rect): boolean {
+  return (
+    a.x < b.x + b.width &&
+    a.x + a.width > b.x &&
+    a.y < b.y + b.height &&
+    a.y + a.height > b.y
+  );
+}
+
+export function computeTestMeldSpan(
+  tileCount: number,
+  groupCount: number,
+  tileW: number,
+): number {
+  if (tileCount <= 0) {
+    return 0;
+  }
+  const groups = Math.max(1, groupCount);
+  return (
+    tileCount * tileW +
+    Math.max(0, tileCount - groups) * MELD_TILE_GAP +
+    Math.max(0, groups - 1) * MELD_GROUP_GAP
+  );
+}
+
+export function computeBottomMeldRect(
+  layout: TableLayout,
+  tileCount: number,
+  groupCount: number,
+): Rect | null {
+  if (tileCount <= 0) {
+    return null;
+  }
+  const width = computeTestMeldSpan(tileCount, groupCount, layout.meldTileW);
+  return {
+    x: layout.melds.bottom.x - width,
+    y: layout.melds.bottom.y,
+    width,
+    height: layout.meldTileH,
   };
 }

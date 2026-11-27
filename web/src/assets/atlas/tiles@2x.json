@@ -4,1471 +4,1471 @@
       "frame": {
         "x": 4,
         "y": 4,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_laid_0": {
       "frame": {
-        "x": 580,
-        "y": 580,
-        "w": 136,
-        "h": 184
+        "x": 772,
+        "y": 772,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_1": {
       "frame": {
-        "x": 148,
+        "x": 196,
         "y": 4,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_laid_1": {
       "frame": {
-        "x": 724,
-        "y": 580,
-        "w": 136,
-        "h": 184
+        "x": 964,
+        "y": 772,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_2": {
       "frame": {
-        "x": 292,
+        "x": 388,
         "y": 4,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_laid_2": {
       "frame": {
-        "x": 868,
-        "y": 580,
-        "w": 136,
-        "h": 184
+        "x": 1156,
+        "y": 772,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_3": {
       "frame": {
-        "x": 436,
+        "x": 580,
         "y": 4,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_laid_3": {
       "frame": {
-        "x": 1012,
-        "y": 580,
-        "w": 136,
-        "h": 184
+        "x": 1348,
+        "y": 772,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_4": {
       "frame": {
-        "x": 580,
+        "x": 772,
         "y": 4,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_laid_4": {
       "frame": {
-        "x": 1156,
-        "y": 580,
-        "w": 136,
-        "h": 184
+        "x": 1540,
+        "y": 772,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_5": {
       "frame": {
-        "x": 724,
+        "x": 964,
         "y": 4,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_laid_5": {
       "frame": {
-        "x": 1300,
-        "y": 580,
-        "w": 136,
-        "h": 184
+        "x": 1732,
+        "y": 772,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_6": {
       "frame": {
-        "x": 868,
+        "x": 1156,
         "y": 4,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_laid_6": {
       "frame": {
         "x": 4,
-        "y": 772,
-        "w": 136,
-        "h": 184
+        "y": 1028,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_7": {
       "frame": {
-        "x": 1012,
+        "x": 1348,
         "y": 4,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_laid_7": {
       "frame": {
-        "x": 148,
-        "y": 772,
-        "w": 136,
-        "h": 184
+        "x": 196,
+        "y": 1028,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_8": {
       "frame": {
-        "x": 1156,
+        "x": 1540,
         "y": 4,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_laid_8": {
       "frame": {
-        "x": 292,
-        "y": 772,
-        "w": 136,
-        "h": 184
+        "x": 388,
+        "y": 1028,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_9": {
       "frame": {
-        "x": 1300,
+        "x": 1732,
         "y": 4,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_laid_9": {
       "frame": {
-        "x": 436,
-        "y": 772,
-        "w": 136,
-        "h": 184
+        "x": 580,
+        "y": 1028,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_10": {
       "frame": {
         "x": 4,
-        "y": 196,
-        "w": 136,
-        "h": 184
+        "y": 260,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_laid_10": {
       "frame": {
-        "x": 580,
-        "y": 772,
-        "w": 136,
-        "h": 184
+        "x": 772,
+        "y": 1028,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_11": {
       "frame": {
-        "x": 148,
-        "y": 196,
-        "w": 136,
-        "h": 184
+        "x": 196,
+        "y": 260,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_laid_11": {
       "frame": {
-        "x": 724,
-        "y": 772,
-        "w": 136,
-        "h": 184
+        "x": 964,
+        "y": 1028,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_12": {
       "frame": {
-        "x": 292,
-        "y": 196,
-        "w": 136,
-        "h": 184
+        "x": 388,
+        "y": 260,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_laid_12": {
       "frame": {
-        "x": 868,
-        "y": 772,
-        "w": 136,
-        "h": 184
+        "x": 1156,
+        "y": 1028,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_13": {
       "frame": {
-        "x": 436,
-        "y": 196,
-        "w": 136,
-        "h": 184
+        "x": 580,
+        "y": 260,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_laid_13": {
       "frame": {
-        "x": 1012,
-        "y": 772,
-        "w": 136,
-        "h": 184
+        "x": 1348,
+        "y": 1028,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_14": {
       "frame": {
-        "x": 580,
-        "y": 196,
-        "w": 136,
-        "h": 184
+        "x": 772,
+        "y": 260,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_laid_14": {
       "frame": {
-        "x": 1156,
-        "y": 772,
-        "w": 136,
-        "h": 184
+        "x": 1540,
+        "y": 1028,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_15": {
       "frame": {
-        "x": 724,
-        "y": 196,
-        "w": 136,
-        "h": 184
+        "x": 964,
+        "y": 260,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_laid_15": {
       "frame": {
-        "x": 1300,
-        "y": 772,
-        "w": 136,
-        "h": 184
+        "x": 1732,
+        "y": 1028,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_16": {
       "frame": {
-        "x": 868,
-        "y": 196,
-        "w": 136,
-        "h": 184
+        "x": 1156,
+        "y": 260,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_laid_16": {
       "frame": {
         "x": 4,
-        "y": 964,
-        "w": 136,
-        "h": 184
+        "y": 1284,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_17": {
       "frame": {
-        "x": 1012,
-        "y": 196,
-        "w": 136,
-        "h": 184
+        "x": 1348,
+        "y": 260,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_laid_17": {
       "frame": {
-        "x": 148,
-        "y": 964,
-        "w": 136,
-        "h": 184
+        "x": 196,
+        "y": 1284,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_18": {
       "frame": {
-        "x": 1156,
-        "y": 196,
-        "w": 136,
-        "h": 184
+        "x": 1540,
+        "y": 260,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_laid_18": {
       "frame": {
-        "x": 292,
-        "y": 964,
-        "w": 136,
-        "h": 184
+        "x": 388,
+        "y": 1284,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_19": {
       "frame": {
-        "x": 1300,
-        "y": 196,
-        "w": 136,
-        "h": 184
+        "x": 1732,
+        "y": 260,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_laid_19": {
       "frame": {
-        "x": 436,
-        "y": 964,
-        "w": 136,
-        "h": 184
+        "x": 580,
+        "y": 1284,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_20": {
       "frame": {
         "x": 4,
-        "y": 388,
-        "w": 136,
-        "h": 184
+        "y": 516,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_laid_20": {
       "frame": {
-        "x": 580,
-        "y": 964,
-        "w": 136,
-        "h": 184
+        "x": 772,
+        "y": 1284,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_21": {
       "frame": {
-        "x": 148,
-        "y": 388,
-        "w": 136,
-        "h": 184
+        "x": 196,
+        "y": 516,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_laid_21": {
       "frame": {
-        "x": 724,
-        "y": 964,
-        "w": 136,
-        "h": 184
+        "x": 964,
+        "y": 1284,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_22": {
       "frame": {
-        "x": 292,
-        "y": 388,
-        "w": 136,
-        "h": 184
+        "x": 388,
+        "y": 516,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_laid_22": {
       "frame": {
-        "x": 868,
-        "y": 964,
-        "w": 136,
-        "h": 184
+        "x": 1156,
+        "y": 1284,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_23": {
       "frame": {
-        "x": 436,
-        "y": 388,
-        "w": 136,
-        "h": 184
+        "x": 580,
+        "y": 516,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_laid_23": {
       "frame": {
-        "x": 1012,
-        "y": 964,
-        "w": 136,
-        "h": 184
+        "x": 1348,
+        "y": 1284,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_24": {
       "frame": {
-        "x": 580,
-        "y": 388,
-        "w": 136,
-        "h": 184
+        "x": 772,
+        "y": 516,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_laid_24": {
       "frame": {
-        "x": 1156,
-        "y": 964,
-        "w": 136,
-        "h": 184
+        "x": 1540,
+        "y": 1284,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_25": {
       "frame": {
-        "x": 724,
-        "y": 388,
-        "w": 136,
-        "h": 184
+        "x": 964,
+        "y": 516,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_laid_25": {
       "frame": {
-        "x": 1300,
-        "y": 964,
-        "w": 136,
-        "h": 184
+        "x": 1732,
+        "y": 1284,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_26": {
       "frame": {
-        "x": 868,
-        "y": 388,
-        "w": 136,
-        "h": 184
+        "x": 1156,
+        "y": 516,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_laid_26": {
       "frame": {
         "x": 4,
-        "y": 1156,
-        "w": 136,
-        "h": 184
+        "y": 1540,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_27": {
       "frame": {
-        "x": 1012,
-        "y": 388,
-        "w": 136,
-        "h": 184
+        "x": 1348,
+        "y": 516,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_laid_27": {
       "frame": {
-        "x": 148,
-        "y": 1156,
-        "w": 136,
-        "h": 184
+        "x": 196,
+        "y": 1540,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_28": {
       "frame": {
-        "x": 1156,
-        "y": 388,
-        "w": 136,
-        "h": 184
+        "x": 1540,
+        "y": 516,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_laid_28": {
       "frame": {
-        "x": 292,
-        "y": 1156,
-        "w": 136,
-        "h": 184
+        "x": 388,
+        "y": 1540,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_29": {
       "frame": {
-        "x": 1300,
-        "y": 388,
-        "w": 136,
-        "h": 184
+        "x": 1732,
+        "y": 516,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_laid_29": {
       "frame": {
-        "x": 436,
-        "y": 1156,
-        "w": 136,
-        "h": 184
+        "x": 580,
+        "y": 1540,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_30": {
       "frame": {
         "x": 4,
-        "y": 580,
-        "w": 136,
-        "h": 184
+        "y": 772,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_laid_30": {
       "frame": {
-        "x": 580,
-        "y": 1156,
-        "w": 136,
-        "h": 184
+        "x": 772,
+        "y": 1540,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_31": {
       "frame": {
-        "x": 148,
-        "y": 580,
-        "w": 136,
-        "h": 184
+        "x": 196,
+        "y": 772,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_laid_31": {
       "frame": {
-        "x": 724,
-        "y": 1156,
-        "w": 136,
-        "h": 184
+        "x": 964,
+        "y": 1540,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_32": {
       "frame": {
-        "x": 292,
-        "y": 580,
-        "w": 136,
-        "h": 184
+        "x": 388,
+        "y": 772,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_laid_32": {
       "frame": {
-        "x": 868,
-        "y": 1156,
-        "w": 136,
-        "h": 184
+        "x": 1156,
+        "y": 1540,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_33": {
       "frame": {
-        "x": 436,
-        "y": 580,
-        "w": 136,
-        "h": 184
+        "x": 580,
+        "y": 772,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "tile_laid_33": {
       "frame": {
-        "x": 1012,
-        "y": 1156,
-        "w": 136,
-        "h": 184
+        "x": 1348,
+        "y": 1540,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "body_standing": {
       "frame": {
-        "x": 1156,
-        "y": 1156,
-        "w": 136,
-        "h": 184
+        "x": 1540,
+        "y": 1540,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "body_laid": {
       "frame": {
-        "x": 1300,
-        "y": 1156,
-        "w": 136,
-        "h": 184
+        "x": 1732,
+        "y": 1540,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "body_back": {
       "frame": {
         "x": 4,
-        "y": 1348,
-        "w": 136,
-        "h": 184
+        "y": 1796,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "body_shadow": {
       "frame": {
-        "x": 148,
-        "y": 1348,
-        "w": 136,
-        "h": 184
+        "x": 196,
+        "y": 1796,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     },
     "body_laid_back": {
       "frame": {
-        "x": 292,
-        "y": 1348,
-        "w": 136,
-        "h": 184
+        "x": 388,
+        "y": 1796,
+        "w": 184,
+        "h": 248
       },
       "rotated": false,
       "trimmed": false,
       "spriteSourceSize": {
         "x": 0,
         "y": 0,
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       },
       "sourceSize": {
-        "w": 136,
-        "h": 184
+        "w": 184,
+        "h": 248
       }
     }
   },
   "meta": {
     "app": "majjj-atlas-builder",
-    "version": "2.0",
+    "version": "3.0",
     "image": "tiles@2x.png",
     "format": "RGBA8888",
     "size": {
-      "w": 1440,
-      "h": 1536
+      "w": 1920,
+      "h": 2048
     },
     "scale": "2"
   }

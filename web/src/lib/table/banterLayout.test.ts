@@ -6,81 +6,85 @@ import {
   rectToPercentStyle,
 } from "./banterLayout";
 import { computeTableLayout, type Rect } from "./layout";
+import {
+  ADR_0013_VIEWPORT_MATRIX,
+  computeBottomMeldRect,
+  rectsOverlap,
+  VIEWER_MELD_SCENARIOS,
+} from "./testFixtures";
 import type { RelativeSlot } from "./viewModel";
 
-function rectsOverlap(a: Rect, b: Rect): boolean {
-  return (
-    a.x < b.x + b.width &&
-    a.x + a.width > b.x &&
-    a.y < b.y + b.height &&
-    a.y + a.height > b.y
-  );
-}
-
 describe("banterLayout — comic speech bubble anchors", () => {
-  const viewports: Array<{ name: string; width: number; height: number }> = [
-    { name: "desktop-1440x900", width: 1440, height: 900 },
-    { name: "ipad-landscape-1024x768", width: 1024, height: 768 },
-    { name: "iphone-landscape-844x390", width: 844, height: 390 },
-    { name: "compact-landscape-568x320", width: 568, height: 320 },
-    { name: "portrait-390x844", width: 390, height: 844 },
-  ];
-
   const slots: RelativeSlot[] = ["top", "left", "right", "bottom"];
 
   it("keeps all bubble anchors inside viewport bounds and strictly clear of viewerHandRect", () => {
-    for (const vp of viewports) {
-      const layout = computeTableLayout(vp.width, vp.height);
-      for (const slot of slots) {
-        const anchor = computeBanterBubbleAnchor(layout, slot);
-        const bubbleRect: Rect = {
-          x: anchor.leftPx,
-          y: anchor.topPx,
-          width: anchor.maxWidthPx,
-          height: anchor.maxHeightPx,
-        };
-        expect(bubbleRect.x, `${vp.name}/${slot} left`).toBeGreaterThanOrEqual(0);
-        expect(bubbleRect.y, `${vp.name}/${slot} top`).toBeGreaterThanOrEqual(0);
-        expect(
-          bubbleRect.x + bubbleRect.width,
-          `${vp.name}/${slot} right`,
-        ).toBeLessThanOrEqual(vp.width);
-        expect(
-          bubbleRect.y + bubbleRect.height,
-          `${vp.name}/${slot} bottom`,
-        ).toBeLessThanOrEqual(vp.height);
-        expect(
-          rectsOverlap(bubbleRect, layout.viewerHandRect),
-          `${vp.name}/${slot} must never cover viewerHandRect`,
-        ).toBe(false);
+    for (const vp of ADR_0013_VIEWPORT_MATRIX) {
+      for (const state of VIEWER_MELD_SCENARIOS) {
+        const layout = computeTableLayout(vp.width, vp.height, state.options);
+        for (const slot of slots) {
+          const anchor = computeBanterBubbleAnchor(layout, slot);
+          const bubbleRect: Rect = {
+            x: anchor.leftPx,
+            y: anchor.topPx,
+            width: anchor.maxWidthPx,
+            height: anchor.maxHeightPx,
+          };
+          expect(bubbleRect.x, `${vp.name}/${state.label}/${slot} left`).toBeGreaterThanOrEqual(0);
+          expect(bubbleRect.y, `${vp.name}/${state.label}/${slot} top`).toBeGreaterThanOrEqual(0);
+          expect(
+            bubbleRect.x + bubbleRect.width,
+            `${vp.name}/${state.label}/${slot} right`,
+          ).toBeLessThanOrEqual(vp.width);
+          expect(
+            bubbleRect.y + bubbleRect.height,
+            `${vp.name}/${state.label}/${slot} bottom`,
+          ).toBeLessThanOrEqual(vp.height);
+          expect(
+            rectsOverlap(bubbleRect, layout.viewerHandRect),
+            `${vp.name}/${state.label}/${slot} must never cover viewerHandRect`,
+          ).toBe(false);
+        }
       }
     }
   });
 
-  it("keeps QuickEmoteBar dock inside viewport bounds and strictly clear of hand, action bar, and bottom badge", () => {
-    for (const vp of viewports) {
-      const layout = computeTableLayout(vp.width, vp.height);
-      const dock = computeQuickEmoteDockRect(layout);
-      expect(dock.x, `${vp.name} left`).toBeGreaterThanOrEqual(0);
-      expect(dock.y, `${vp.name} top`).toBeGreaterThanOrEqual(0);
-      expect(dock.x + dock.width, `${vp.name} right`).toBeLessThanOrEqual(
-        vp.width,
-      );
-      expect(dock.y + dock.height, `${vp.name} bottom`).toBeLessThanOrEqual(
-        vp.height,
-      );
-      expect(
-        rectsOverlap(dock, layout.viewerHandRect),
-        `${vp.name} quick-emote dock must never overlap viewerHandRect`,
-      ).toBe(false);
-      expect(
-        rectsOverlap(dock, layout.turnBarRect),
-        `${vp.name} quick-emote dock must never overlap turnBarRect`,
-      ).toBe(false);
-      expect(
-        rectsOverlap(dock, layout.badges.bottom),
-        `${vp.name} quick-emote dock must never overlap bottom badge`,
-      ).toBe(false);
+  it("keeps QuickEmoteBar dock inside viewport bounds and strictly clear of hand, action bar, bottom badge, and bottom melds", () => {
+    for (const vp of ADR_0013_VIEWPORT_MATRIX) {
+      for (const state of VIEWER_MELD_SCENARIOS) {
+        const layout = computeTableLayout(vp.width, vp.height, state.options);
+        const dock = computeQuickEmoteDockRect(layout);
+        expect(dock.x, `${vp.name}/${state.label} left`).toBeGreaterThanOrEqual(0);
+        expect(dock.y, `${vp.name}/${state.label} top`).toBeGreaterThanOrEqual(0);
+        expect(dock.x + dock.width, `${vp.name}/${state.label} right`).toBeLessThanOrEqual(
+          vp.width,
+        );
+        expect(dock.y + dock.height, `${vp.name}/${state.label} bottom`).toBeLessThanOrEqual(
+          vp.height,
+        );
+        expect(
+          rectsOverlap(dock, layout.viewerHandRect),
+          `${vp.name}/${state.label} quick-emote dock must never overlap viewerHandRect`,
+        ).toBe(false);
+        expect(
+          rectsOverlap(dock, layout.turnBarRect),
+          `${vp.name}/${state.label} quick-emote dock must never overlap turnBarRect`,
+        ).toBe(false);
+        expect(
+          rectsOverlap(dock, layout.badges.bottom),
+          `${vp.name}/${state.label} quick-emote dock must never overlap bottom badge`,
+        ).toBe(false);
+        const bottomMeldRect = computeBottomMeldRect(
+          layout,
+          state.options.bottomMeldTileCount,
+          state.options.bottomMeldGroupCount,
+        );
+        if (bottomMeldRect !== null) {
+          expect(
+            rectsOverlap(dock, bottomMeldRect),
+            `${vp.name}/${state.label} quick-emote dock must never overlap bottomMelds`,
+          ).toBe(false);
+        }
+      }
     }
   });
 
