@@ -605,4 +605,25 @@ python3_bin="$(resolve_python3)" || fail "no working python3 interpreter found f
 "$python3_bin" -B -m unittest discover -s "$repo_root/scripts/windows-tts/server" -p "test_*.py" -v
 "$python3_bin" -B -m unittest "$repo_root/scripts/windows-tts/test_voice_pack_pipeline.py" -v
 
+# 8. Documentation IPv6 privacy guardrail self-test
+"$repo_root/scripts/check-doc-privacy.sh" >/dev/null
+test_doc_privacy() {
+  local root
+  root="$(make_test_env doc-privacy)"
+  trap 'rm -rf "$root"' RETURN
+
+  cat > "$root/clean.md" <<'EOF'
+Allowed ranges: 2000::/3, fe80::/10, fc00::/7, 2001:db8:abcd:1234::10, ::1
+EOF
+  "$repo_root/scripts/check-doc-privacy.sh" "$root/clean.md" >/dev/null || fail "check-doc-privacy.sh must allow RFC 3849 and 2000::/3"
+
+  cat > "$root/leak.md" <<'EOF'
+Accidental public IPv6: http://[2001:4860:4860::8888]:8789
+EOF
+  if "$repo_root/scripts/check-doc-privacy.sh" "$root/leak.md" >/dev/null 2>&1; then
+    fail "check-doc-privacy.sh must reject non-RFC global unicast IPv6 literals"
+  fi
+}
+test_doc_privacy
+
 echo "test-dist-scripts: OK"
