@@ -698,6 +698,13 @@ class FastApiAppWiringTests(unittest.TestCase):
         self.assertIn("/health", source)
         self.assertIn("/v1/tts/synthesize", source)
         self.assertIn("/v1/audio/speech", source)
+        # Guard against PEP 563 breaking FastAPI resolution of create_app()-local Pydantic models
+        for line in source.splitlines():
+            self.assertNotEqual(
+                line.strip(),
+                "from __future__ import annotations",
+                "app.py must not enable postponed annotations while body models are local to create_app()",
+            )
 
     def test_fastapi_testclient_roundtrip_when_fastapi_installed(self) -> None:
         if importlib.util.find_spec("fastapi") is None or importlib.util.find_spec("httpx") is None:

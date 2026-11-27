@@ -51,6 +51,19 @@ DEFAULT_CLIP_GAP_SEC = 0.08
 DEFAULT_TAIL_PAD_SEC = 0.06
 MAX_TOTAL_M4A_BYTES = 2 * 1024 * 1024  # 2.0 MiB single-binary budget ceiling
 
+SLOT_MAX_NEW_TOKENS: Dict[str, int] = {
+    "tile": 36,    # ~2.9s @ 12.5 Hz codec; prevents runaway open-ended babble
+    "action": 40,  # ~3.2s
+    "emote": 64,   # ~5.1s
+}
+SLOT_MAX_DURATION_SEC: Dict[str, float] = {
+    "tile": 2.2,
+    "action": 2.4,
+    "emote": 3.5,
+}
+REFERENCE_MAX_NEW_TOKENS = 120
+MAX_SLOT_RETRIES = 3
+
 
 @dataclass(frozen=True)
 class VoiceSlotSpec:
@@ -359,6 +372,11 @@ class Qwen3Offline17BSynthesizer(VoicePackSynthesizer):
     def synthesize_slot(
         self, pack: VoicePackSpec, slot: VoiceSlotSpec
     ) -> Tuple[bytes, int]:
+        max_tokens = (
+            REFERENCE_MAX_NEW_TOKENS
+            if slot.slot_id == "__reference__"
+            else SLOT_MAX_NEW_TOKENS.get(slot.category, REFERENCE_MAX_NEW_TOKENS)
+        )
         if pack.kind == "ai":
             model = self._ensure_model(self.custom_voice_model)
             instruct = f"{pack.base_instruct}{slot.style_instruct}".strip()
@@ -367,6 +385,7 @@ class Qwen3Offline17BSynthesizer(VoicePackSynthesizer):
                 language=pack.language,
                 speaker=pack.speaker,
                 instruct=instruct,
+                max_new_tokens=max_tokens,
             )
         else:
             model = self._ensure_model(self.voice_design_model)
@@ -375,6 +394,7 @@ class Qwen3Offline17BSynthesizer(VoicePackSynthesizer):
                 text=slot.text,
                 language=pack.language,
                 instruct=instruct,
+                max_new_tokens=max_tokens,
             )
 
         waveform = wavs[0] if isinstance(wavs, (list, tuple)) and wavs else wavs
@@ -649,13 +669,22 @@ def generate_voice_packs(
         for spec in selected_specs:
             processed_clips: List[Tuple[str, bytes]] = []
             for slot in CANONICAL_SLOTS:
-                raw_pcm, raw_sr = synthesizer.synthesize_slot(spec, slot)
-                if raw_sr != sample_rate:
-                    resampled = _resample_linear(_unpack_pcm16(raw_pcm), raw_sr, sample_rate)
-                    raw_pcm = _pack_pcm16(resampled)
-                trimmed = trim_silence(raw_pcm, sample_rate=sample_rate)
+                max_dur_sec = SLOT_MAX_DURATION_SEC.get(slot.category, 3.5)
+                best_trimmed: Optional[bytes] = None
+                for _attempt in range(MAX_SLOT_RETRIES):
+                    raw_pcm, raw_sr = synthesizer.synthesize_slot(spec, slot)
+                    if raw_sr != sample_rate:
+                        resampled = _resample_linear(_unpack_pcm16(raw_pcm), raw_sr, sample_rate)
+                        raw_pcm = _pack_pcm16(resampled)
+                    trimmed = trim_silence(raw_pcm, sample_rate=sample_rate)
+                    if best_trimmed is None or len(trimmed) < len(best_trimmed):
+                        best_trimmed = trimmed
+                    dur_sec = (len(trimmed) // 2) / float(sample_rate)
+                    if dur_sec <= max_dur_sec:
+                        break
+                assert best_trimmed is not None
                 normalized = normalize_loudness(
-                    trimmed,
+                    best_trimmed,
                     target_dbfs=target_dbfs,
                     peak_limit_dbfs=peak_limit_dbfs,
                 )

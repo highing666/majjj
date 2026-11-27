@@ -1,6 +1,8 @@
 """FastAPI HTTP server wiring for the Majjj Windows LAN emotional TTS service."""
 
-from __future__ import annotations
+# NOTE: Do NOT enable `from __future__ import annotations` here — SynthesizeBody and
+# OpenAiSpeechBody are created inside create_app() (for lazy FastAPI/Pydantic imports),
+# so PEP 563 stringified annotations cannot be resolved via globals() by FastAPI.
 
 from contextlib import asynccontextmanager
 import os
