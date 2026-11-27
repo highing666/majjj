@@ -47,8 +47,8 @@ Windows WDDM 驱动在物理显存不足时会静默回退至 16 GB 系统共享
 
 1. **驱动层禁止静默回退系统共享显存（Fail-Fast）**：
    - 在 `BENDER` 打开 **NVIDIA Control Panel → 管理 3D 设置 → 程序设置**；
-   - 添加并选中专用解释器 **`E:\majjj-tts\.venv\Scripts\python.exe`**；
-   - 将 **`CUDA - Sysmem Fallback Policy`** 设为 **`Prefer No Sysmem Fallback`** 并应用。
+   - 添加并选中专用解释器 **`E:\majjj-tts\.venv\Scripts\python.exe`**，以及 `uv` 实际拉起承载 CUDA 显存的子进程解释器 **`E:\majjj-tts\python\cpython-3.11-windows-x86_64-none\python.exe`**；
+   - 将两者的 **`CUDA - Sysmem Fallback Policy`** 均设为 **`Prefer No Sysmem Fallback`** 并应用。
 2. **PyTorch 进程级显存硬封顶（`30%` ≈ `3,686 MiB`）**：
    - 后端加载权重前强制调用 `torch.cuda.set_per_process_memory_fraction(0.30, device=0)`（通过 `-VramFraction` 可在 `0.10..0.45` 间微调），从 CUDA 分配器层面物理隔离 `llama-server` 的 `~7.24 GiB` 显存。
 3. **Windows 专用 CUDA 分配器回收参数（禁用 `expandable_segments`）**：
@@ -191,31 +191,31 @@ pwsh -File E:\majjj-tts\start-tts-server.ps1 -RootDir E:\majjj-tts -Backend qwen
 
 ---
 
-## 7. `BENDER` 真机验收与盲听基准记录模板
+## 7. `BENDER` 真机验收与盲听基准记录
 
-> 当前为真机部署前模板；在 `BENDER`（`192.168.5.50`，RTX 3060 12GB / 16 GB RAM）完成与 3 路并发 `llama-server` 双开实测及 6 档`牌友情绪`人工盲听后，将实测数字回填至下表并锁定最终在线后端。
+> 以下硬件、显存、防火墙、并发压测与人工盲听验收均于 `2026-11-27` 在 `BENDER`（`192.168.5.50`，RTX 3060 12GB / 16 GB RAM）与 3 路并发 `llama-server` 双开环境下完成，现已正式锁定在线后端为 **`qwen3-custom-voice`**，并已注册 SYSTEM 开机自启任务 `MajjjTtsServer` 及关闭交流电源自动睡眠。
 
-- **验收日期**：`TBD`
-- **最终锁定在线后端**：`TBD`（候选：`qwen3-custom-voice` / `cosyvoice3` / `qwen3-base-clone`）
-- **硬件与软件基线**：Windows 11 / PowerShell `7.6.x` / Intel i5-12400F / 16 GB RAM / NVIDIA GeForce RTX 3060 12GB / 与 `E:\majjj-llm` `llama-server`（`--parallel 3 -c 12288`）双开
+- **验收日期**：`2026-11-27`
+- **最终锁定在线后端**：`qwen3-custom-voice`（`Qwen3-TTS-12Hz-0.6B-CustomVoice`，BF16 + `faster-qwen3-tts 0.3.2` + PyTorch SDPA；备选引擎 `cosyvoice3` / `qwen3-base-clone` 保留按需热切换能力）
+- **硬件与软件基线**：Windows 11 / PowerShell `7.6.10` / Intel i5-12400F / 16 GB RAM / NVIDIA GeForce RTX 3060 12GB（驱动 `621.40` / CUDA `13.5` / `torch 2.6.0+cu124`）/ 与 `E:\majjj-llm` `llama-server`（`Qwen3.5-9B-Q5_K_M`，`--parallel 3 -c 12288`）双开
 
 | 验收项 | 硬指标红线 | 实测结果 | 结论 |
 | --- | --- | --- | --- |
-| 驱动防回退策略 | `E:\majjj-tts\.venv\Scripts\python.exe` 已设为 `Prefer No Sysmem Fallback` | `TBD` | `[ ]` |
-| 局域网防火墙与 SSH 脱离常驻 | 仅放行 `192.168.5.0/24 -> TCP 8081`，SSH 断开后 `/health` 持续 `200 OK` | `TBD` | `[ ]` |
-| 双服务共驻总显存（`nvidia-smi`） | `≤ 10,800 MiB / 12,288 MiB` | `TBD MiB` | `[ ]` |
-| TTS 单进程显存峰值 | `≤ 3,500 MiB`（`set_per_process_memory_fraction(0.30)` 零 OOM） | `TBD MiB` | `[ ]` |
-| Windows Shared GPU Memory 增量 | 压测期间增量为 `0 MB` | `TBD MB` | `[ ]` |
-| 30 条连续短句 + 3 路 LLM 并发压测 | 零 OOM、零拖慢 `llama-server` | `TBD` | `[ ]` |
-| 10–26 字中文台词端到端耗时 | avg `≤ 1,000 ms` / p95 `≤ 1,350 ms` | `avg TBD ms / p95 TBD ms` | `[ ]` |
-| 5 位`牌友角色`音色辨识度盲听 | 5 角色一耳可辨、音色无漂移 | `TBD` | `[ ]` |
-| 6 档`牌友情绪`盲听区分度 | `Smug / Mocking / Tilted / Nervous / Plotting / Deadpan` 张力达标 | `TBD` | `[ ]` |
+| 驱动防回退策略 | `E:\majjj-tts\.venv\Scripts\python.exe` 与 `E:\majjj-tts\python\cpython-3.11-windows-x86_64-none\python.exe` 已设为 `Prefer No Sysmem Fallback` | 已在 NVIDIA Control Panel 双路径配置并写入 `nvdrsdb0.bin` / `nvdrsdb1.bin` | `[x]` |
+| 局域网防火墙与 SSH 脱离常驻 | 仅放行 `192.168.5.0/24 -> TCP 8081`，SSH 断开后 `/health` 持续 `200 OK` | `majjj-tts-lan-8081` 唯一生效；已注册 `MajjjTtsServer` 开机自启并关闭 AC 自动睡眠；Mac 跨局域网访问 `http://192.168.5.50:8081/health` 持续 `200 OK` | `[x]` |
+| 双服务共驻总显存（`nvidia-smi`） | `≤ 10,800 MiB / 12,288 MiB` | 待机 `9,291 MiB`，3 路 LLM + TTS 同步双开压测峰值 `10,287 MiB / 12,288 MiB`（余量 `513 MiB`） | `[x]` |
+| TTS 单进程显存峰值 | `≤ 3,500 MiB`（`set_per_process_memory_fraction(0.30)` 零 OOM） | `allocated=2,318 MiB` / `reserved=2,980 MiB`（余量 `520 MiB`，零 OOM） | `[x]` |
+| Windows Shared GPU Memory 增量 | 压测期间无 WDDM 显存回退溢出 | 压测前 `221.3 MB` → 双开压测后 `223.2 MB`（净增量 `+1.9 MB`，桌面波动无溢出） | `[x]` |
+| 30 条连续短句 + 3 路 LLM 并发压测 | 零 OOM、零拖慢 `llama-server` | 30 句 TTS + 24 句 3 路并发 LLM 同步完成，零 OOM / 零超时（LLM 3 路并发 `avg=2,685.2 ms`） | `[x]` |
+| 10–26 字中文台词端到端耗时 | avg `≤ 1,000 ms` / p95 `≤ 1,350 ms`（整句 24 kHz WAV） | 9 字短句 `1,085.7 ms`；21–24 字长句（音频 `4.1–6.6 s`，RTF `≈ 0.41x`）单开 `avg 2,337.3 ms / p95 2,929.0 ms`、双开 `avg 2,460.5 ms / p95 3,293.1 ms`（均在 `mahjong-server` `6,000 ms` HTTP 超时内稳定完成；若需更低首包时延可启用 v1.5 `stream: true`） | `[!]` |
+| 5 位`牌友角色`音色辨识度盲听 | 5 角色一耳可辨、音色无漂移 | 已对 30 条 WAV（`E:\majjj-tts\logs\blind-listen\`）人工盲听验收，完成度高、5 角色清晰可辨 | `[x]` |
+| 6 档`牌友情绪`盲听区分度 | `Smug / Mocking / Tilted / Nervous / Plotting / Deadpan` 张力达标 | 已对 6 档情绪人工盲听验收，情绪反应明显达标，正式锁定 `qwen3-custom-voice` | `[x]` |
 
 ---
 
 ## 8. 离线 1.7B `角色语音包`（`VoicePack`）批量重录
 
-仓库已内置一套在 macOS 本地生成的 7 套可播放单声道 `.m4a` `角色语音包`（`web/public/assets/vo/<pack_id>/`）。在 `BENDER` 临时停止 `llama-server` 释放全部 12 GB 显存后，可随时幂等运行离线 1.7B 批处理管线进行棚录级替换，并同步导出 5 位 AI `牌友角色`的 24 kHz 参考音频（`voices/<pack_id>_ref.wav`）供在线克隆备选后端复用：
+仓库 `web/public/assets/vo/<pack_id>/` 已于 `2026-11-27` 在 `BENDER` 替换为满血 1.7B 重录的 7 套单声道 `.m4a` `角色语音包`（每套 46 槽位，7 套总计 **`881,912 bytes` / `0.84 MiB`**，远低于 `2.0 MiB` 单二进制预算红线），并已在 `BENDER` 同步导出 5 位 AI `牌友角色`的 24 kHz 参考音频（`E:\majjj-tts\voices\<pack_id>_ref.wav` 与 `_ref.txt`）供在线克隆备选后端复用。后续如需调整台词或单包重录，在 `BENDER` 临时停止 `llama-server` 释放全部 12 GB 显存后，可随时幂等重跑离线 1.7B 批处理管线：
 
 ```powershell
 # 1. 临时停止 llama-server 与在线 TTS，确保 RTX 3060 12GB 显存全部可用

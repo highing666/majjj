@@ -14,6 +14,13 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_VO_DIR = path.resolve(__dirname, "../../../public/assets/vo");
 const MAX_TOTAL_M4A_BYTES = 2 * 1024 * 1024; // 2.0 MiB single-binary budget ceiling
+const MAX_SLOT_DURATION_SEC = {
+  tile: 3.5,
+  action: 3.5,
+  emote: 4.5,
+} as const;
+const TILE_SLOT_SET = new Set<string>(VOICE_TILE_SLOTS);
+const ACTION_SLOT_SET = new Set<string>(VOICE_ACTION_SLOTS);
 
 function findMp4Box(
   buf: Buffer,
@@ -161,6 +168,15 @@ describe("VoicePack manifest parser and committed 7-pack assets", () => {
         const cur = orderedSlices[i]!;
         expect(cur.start, `${packId}:${cur.slotId} start >= 0`).toBeGreaterThanOrEqual(0);
         expect(cur.duration, `${packId}:${cur.slotId} duration > 0`).toBeGreaterThan(0);
+        const maxSlotDuration = TILE_SLOT_SET.has(cur.slotId)
+          ? MAX_SLOT_DURATION_SEC.tile
+          : ACTION_SLOT_SET.has(cur.slotId)
+            ? MAX_SLOT_DURATION_SEC.action
+            : MAX_SLOT_DURATION_SEC.emote;
+        expect(
+          cur.duration,
+          `${packId}:${cur.slotId} duration ${cur.duration}s exceeds ${maxSlotDuration}s ceiling (runaway TTS guard)`,
+        ).toBeLessThanOrEqual(maxSlotDuration);
         expect(
           cur.start + cur.duration,
           `${packId}:${cur.slotId} within manifest.duration`,

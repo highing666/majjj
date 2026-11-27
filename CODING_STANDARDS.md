@@ -12,7 +12,7 @@ Judgement-call standards for code review across the workspace. Mechanical checks
 - Keep crate-internal error enums (`MatchError`) limited to variants actually produced and consumed at that crate layer; reserve forward-compatible wire/contract variants in `mahjong-server` / `mahjong-ai` only when explicitly frozen in `docs/specs/v1-architecture-and-design.md`.
 - Keep `TableSession` responsibilities cohesive (extract focused modules/helpers for match driving, confirmation ops, and connection state rather than letting `session.rs` accumulate unrelated concerns).
 - Ensure every `SubmitAction` rejection path (including invalid phase or unseated caller) emits `ActionRejected` or clears the client input lock so the UI never remains stuck waiting on a receipt.
-- Decouple bounded gameplay sync waits (e.g., highlight short-sync caps) from underlying async request timeouts so slow-but-healthy responses unblock gameplay without aborting in-flight work or firing false outage notices.
+- Decouple bounded gameplay sync waits (e.g., highlight short-sync caps) and upstream queue-admission deadlines (e.g., TTS `deadline_ms`) from underlying in-flight async HTTP request timeouts so slow-but-healthy responses unblock gameplay and complete cleanly without aborting active GPU/LLM work or firing false outage notices.
 
 ## Cohesive Engine State, Frontend & Public-Seam TDD
 

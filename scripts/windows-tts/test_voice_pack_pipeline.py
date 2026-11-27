@@ -327,9 +327,39 @@ class BatchPipelineEndToEndTests(unittest.TestCase):
         self.assertEqual(calls[0][0], "custom_voice")
         self.assertEqual(calls[0][1]["speaker"], "Eric")
         self.assertEqual(calls[0][1]["text"], "一万")
+        self.assertEqual(calls[0][1]["max_new_tokens"], gvp.SLOT_MAX_NEW_TOKENS["tile"])
         self.assertEqual(calls[1][0], "voice_design")
         self.assertEqual(calls[1][1]["text"], "一万")
+        self.assertEqual(calls[1][1]["max_new_tokens"], gvp.SLOT_MAX_NEW_TOKENS["tile"])
         self.assertIn("女声", calls[1][1]["instruct"])
+
+    def test_runaway_slot_duration_triggers_retry_and_keeps_shortest_clip(self) -> None:
+        attempts: Dict[str, int] = {}
+
+        class RunawayOnceSynthesizer(gvp.DryRunSynthesizer):
+            def synthesize_slot(
+                self, pack: gvp.VoicePackSpec, slot: gvp.VoiceSlotSpec
+            ) -> Tuple[bytes, int]:
+                attempts[slot.slot_id] = attempts.get(slot.slot_id, 0) + 1
+                if slot.slot_id == "s4" and attempts[slot.slot_id] == 1:
+                    # Simulate a 4.0s runaway hallucination on a tile slot (ceiling 2.2s)
+                    return self._tone_pcm16(4.0, 320.0, amplitude=0.35), self.sample_rate
+                return super().synthesize_slot(pack, slot)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            results = gvp.generate_voice_packs(
+                pack_ids=["tea_sarcasm"],
+                output_dir=root / "vo",
+                voices_dir=root / "voices",
+                synthesizer=RunawayOnceSynthesizer(),
+                encoder=_fake_m4a_encoder,
+                bitrate_bps=24000,
+            )
+            self.assertEqual(len(results), 1)
+            self.assertEqual(attempts["s4"], 2)
+            manifest = json.loads((root / "vo" / "tea_sarcasm" / "manifest.json").read_text(encoding="utf-8"))
+            self.assertLess(manifest["sprites"]["s4"][1], 1.0)
 
     def test_exported_reference_clips_load_cleanly_in_cosyvoice3_and_qwen3_base_clone(self) -> None:
         server_dir = THIS_DIR / "server"

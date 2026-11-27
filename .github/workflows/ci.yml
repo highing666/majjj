@@ -26,6 +26,11 @@ jobs:
           cache-dependency-path: 'web/package-lock.json'
       - run: npm ci --prefix web
       - run: make check
+      - name: Verify Windows TTS FastAPI routes
+        run: |
+          python3 -m venv /tmp/tts-ci-venv
+          /tmp/tts-ci-venv/bin/pip install --quiet fastapi httpx pydantic
+          MAJJJ_REQUIRE_FASTAPI_TESTS=1 /tmp/tts-ci-venv/bin/python -m unittest discover -s scripts/windows-tts/server -p 'test_*.py' -v
       - name: Verify release embedded binary
         run: |
           cargo build --release -p mahjong-server

@@ -276,6 +276,8 @@ function loadVoicePackSchemaConstants() {
     ...parseConstStringArray("AI_VOICE_PACK_IDS"),
     ...parseConstStringArray("HUMAN_VOICE_PACK_IDS"),
   ];
+  const tileSlots = new Set(parseConstStringArray("VOICE_TILE_SLOTS"));
+  const actionSlots = new Set(parseConstStringArray("VOICE_ACTION_SLOTS"));
   const slots = [...speechMatch[1].matchAll(/([a-z0-9_]+)\s*:\s*"[^"]+"/g)].map((m) => m[1]);
   if (packIds.length !== 7) {
     throw new Error(`Expected 7 canonical VoicePack IDs in schema, parsed ${packIds.length}`);
@@ -283,11 +285,17 @@ function loadVoicePackSchemaConstants() {
   if (slots.length !== 46) {
     throw new Error(`Expected 46 canonical VoicePack slots in schema, parsed ${slots.length}`);
   }
-  return { packIds, slots };
+  return { packIds, slots, tileSlots, actionSlots };
 }
 
-const { packIds: VOICE_PACK_IDS, slots: CANONICAL_VOICE_SLOTS } = loadVoicePackSchemaConstants();
+const {
+  packIds: VOICE_PACK_IDS,
+  slots: CANONICAL_VOICE_SLOTS,
+  tileSlots: VOICE_TILE_SLOT_SET,
+  actionSlots: VOICE_ACTION_SLOT_SET,
+} = loadVoicePackSchemaConstants();
 const MAX_VOICE_PACK_TOTAL_BYTES = 2 * 1024 * 1024; // 2.0 MiB single-binary budget ceiling
+const MAX_VOICE_SLOT_DURATION_SEC = { tile: 3.5, action: 3.5, emote: 4.5 };
 const hasAfinfo = process.platform === "darwin" && fs.existsSync("/usr/bin/afinfo");
 
 function validateVoicePackRoot(voRoot) {
@@ -378,6 +386,16 @@ function validateVoicePackRoot(voRoot) {
         ) {
           failures.push(`${relRoot}/${packId}/manifest.json: invalid slice for ${cur.slot}`);
           continue;
+        }
+        const maxSlotDur = VOICE_TILE_SLOT_SET.has(cur.slot)
+          ? MAX_VOICE_SLOT_DURATION_SEC.tile
+          : VOICE_ACTION_SLOT_SET.has(cur.slot)
+            ? MAX_VOICE_SLOT_DURATION_SEC.action
+            : MAX_VOICE_SLOT_DURATION_SEC.emote;
+        if (cur.dur > maxSlotDur) {
+          failures.push(
+            `${relRoot}/${packId}/manifest.json: ${cur.slot} duration ${cur.dur.toFixed(4)}s exceeds ${maxSlotDur}s ceiling (runaway TTS guard)`,
+          );
         }
         if (cur.start + cur.dur > manifest.duration + 0.001) {
           failures.push(

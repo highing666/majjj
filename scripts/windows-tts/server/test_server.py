@@ -6,6 +6,7 @@ import asyncio
 import importlib.util
 import io
 import json
+import os
 import pathlib
 import py_compile
 import sys
@@ -698,9 +699,18 @@ class FastApiAppWiringTests(unittest.TestCase):
         self.assertIn("/health", source)
         self.assertIn("/v1/tts/synthesize", source)
         self.assertIn("/v1/audio/speech", source)
+        # Guard against PEP 563 breaking FastAPI resolution of create_app()-local Pydantic models
+        for line in source.splitlines():
+            self.assertNotEqual(
+                line.strip(),
+                "from __future__ import annotations",
+                "app.py must not enable postponed annotations while body models are local to create_app()",
+            )
 
     def test_fastapi_testclient_roundtrip_when_fastapi_installed(self) -> None:
         if importlib.util.find_spec("fastapi") is None or importlib.util.find_spec("httpx") is None:
+            if os.environ.get("MAJJJ_REQUIRE_FASTAPI_TESTS") == "1":
+                self.fail("MAJJJ_REQUIRE_FASTAPI_TESTS=1 but fastapi/httpx are not installed")
             self.skipTest("fastapi/httpx not installed in offline stdlib sandbox")
 
         from fastapi.testclient import TestClient  # type: ignore[import-not-found]
@@ -730,6 +740,19 @@ class FastApiAppWiringTests(unittest.TestCase):
             self.assertEqual(synth_resp.status_code, 200)
             self.assertEqual(synth_resp.headers["content-type"], "audio/wav")
             self.assertEqual(synth_resp.content[:4], b"RIFF")
+
+            speech_resp = client.post(
+                "/v1/audio/speech",
+                json={
+                    "model": "majjj-tts",
+                    "voice": "QuickHothead",
+                    "input": "搞快点！",
+                    "response_format": "wav",
+                },
+            )
+            self.assertEqual(speech_resp.status_code, 200)
+            self.assertEqual(speech_resp.headers["content-type"], "audio/wav")
+            self.assertEqual(speech_resp.content[:4], b"RIFF")
 
             expired_resp = client.post(
                 "/v1/tts/synthesize",
