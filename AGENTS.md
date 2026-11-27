@@ -18,7 +18,7 @@ Judgement-call review standards live in `CODING_STANDARDS.md` (consult during co
 
 ### Environment & sandbox
 
-Shell search (`grep`/`node`, not `rg`), macOS sandbox `cargo`/`git`/`swift` worktree caveats, and worktree `npm` setup live in `docs/agents/environment.md`.
+Read `docs/agents/environment.md` before running standalone `cargo`, `git` writes, `python3`, `swift`, worktree `npm`, or `BENDER` SSH commands (covers macOS sandbox caveats, `grep`/`node` shell search, and Windows PowerShell quoting).
 
 ### Architecture spec
 

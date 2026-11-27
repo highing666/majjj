@@ -81,6 +81,7 @@ function Sync-CompanionFiles {
 
     $RootFiles = @(
         'deploy-tts-server.ps1',
+        'generate_voice_packs.py',
         'start-tts-server.ps1',
         'stop-tts-server.ps1',
         'setup-firewall.ps1',

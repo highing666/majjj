@@ -24,3 +24,9 @@ npm ci --offline --prefix web
 - **Sandbox CLI tools**: Use `grep`, `node`, and `/opt/homebrew/bin/python3.12` (or `python3.13`, stdlib-only inside sandbox) for ad-hoc searches and scripts (`rg` exits 127 and `/usr/bin/python3` triggers macOS's `xcode-select` shim in the sandbox).
 - **Local asset tools**: `/usr/bin/sips` cannot rasterize SVG; invoke `/Library/Developer/CommandLineTools/usr/bin/swift -module-cache-path <workspace-dir>` with `DEVELOPER_DIR=/Library/Developer/CommandLineTools`, `CLANG_MODULE_CACHE_PATH`, and `SWIFT_MODULE_CACHE_PATH` pointing inside the workspace (see [web/scripts/build-atlas.mjs](file:///Users/highing/code/majjj/web/scripts/build-atlas.mjs)). `/usr/bin/afconvert` and `/usr/bin/afinfo` handle `.m4a` encoding and inspection; `/usr/bin/say` requires `BypassSandbox: true` to reach the macOS speech daemon.
 - **File reading in worktrees**: Pass absolute paths rooted at the worktree `pwd` to file-reading tools.
+
+## Remote Windows Host (`BENDER`)
+
+- **SSH shell & UTF-8**: SSH alias `win` (`192.168.5.50`, configured in `~/.ssh/config`) logs directly into PowerShell 7 (`pwsh`). Pass single-quoted PowerShell directly to `ssh win '...'` (no nested `pwsh -Command "..."` or `\$` escaping) and prepend `[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)` for clean UTF-8 output.
+- **Cross-OS `tar` sync**: Prefix macOS `tar` pipelines targeting Windows with `COPYFILE_DISABLE=1` so macOS does not emit `._*` AppleDouble files into `E:\majjj-tts\`.
+- **`uv` Python child process**: On Windows, `E:\majjj-tts\.venv\Scripts\python.exe` is a thin launcher that spawns the real CUDA child under `E:\majjj-tts\python\cpython-*-windows-*\python.exe`; apply NVIDIA Control Panel `Prefer No Sysmem Fallback` to both paths.
