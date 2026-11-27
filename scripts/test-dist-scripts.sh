@@ -402,7 +402,11 @@ done
 src="\${args[0]}"
 dest="\${args[1]}"
 printf 'scp src=%s dest=%s\n' "\$src" "\$dest" >> "$root/logs/calls.log"
-remote_spec="\${dest#*:}"
+if [[ "\$dest" == *"]:"* ]]; then
+  remote_spec="\${dest#*]:}"
+else
+  remote_spec="\${dest#*:}"
+fi
 # Strip matching outer single quotes if present
 remote_spec="\${remote_spec#\'}"
 remote_spec="\${remote_spec%\'}"
@@ -537,6 +541,38 @@ EOF
     "$repo_root/scripts/deploy-partner.sh" --bin "$root/bin-v2" --sync-app
   cmp -s "$root/bin-v2" "$remote_bin_dir/majjj" || fail "--bin --sync-app must update binary"
   [ -x "$remote_app/Contents/MacOS/Majjj" ] || fail "--bin --sync-app must also sync Majjj.app"
+  assert_file_contains "$root/logs/calls.log" "http://partner.local:8789/api/health" ".local host health URL must remain unbracketed"
+
+  # 5i. Bare IPv6 host brackets /api/health URL and scp destination while keeping ssh target clean
+  : > "$root/logs/calls.log"
+  PATH="$root/bin:$PATH" \
+    MAJJJ_DEPLOY_CONFIG="$root/deploy.local" \
+    STUB_CURL_MODE="healthy" \
+    "$repo_root/scripts/deploy-partner.sh" --host 2001:db8::1 --user partner --bin "$root/bin-v1"
+  assert_file_contains "$root/logs/calls.log" "http://[2001:db8::1]:8789/api/health" "bare IPv6 host must be bracketed in health URL"
+  assert_file_contains "$root/logs/calls.log" "ssh target=partner@2001:db8::1" "bare IPv6 ssh target must remain unbracketed"
+  assert_file_contains "$root/logs/calls.log" "dest=partner@[2001:db8::1]:" "bare IPv6 scp destination must be bracketed"
+  cmp -s "$root/bin-v1" "$remote_bin_dir/majjj" || fail "bare IPv6 deploy must update binary"
+
+  # 5j. Already-bracketed IPv6 host avoids double brackets and strips brackets for ssh
+  : > "$root/logs/calls.log"
+  PATH="$root/bin:$PATH" \
+    MAJJJ_DEPLOY_CONFIG="$root/deploy.local" \
+    STUB_CURL_MODE="healthy" \
+    "$repo_root/scripts/deploy-partner.sh" --host "[2001:db8::1]" --user partner --bin "$root/bin-v2"
+  assert_file_contains "$root/logs/calls.log" "http://[2001:db8::1]:8789/api/health" "bracketed IPv6 host must not double-bracket health URL"
+  assert_file_contains "$root/logs/calls.log" "ssh target=partner@2001:db8::1" "bracketed IPv6 ssh target must strip outer brackets"
+  assert_file_contains "$root/logs/calls.log" "dest=partner@[2001:db8::1]:" "bracketed IPv6 scp destination must stay single-bracketed"
+
+  # 5k. IPv4 host preserves exact unbracketed health URL, ssh, and scp behavior
+  : > "$root/logs/calls.log"
+  PATH="$root/bin:$PATH" \
+    MAJJJ_DEPLOY_CONFIG="$root/deploy.local" \
+    STUB_CURL_MODE="healthy" \
+    "$repo_root/scripts/deploy-partner.sh" --host 192.168.1.20 --user partner --bin "$root/bin-v1"
+  assert_file_contains "$root/logs/calls.log" "http://192.168.1.20:8789/api/health" "IPv4 host health URL must remain unbracketed"
+  assert_file_contains "$root/logs/calls.log" "ssh target=partner@192.168.1.20" "IPv4 ssh target must remain unbracketed"
+  assert_file_contains "$root/logs/calls.log" "dest=partner@192.168.1.20:" "IPv4 scp destination must remain unbracketed"
 }
 
 test_deploy_partner

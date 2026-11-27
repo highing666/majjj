@@ -43,4 +43,9 @@ tts_base_url: string | null,
 /**
  * Whether AI personas gently nudge a human player after 15–20 seconds of thinking.
  */
-slow_think_nudge_enabled: boolean, };
+slow_think_nudge_enabled: boolean, 
+/**
+ * Optional persisted custom public origin override for remote invitation links
+ * (e.g. `http://majjj.example.com:8789` or `https://majjj.example.com:8443`).
+ */
+public_url_override: string | null, };

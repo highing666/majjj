@@ -38,6 +38,10 @@ pub struct PreferencesData {
     /// Whether AI personas gently nudge a human player after 15–20 seconds of thinking.
     #[serde(default = "default_true")]
     pub slow_think_nudge_enabled: bool,
+    /// Optional persisted custom public origin override for remote invitation links
+    /// (e.g. `http://majjj.example.com:8789` or `https://majjj.example.com:8443`).
+    #[serde(default)]
+    pub public_url_override: Option<String>,
 }
 
 impl Default for PreferencesData {
@@ -53,6 +57,7 @@ impl Default for PreferencesData {
             llm_base_url: None,
             tts_base_url: None,
             slow_think_nudge_enabled: true,
+            public_url_override: None,
         }
     }
 }

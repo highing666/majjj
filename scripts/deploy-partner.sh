@@ -108,10 +108,26 @@ if [ -z "$host" ]; then
   exit 1
 fi
 
-if [ -n "$user" ]; then
-  ssh_target="${user}@${host}"
+bare_host="$host"
+if [[ "$bare_host" == \[*\] ]]; then
+  bare_host="${bare_host#[}"
+  bare_host="${bare_host%]}"
+fi
+
+if [[ "$bare_host" == *:* ]]; then
+  url_host="[${bare_host//%/%25}]"
+  scp_host="[${bare_host}]"
 else
-  ssh_target="$host"
+  url_host="$bare_host"
+  scp_host="$bare_host"
+fi
+
+if [ -n "$user" ]; then
+  ssh_target="${user}@${bare_host}"
+  scp_target="${user}@${scp_host}"
+else
+  ssh_target="$bare_host"
+  scp_target="$scp_host"
 fi
 
 # Strip leading ~/ if provided so scp/ssh handle relative-to-$HOME cleanly
@@ -120,7 +136,7 @@ remote_dir_rel="$(dirname "$remote_bin_rel")"
 remote_tmp_rel="${remote_dir_rel}/.majjj.deploy.$$"
 
 check_partner_idle() {
-  local health_url="http://${host}:${port}/api/health"
+  local health_url="http://${url_host}:${port}/api/health"
   local health_body=""
   if health_body="$(curl -fsS --max-time 3 "$health_url" 2>/dev/null)"; then
     if printf '%s' "$health_body" | grep -Eq '"app"[[:space:]]*:[[:space:]]*"majjj"'; then
@@ -164,7 +180,7 @@ sync_remote_app() {
   trap 'rm -rf "$stage_dir"' RETURN
   "$repo_root/scripts/install-local.sh" --app-only --app-dir "$stage_dir/Majjj.app" >/dev/null
   ssh "$ssh_target" "mkdir -p \"\$HOME/Applications\" && rm -rf \"\$HOME/Applications/Majjj.app.tmp\""
-  scp -rq "$stage_dir/Majjj.app" "${ssh_target}:'Applications/Majjj.app.tmp'"
+  scp -rq "$stage_dir/Majjj.app" "${scp_target}:'Applications/Majjj.app.tmp'"
   ssh "$ssh_target" "rm -rf \"\$HOME/Applications/Majjj.app\" && mv -f \"\$HOME/Applications/Majjj.app.tmp\" \"\$HOME/Applications/Majjj.app\""
   echo "Synced Majjj.app -> ${ssh_target}:~/Applications/Majjj.app"
 }
@@ -218,7 +234,7 @@ do_push() {
   fi
 
   ssh "$ssh_target" "$dir_setup && mkdir -p \"\$rdir\""
-  scp -q "$local_bin" "${ssh_target}:'${remote_tmp_rel}'"
+  scp -q "$local_bin" "${scp_target}:'${remote_tmp_rel}'"
 
   ssh "$ssh_target" "
     set -eu

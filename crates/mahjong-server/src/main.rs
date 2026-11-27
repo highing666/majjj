@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use clap::Parser;
 use mahjong_server::protocol::HealthResponse;
+use mahjong_server::public_url::normalize_public_url;
 use mahjong_server::storage::resolve_data_dir;
 use mahjong_server::{default_ai_threads, ServerConfig, ServerError};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -21,6 +22,10 @@ fn parse_ai_threads(raw: &str) -> Result<usize, String> {
         return Err("ai thread count must be at least 1".to_string());
     }
     Ok(parsed)
+}
+
+fn parse_public_url(raw: &str) -> Result<String, String> {
+    normalize_public_url(raw).map_err(|err| err.to_string())
 }
 
 /// Authoritative LAN server for Majjj.
@@ -80,6 +85,10 @@ struct Cli {
         value_parser = clap::builder::BoolishValueParser::new()
     )]
     no_tts: bool,
+
+    /// Custom public origin override for remote invitation links (e.g. `http://majjj.example.com:8789`).
+    #[arg(long, env = "MAJJJ_PUBLIC_URL", value_parser = parse_public_url)]
+    public_url: Option<String>,
 }
 
 impl From<Cli> for ServerConfig {
@@ -93,7 +102,8 @@ impl From<Cli> for ServerConfig {
             .with_headless(cli.headless)
             .with_llm_url(cli.llm_url)
             .with_tts_url(cli.tts_url)
-            .with_no_tts(cli.no_tts);
+            .with_no_tts(cli.no_tts)
+            .with_public_url(cli.public_url);
         if let Some(bind) = cli.bind {
             cfg = cfg.with_bind(bind);
         }
@@ -490,6 +500,59 @@ mod tests {
         let no_tts_flag =
             Cli::try_parse_from(["mahjong-server", "--no-tts"]).expect("parse --no-tts");
         assert!(ServerConfig::from(no_tts_flag).no_tts);
+    }
+
+    #[test]
+    fn cli_accepts_public_url_flag_and_env_override_and_rejects_invalid_origins() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var("MAJJJ_PUBLIC_URL");
+
+        let default_cli =
+            Cli::try_parse_from(["mahjong-server"]).expect("parse default public_url");
+        assert_eq!(ServerConfig::from(default_cli).public_url, None);
+
+        std::env::set_var("MAJJJ_PUBLIC_URL", "HTTPS://Env.Example.COM:8443/");
+        let env_cli = Cli::try_parse_from(["mahjong-server"]).expect("parse MAJJJ_PUBLIC_URL");
+        assert_eq!(
+            ServerConfig::from(env_cli).public_url.as_deref(),
+            Some("https://env.example.com:8443")
+        );
+
+        let flag_cli = Cli::try_parse_from([
+            "mahjong-server",
+            "--public-url",
+            "http://majjj.example.com:8789/",
+        ])
+        .expect("parse --public-url over env");
+        std::env::remove_var("MAJJJ_PUBLIC_URL");
+        assert_eq!(
+            ServerConfig::from(flag_cli).public_url.as_deref(),
+            Some("http://majjj.example.com:8789")
+        );
+
+        for invalid in [
+            "ftp://majjj.example.com",
+            "http://majjj.example.com:8789/table",
+            "http://user:pass@majjj.example.com:8789",
+            "http://2001:db9::1:8789",
+            "",
+        ] {
+            let err = Cli::try_parse_from(["mahjong-server", "--public-url", invalid])
+                .expect_err(&format!("must reject invalid --public-url {invalid:?}"));
+            let msg = err.to_string();
+            assert!(
+                msg.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c)),
+                "CLI error for --public-url {invalid:?} must contain clear Chinese reason: {msg}"
+            );
+        }
+
+        std::env::set_var("MAJJJ_PUBLIC_URL", "http://majjj.example.com/bad");
+        let env_err = Cli::try_parse_from(["mahjong-server"]);
+        std::env::remove_var("MAJJJ_PUBLIC_URL");
+        assert!(
+            env_err.is_err(),
+            "invalid MAJJJ_PUBLIC_URL must be rejected"
+        );
     }
 
     #[test]

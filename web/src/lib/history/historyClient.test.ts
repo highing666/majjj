@@ -65,6 +65,7 @@ function sampleExport(): HistoryExportResponse {
       llm_base_url: null,
       tts_base_url: null,
       slow_think_nudge_enabled: true,
+      public_url_override: null,
     },
     matches: [],
     hands: [],
@@ -142,6 +143,7 @@ describe("historyClient", () => {
       llm_base_url: null,
       tts_base_url: null,
       slow_think_nudge_enabled: true,
+      public_url_override: null,
     };
     const fetchFn = vi
       .fn<HistoryFetch>()
