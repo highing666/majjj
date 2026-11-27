@@ -6,6 +6,7 @@ import { ALL_SEATS } from "../protocol/seats";
 import {
   buildOfflinePauseBanner,
   buildSeatControlItems,
+  buildSelfAiAssistControl,
   buildTakeOverSeatItems,
   getOfflineHumanTakeOverSeats,
   getTakeOverModalCopy,
@@ -146,28 +147,114 @@ describe("seatControl view-model helpers", () => {
     expect(shouldShowReclaimControl(makeSnapshot({ your_seat: null }))).toBe(false);
   });
 
-  it("builds toggleable AI assist controls for offline human seats and own seat", () => {
+  it("builds top-bar AI assist controls strictly for offline other human seats", () => {
     const items = buildSeatControlItems(makeSnapshot());
     expect(items).toEqual([
       {
-        seat: "East",
-        displayName: "自家 · 东家",
-        isSelf: true,
-        isOffline: false,
-        aiAssisted: false,
-        nextEnabled: true,
-        actionLabel: "本座暂交 AI 托管",
-      },
-      {
         seat: "South",
         displayName: "下家 · 南家",
-        isSelf: false,
-        isOffline: true,
         aiAssisted: false,
         nextEnabled: true,
         actionLabel: "暂由 AI 托管",
       },
     ]);
+
+    const offlineAssisted = makeSnapshot({
+      seats: [
+        makeSeat("East", { kind: "Human", nickname: "东家", connected: true, ai_assisted: true, ai_difficulty: "Strong", ai_style: "Balanced" }),
+        makeSeat("South", { kind: "Human", nickname: "南家", connected: false, ai_assisted: true, ai_difficulty: "Strong", ai_style: "Balanced" }),
+        makeSeat("West"),
+        makeSeat("North"),
+      ],
+    });
+    expect(buildSeatControlItems(offlineAssisted)).toEqual([
+      {
+        seat: "South",
+        displayName: "下家 · 南家",
+        aiAssisted: true,
+        nextEnabled: false,
+        actionLabel: "取消托管",
+      },
+    ]);
+
+    const onlineAssistedOther = makeSnapshot({
+      seats: [
+        makeSeat("East", { kind: "Human", nickname: "东家", connected: true, ai_difficulty: null, ai_style: null }),
+        makeSeat("South", { kind: "Human", nickname: "南家", connected: true, ai_assisted: true, ai_difficulty: "Strong", ai_style: "Balanced" }),
+        makeSeat("West"),
+        makeSeat("North"),
+      ],
+    });
+    expect(buildSeatControlItems(onlineAssistedOther)).toEqual([]);
+
+    const allOnlineNormal = makeSnapshot({
+      seats: [
+        makeSeat("East", { kind: "Human", nickname: "东家", connected: true, ai_difficulty: null, ai_style: null }),
+        makeSeat("South"),
+        makeSeat("West"),
+        makeSeat("North"),
+      ],
+    });
+    expect(buildSeatControlItems(allOnlineNormal)).toEqual([]);
+    expect(shouldShowReclaimControl(allOnlineNormal)).toBe(false);
+    expect(buildOfflinePauseBanner(allOnlineNormal)).toBeNull();
+  });
+
+  it("builds Settings self AI assist control only for seated humans InMatch (1P and multi-human)", () => {
+    expect(buildSelfAiAssistControl(null)).toBeNull();
+    expect(buildSelfAiAssistControl(makeSnapshot({ phase: "Lobby" }))).toBeNull();
+    expect(buildSelfAiAssistControl(makeSnapshot({ phase: "Finished" }))).toBeNull();
+    expect(buildSelfAiAssistControl(makeSnapshot({ your_seat: null }))).toBeNull();
+
+    const singlePlayerOff = makeSnapshot({
+      seats: [
+        makeSeat("East", { kind: "Human", nickname: "东家", connected: true, ai_difficulty: null, ai_style: null }),
+        makeSeat("South"),
+        makeSeat("West"),
+        makeSeat("North"),
+      ],
+    });
+    expect(buildSelfAiAssistControl(singlePlayerOff)).toMatchObject({
+      seat: "East",
+      aiAssisted: false,
+      nextEnabled: true,
+      actionLabel: "本座暂交 AI 托管",
+      statusLabel: "未开启",
+      shouldCloseSettingsOnToggle: true,
+    });
+
+    const multiHumanOff = makeSnapshot();
+    expect(buildSelfAiAssistControl(multiHumanOff)).toMatchObject({
+      seat: "East",
+      aiAssisted: false,
+      nextEnabled: true,
+      actionLabel: "本座暂交 AI 托管",
+      shouldCloseSettingsOnToggle: true,
+    });
+
+    const selfAssistedOn = makeSnapshot({
+      seats: [
+        makeSeat("East", {
+          kind: "Human",
+          nickname: "东家",
+          connected: true,
+          ai_assisted: true,
+          ai_difficulty: "Strong",
+          ai_style: "Balanced",
+        }),
+        makeSeat("South"),
+        makeSeat("West"),
+        makeSeat("North"),
+      ],
+    });
+    expect(buildSelfAiAssistControl(selfAssistedOn)).toMatchObject({
+      seat: "East",
+      aiAssisted: true,
+      nextEnabled: false,
+      actionLabel: "收回控制权",
+      statusLabel: "AI 托管中",
+      shouldCloseSettingsOnToggle: false,
+    });
   });
 
   it("builds observer takeover items for AI seats InMatch and offline human seats across phases", () => {

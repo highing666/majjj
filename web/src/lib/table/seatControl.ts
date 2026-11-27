@@ -14,11 +14,19 @@ export type TakeOverKind = "ai" | "offline_human";
 export interface SeatControlItem {
   seat: Seat;
   displayName: string;
-  isSelf: boolean;
-  isOffline: boolean;
   aiAssisted: boolean;
   nextEnabled: boolean;
   actionLabel: string;
+}
+
+export interface SelfAiAssistControl {
+  seat: Seat;
+  aiAssisted: boolean;
+  nextEnabled: boolean;
+  actionLabel: string;
+  statusLabel: string;
+  hint: string;
+  shouldCloseSettingsOnToggle: boolean;
 }
 
 export interface TakeOverSeatItem {
@@ -86,7 +94,49 @@ export function shouldShowReclaimControl(snapshot: TableSnapshot): boolean {
 }
 
 /**
- * Builds per-seat AI assist controls available to an online seated player during `InMatch`.
+ * Builds the self AI assist control rendered inside Settings for a seated human during `InMatch`.
+ * Returns `null` outside `InMatch` or for unseated observers.
+ */
+export function buildSelfAiAssistControl(
+  snapshot: TableSnapshot | null,
+): SelfAiAssistControl | null {
+  if (
+    snapshot === null ||
+    snapshot.phase !== "InMatch" ||
+    snapshot.your_seat === null
+  ) {
+    return null;
+  }
+  const seatInfo = snapshot.seats[seatIndex(snapshot.your_seat)];
+  if (seatInfo.kind !== "Human") {
+    return null;
+  }
+  if (seatInfo.ai_assisted) {
+    return {
+      seat: snapshot.your_seat,
+      aiAssisted: true,
+      nextEnabled: false,
+      actionLabel: "收回控制权",
+      statusLabel: "AI 托管中",
+      hint: "当前本座正由 AI 暂时代打；点击右侧按钮立即取消 AI 托管并收回控制权。",
+      shouldCloseSettingsOnToggle: false,
+    };
+  }
+  return {
+    seat: snapshot.your_seat,
+    aiAssisted: false,
+    nextEnabled: true,
+    actionLabel: "本座暂交 AI 托管",
+    statusLabel: "未开启",
+    hint: "开启后由 AI 暂时代打本座，可随时在牌桌顶部一键收回控制权；本小局战绩仍计入本人并标记为 AI 托管小局。",
+    shouldCloseSettingsOnToggle: true,
+  };
+}
+
+/**
+ * Builds top-bar AI assist controls for offline other human seats during `InMatch`.
+ * Own-seat self-assist lives in Settings (and reclaims via `shouldShowReclaimControl`);
+ * online other seats display their AI-assist badge directly on their nameplate.
  */
 export function buildSeatControlItems(
   snapshot: TableSnapshot,
@@ -103,17 +153,12 @@ export function buildSeatControlItems(
     }
     const isSelf = seatInfo.seat === yourSeat;
     const isOffline = !seatInfo.connected;
-    if (!isSelf && !isOffline && !seatInfo.ai_assisted) {
+    if (isSelf || !isOffline) {
       continue;
     }
 
     const nextEnabled = !seatInfo.ai_assisted;
-    let actionLabel: string;
-    if (isSelf) {
-      actionLabel = seatInfo.ai_assisted ? "收回控制权" : "本座暂交 AI 托管";
-    } else {
-      actionLabel = seatInfo.ai_assisted ? "取消托管" : "暂由 AI 托管";
-    }
+    const actionLabel = seatInfo.ai_assisted ? "取消托管" : "暂由 AI 托管";
 
     items.push({
       seat: seatInfo.seat,
@@ -122,8 +167,6 @@ export function buildSeatControlItems(
         yourSeat,
         snapshot.seats,
       ),
-      isSelf,
-      isOffline,
       aiAssisted: seatInfo.ai_assisted,
       nextEnabled,
       actionLabel,

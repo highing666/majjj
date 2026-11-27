@@ -11,12 +11,16 @@
     IosAudioSessionMode,
   } from "../preferences/devicePreferences";
   import type { TablePace } from "../protocol/generated/TablePace";
+  import type { SelfAiAssistControl } from "../table/seatControl";
 
   interface Props {
     open: boolean;
     preferences: DevicePreferences;
     pace: TablePace;
     canEditPace?: boolean;
+    selfAiAssist?: SelfAiAssistControl | null;
+    canToggleSelfAiAssist?: boolean;
+    onToggleSelfAiAssist?: () => void;
     activeSeatVoicePackId?: HumanVoicePackId | null;
     onSelectHumanVoicePack?: (voicePackId: HumanVoicePackId) => void;
     slowThinkNudgeEnabled?: boolean;
@@ -39,6 +43,9 @@
     preferences,
     pace,
     canEditPace = true,
+    selfAiAssist = null,
+    canToggleSelfAiAssist = true,
+    onToggleSelfAiAssist,
     activeSeatVoicePackId = null,
     onSelectHumanVoicePack,
     slowThinkNudgeEnabled = true,
@@ -398,6 +405,30 @@
         </label>
       </div>
 
+      {#if selfAiAssist !== null && onToggleSelfAiAssist}
+        <div class="settings-section">
+          <div class="section-label-row">
+            <h3>本座 AI 托管</h3>
+            <span class="tag" class:tag-self={selfAiAssist.aiAssisted}>
+              {selfAiAssist.statusLabel}
+            </span>
+          </div>
+          <div class="self-assist-row">
+            <span class="row-hint">{selfAiAssist.hint}</span>
+            <button
+              class="btn self-assist-btn"
+              class:btn-jade={!selfAiAssist.aiAssisted}
+              class:btn-primary={selfAiAssist.aiAssisted}
+              type="button"
+              disabled={!canToggleSelfAiAssist}
+              onclick={() => onToggleSelfAiAssist()}
+            >
+              {selfAiAssist.actionLabel}
+            </button>
+          </div>
+        </div>
+      {/if}
+
       {#if serverVersion || tableId || connectionStatusText || shutdownState?.visible}
         <div class="settings-service-meta">
           <div class="service-meta-line">
@@ -508,6 +539,18 @@
     justify-content: space-between;
     align-items: center;
     gap: 8px;
+  }
+
+  .self-assist-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .self-assist-btn {
+    flex: 0 0 auto;
+    white-space: nowrap;
   }
 
   .toggle-row {

@@ -67,6 +67,7 @@
   import RotateOverlay from "./lib/table/RotateOverlay.svelte";
   import {
     buildOfflinePauseBanner,
+    buildSelfAiAssistControl,
     buildTakeOverSeatItems,
     getOfflineHumanTakeOverSeats,
     type TakeOverKind,
@@ -335,6 +336,7 @@
       snapshot.your_seat !== null &&
       snapshot.seats[seatIndex(snapshot.your_seat)].ai_assisted,
   );
+  const selfAiAssistControl = $derived(buildSelfAiAssistControl(snapshot));
   const inputLocked = $derived(
     actionsDisabled ||
       sessionState.pendingActionId !== null ||
@@ -451,6 +453,17 @@
       handleSetPace(pace);
     } else if (snapshot.config.pace !== pace) {
       client.updateLobbyConfig(patchLobbyConfig(snapshot.config, { pace }));
+    }
+  }
+
+  function handleSettingsToggleSelfAiAssist(): void {
+    if (actionsDisabled || selfAiAssistControl === null) {
+      return;
+    }
+    const { seat, nextEnabled, shouldCloseSettingsOnToggle } =
+      selfAiAssistControl;
+    if (client.toggleAiAssist(seat, nextEnabled) && shouldCloseSettingsOnToggle) {
+      settingsOpen = false;
     }
   }
 
@@ -895,6 +908,9 @@
     canEditPace={snapshot !== null &&
       !actionsDisabled &&
       snapshot.your_seat !== null}
+    selfAiAssist={selfAiAssistControl}
+    canToggleSelfAiAssist={!actionsDisabled}
+    onToggleSelfAiAssist={handleSettingsToggleSelfAiAssist}
     slowThinkNudgeEnabled={snapshot?.slow_think_nudge_enabled ??
       presentedSnapshot?.slow_think_nudge_enabled ??
       true}
