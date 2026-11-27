@@ -15,6 +15,7 @@ pub mod pacing;
 pub mod persona;
 pub mod persona_memory;
 pub mod protocol;
+pub mod public_url;
 mod seat_control;
 pub mod server;
 pub mod session;

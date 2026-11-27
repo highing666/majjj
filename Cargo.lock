@@ -587,6 +587,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "if-addrs",
+ "libc",
  "mahjong-ai",
  "mahjong-core",
  "rand_chacha 0.3.1",

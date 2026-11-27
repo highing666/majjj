@@ -32,6 +32,7 @@ use crate::lifecycle::{
 use crate::llm::{resolve_llm_base_url, LlmClient, OpenAiLlmClient};
 use crate::persona_memory::ClearPersonaMemoryRequest;
 use crate::protocol::{HealthResponse, ServerMessage};
+use crate::public_url::{normalize_public_url, PublicUrlError};
 use crate::session::{OutboundSignal, TableOptions, TableRuntime};
 use crate::static_assets::{
     DiskStaticAssets, EmbeddedStaticAssets, StaticAssetError, StaticAssetSource,
@@ -93,6 +94,8 @@ pub struct ServerConfig {
     pub no_tts: bool,
     /// Optional injected [`TtsClient`] for automated tests (bypasses constructing `HttpTtsClient`).
     pub tts_client: Option<Arc<dyn TtsClient>>,
+    /// Optional explicit custom public origin override (`--public-url` / `MAJJJ_PUBLIC_URL`).
+    pub public_url: Option<String>,
 }
 
 impl Default for ServerConfig {
@@ -112,6 +115,7 @@ impl Default for ServerConfig {
             tts_url: None,
             no_tts: false,
             tts_client: None,
+            public_url: None,
         }
     }
 }
@@ -151,11 +155,15 @@ pub enum ServerError {
         "无法连接局域网推理服务（{endpoint}）：{reason}。请确认 Windows 主机上的 llama-server 已启动且局域网可达，或通过 --llm-url / MAJJJ_LLM_URL 指定正确地址"
     )]
     LlmUnavailable { endpoint: String, reason: String },
+    /// Configured custom public origin (`--public-url` / `MAJJJ_PUBLIC_URL`) failed strict validation.
+    #[error("自定义公网入口配置无效：{0}")]
+    InvalidPublicUrl(#[from] PublicUrlError),
 }
 
 /// Running server handle returned by [`ServerConfig::spawn`].
 pub struct ServerHandle {
     addr: SocketAddr,
+    cli_public_url: Option<String>,
     shutdown_tx: watch::Sender<bool>,
     join_handle: Option<JoinHandle<Result<(), std::io::Error>>>,
 }
@@ -164,6 +172,7 @@ impl std::fmt::Debug for ServerHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ServerHandle")
             .field("addr", &self.addr)
+            .field("cli_public_url", &self.cli_public_url)
             .finish_non_exhaustive()
     }
 }
@@ -173,6 +182,12 @@ impl ServerHandle {
     #[must_use]
     pub fn addr(&self) -> SocketAddr {
         self.addr
+    }
+
+    /// Returns the validated CLI/ENV custom public origin override, if configured.
+    #[must_use]
+    pub fn cli_public_url(&self) -> Option<&str> {
+        self.cli_public_url.as_deref()
     }
 
     /// Waits until the server stops on its own (e.g. via `POST /api/shutdown` or idle auto-exit).
@@ -314,6 +329,13 @@ impl ServerConfig {
         self
     }
 
+    /// Overrides the custom public origin for remote invitation links (`--public-url` / `MAJJJ_PUBLIC_URL`).
+    #[must_use]
+    pub fn with_public_url(mut self, public_url: impl Into<Option<String>>) -> Self {
+        self.public_url = public_url.into();
+        self
+    }
+
     /// Binds the TCP socket immediately (failing on port conflicts without fallback) and
     /// spawns the Axum HTTP/WebSocket server on the current Tokio runtime.
     ///
@@ -343,6 +365,10 @@ impl ServerConfig {
         if self.ai_threads == 0 {
             return Err(ServerError::InvalidAiThreads(0));
         }
+        let cli_public_url = match self.public_url.as_deref() {
+            Some(raw) => Some(normalize_public_url(raw)?),
+            None => None,
+        };
         if options.data_dir().is_none() {
             if let Some(dir) = &self.data_dir {
                 options = options.with_data_dir(dir.clone());
@@ -484,6 +510,7 @@ impl ServerConfig {
 
         Ok(ServerHandle {
             addr: local_addr,
+            cli_public_url,
             shutdown_tx,
             join_handle: Some(join_handle),
         })

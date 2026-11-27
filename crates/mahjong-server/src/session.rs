@@ -50,7 +50,7 @@ use crate::protocol::{
 };
 use crate::seat_control::HandAttribution;
 use crate::server::ServerError;
-use crate::storage::{current_unix_ms, normalize_nickname, HistoryStore};
+use crate::storage::{current_unix_ms, normalize_nickname, HistoryStore, PublicUrlSaveError};
 use crate::tts::{
     TtsClient, TtsSynthesisRequest, TTS_IN_HAND_DEADLINE_MS, TTS_SETTLEMENT_DEADLINE_MS,
 };
@@ -2554,6 +2554,19 @@ impl TableRuntime {
     pub async fn history_preferences(&self) -> PreferencesData {
         let session = self.inner.lock().await;
         session.history.preferences().clone()
+    }
+
+    /// Validates and atomically updates `public_url_override` in `preferences.json`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PublicUrlSaveError`] if validation or disk persistence fails.
+    pub async fn set_public_url_override(
+        &self,
+        raw: Option<&str>,
+    ) -> Result<Option<String>, PublicUrlSaveError> {
+        let mut session = self.inner.lock().await;
+        session.history.set_public_url_override(raw)
     }
 
     /// Exports full preferences, matches, and hands JSON backup for `GET /api/history/export`.
