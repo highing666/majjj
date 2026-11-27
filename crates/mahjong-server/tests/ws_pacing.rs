@@ -385,7 +385,8 @@ async fn real_ws_ai_only_all_pass_alignment_and_realtime_overlapped_thinking() {
     );
 
     // Wait for South AI's turn action (overlapped with Realtime budget <= 180ms hard cap):
-    // total time from TileDrawn should stay inside [350ms..1100ms] (overlapped, NOT think+delay stacked).
+    // under ADR-0014 Standard leisure pacing, total time from TileDrawn falls within
+    // [1120ms..9000ms] (with slight real-clock scheduling slack) rather than stacking think+delay.
     let draw_at = Instant::now();
     let (f3, t3, ev3, _) = recv_event_batch(&mut east).await;
     assert_eq!((f3, t3), (5, 5));
@@ -398,8 +399,8 @@ async fn real_ws_ai_only_all_pass_alignment_and_realtime_overlapped_thinking() {
     ));
     let ai_turn_elapsed = draw_at.elapsed();
     assert!(
-        ai_turn_elapsed >= Duration::from_millis(320)
-            && ai_turn_elapsed <= Duration::from_millis(1100),
+        ai_turn_elapsed >= Duration::from_millis(1000)
+            && ai_turn_elapsed <= Duration::from_millis(9300),
         "Overlapped AI turn elapsed {ai_turn_elapsed:?} out of expected range"
     );
 

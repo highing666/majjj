@@ -130,6 +130,9 @@ async fn real_ws_quick_emotes_broadcast_trigger_ai_replies_and_nudge_persists_ac
                 ai_reply_seats.push(seat);
             }
             ServerMessage::TableBanter { .. }
+            | ServerMessage::TableBanterAudioReady { .. }
+            | ServerMessage::TableBanterAudioFallback { .. }
+            | ServerMessage::TtsStatusNotice { .. }
             | ServerMessage::LobbyUpdated { .. }
             | ServerMessage::ServerPing { .. } => {}
             other => panic!("unexpected msg on east WS: {other:?}"),
@@ -148,6 +151,9 @@ async fn real_ws_quick_emotes_broadcast_trigger_ai_replies_and_nudge_persists_ac
                 break;
             }
             ServerMessage::TableBanter { .. }
+            | ServerMessage::TableBanterAudioReady { .. }
+            | ServerMessage::TableBanterAudioFallback { .. }
+            | ServerMessage::TtsStatusNotice { .. }
             | ServerMessage::LobbyUpdated { .. }
             | ServerMessage::ServerPing { .. } => {}
             other => panic!("unexpected msg on south WS: {other:?}"),
@@ -169,6 +175,9 @@ async fn real_ws_quick_emotes_broadcast_trigger_ai_replies_and_nudge_persists_ac
                 break;
             }
             ServerMessage::TableBanter { .. }
+            | ServerMessage::TableBanterAudioReady { .. }
+            | ServerMessage::TableBanterAudioFallback { .. }
+            | ServerMessage::TtsStatusNotice { .. }
             | ServerMessage::LobbyUpdated { .. }
             | ServerMessage::ServerPing { .. } => {}
             other => panic!("expected ActionRejected during cooldown, got {other:?}"),
@@ -190,7 +199,11 @@ async fn real_ws_quick_emotes_broadcast_trigger_ai_replies_and_nudge_persists_ac
                 assert!(!slow_think_nudge_enabled);
                 break;
             }
-            ServerMessage::TableBanter { .. } | ServerMessage::ServerPing { .. } => {}
+            ServerMessage::TableBanter { .. }
+            | ServerMessage::TableBanterAudioReady { .. }
+            | ServerMessage::TableBanterAudioFallback { .. }
+            | ServerMessage::TtsStatusNotice { .. }
+            | ServerMessage::ServerPing { .. } => {}
             other => panic!("expected LobbyUpdated on south WS, got {other:?}"),
         }
     }

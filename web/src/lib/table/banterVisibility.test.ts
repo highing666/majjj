@@ -143,12 +143,15 @@ describe("banterVisibility", () => {
     ).toBe(false);
   });
 
-  it("suppresses only AI banter text bubbles when hidden while keeping human quick_emote bubbles visible", () => {
+  it("suppresses only AI banter text bubbles when hidden while keeping human quick_emote and audioFallback bubbles visible", () => {
     const aiBubble = makeAiBubble();
+    const fallbackAiBubble = makeAiBubble({ banterId: "b-2", audioFallback: true });
     const emoteBubble = makeQuickEmoteBubble();
 
     expect(shouldShowBubbleText(aiBubble, false)).toBe(true);
     expect(shouldShowBubbleText(aiBubble, true)).toBe(false);
+    expect(shouldShowBubbleText(fallbackAiBubble, false)).toBe(true);
+    expect(shouldShowBubbleText(fallbackAiBubble, true)).toBe(true);
     expect(shouldShowBubbleText(emoteBubble, false)).toBe(true);
     expect(shouldShowBubbleText(emoteBubble, true)).toBe(true);
   });

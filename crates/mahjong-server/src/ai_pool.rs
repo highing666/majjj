@@ -18,7 +18,7 @@ use crate::pacing::{overlapped_wait, AiTurnTrigger, ReleaseTicket};
 use crate::persona_memory::MemoryNoteJob;
 use crate::server::ServerError;
 use crate::session::TableSession;
-use crate::tts::{TtsClient, TtsError};
+use crate::tts::TtsClient;
 
 /// Computes the default worker count for the dedicated Rayon AI thinking pool:
 /// `(available_parallelism / 2).clamp(1, 4)` (or `1` if parallelism cannot be queried).
@@ -148,21 +148,30 @@ fn spawn_tts_synthesis_task(
     job: PendingTtsJob,
 ) {
     tokio::spawn(async move {
-        let deadline = std::time::Duration::from_millis(u64::from(job.deadline_ms));
-        let endpoint = tts.endpoint().to_string();
-        let res = match tokio::time::timeout(deadline, tts.synthesize(job.request)).await {
-            Ok(inner) => inner,
-            Err(_) => Err(TtsError::Timeout {
-                endpoint,
-                timeout_ms: u64::from(job.deadline_ms),
-            }),
-        };
-        let schedule_probe_at = {
-            let mut session = runtime.lock().await;
-            session.commit_tts_result(job.guard, job.dispatched_at, job.deadline_ms, res)
-        };
-        if let Some(probe_at) = schedule_probe_at {
-            spawn_tts_health_probe(Arc::downgrade(&runtime), tts, Some(probe_at));
+        let mut current = job;
+        loop {
+            // Decouple upstream queue-admission `deadline_ms` from the in-flight HTTP call
+            // (which uses `HttpTtsClient`'s own 8s ceiling) so slow-but-healthy GPU synthesis
+            // finishes cleanly without aborting active GPU work; `commit_tts_result` enforces
+            // the `deadline_ms` delivery freshness budget and promotes any queued job once
+            // the GPU is actually free.
+            let res = tts.synthesize(current.request).await;
+            let outcome = {
+                let mut session = runtime.lock().await;
+                session.commit_tts_result(
+                    current.guard,
+                    current.dispatched_at,
+                    current.deadline_ms,
+                    res,
+                )
+            };
+            if let Some(probe_at) = outcome.schedule_probe_at {
+                spawn_tts_health_probe(Arc::downgrade(&runtime), Arc::clone(&tts), Some(probe_at));
+            }
+            match outcome.next_job {
+                Some(next) => current = next,
+                None => break,
+            }
         }
     });
 }
@@ -401,6 +410,7 @@ pub(crate) fn spawn_scheduled_work(
                     Some(done_tx),
                 );
             }
+            let mut ai_jobs = ai_jobs;
             tokio::spawn(async move {
                 // Bound gameplay wait by `HIGHLIGHT_SYNC_CAP` (~1.5s) while allowing slower
                 // LLM requests to finish asynchronously up to `ASYNC_BANTER_TIMEOUT` (6s)
@@ -413,6 +423,12 @@ pub(crate) fn spawn_scheduled_work(
                 .await;
 
                 if pending_release.is_some() || !ai_jobs.is_empty() {
+                    // Refresh started_at after sync_banter finishes so waiting on highlight
+                    // text generation never consumes the AI's own humanized thinking window (ADR-0014).
+                    let resumed_at = tokio::time::Instant::now();
+                    for job in &mut ai_jobs {
+                        job.started_at = resumed_at;
+                    }
                     spawn_gameplay_work(
                         runtime,
                         ai_pool,

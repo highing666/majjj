@@ -425,6 +425,10 @@ pub enum ServerMessage {
         audio_url: String,
         duration_ms: u32,
     },
+    /// Silent per-line fallback signal emitted when synthesis for a specific `banter_id`
+    /// is skipped or times out while the LAN TTS service remains available, allowing clients
+    /// with `hide_banter_bubble_with_voice` enabled to reveal that single line's text bubble.
+    TableBanterAudioFallback { banter_id: String, seat: Seat },
     /// Broadcast human quick-emote comic bubble (`快捷互动`) to all connected clients.
     QuickEmoteBroadcast {
         seat: Seat,

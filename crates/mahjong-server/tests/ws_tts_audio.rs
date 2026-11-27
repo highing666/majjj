@@ -28,6 +28,8 @@ struct FakeTtsState {
     healthy: Arc<Mutex<bool>>,
     wav_bytes: Arc<Mutex<Vec<u8>>>,
     duration_ms: Arc<Mutex<u32>>,
+    synth_delay: Arc<Mutex<Duration>>,
+    return_408_once: Arc<Mutex<bool>>,
     health_requests: Arc<Mutex<usize>>,
     synth_requests: Arc<Mutex<Vec<serde_json::Value>>>,
 }
@@ -44,6 +46,8 @@ impl FakeTtsServer {
             healthy: Arc::new(Mutex::new(true)),
             wav_bytes: Arc::new(Mutex::new(wav_bytes)),
             duration_ms: Arc::new(Mutex::new(duration_ms)),
+            synth_delay: Arc::new(Mutex::new(Duration::ZERO)),
+            return_408_once: Arc::new(Mutex::new(false)),
             health_requests: Arc::new(Mutex::new(0)),
             synth_requests: Arc::new(Mutex::new(Vec::new())),
         };
@@ -129,6 +133,29 @@ async fn fake_tts_synthesize(
         .lock()
         .expect("lock synth requests")
         .push(body);
+    let delay = *state.synth_delay.lock().expect("lock synth delay");
+    if !delay.is_zero() {
+        tokio::time::sleep(delay).await;
+    }
+    let should_408 = {
+        let mut flag = state.return_408_once.lock().expect("lock 408 flag");
+        if *flag {
+            *flag = false;
+            true
+        } else {
+            false
+        }
+    };
+    if should_408 {
+        return (
+            StatusCode::REQUEST_TIMEOUT,
+            Json(serde_json::json!({
+                "error": "deadline_exceeded",
+                "message": "queue wait exceeded deadline_ms"
+            })),
+        )
+            .into_response();
+    }
     let wav = state.wav_bytes.lock().expect("lock wav").clone();
     let dur = *state.duration_ms.lock().expect("lock dur");
     let mut resp = (StatusCode::OK, wav).into_response();
@@ -318,7 +345,7 @@ async fn single_synthesis_shared_by_multiple_ws_clients_over_http_and_404_on_unk
     assert_eq!(synth_reqs[0]["request_id"], "b-1");
     assert_eq!(synth_reqs[0]["format"], "wav");
     assert_eq!(synth_reqs[0]["stream"], false);
-    assert_eq!(synth_reqs[0]["deadline_ms"], 2500);
+    assert_eq!(synth_reqs[0]["deadline_ms"], 5000);
 
     // Both clients fetch GET /api/banter-audio/b-1 and receive exact WAV bytes + headers.
     for _ in 0..2 {
@@ -468,4 +495,104 @@ async fn tts_url_precedence_honors_cli_over_preferences_and_no_tts_disables_all_
 
     pref_tts.shutdown();
     cli_tts.shutdown();
+}
+
+#[tokio::test]
+async fn http_tts_client_decouples_request_timeout_from_deadline_and_ws_408_emits_fallback() {
+    use mahjong_server::persona::{PersonaId, PersonaMood};
+    use mahjong_server::tts::{HttpTtsClient, TtsClient, TtsSynthesisRequest};
+
+    let expected_wav = make_pcm16_mono_wav(6_000, 0x3C);
+    let fake_tts = FakeTtsServer::start(expected_wav.clone(), 500).await;
+
+    // 1. HttpTtsClient uses its 8s request_timeout ceiling rather than clamping to request.deadline_ms.
+    *fake_tts.state.synth_delay.lock().expect("lock delay") = Duration::from_millis(250);
+    let client = HttpTtsClient::new(&fake_tts.base_url()).expect("create http tts client");
+    let out = client
+        .synthesize(TtsSynthesisRequest::new(
+            "b-decoupled",
+            PersonaId::QuickHothead,
+            PersonaMood::Smug,
+            "请求超时上限与deadline解耦验证",
+            120,
+        ))
+        .await
+        .expect("HttpTtsClient must not prematurely abort at deadline_ms=120");
+    assert_eq!(out.wav_bytes, expected_wav);
+    assert_eq!(out.duration_ms, 500);
+
+    // 2. Over live WS, upstream HTTP 408 emits TableBanterAudioFallback without TtsStatusNotice,
+    // and the following synthesis succeeds immediately.
+    *fake_tts.state.synth_delay.lock().expect("lock delay") = Duration::ZERO;
+    *fake_tts.state.return_408_once.lock().expect("lock 408") = true;
+
+    let server = ServerConfig::default()
+        .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
+        .with_port(0)
+        .with_llm_client(stub_llm_client())
+        .with_tts_url(Some(fake_tts.base_url()))
+        .spawn_with_options(
+            TableOptions::with_wall_factory(23, no_reaction_factory())
+                .with_pacing(PacingMode::Immediate),
+        )
+        .await
+        .expect("spawn server against local fake TTS");
+
+    let mut east = connect_and_hello(server.addr(), "c-east", "小王").await;
+    let mut west = connect_and_hello(server.addr(), "c-west", "小李").await;
+    let mut north = connect_and_hello(server.addr(), "c-north", "小张").await;
+    for (client_ws, seat) in [
+        (&mut east, Seat::East),
+        (&mut west, Seat::West),
+        (&mut north, Seat::North),
+    ] {
+        send_msg(client_ws, &ClientMessage::JoinSeat { seat: Some(seat) }).await;
+        let _ = recv_snapshot(client_ws).await;
+    }
+    send_msg(&mut east, &ClientMessage::StartMatch).await;
+    let _ = recv_snapshot(&mut east).await;
+
+    // Opening banter b-1 hits HTTP 408 -> client receives TableBanterAudioFallback("b-1"), NOT TtsStatusNotice.
+    loop {
+        match recv_msg(&mut east).await {
+            ServerMessage::TableBanterAudioFallback { banter_id, .. } if banter_id == "b-1" => {
+                break;
+            }
+            ServerMessage::TtsStatusNotice { .. } => {
+                panic!("HTTP 408 must NOT emit TtsStatusNotice");
+            }
+            ServerMessage::TableBanter { .. }
+            | ServerMessage::LobbyUpdated { .. }
+            | ServerMessage::ServerPing { .. } => {}
+            other => panic!("unexpected msg waiting for 408 fallback: {other:?}"),
+        }
+    }
+
+    // Immediate next quick emote succeeds without cooldown -> TableBanterAudioReady!
+    send_msg(
+        &mut east,
+        &ClientMessage::SendQuickEmote {
+            emote: QuickEmote::IsThatIt,
+        },
+    )
+    .await;
+    loop {
+        match recv_msg(&mut east).await {
+            ServerMessage::TableBanterAudioReady { banter_id, .. } if banter_id != "b-1" => break,
+            ServerMessage::TtsStatusNotice { .. } => {
+                panic!("healthy synthesis after 408 must NOT emit TtsStatusNotice");
+            }
+            ServerMessage::QuickEmoteBroadcast { .. }
+            | ServerMessage::TableBanter { .. }
+            | ServerMessage::LobbyUpdated { .. }
+            | ServerMessage::ServerPing { .. } => {}
+            other => panic!("unexpected msg waiting for post-408 audio ready: {other:?}"),
+        }
+    }
+
+    let _ = east.close(None).await;
+    let _ = west.close(None).await;
+    let _ = north.close(None).await;
+    server.shutdown().await;
+    fake_tts.shutdown();
 }

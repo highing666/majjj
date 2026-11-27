@@ -46,6 +46,7 @@ export interface ActiveBanterBubble {
   kind: "banter" | "quick_emote";
   bubbleId: number;
   banterId: string | null;
+  audioFallback?: boolean;
   priority: BanterVoicePriority;
   seat: Seat;
   personaId: PersonaId | null;
@@ -95,6 +96,7 @@ export interface PresentationQueue {
     active: ActiveBanterVoiceState | null,
     pendingBanterIds?: ReadonlySet<string>,
   ): void;
+  setHideAiBanterText(hidden: boolean): void;
   enqueueServerMessage(message: ServerMessage): void;
   emitLocalUiAction(action: LocalUiAction): void;
   skipActiveImpact(): boolean;
@@ -122,7 +124,7 @@ const PACE_MULTIPLIER: Record<TablePace, number> = {
 
 const BACKLOG_ACCEL_THRESHOLD = 3;
 const BACKLOG_ACCEL_FACTOR = 1.6;
-const DEFAULT_BANTER_DURATION_MS = 4500;
+const DEFAULT_BANTER_DURATION_MS = 5500;
 const DEFAULT_BANTER_VOICE_TAIL_MS = 500;
 
 function createEmptyBanterMap(): ActiveBanterMap {
@@ -228,6 +230,7 @@ export function createPresentationQueue(
   const deferredDismissBubbleIds: Partial<Record<Seat, number>> = {};
   let activeBanterVoice: ActiveBanterVoiceState | null = null;
   let pendingBanterVoiceIds: ReadonlySet<string> = new Set();
+  let hideAiBanterText = false;
   let nextBubbleId = 1;
   let settlementVisible = false;
   let pace: TablePace = "Standard";
@@ -241,6 +244,7 @@ export function createPresentationQueue(
     string,
     { seat: Seat; priority: BanterVoicePriority }
   >();
+  const pendingHiddenBanterBySeat: Partial<Record<Seat, ActiveBanterBubble>> = {};
   const stateListeners = new Set<PresentationStateListener>();
   const semanticListeners = new Set<SemanticEventListener>();
   const banterVoiceListeners = new Set<BanterVoiceEventListener>();
@@ -309,6 +313,9 @@ export function createPresentationQueue(
 
   function pruneBubblesForSeats(seats: TableSnapshot["seats"]): void {
     for (const info of seats) {
+      if (info.kind !== "Ai") {
+        delete pendingHiddenBanterBySeat[info.seat];
+      }
       const bubble = activeBubbles[info.seat];
       if (bubble === null) {
         continue;
@@ -344,6 +351,9 @@ export function createPresentationQueue(
   function clearBanterTracking(): void {
     highlightEventSeqs.clear();
     banterMetaById.clear();
+    for (const seat of ALL_SEATS) {
+      delete pendingHiddenBanterBySeat[seat];
+    }
   }
 
   function recordBanterMeta(
@@ -608,6 +618,13 @@ export function createPresentationQueue(
     }, Math.max(1, Math.round(delayMs)));
   }
 
+  function effectiveBanterDurationMs(): number {
+    return Math.max(
+      1,
+      Math.round(banterDurationMs * (pace === "Fast" ? 0.78 : 1.0)),
+    );
+  }
+
   function scheduleSeatBubble(bubble: ActiveBanterBubble): void {
     const seat = bubble.seat;
     clearSeatBubble(seat);
@@ -615,11 +632,11 @@ export function createPresentationQueue(
       ...activeBubbles,
       [seat]: bubble,
     };
-    const effectiveDurationMs = Math.max(
-      1,
-      Math.round(banterDurationMs * (pace === "Fast" ? 0.78 : 1.0)),
+    scheduleSeatBubbleDismissTimer(
+      seat,
+      bubble.bubbleId,
+      effectiveBanterDurationMs(),
     );
-    scheduleSeatBubbleDismissTimer(seat, bubble.bubbleId, effectiveDurationMs);
     emitState();
   }
 
@@ -660,10 +677,11 @@ export function createPresentationQueue(
 
     recordBanterMeta(banter_id, seat, priority);
 
-    scheduleSeatBubble({
+    const bubble: ActiveBanterBubble = {
       kind: "banter",
       bubbleId: nextBubbleId++,
       banterId: banter_id,
+      audioFallback: false,
       priority,
       seat,
       personaId: persona_id,
@@ -672,7 +690,57 @@ export function createPresentationQueue(
       text: trimmed,
       eventSeq: event_seq,
       replyToSeat: reply_to_seat,
-    });
+    };
+    if (hideAiBanterText) {
+      pendingHiddenBanterBySeat[seat] = bubble;
+    } else {
+      delete pendingHiddenBanterBySeat[seat];
+    }
+    scheduleSeatBubble(bubble);
+  }
+
+  function handleTableBanterAudioFallback(
+    message: Extract<ServerMessage, { TableBanterAudioFallback: unknown }>,
+  ): void {
+    const { banter_id, seat } = message.TableBanterAudioFallback;
+    const pendingHidden = pendingHiddenBanterBySeat[seat];
+    if (pendingHidden?.banterId === banter_id) {
+      delete pendingHiddenBanterBySeat[seat];
+    }
+    if (!hideAiBanterText) {
+      return;
+    }
+    const snap = sessionState.snapshot;
+    if (snap !== null) {
+      const seatInfo = snap.seats.find((entry) => entry.seat === seat);
+      if (seatInfo && seatInfo.kind !== "Ai") {
+        return;
+      }
+    }
+    const current = activeBubbles[seat];
+    let targetBubble: ActiveBanterBubble | null = null;
+    if (
+      current !== null &&
+      current.kind === "banter" &&
+      current.banterId === banter_id
+    ) {
+      targetBubble = current;
+    } else if (current === null && pendingHidden?.banterId === banter_id) {
+      targetBubble = pendingHidden;
+    }
+    if (targetBubble === null) {
+      return;
+    }
+    delete deferredDismissBubbleIds[seat];
+    activeBubbles = {
+      ...activeBubbles,
+      [seat]: {
+        ...targetBubble,
+        audioFallback: true,
+      },
+    };
+    scheduleSeatBubbleDismissTimer(seat, targetBubble.bubbleId, banterDurationMs);
+    emitState();
   }
 
   function handleTableBanterAudioReady(
@@ -680,6 +748,9 @@ export function createPresentationQueue(
   ): void {
     const { banter_id, seat, audio_url, duration_ms } =
       message.TableBanterAudioReady;
+    if (pendingHiddenBanterBySeat[seat]?.banterId === banter_id) {
+      delete pendingHiddenBanterBySeat[seat];
+    }
     const trimmedUrl = audio_url.trim();
     if (trimmedUrl.length === 0) {
       return;
@@ -835,6 +906,15 @@ export function createPresentationQueue(
       }
     },
 
+    setHideAiBanterText(hidden: boolean): void {
+      hideAiBanterText = hidden;
+      if (!hidden) {
+        for (const seat of ALL_SEATS) {
+          delete pendingHiddenBanterBySeat[seat];
+        }
+      }
+    },
+
     enqueueServerMessage(message: ServerMessage): void {
       if (disposed || typeof message !== "object" || message === null) {
         return;
@@ -857,6 +937,10 @@ export function createPresentationQueue(
       }
       if ("TableBanterAudioReady" in message) {
         handleTableBanterAudioReady(message);
+        return;
+      }
+      if ("TableBanterAudioFallback" in message) {
+        handleTableBanterAudioFallback(message);
         return;
       }
       if ("QuickEmoteBroadcast" in message) {

@@ -666,6 +666,10 @@ export function reduceServerMessage(
     return { state, effects: [] };
   }
 
+  if ("TableBanterAudioFallback" in message) {
+    return { state, effects: [] };
+  }
+
   if ("ServerPong" in message) {
     return {
       state: {

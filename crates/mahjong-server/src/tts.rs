@@ -17,17 +17,17 @@ use crate::persona::{PersonaId, PersonaMood};
 /// Default LAN Windows emotional TTS endpoint (see Spec #81 / ADR-0011).
 pub const DEFAULT_TTS_BASE_URL: &str = "http://192.168.5.50:8081";
 
-/// Synthesis deadline for in-hand `BanterVoice` lines (`2,500 ms` per Spec #81).
-pub const TTS_IN_HAND_DEADLINE_MS: u32 = 2_500;
+/// Synthesis deadline for in-hand `BanterVoice` lines (`5,000 ms` per ADR-0014).
+pub const TTS_IN_HAND_DEADLINE_MS: u32 = 5_000;
 
-/// Synthesis deadline for hand-settlement `BanterVoice` lines (`5,000 ms` per Spec #81).
-pub const TTS_SETTLEMENT_DEADLINE_MS: u32 = 5_000;
+/// Synthesis deadline for hand-settlement `BanterVoice` lines (`6,500 ms` per ADR-0014).
+pub const TTS_SETTLEMENT_DEADLINE_MS: u32 = 6_500;
 
 /// Cooldown backoff duration before probing `/health` after TTS unavailability (`15 s` per Spec #81).
 pub const TTS_COOLDOWN_DURATION: Duration = Duration::from_secs(15);
 
 const DEFAULT_HEALTH_TIMEOUT: Duration = Duration::from_secs(3);
-const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(6);
+const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// Boxed `Send` future returned by [`TtsClient`] methods.
 pub type TtsFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -121,6 +121,16 @@ pub enum TtsError {
     /// Response payload was not valid WAV or failed `/health` readiness validation.
     #[error("语音合成服务返回格式异常：{reason}")]
     InvalidResponse { reason: String },
+}
+
+impl TtsError {
+    /// Returns `true` when this error indicates the LAN TTS service itself is unhealthy
+    /// or unreachable (eligible for circuit-breaker counting), and `false` for per-line
+    /// latency/queue shedding (`Timeout`, HTTP 408 `DeadlineExceeded`) per ADR-0014.
+    #[must_use]
+    pub const fn is_service_outage(&self) -> bool {
+        !matches!(self, Self::Timeout { .. } | Self::DeadlineExceeded { .. })
+    }
 }
 
 /// Narrow asynchronous boundary for talking to the optional LAN emotional TTS service.
@@ -387,15 +397,12 @@ impl TtsClient for HttpTtsClient {
                 serde_json::to_vec(&request).map_err(|err| TtsError::InvalidResponse {
                     reason: format!("序列化语音合成请求失败：{err}"),
                 })?;
-            let effective_timeout = self.request_timeout.min(Duration::from_millis(u64::from(
-                request.deadline_ms.max(100),
-            )));
             let (status, headers, body) = self
                 .send_http(
                     Method::POST,
                     "/v1/tts/synthesize",
                     Some(payload),
-                    effective_timeout,
+                    self.request_timeout,
                 )
                 .await?;
             self.ensure_http_success(status, &body)?;
@@ -515,6 +522,6 @@ mod tests {
         assert!(value["instruct_override"].is_null());
         assert_eq!(value["format"], "wav");
         assert_eq!(value["stream"], false);
-        assert_eq!(value["deadline_ms"], 2500);
+        assert_eq!(value["deadline_ms"], 5000);
     }
 }

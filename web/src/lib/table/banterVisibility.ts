@@ -55,13 +55,13 @@ export function shouldHideBanterBubbles(input: BanterVisibilityInput): boolean {
 
 /**
  * Suppresses regular AI `牌桌台词` text bubbles when `hideAiBanterText` is active,
- * while keeping human `快捷互动` bubbles visible.
+ * while keeping human `快捷互动` bubbles and per-line `audioFallback` bubbles visible.
  */
 export function shouldShowBubbleText(
   bubble: ActiveBanterBubble,
   hideAiBanterText: boolean,
 ): boolean {
-  if (bubble.kind === "quick_emote") {
+  if (bubble.kind === "quick_emote" || bubble.audioFallback === true) {
     return true;
   }
   return !hideAiBanterText;

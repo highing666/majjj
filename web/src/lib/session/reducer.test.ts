@@ -1263,6 +1263,15 @@ describe("session reducer — TableBanter and LlmStatusNotice", () => {
     expect(afterAudioReady.state).toEqual(degraded.state);
     expect(afterAudioReady.effects).toEqual([]);
 
+    const afterAudioFallback = reduceServerMessage(degraded.state, {
+      TableBanterAudioFallback: {
+        banter_id: "b-2",
+        seat: "West",
+      },
+    });
+    expect(afterAudioFallback.state).toEqual(degraded.state);
+    expect(afterAudioFallback.effects).toEqual([]);
+
     const recovered = reduceServerMessage(degraded.state, {
       TtsStatusNotice: {
         available: true,

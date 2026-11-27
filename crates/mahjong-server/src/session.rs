@@ -1587,6 +1587,7 @@ impl TableSession {
         if let Some(attribution) = next_hand_attribution {
             active_mut.hand_attribution = attribution;
             active_mut.hand_generation += 1;
+            self.tts.clear_pending_slot();
         }
         let next_trigger = compute_ai_turn_trigger(&active_mut.game, &emitted);
         active_mut.ai_turn_trigger = next_trigger;
@@ -2112,13 +2113,13 @@ impl TableSession {
                     reply_to_seat: guard.reply_to_seat,
                 });
 
-                let tts_job = self.tts.should_dispatch(now).then(|| {
+                let tts_job = if self.tts.should_dispatch(now) {
                     let deadline_ms = if guard.allow_finished_phase {
                         TTS_SETTLEMENT_DEADLINE_MS
                     } else {
                         TTS_IN_HAND_DEADLINE_MS
                     };
-                    PendingTtsJob {
+                    let job = PendingTtsJob {
                         guard: TtsGuard {
                             banter_id: banter_id.clone(),
                             match_id: guard.match_id,
@@ -2138,8 +2139,11 @@ impl TableSession {
                         ),
                         dispatched_at: now,
                         deadline_ms,
-                    }
-                });
+                    };
+                    self.enqueue_tts_job(job, now)
+                } else {
+                    None
+                };
 
                 let followup = chain.and_then(|chain| {
                     let seat_infos = self.seat_infos();
@@ -2195,11 +2199,17 @@ impl TableSession {
             self.in_flight_ai.remove(&key);
             return None;
         }
+        let wall_remaining = self.active_match.as_ref().map_or(0, |active| {
+            usize::from(active.game.project_view(key.seat).wall_remaining)
+        });
+        let persona_id = self.seats[key.seat.index()].info.persona_id;
         Some(target_ai_delay(
             self.options.pacing,
             self.config.pace,
             action,
             trigger,
+            persona_id,
+            wall_remaining,
             step_seed,
         ))
     }

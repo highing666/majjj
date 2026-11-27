@@ -298,6 +298,7 @@ impl VirtualClient {
                     ServerMessage::LobbyUpdated { .. }
                     | ServerMessage::TableBanter { .. }
                     | ServerMessage::TableBanterAudioReady { .. }
+                    | ServerMessage::TableBanterAudioFallback { .. }
                     | ServerMessage::LlmStatusNotice { .. }
                     | ServerMessage::TtsStatusNotice { .. } => continue,
                     other => panic!("expected TableSnapshot, got {other:?}"),
@@ -636,6 +637,7 @@ pub async fn recv_non_ping_msg(ws: &mut WsClient) -> ServerMessage {
             ServerMessage::ServerPing { .. }
             | ServerMessage::TableBanter { .. }
             | ServerMessage::TableBanterAudioReady { .. }
+            | ServerMessage::TableBanterAudioFallback { .. }
             | ServerMessage::LlmStatusNotice { .. }
             | ServerMessage::TtsStatusNotice { .. } => continue,
             other => return other,
@@ -651,6 +653,7 @@ pub async fn recv_snapshot(ws: &mut WsClient) -> TableSnapshot {
             ServerMessage::LobbyUpdated { .. }
             | ServerMessage::TableBanter { .. }
             | ServerMessage::TableBanterAudioReady { .. }
+            | ServerMessage::TableBanterAudioFallback { .. }
             | ServerMessage::LlmStatusNotice { .. }
             | ServerMessage::TtsStatusNotice { .. } => continue,
             other => panic!("expected TableSnapshot, got {other:?}"),
@@ -673,6 +676,7 @@ pub async fn recv_event_batch(
             ServerMessage::LobbyUpdated { .. }
             | ServerMessage::TableBanter { .. }
             | ServerMessage::TableBanterAudioReady { .. }
+            | ServerMessage::TableBanterAudioFallback { .. }
             | ServerMessage::LlmStatusNotice { .. }
             | ServerMessage::TtsStatusNotice { .. } => continue,
             other => panic!("expected EventBatch, got {other:?}"),

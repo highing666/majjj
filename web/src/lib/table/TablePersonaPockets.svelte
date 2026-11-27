@@ -1,8 +1,11 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import type { ActiveBanterVoiceState } from "../audio/audioTypes";
   import PersonaAvatar from "../personas/PersonaAvatar.svelte";
   import type { PlayerView } from "../protocol/generated/PlayerView";
+  import type { Seat } from "../protocol/generated/Seat";
   import type { TableSnapshot } from "../protocol/generated/TableSnapshot";
+  import { createAiThinkingIndicatorController } from "./aiThinkingIndicator";
   import { rectToPercentStyle } from "./banterLayout";
   import { isSeatActivelySpeaking } from "./banterVisibility";
   import type { Rect, TableLayout } from "./layout";
@@ -26,6 +29,33 @@
     activeBanterVoice = null,
     reducedEffects = false,
   }: Props = $props();
+
+  let thinkingSeat = $state<Seat | null>(null);
+  const thinkingController = createAiThinkingIndicatorController();
+  const unsubscribeThinking = thinkingController.subscribe((seat) => {
+    thinkingSeat = seat;
+  });
+
+  $effect(() => {
+    const activeSeat = playerView.turn.active_seat;
+    const activeSeatIsAi =
+      activeSeat !== null &&
+      snapshot.seats.some(
+        (entry) => entry.seat === activeSeat && entry.kind === "Ai",
+      );
+    thinkingController.observe({
+      phase: snapshot.phase,
+      publicPhase: playerView.phase,
+      activeSeat,
+      activeSeatIsAi,
+      turnSeq: playerView.seq,
+    });
+  });
+
+  onDestroy(() => {
+    unsubscribeThinking();
+    thinkingController.dispose();
+  });
 
   const pocketModels = $derived(
     buildTablePersonaPocketModels(snapshot, playerView),
@@ -63,16 +93,19 @@
         item.model.seat,
         activeBanterVoice,
       )}
+      {@const isThinking = thinkingSeat === item.model.seat && !isSpeaking}
       <div
         class="persona-pocket persona-pocket-{item.model.slot}"
         class:persona-pocket-active={item.model.isActive}
         class:persona-pocket-speaking={isSpeaking}
         class:persona-pocket-speaking-static={isSpeaking && reducedEffects}
+        class:persona-pocket-thinking={isThinking}
         style="{rectStyle(tableLayout, item.rect)} --persona-accent: {item.model.accentHex};"
         data-seat={item.model.seat}
         data-persona={item.model.personaId}
         data-mood={item.model.mood}
         data-speaking={isSpeaking ? "true" : undefined}
+        data-thinking={isThinking ? "true" : undefined}
       >
         <div class="persona-avatar-wrap">
           <PersonaAvatar
@@ -86,6 +119,17 @@
               class:speaking-pulse-dot-static={reducedEffects}
               aria-hidden="true"
             ></span>
+          {:else if isThinking}
+            <span
+              class="thinking-dots-pill"
+              class:thinking-dots-static={reducedEffects}
+              role="status"
+              aria-label="思考中"
+            >
+              <span class="thinking-dot"></span>
+              <span class="thinking-dot"></span>
+              <span class="thinking-dot"></span>
+            </span>
           {/if}
         </div>
         {#if showMoodChip}
@@ -171,6 +215,53 @@
 
   .speaking-pulse-dot-static {
     animation: none;
+  }
+
+  .thinking-dots-pill {
+    position: absolute;
+    right: -2px;
+    bottom: -2px;
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 2px 3px;
+    border-radius: 999px;
+    background: rgba(11, 24, 29, 0.92);
+    border: 1px solid rgba(245, 190, 88, 0.72);
+    pointer-events: none;
+  }
+
+  .thinking-dot {
+    width: 3px;
+    height: 3px;
+    border-radius: 999px;
+    background: #f5be58;
+    animation: thinkingDotBreath 1.2s ease-in-out infinite;
+  }
+
+  .thinking-dot:nth-child(2) {
+    animation-delay: 0.2s;
+  }
+
+  .thinking-dot:nth-child(3) {
+    animation-delay: 0.4s;
+  }
+
+  .thinking-dots-static .thinking-dot {
+    animation: none;
+    opacity: 0.9;
+  }
+
+  @keyframes thinkingDotBreath {
+    0%,
+    100% {
+      opacity: 0.35;
+      transform: scale(0.85);
+    }
+    50% {
+      opacity: 1;
+      transform: scale(1.15);
+    }
   }
 
   @keyframes pocketVoicePulse {
