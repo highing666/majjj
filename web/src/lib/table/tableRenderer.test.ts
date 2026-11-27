@@ -325,8 +325,9 @@ describe("TableSceneRenderer standing vs laid bodies & Scheme B integration", ()
     spy.atlas.destroy();
   });
 
-  it("renders 4-layer turn cues: drawn lift/caret vs post-pon 13-tile highlight, hand dimming, reducedEffects static glow, and onLayoutChange", () => {
+  it("renders frameless non-dimming hand and clean turn cues across own turn, post-pon, opponent turn, inputLocked, and reducedEffects", () => {
     const spy = createSpyTileAtlas();
+    const standingTextureSet = new Set(spy.standingTextures.values());
     const stage = new Container();
     const onLayoutChange = vi.fn();
     const renderer = new TableSceneRenderer(stage, spy.atlas, {
@@ -334,9 +335,45 @@ describe("TableSceneRenderer standing vs laid bodies & Scheme B integration", ()
       onLayoutChange,
     });
 
-    renderer.resize(1280, 720);
+    const feltLayer = stage.children[0] as Container;
+    const viewerHandLayer = stage.children[7] as Container;
 
-    // 1. discard_drawn: drawn tile lifted with ▼ indicator, full brightness, breathing animates on tick
+    const bannedFrameLabels = new Set([
+      "turn-tray-idle",
+      "turn-tray-active",
+      "turn-tray-breath",
+      "post-pon-tile-highlight",
+      "drawn-tile-glow",
+    ]);
+
+    const expectFramelessAndFullBrightness = (expectedTileCount: number) => {
+      const graphics = viewerHandLayer.children.filter(
+        (c): c is Graphics => c instanceof Graphics,
+      );
+      expect(graphics.filter((g) => bannedFrameLabels.has(g.label))).toHaveLength(
+        0,
+      );
+      // At rest (no tile selected), zero framing/marker Graphics are visible in viewerHandLayer.
+      expect(graphics.filter((g) => g.visible)).toHaveLength(0);
+
+      const tileSprites = viewerHandLayer.children.filter(
+        (c) => "texture" in c && standingTextureSet.has(c.texture as Texture),
+      );
+      expect(tileSprites).toHaveLength(expectedTileCount);
+      for (const sprite of tileSprites) {
+        expect(sprite.tint).toBe(0xffffff);
+        expect(sprite.alpha).toBe(1);
+      }
+      return tileSprites;
+    };
+
+    const hasStageWash = () =>
+      feltLayer.children.some(
+        (c) => c instanceof Graphics && c.label === "turn-stage-wash",
+      );
+
+    // 1. discard_drawn (desktop): drawn gap + 5px lift + ▼ caret + stage wash, zero hand frames, safe tick
+    renderer.resize(1280, 720);
     renderer.render({
       snapshot: makeSnapshot(),
       pendingAddedKong: null,
@@ -345,46 +382,52 @@ describe("TableSceneRenderer standing vs laid bodies & Scheme B integration", ()
     });
 
     expect(onLayoutChange).toHaveBeenCalled();
-    const latestLayout = onLayoutChange.mock.calls[onLayoutChange.mock.calls.length - 1][0];
+    const latestLayout =
+      onLayoutChange.mock.calls[onLayoutChange.mock.calls.length - 1][0];
     expect(latestLayout.turnBarRect.width).toBeGreaterThan(0);
-
-    const viewerHandLayer = stage.children[7] as Container;
+    expect(hasStageWash()).toBe(true);
     expect(collectTexts(viewerHandLayer)).toContain("▼");
 
-    const closedTileSprite = viewerHandLayer.children.find(
-      (c) => "texture" in c && c.texture === spy.standingTextures.get(0),
-    )!;
-    const drawnTileSprite = viewerHandLayer.children.find(
-      (c) => "texture" in c && c.texture === spy.standingTextures.get(5),
-    )!;
-    expect(drawnTileSprite.y).toBeLessThan(closedTileSprite.y);
-    expect(closedTileSprite.tint).toBe(0xffffff);
-    expect(closedTileSprite.alpha).toBe(1);
+    const desktopSprites = expectFramelessAndFullBrightness(14);
+    const firstClosedSprite = desktopSprites[0];
+    const secondClosedSprite = desktopSprites[1];
+    const lastClosedSprite = desktopSprites[12];
+    const drawnTileSprite = desktopSprites[13];
+    expect(firstClosedSprite.y - drawnTileSprite.y).toBe(5);
+    const closedPitch = secondClosedSprite.x - firstClosedSprite.x;
+    expect(drawnTileSprite.x - lastClosedSprite.x).toBeGreaterThan(closedPitch);
 
-    const trayGlow = viewerHandLayer.children.find(
-      (c) => c instanceof Graphics && c.label === "turn-tray-breath",
-    );
-    expect(trayGlow).toBeDefined();
-    const initialGlowAlpha = trayGlow!.alpha;
     renderer.tick(425);
-    expect(trayGlow!.alpha).not.toBe(initialGlowAlpha);
+    expectFramelessAndFullBrightness(14);
 
-    // 2. reducedEffects: static highlight does not animate on tick
+    // 2. discard_drawn (short landscape): drawn lift is 3px + ▼ caret, zero hand frames
+    renderer.resize(844, 390);
+    renderer.render({
+      snapshot: makeSnapshot(),
+      pendingAddedKong: null,
+      inputLocked: false,
+      reducedEffects: false,
+    });
+    expect(renderer.getLayout()!.isShortLandscape).toBe(true);
+    expect(hasStageWash()).toBe(true);
+    expect(collectTexts(viewerHandLayer)).toContain("▼");
+    const shortSprites = expectFramelessAndFullBrightness(14);
+    expect(shortSprites[0].y - shortSprites[13].y).toBe(3);
+
+    // 3. reducedEffects: static cues, zero hand frames, tick remains a safe no-op
+    renderer.resize(1280, 720);
     renderer.render({
       snapshot: makeSnapshot(),
       pendingAddedKong: null,
       inputLocked: false,
       reducedEffects: true,
     });
-    const staticGlow = viewerHandLayer.children.find(
-      (c) => c instanceof Graphics && c.label === "turn-tray-breath",
-    );
-    expect(staticGlow).toBeDefined();
-    const staticAlpha = staticGlow!.alpha;
+    expect(hasStageWash()).toBe(true);
+    expect(collectTexts(viewerHandLayer)).toContain("▼");
     renderer.tick(425);
-    expect(staticGlow!.alpha).toBe(staticAlpha);
+    expectFramelessAndFullBrightness(14);
 
-    // 3. discard_post_pon (drawn_tile: null): no ▼ indicator, closed hand highlighted uniformly
+    // 4. discard_post_pon (drawn_tile: null): no ▼, no per-tile gold boxes, keeps stage wash
     const postPonSnap = makeSnapshot();
     postPonSnap.player_view!.hand.closed_tiles = [0, 1, 2, 9, 10, 11, 18, 19, 20, 27];
     postPonSnap.player_view!.hand.drawn_tile = null;
@@ -395,13 +438,11 @@ describe("TableSceneRenderer standing vs laid bodies & Scheme B integration", ()
       inputLocked: false,
       reducedEffects: false,
     });
+    expect(hasStageWash()).toBe(true);
     expect(collectTexts(viewerHandLayer)).not.toContain("▼");
-    const postPonHighlights = viewerHandLayer.children.filter(
-      (c) => c instanceof Graphics && c.label === "post-pon-tile-highlight",
-    );
-    expect(postPonHighlights).toHaveLength(10);
+    expectFramelessAndFullBrightness(10);
 
-    // 4. idle (waiting on opponent): Layer 3 dims hand, then snaps back on own turn
+    // 5. idle (waiting on opponent): no ▼, no stage wash, zero tray/marker frames, 100% brightness
     const idleSnap = makeSnapshot();
     idleSnap.player_view!.turn.active_seat = "South";
     idleSnap.player_view!.legal_actions = [];
@@ -411,12 +452,20 @@ describe("TableSceneRenderer standing vs laid bodies & Scheme B integration", ()
       inputLocked: false,
       reducedEffects: false,
     });
+    expect(hasStageWash()).toBe(false);
     expect(collectTexts(viewerHandLayer)).not.toContain("▼");
-    const dimmedSprite = viewerHandLayer.children.find(
-      (c) => "texture" in c && c.texture === spy.standingTextures.get(0),
-    )!;
-    expect(dimmedSprite.tint).not.toBe(0xffffff);
-    expect(dimmedSprite.alpha).toBeLessThan(1);
+    expectFramelessAndFullBrightness(14);
+
+    // 6. inputLocked (e.g., during animation lock on own turn): no ▼, no stage wash, 100% brightness
+    renderer.render({
+      snapshot: makeSnapshot(),
+      pendingAddedKong: null,
+      inputLocked: true,
+      reducedEffects: false,
+    });
+    expect(hasStageWash()).toBe(false);
+    expect(collectTexts(viewerHandLayer)).not.toContain("▼");
+    expectFramelessAndFullBrightness(14);
 
     renderer.destroy();
     spy.atlas.destroy();

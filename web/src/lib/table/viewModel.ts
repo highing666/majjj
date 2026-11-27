@@ -682,7 +682,7 @@ export function deriveTurnCueState(
     highlightClosedHand: false,
     turnPillText: null,
     waitHintText,
-    dimViewerHand: true,
+    dimViewerHand: false,
     centerEdgeGlowSlot,
   };
 }
