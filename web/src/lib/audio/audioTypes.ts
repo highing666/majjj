@@ -1,5 +1,13 @@
 import type { IosAudioSessionMode } from "../preferences/devicePreferences";
+import type { RelativeRole } from "../presentation/semanticEvents";
 import type { Seat } from "../protocol/generated/Seat";
+import type {
+  VoicePackManifest,
+  VoiceSlotId,
+  VoiceSpriteSlice,
+} from "./voicePackSchema";
+
+export type { VoicePackManifest, VoiceSlotId, VoiceSpriteSlice };
 
 export type SfxSlotId =
   | "hover"
@@ -146,20 +154,39 @@ export type VoActionCategory =
   | "RobKong"
   | "Kong"
   | "Pon"
+  | "QuickEmote"
   | "Chi"
   | "Discard";
 
-export interface VoManifest {
-  readonly pack_id: string;
-  readonly version: number;
-  readonly clips: Partial<Record<VoActionCategory, readonly string[]>>;
-}
+export type VoManifest = VoicePackManifest;
 
 export interface VoTriggerRequest {
   readonly seat: Seat;
   readonly packId: string;
   readonly category: VoActionCategory;
+  readonly slot: VoiceSlotId;
 }
+
+export type BanterVoicePriority = "highlight" | "normal";
+
+export interface BanterVoiceRequest {
+  readonly banterId: string;
+  readonly seat: Seat;
+  readonly audioUrl: string;
+  readonly durationMs: number;
+  readonly priority: BanterVoicePriority;
+  readonly relativeRole: RelativeRole | null;
+}
+
+export interface ActiveBanterVoiceState {
+  readonly seat: Seat;
+  readonly banterId: string;
+}
+
+export type BanterVoiceStateListener = (
+  active: ActiveBanterVoiceState | null,
+  pendingBanterIds: ReadonlySet<string>,
+) => void;
 
 export type SfxBackendMode = "uninitialized" | "sprite" | "procedural";
 
@@ -183,6 +210,9 @@ export interface AudioStatus {
   readonly sessionType: IosAudioSessionMode;
   readonly masterVolume: number;
   readonly sfxVolume: number;
+  readonly voiceVolume: number;
+  readonly tileCallVoiceEnabled: boolean;
+  readonly banterVoiceEnabled: boolean;
   readonly backendMode: SfxBackendMode;
   readonly hasAudioSessionApi: boolean;
 }

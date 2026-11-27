@@ -238,6 +238,7 @@ async fn startup_gate_enforces_reachable_llm_precedence_and_binary_exit_on_failu
         .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
         .with_port(0)
         .with_data_dir(temp.path())
+        .with_no_tts(true)
         .spawn()
         .await
         .expect("server must start using preferences.json llm_base_url");
@@ -326,6 +327,7 @@ async fn fake_llama_server_end_to_end_json_schema_banter_timeout_and_recovery() 
         .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
         .with_port(0)
         .with_llm_url(Some(fake.base_url()))
+        .with_no_tts(true)
         .spawn_with_options(
             TableOptions::with_wall_factory(42, factory)
                 .with_pacing(PacingMode::Immediate)

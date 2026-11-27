@@ -1,6 +1,13 @@
 <script lang="ts">
   import { createAudioEventRouter } from "./lib/audio/audioRouter";
-  import type { AudioStatus } from "./lib/audio/audioTypes";
+  import type {
+    ActiveBanterVoiceState,
+    AudioStatus,
+  } from "./lib/audio/audioTypes";
+  import {
+    isHumanVoicePackId,
+    type HumanVoicePackId,
+  } from "./lib/audio/voicePackSchema";
   import {
     createHistoryController,
     type HistoryState,
@@ -38,6 +45,11 @@
   import { createTableClient } from "./lib/session/client";
   import type { SessionState } from "./lib/session/reducer";
   import DestructiveOpModal from "./lib/table/DestructiveOpModal.svelte";
+  import {
+    buildHumanVoicePackSyncKey,
+    resolveHumanVoicePackSyncTarget,
+    shouldHideBanterBubbles,
+  } from "./lib/table/banterVisibility";
   import MatchHud from "./lib/table/MatchHud.svelte";
   import MatchSummaryView from "./lib/table/MatchSummaryView.svelte";
   import {
@@ -62,6 +74,10 @@
   import type { WebGLRecoveryState } from "./lib/table/webglRecovery";
   import AudioResumeCapsule from "./lib/ui/AudioResumeCapsule.svelte";
   import SettingsModal from "./lib/ui/SettingsModal.svelte";
+  import {
+    createTtsNoticeController,
+    type TtsNoticeViewState,
+  } from "./lib/ui/ttsNotice";
 
   const client = createTableClient();
   const preferencesStore = getBrowserDevicePreferencesStore();
@@ -83,9 +99,13 @@
     onShutdownSuccess: () => client.dispose(),
   });
   const historyController = createHistoryController();
+  const ttsNoticeController = createTtsNoticeController();
   let sessionState = $state<SessionState>(client.getState());
   let shutdownState = $state<ShutdownState>(shutdownController.getState());
   let historyState = $state<HistoryState>(historyController.getState());
+  let ttsNoticeState = $state<TtsNoticeViewState>(
+    ttsNoticeController.getState(),
+  );
   let presentationState = $state<PresentationState>(
     presentationQueue.getState(),
   );
@@ -95,7 +115,11 @@
   let webglRecoveryState = $state<WebGLRecoveryState | null>(null);
   let tableLayout = $state<TableLayout | null>(null);
   let audioStatus = $state<AudioStatus>(audioRouter.getStatus());
+  let activeBanterVoice = $state<ActiveBanterVoiceState | null>(
+    audioRouter.getActiveBanterVoice(),
+  );
   let settingsOpen = $state(false);
+  let lastSyncedVoicePackKey: string | null = null;
   let takeOverTarget = $state<{
     seatInfo: SeatInfo;
     kind: TakeOverKind;
@@ -112,6 +136,9 @@
     const unsubscribeHistory = historyController.subscribe((next) => {
       historyState = next;
     });
+    const unsubscribeTtsNotice = ttsNoticeController.subscribe((next) => {
+      ttsNoticeState = next;
+    });
     const unsubscribePrefs = preferencesStore.subscribe((next) => {
       devicePrefs = next;
     });
@@ -127,9 +154,24 @@
     const unsubscribeAudioStatus = audioRouter.subscribe((next) => {
       audioStatus = next;
     });
+    const unsubscribeBanterVoiceState = audioRouter.onBanterVoiceStateChange(
+      (active, pendingBanterIds) => {
+        activeBanterVoice = active;
+        presentationQueue.setActiveBanterVoice(active, pendingBanterIds);
+      },
+    );
     const unsubscribeSemantic = presentationQueue.onSemanticEvent((event) => {
       audioRouter.handleSemanticEvent(event);
     });
+    const unsubscribeBanterVoice = presentationQueue.onBanterVoiceEvent(
+      (event) => {
+        if (event.type === "ready") {
+          audioRouter.enqueueBanterVoice(event.request);
+        } else {
+          audioRouter.flushBanterVoices();
+        }
+      },
+    );
     const unbindAudioGestures = audioRouter.bindGestureUnlock(window);
     const unsubscribeMessages = client.onServerMessage((message) => {
       presentationQueue.enqueueServerMessage(message);
@@ -138,12 +180,15 @@
     return () => {
       unsubscribeMessages();
       unbindAudioGestures();
+      unsubscribeBanterVoice();
       unsubscribeSemantic();
+      unsubscribeBanterVoiceState();
       unsubscribeAudioStatus();
       unsubscribePresentation();
       unsubscribeViewportDisplay();
       unsubscribeRenderQuality();
       unsubscribePrefs();
+      unsubscribeTtsNotice();
       unsubscribeHistory();
       unsubscribeShutdown();
       unsubscribeClient();
@@ -153,8 +198,13 @@
       audioRouter.dispose();
       presentationQueue.dispose();
       effectsBus.dispose();
+      ttsNoticeController.dispose();
       client.dispose();
     };
+  });
+
+  $effect(() => {
+    ttsNoticeController.applyNotice(sessionState.ttsStatusNotice);
   });
 
   $effect(() => {
@@ -163,6 +213,51 @@
   });
 
   const snapshot = $derived(sessionState.snapshot);
+
+  const activeSeatVoicePackId = $derived.by<HumanVoicePackId | null>(() => {
+    if (!snapshot || snapshot.your_seat === null) {
+      return null;
+    }
+    const raw = snapshot.seats[seatIndex(snapshot.your_seat)].voice_pack_id;
+    return isHumanVoicePackId(raw) ? raw : null;
+  });
+
+  const hideAiBanterText = $derived(
+    shouldHideBanterBubbles({
+      preferences: devicePrefs,
+      audioState: audioStatus.state,
+      ttsStatusNotice: sessionState.ttsStatusNotice,
+    }),
+  );
+
+  $effect(() => {
+    const seats = snapshot?.seats;
+    if (seats) {
+      audioRouter.preloadVoicePacks(seats.map((entry) => entry.voice_pack_id));
+    }
+  });
+
+  $effect(() => {
+    const yourSeat = snapshot?.your_seat ?? null;
+    if (!snapshot || yourSeat === null || actionsDisabled) {
+      lastSyncedVoicePackKey = null;
+      return;
+    }
+    const currentSeatVoicePackId =
+      snapshot.seats[seatIndex(yourSeat)].voice_pack_id;
+    const target = resolveHumanVoicePackSyncTarget({
+      preferredPackId: devicePrefs.human_voice_pack_id,
+      currentSeatVoicePackId,
+      isConnected: !actionsDisabled,
+      yourSeat,
+      tableId: snapshot.table_id,
+      lastSyncedKey: lastSyncedVoicePackKey,
+    });
+    if (target !== null) {
+      lastSyncedVoicePackKey = target.syncKey;
+      client.setSeatVoicePack(target.packId);
+    }
+  });
 
   $effect(() => {
     shutdownController.syncHostIsLoopback(snapshot?.host_is_loopback === true);
@@ -309,6 +404,18 @@
     }
   }
 
+  function handleSelectHumanVoicePack(voicePackId: HumanVoicePackId): void {
+    preferencesStore.update({ human_voice_pack_id: voicePackId });
+    if (!actionsDisabled && snapshot !== null && snapshot.your_seat !== null) {
+      lastSyncedVoicePackKey = buildHumanVoicePackSyncKey(
+        snapshot.table_id,
+        snapshot.your_seat,
+        voicePackId,
+      );
+      client.setSeatVoicePack(voicePackId);
+    }
+  }
+
   function openTakeOverModal(seatInfo: SeatInfo, kind: TakeOverKind): void {
     takeOverTarget = { seatInfo, kind };
   }
@@ -360,6 +467,19 @@
     </div>
   {/if}
 
+  {#if ttsNoticeState.visible && !settlementVisible}
+    <div
+      class="banner"
+      class:banner-warn={ttsNoticeState.kind === "degraded"}
+      class:banner-info={ttsNoticeState.kind === "recovered"}
+      class:banner-floating={compact}
+      role="status"
+      aria-live="polite"
+    >
+      <span>{ttsNoticeState.message}</span>
+    </div>
+  {/if}
+
   {#if sessionState.lastErrorNotice}
     <div class="banner banner-warn" class:banner-floating={compact} role="status">
       <span>提示：{sessionState.lastErrorNotice}</span>
@@ -405,6 +525,7 @@
       onLeaveSeat={() => client.leaveSeat()}
       onUpdateConfig={(config) => client.updateLobbyConfig(config)}
       onSetSeatPersona={(seat, personaId) => client.setSeatPersona(seat, personaId)}
+      onSetSeatVoicePack={handleSelectHumanVoicePack}
       onStartMatch={() => client.startMatch()}
       onOpenSettings={() => (settingsOpen = true)}
       onOpenHistory={() => void historyController.open()}
@@ -451,6 +572,8 @@
             playerView={presentedPlayerView}
             {tableLayout}
             activeBubbles={presentationState.activeBubbles}
+            {activeBanterVoice}
+            {hideAiBanterText}
             reducedEffects={renderQualityState.reducedEffects}
             {turnCue}
             {viewportState}
@@ -510,6 +633,8 @@
               "ConfirmNextHand",
             )}
             activeBubbles={presentationState.activeBubbles}
+            {activeBanterVoice}
+            {hideAiBanterText}
             reducedEffects={renderQualityState.reducedEffects}
             disabled={inputLocked}
             destructivePending={snapshot !== null &&
@@ -596,6 +721,8 @@
       yourSeat={activeSnap.your_seat}
       lastSettlement={presentedPlayerView.last_settlement}
       activeBubbles={presentationState.activeBubbles}
+      {activeBanterVoice}
+      {hideAiBanterText}
       reducedEffects={renderQualityState.reducedEffects}
       disabled={actionsDisabled}
       onUpdateConfig={(config) => client.updateLobbyConfig(config)}
@@ -654,6 +781,8 @@
   <SettingsModal
     open={settingsOpen}
     preferences={devicePrefs}
+    {activeSeatVoicePackId}
+    onSelectHumanVoicePack={handleSelectHumanVoicePack}
     pace={snapshot?.phase === "InMatch"
       ? snapshot.pace
       : (snapshot?.config.pace ?? "Standard")}
@@ -695,6 +824,18 @@
     visible={audioStatus.needsResumeCapsule}
     onResume={() => audioRouter.unlockFromGesture()}
   />
+
+  {#if ttsNoticeState.visible && settlementVisible}
+    <div class="tts-modal-notice" role="status" aria-live="polite">
+      <div
+        class="banner banner-floating"
+        class:banner-warn={ttsNoticeState.kind === "degraded"}
+        class:banner-info={ttsNoticeState.kind === "recovered"}
+      >
+        <span>{ttsNoticeState.message}</span>
+      </div>
+    </div>
+  {/if}
 
   {#if takeOverTarget !== null}
     <TakeOverModal
@@ -841,6 +982,28 @@
     background: rgba(88, 20, 20, 0.92);
     border-color: #f87171;
     color: #fee2e2;
+  }
+
+  .banner-info {
+    background: var(--jade-soft);
+    border-color: #9ed4be;
+    color: var(--jade);
+  }
+
+  .banner-floating.banner-info {
+    background: rgba(16, 46, 38, 0.92);
+    border-color: rgba(110, 231, 183, 0.65);
+    color: #d1fae5;
+  }
+
+  .tts-modal-notice {
+    position: fixed;
+    top: max(8px, env(safe-area-inset-top));
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 46;
+    max-width: min(460px, calc(100% - 24px));
+    pointer-events: none;
   }
 
   .table-stage.stage-shaking {

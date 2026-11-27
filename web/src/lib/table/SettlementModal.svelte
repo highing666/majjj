@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { ActiveBanterVoiceState } from "../audio/audioTypes";
   import type { ActiveBanterMap } from "../presentation/presentationQueue";
   import type { HandSettlement } from "../protocol/generated/HandSettlement";
   import type { MatchMode } from "../protocol/generated/MatchMode";
@@ -30,6 +31,8 @@
     readySeats: [boolean, boolean, boolean, boolean] | null;
     canConfirmNextHand: boolean;
     activeBubbles?: ActiveBanterMap | null;
+    activeBanterVoice?: ActiveBanterVoiceState | null;
+    hideAiBanterText?: boolean;
     reducedEffects?: boolean;
     disabled?: boolean;
     destructivePending?: boolean;
@@ -46,6 +49,8 @@
     readySeats,
     canConfirmNextHand,
     activeBubbles = null,
+    activeBanterVoice = null,
+    hideAiBanterText = false,
     reducedEffects = false,
     disabled = false,
     destructivePending = false,
@@ -118,6 +123,8 @@
         {seats}
         {yourSeat}
         {activeBubbles}
+        {activeBanterVoice}
+        {hideAiBanterText}
         {reducedEffects}
       />
     {/if}

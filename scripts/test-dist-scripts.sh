@@ -533,4 +533,29 @@ test_deploy_partner
 # 6. Windows llama-server deployment scripts offline contract tests
 node --test "$repo_root/scripts/windows-llm/test-scripts.mjs"
 
+# 7. Windows LAN emotional TTS service & PowerShell ops scripts offline contract tests
+node --test "$repo_root/scripts/windows-tts/test-scripts.mjs"
+
+resolve_python3() {
+  local candidate
+  for candidate in /opt/homebrew/bin/python3 /opt/homebrew/bin/python3.12 /opt/homebrew/bin/python3.13 /usr/local/bin/python3; do
+    if [ -x "$candidate" ] && "$candidate" --version >/dev/null 2>&1; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  if command -v python3 >/dev/null 2>&1; then
+    candidate="$(command -v python3)"
+    if "$candidate" --version >/dev/null 2>&1; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+python3_bin="$(resolve_python3)" || fail "no working python3 interpreter found for windows-tts unit tests"
+"$python3_bin" -B -m unittest discover -s "$repo_root/scripts/windows-tts/server" -p "test_*.py" -v
+"$python3_bin" -B -m unittest "$repo_root/scripts/windows-tts/test_voice_pack_pipeline.py" -v
+
 echo "test-dist-scripts: OK"

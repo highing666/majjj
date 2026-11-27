@@ -252,4 +252,33 @@ describe("lobbyTable", () => {
       "North",
     ]);
   });
+
+  it("projects human VoicePack metadata onto human lobby slots", () => {
+    const seats = makeSeats({
+      East: {
+        kind: "Human",
+        nickname: "小红",
+        connected: true,
+        voice_pack_id: "human_female",
+      },
+      West: {
+        kind: "Human",
+        nickname: "小明",
+        connected: true,
+        voice_pack_id: "human_male",
+      },
+    });
+    const vm = buildLobbyTableViewModel(
+      makeLobbySnapshot({ your_seat: "East", seats }),
+    );
+    expect(vm.slots.bottom.humanVoicePackMeta).toMatchObject({
+      id: "human_female",
+      label: "利落女声",
+    });
+    expect(vm.slots.top.humanVoicePackMeta).toMatchObject({
+      id: "human_male",
+      label: "清亮男声",
+    });
+    expect(vm.slots.right.humanVoicePackMeta).toBeNull();
+  });
 });

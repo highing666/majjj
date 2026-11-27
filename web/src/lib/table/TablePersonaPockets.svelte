@@ -1,8 +1,10 @@
 <script lang="ts">
+  import type { ActiveBanterVoiceState } from "../audio/audioTypes";
   import PersonaAvatar from "../personas/PersonaAvatar.svelte";
   import type { PlayerView } from "../protocol/generated/PlayerView";
   import type { TableSnapshot } from "../protocol/generated/TableSnapshot";
   import { rectToPercentStyle } from "./banterLayout";
+  import { isSeatActivelySpeaking } from "./banterVisibility";
   import type { Rect, TableLayout } from "./layout";
   import {
     buildTablePersonaPocketModels,
@@ -13,9 +15,17 @@
     snapshot: TableSnapshot;
     playerView: PlayerView;
     tableLayout: TableLayout | null;
+    activeBanterVoice?: ActiveBanterVoiceState | null;
+    reducedEffects?: boolean;
   }
 
-  let { snapshot, playerView, tableLayout }: Props = $props();
+  let {
+    snapshot,
+    playerView,
+    tableLayout,
+    activeBanterVoice = null,
+    reducedEffects = false,
+  }: Props = $props();
 
   const pocketModels = $derived(
     buildTablePersonaPocketModels(snapshot, playerView),
@@ -49,19 +59,35 @@
       {@const avatarPx = avatarSizeFor(item.rect)}
       {@const showMoodChip = item.rect.width >= 66}
       {@const showMetaLine = item.rect.height >= 30 && item.rect.width >= 112}
+      {@const isSpeaking = isSeatActivelySpeaking(
+        item.model.seat,
+        activeBanterVoice,
+      )}
       <div
         class="persona-pocket persona-pocket-{item.model.slot}"
         class:persona-pocket-active={item.model.isActive}
+        class:persona-pocket-speaking={isSpeaking}
+        class:persona-pocket-speaking-static={isSpeaking && reducedEffects}
         style="{rectStyle(tableLayout, item.rect)} --persona-accent: {item.model.accentHex};"
         data-seat={item.model.seat}
         data-persona={item.model.personaId}
         data-mood={item.model.mood}
+        data-speaking={isSpeaking ? "true" : undefined}
       >
-        <PersonaAvatar
-          personaId={item.model.personaId}
-          mood={item.model.mood}
-          size={avatarPx}
-        />
+        <div class="persona-avatar-wrap">
+          <PersonaAvatar
+            personaId={item.model.personaId}
+            mood={item.model.mood}
+            size={avatarPx}
+          />
+          {#if isSpeaking}
+            <span
+              class="speaking-pulse-dot"
+              class:speaking-pulse-dot-static={reducedEffects}
+              aria-hidden="true"
+            ></span>
+          {/if}
+        </div>
         {#if showMoodChip}
           <div class="persona-pocket-info">
             <span
@@ -106,6 +132,71 @@
   .persona-pocket-active {
     border-color: var(--persona-accent, #f5be58);
     box-shadow: 0 0 10px rgba(245, 190, 88, 0.38);
+  }
+
+  .persona-pocket-speaking {
+    border-color: var(--persona-accent, #f5be58);
+    box-shadow:
+      0 0 0 1.5px var(--persona-accent, #f5be58),
+      0 0 14px rgba(245, 190, 88, 0.56);
+    animation: pocketVoicePulse 1.15s ease-in-out infinite;
+  }
+
+  .persona-pocket-speaking-static {
+    animation: none;
+    box-shadow:
+      0 0 0 2px var(--persona-accent, #f5be58),
+      0 0 10px rgba(245, 190, 88, 0.42);
+  }
+
+  .persona-avatar-wrap {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+  }
+
+  .speaking-pulse-dot {
+    position: absolute;
+    right: -2px;
+    bottom: -2px;
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: var(--persona-accent, #f5be58);
+    border: 1.5px solid #0b181d;
+    box-shadow: 0 0 6px var(--persona-accent, #f5be58);
+    animation: voiceDotPulse 0.9s ease-in-out infinite;
+  }
+
+  .speaking-pulse-dot-static {
+    animation: none;
+  }
+
+  @keyframes pocketVoicePulse {
+    0%,
+    100% {
+      box-shadow:
+        0 0 0 1.5px var(--persona-accent, #f5be58),
+        0 0 9px rgba(245, 190, 88, 0.38);
+    }
+    50% {
+      box-shadow:
+        0 0 0 2.5px var(--persona-accent, #f5be58),
+        0 0 18px rgba(245, 190, 88, 0.72);
+    }
+  }
+
+  @keyframes voiceDotPulse {
+    0%,
+    100% {
+      transform: scale(0.92);
+      opacity: 0.85;
+    }
+    50% {
+      transform: scale(1.22);
+      opacity: 1;
+    }
   }
 
   .persona-pocket-right {

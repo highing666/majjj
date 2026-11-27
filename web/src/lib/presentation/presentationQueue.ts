@@ -1,3 +1,8 @@
+import type {
+  ActiveBanterVoiceState,
+  BanterVoicePriority,
+  BanterVoiceRequest,
+} from "../audio/audioTypes";
 import type { PersonaId } from "../protocol/generated/PersonaId";
 import type { PersonaMood } from "../protocol/generated/PersonaMood";
 import type { PlayerAction } from "../protocol/generated/PlayerAction";
@@ -7,13 +12,14 @@ import type { Seat } from "../protocol/generated/Seat";
 import type { ServerMessage } from "../protocol/generated/ServerMessage";
 import type { TablePace } from "../protocol/generated/TablePace";
 import type { TableSnapshot } from "../protocol/generated/TableSnapshot";
-import { ALL_SEATS } from "../protocol/seats";
+import { ALL_SEATS, seatRelativeRole } from "../protocol/seats";
 import {
   createInitialSessionState,
   reduceServerMessage,
   type PendingAddedKong,
   type SessionState,
 } from "../session/reducer";
+import { isBubbleActivelySpeaking } from "../table/banterVisibility";
 import {
   IMPACT_DURATION_MS,
   createPresentationEffectsBus,
@@ -25,6 +31,7 @@ import {
   createUiActionPromptedEvent,
   mapLocalUiActionToSemanticEvent,
   mapPlayerEventToSemanticEvent,
+  mapQuickEmoteBroadcastToSemanticEvent,
   type LocalUiAction,
   type SemanticGameEvent,
   type SemanticMappingContext,
@@ -38,6 +45,8 @@ export interface PresentationScheduler {
 export interface ActiveBanterBubble {
   kind: "banter" | "quick_emote";
   bubbleId: number;
+  banterId: string | null;
+  priority: BanterVoicePriority;
   seat: Seat;
   personaId: PersonaId | null;
   mood: PersonaMood | null;
@@ -48,6 +57,12 @@ export interface ActiveBanterBubble {
 }
 
 export type ActiveBanterMap = Record<Seat, ActiveBanterBubble | null>;
+
+export type BanterVoiceFlushReason = "hand_started" | "lobby" | "snapshot";
+
+export type BanterVoiceEvent =
+  | { type: "ready"; request: BanterVoiceRequest }
+  | { type: "flush"; reason: BanterVoiceFlushReason };
 
 export interface PresentationState {
   snapshot: TableSnapshot | null;
@@ -64,15 +79,22 @@ export interface PresentationQueueOptions {
   effectsBus?: PresentationEffectsBus;
   scheduler?: PresentationScheduler;
   banterDurationMs?: number;
+  banterVoiceTailMs?: number;
 }
 
 export type PresentationStateListener = (state: PresentationState) => void;
 export type SemanticEventListener = (event: SemanticGameEvent) => void;
+export type BanterVoiceEventListener = (event: BanterVoiceEvent) => void;
 
 export interface PresentationQueue {
   getState(): PresentationState;
   subscribe(listener: PresentationStateListener): () => void;
   onSemanticEvent(listener: SemanticEventListener): () => void;
+  onBanterVoiceEvent(listener: BanterVoiceEventListener): () => void;
+  setActiveBanterVoice(
+    active: ActiveBanterVoiceState | null,
+    pendingBanterIds?: ReadonlySet<string>,
+  ): void;
   enqueueServerMessage(message: ServerMessage): void;
   emitLocalUiAction(action: LocalUiAction): void;
   skipActiveImpact(): boolean;
@@ -101,6 +123,7 @@ const PACE_MULTIPLIER: Record<TablePace, number> = {
 const BACKLOG_ACCEL_THRESHOLD = 3;
 const BACKLOG_ACCEL_FACTOR = 1.6;
 const DEFAULT_BANTER_DURATION_MS = 4500;
+const DEFAULT_BANTER_VOICE_TAIL_MS = 500;
 
 function createEmptyBanterMap(): ActiveBanterMap {
   return {
@@ -152,6 +175,28 @@ function shouldShowSettlement(snapshot: TableSnapshot | null): boolean {
   );
 }
 
+function isHighlightPlayerEvent(event: PlayerEvent): boolean {
+  const { kind } = event;
+  return (
+    "MeldDeclared" in kind ||
+    "HandSettled" in kind ||
+    "MatchFinished" in kind
+  );
+}
+
+function isSettlementPhase(snapshot: TableSnapshot | null): boolean {
+  if (snapshot === null) {
+    return false;
+  }
+  return (
+    snapshot.phase === "Finished" ||
+    snapshot.player_view?.phase === "BetweenHands" ||
+    snapshot.player_view?.phase === "MatchFinished"
+  );
+}
+
+const MAX_TRACKED_BANTER_META = 64;
+
 function buildSemanticContext(
   session: SessionState,
 ): SemanticMappingContext {
@@ -173,11 +218,16 @@ export function createPresentationQueue(
   const effectsBus = options.effectsBus ?? createPresentationEffectsBus();
   const scheduler = options.scheduler ?? defaultScheduler;
   const banterDurationMs = options.banterDurationMs ?? DEFAULT_BANTER_DURATION_MS;
+  const banterVoiceTailMs =
+    options.banterVoiceTailMs ?? DEFAULT_BANTER_VOICE_TAIL_MS;
 
   let sessionState = createInitialSessionState();
   let activeImpact: PiltoverImpactFrame | null = null;
   let activeBubbles: ActiveBanterMap = createEmptyBanterMap();
   const bubbleTimers: Partial<Record<Seat, unknown>> = {};
+  const deferredDismissBubbleIds: Partial<Record<Seat, number>> = {};
+  let activeBanterVoice: ActiveBanterVoiceState | null = null;
+  let pendingBanterVoiceIds: ReadonlySet<string> = new Set();
   let nextBubbleId = 1;
   let settlementVisible = false;
   let pace: TablePace = "Standard";
@@ -186,8 +236,14 @@ export function createPresentationQueue(
   let disposed = false;
 
   const queuedItems: QueueItem[] = [];
+  const highlightEventSeqs = new Set<number>();
+  const banterMetaById = new Map<
+    string,
+    { seat: Seat; priority: BanterVoicePriority }
+  >();
   const stateListeners = new Set<PresentationStateListener>();
   const semanticListeners = new Set<SemanticEventListener>();
+  const banterVoiceListeners = new Set<BanterVoiceEventListener>();
 
   const unsubPiltover = registerPiltoverImpactSubscriber(effectsBus, {
     onImpact: (frame) => {
@@ -221,12 +277,25 @@ export function createPresentationQueue(
     };
   }
 
+  function isBubbleHeldByVoice(bubble: ActiveBanterBubble | null): boolean {
+    if (isBubbleActivelySpeaking(bubble, activeBanterVoice)) {
+      return true;
+    }
+    return (
+      bubble !== null &&
+      bubble.kind === "banter" &&
+      bubble.banterId !== null &&
+      pendingBanterVoiceIds.has(bubble.banterId)
+    );
+  }
+
   function clearSeatBubble(seat: Seat): void {
     const timer = bubbleTimers[seat];
     if (timer !== undefined) {
       scheduler.clearTimeout(timer);
       delete bubbleTimers[seat];
     }
+    delete deferredDismissBubbleIds[seat];
     if (activeBubbles[seat] !== null) {
       activeBubbles = { ...activeBubbles, [seat]: null };
     }
@@ -263,6 +332,33 @@ export function createPresentationQueue(
   function emitSemantic(event: SemanticGameEvent): void {
     for (const listener of semanticListeners) {
       listener(event);
+    }
+  }
+
+  function emitBanterVoice(event: BanterVoiceEvent): void {
+    for (const listener of banterVoiceListeners) {
+      listener(event);
+    }
+  }
+
+  function clearBanterTracking(): void {
+    highlightEventSeqs.clear();
+    banterMetaById.clear();
+  }
+
+  function recordBanterMeta(
+    banterId: string,
+    seat: Seat,
+    priority: BanterVoicePriority,
+  ): void {
+    banterMetaById.delete(banterId);
+    banterMetaById.set(banterId, { seat, priority });
+    while (banterMetaById.size > MAX_TRACKED_BANTER_META) {
+      const oldest = banterMetaById.keys().next().value;
+      if (oldest === undefined) {
+        break;
+      }
+      banterMetaById.delete(oldest);
     }
   }
 
@@ -341,6 +437,11 @@ export function createPresentationQueue(
     sessionState = reduced.state;
     if ("HandStarted" in item.event.kind) {
       clearAllBubbles();
+      clearBanterTracking();
+      emitBanterVoice({ type: "flush", reason: "hand_started" });
+    }
+    if (isHighlightPlayerEvent(item.event)) {
+      highlightEventSeqs.add(item.event.seq);
     }
     if ("HandSettled" in item.event.kind) {
       settlementVisible = false;
@@ -441,6 +542,8 @@ export function createPresentationQueue(
     const prevSnapshot = sessionState.snapshot;
     const prevView = prevSnapshot?.player_view ?? null;
     clearQueueAndEffects();
+    clearBanterTracking();
+    emitBanterVoice({ type: "flush", reason: "snapshot" });
     const nextSnap = message.TableSnapshot;
     const phaseReset =
       nextSnap.phase === "Lobby" ||
@@ -468,6 +571,8 @@ export function createPresentationQueue(
     if (message.LobbyUpdated.phase === "Lobby") {
       clearQueueAndEffects();
       clearAllBubbles();
+      clearBanterTracking();
+      emitBanterVoice({ type: "flush", reason: "lobby" });
       settlementVisible = false;
     } else {
       pruneBubblesForSeats(message.LobbyUpdated.seats);
@@ -477,6 +582,30 @@ export function createPresentationQueue(
       sessionState = reduced.state;
     }
     emitState();
+  }
+
+  function scheduleSeatBubbleDismissTimer(
+    seat: Seat,
+    bubbleId: number,
+    delayMs: number,
+  ): void {
+    const existing = bubbleTimers[seat];
+    if (existing !== undefined) {
+      scheduler.clearTimeout(existing);
+      delete bubbleTimers[seat];
+    }
+    bubbleTimers[seat] = scheduler.setTimeout(() => {
+      delete bubbleTimers[seat];
+      if (disposed || activeBubbles[seat]?.bubbleId !== bubbleId) {
+        return;
+      }
+      if (isBubbleHeldByVoice(activeBubbles[seat])) {
+        deferredDismissBubbleIds[seat] = bubbleId;
+        return;
+      }
+      activeBubbles = { ...activeBubbles, [seat]: null };
+      emitState();
+    }, Math.max(1, Math.round(delayMs)));
   }
 
   function scheduleSeatBubble(bubble: ActiveBanterBubble): void {
@@ -490,22 +619,22 @@ export function createPresentationQueue(
       1,
       Math.round(banterDurationMs * (pace === "Fast" ? 0.78 : 1.0)),
     );
-    const id = bubble.bubbleId;
-    bubbleTimers[seat] = scheduler.setTimeout(() => {
-      delete bubbleTimers[seat];
-      if (!disposed && activeBubbles[seat]?.bubbleId === id) {
-        activeBubbles = { ...activeBubbles, [seat]: null };
-        emitState();
-      }
-    }, effectiveDurationMs);
+    scheduleSeatBubbleDismissTimer(seat, bubble.bubbleId, effectiveDurationMs);
     emitState();
   }
 
   function handleTableBanter(
     message: Extract<ServerMessage, { TableBanter: unknown }>,
   ): void {
-    const { seat, persona_id, mood, text, event_seq, reply_to_seat } =
-      message.TableBanter;
+    const {
+      banter_id,
+      seat,
+      persona_id,
+      mood,
+      text,
+      event_seq,
+      reply_to_seat,
+    } = message.TableBanter;
     const trimmed = text.trim();
     if (trimmed.length === 0) {
       return;
@@ -521,9 +650,21 @@ export function createPresentationQueue(
     const reduced = reduceServerMessage(sessionState, message);
     sessionState = reduced.state;
 
+    const priority: BanterVoicePriority =
+      isSettlementPhase(sessionState.snapshot) ||
+      highlightEventSeqs.has(event_seq) ||
+      (reply_to_seat !== null &&
+        activeBubbles[reply_to_seat]?.priority === "highlight")
+        ? "highlight"
+        : "normal";
+
+    recordBanterMeta(banter_id, seat, priority);
+
     scheduleSeatBubble({
       kind: "banter",
       bubbleId: nextBubbleId++,
+      banterId: banter_id,
+      priority,
       seat,
       personaId: persona_id,
       mood,
@@ -531,6 +672,42 @@ export function createPresentationQueue(
       text: trimmed,
       eventSeq: event_seq,
       replyToSeat: reply_to_seat,
+    });
+  }
+
+  function handleTableBanterAudioReady(
+    message: Extract<ServerMessage, { TableBanterAudioReady: unknown }>,
+  ): void {
+    const { banter_id, seat, audio_url, duration_ms } =
+      message.TableBanterAudioReady;
+    const trimmedUrl = audio_url.trim();
+    if (trimmedUrl.length === 0) {
+      return;
+    }
+    const snap = sessionState.snapshot;
+    if (snap !== null) {
+      const seatInfo = snap.seats.find((entry) => entry.seat === seat);
+      if (seatInfo && seatInfo.kind !== "Ai") {
+        return;
+      }
+    }
+    const meta = banterMetaById.get(banter_id);
+    const priority: BanterVoicePriority =
+      meta?.priority ?? (isSettlementPhase(snap) ? "highlight" : "normal");
+    const viewer = snap?.your_seat ?? null;
+    const relativeRole =
+      viewer !== null ? seatRelativeRole(viewer, seat) : null;
+
+    emitBanterVoice({
+      type: "ready",
+      request: {
+        banterId: banter_id,
+        seat,
+        audioUrl: trimmedUrl,
+        durationMs: duration_ms,
+        priority,
+        relativeRole,
+      },
     });
   }
 
@@ -553,9 +730,18 @@ export function createPresentationQueue(
     const reduced = reduceServerMessage(sessionState, message);
     sessionState = reduced.state;
 
+    emitSemantic(
+      mapQuickEmoteBroadcastToSemanticEvent(
+        { seat, emote, text: trimmed },
+        buildSemanticContext(sessionState),
+      ),
+    );
+
     scheduleSeatBubble({
       kind: "quick_emote",
       bubbleId: nextBubbleId++,
+      banterId: null,
+      priority: "normal",
       seat,
       personaId: null,
       mood: null,
@@ -584,6 +770,9 @@ export function createPresentationQueue(
     }
 
     events.forEach((event, idx) => {
+      if (isHighlightPlayerEvent(event)) {
+        highlightEventSeqs.add(event.seq);
+      }
       const isLast = idx === events.length - 1;
       queuedItems.push({
         kind: "event",
@@ -613,6 +802,39 @@ export function createPresentationQueue(
       };
     },
 
+    onBanterVoiceEvent(listener: BanterVoiceEventListener): () => void {
+      banterVoiceListeners.add(listener);
+      return () => {
+        banterVoiceListeners.delete(listener);
+      };
+    },
+
+    setActiveBanterVoice(
+      nextActive: ActiveBanterVoiceState | null,
+      nextPendingIds?: ReadonlySet<string>,
+    ): void {
+      if (disposed) {
+        return;
+      }
+      activeBanterVoice = nextActive ? { ...nextActive } : null;
+      pendingBanterVoiceIds = nextPendingIds ? new Set(nextPendingIds) : new Set();
+      for (const seat of ALL_SEATS) {
+        const deferredId = deferredDismissBubbleIds[seat];
+        if (deferredId === undefined) {
+          continue;
+        }
+        const bubble = activeBubbles[seat];
+        if (bubble === null || bubble.bubbleId !== deferredId) {
+          delete deferredDismissBubbleIds[seat];
+          continue;
+        }
+        if (!isBubbleHeldByVoice(bubble)) {
+          delete deferredDismissBubbleIds[seat];
+          scheduleSeatBubbleDismissTimer(seat, deferredId, banterVoiceTailMs);
+        }
+      }
+    },
+
     enqueueServerMessage(message: ServerMessage): void {
       if (disposed || typeof message !== "object" || message === null) {
         return;
@@ -631,6 +853,10 @@ export function createPresentationQueue(
       }
       if ("TableBanter" in message) {
         handleTableBanter(message);
+        return;
+      }
+      if ("TableBanterAudioReady" in message) {
+        handleTableBanterAudioReady(message);
         return;
       }
       if ("QuickEmoteBroadcast" in message) {
@@ -663,11 +889,15 @@ export function createPresentationQueue(
         return;
       }
       disposed = true;
+      activeBanterVoice = null;
+      pendingBanterVoiceIds = new Set();
       clearQueueAndEffects();
       clearAllBubbles();
+      clearBanterTracking();
       unsubPiltover();
       stateListeners.clear();
       semanticListeners.clear();
+      banterVoiceListeners.clear();
     },
   };
 }

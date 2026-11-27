@@ -30,7 +30,12 @@ describe("devicePreferences", () => {
     expect(store.load()).toEqual({
       master_volume: 0.85,
       sfx_volume: 1,
+      voice_volume: 1,
       muted: false,
+      tile_call_voice_enabled: true,
+      banter_voice_enabled: true,
+      hide_banter_bubble_with_voice: false,
+      human_voice_pack_id: null,
       ios_audio_session: "playback",
       confirm_discard: false,
       reduced_effects: false,
@@ -39,7 +44,12 @@ describe("devicePreferences", () => {
     const updated = store.update({
       master_volume: 1.8,
       sfx_volume: -0.4,
+      voice_volume: 1.4,
       muted: true,
+      tile_call_voice_enabled: false,
+      banter_voice_enabled: false,
+      hide_banter_bubble_with_voice: true,
+      human_voice_pack_id: "human_female",
       ios_audio_session: "ambient",
       confirm_discard: true,
       reduced_effects: true,
@@ -48,16 +58,28 @@ describe("devicePreferences", () => {
     expect(updated).toEqual({
       master_volume: 1,
       sfx_volume: 0,
+      voice_volume: 1,
       muted: true,
+      tile_call_voice_enabled: false,
+      banter_voice_enabled: false,
+      hide_banter_bubble_with_voice: true,
+      human_voice_pack_id: "human_female",
       ios_audio_session: "ambient",
       confirm_discard: true,
       reduced_effects: true,
     });
 
+    const clampedLow = store.update({
+      voice_volume: -0.25,
+      human_voice_pack_id: "human_male",
+    });
+    expect(clampedLow.voice_volume).toBe(0);
+    expect(clampedLow.human_voice_pack_id).toBe("human_male");
+
     const reloaded = createDevicePreferencesStore(raw, {
       defaultConfirmDiscard: false,
     }).load();
-    expect(reloaded).toEqual(updated);
+    expect(reloaded).toEqual(clampedLow);
     expect(raw.getItem(DEVICE_PREFERENCES_STORAGE_KEY)).not.toBeNull();
   });
 
@@ -71,7 +93,12 @@ describe("devicePreferences", () => {
     expect(store.load()).toEqual({
       master_volume: 0.85,
       sfx_volume: 1,
+      voice_volume: 1,
       muted: false,
+      tile_call_voice_enabled: true,
+      banter_voice_enabled: true,
+      hide_banter_bubble_with_voice: false,
+      human_voice_pack_id: null,
       ios_audio_session: "playback",
       confirm_discard: true,
       reduced_effects: false,
@@ -82,7 +109,12 @@ describe("devicePreferences", () => {
       JSON.stringify({
         master_volume: "loud",
         sfx_volume: Number.NaN,
+        voice_volume: Number.POSITIVE_INFINITY,
         muted: "yes",
+        tile_call_voice_enabled: 0,
+        banter_voice_enabled: "false",
+        hide_banter_bubble_with_voice: 1,
+        human_voice_pack_id: "quick_hothead",
         ios_audio_session: "invalid",
         confirm_discard: 1,
         reduced_effects: null,
@@ -94,18 +126,24 @@ describe("devicePreferences", () => {
     expect(sanitized).toEqual({
       master_volume: 0.85,
       sfx_volume: 1,
+      voice_volume: 1,
       muted: false,
+      tile_call_voice_enabled: true,
+      banter_voice_enabled: true,
+      hide_banter_bubble_with_voice: false,
+      human_voice_pack_id: null,
       ios_audio_session: "playback",
       confirm_discard: true,
       reduced_effects: false,
     });
     expect("pace" in sanitized).toBe(false);
 
-    store.update({ muted: true });
+    store.update({ muted: true, human_voice_pack_id: "human_female" });
     const persisted = JSON.parse(
       raw.getItem(DEVICE_PREFERENCES_STORAGE_KEY) ?? "{}",
     ) as Record<string, unknown>;
     expect("pace" in persisted).toBe(false);
+    expect(persisted.human_voice_pack_id).toBe("human_female");
 
     const throwingStorage: StorageLike = {
       getItem() {

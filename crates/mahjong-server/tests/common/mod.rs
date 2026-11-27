@@ -278,7 +278,9 @@ impl VirtualClient {
                     ServerMessage::TableSnapshot(snap) => return snap,
                     ServerMessage::LobbyUpdated { .. }
                     | ServerMessage::TableBanter { .. }
-                    | ServerMessage::LlmStatusNotice { .. } => continue,
+                    | ServerMessage::TableBanterAudioReady { .. }
+                    | ServerMessage::LlmStatusNotice { .. }
+                    | ServerMessage::TtsStatusNotice { .. } => continue,
                     other => panic!("expected TableSnapshot, got {other:?}"),
                 },
                 OutboundSignal::ReplaceAndClose => panic!("unexpected SessionReplaced"),
@@ -378,6 +380,7 @@ pub async fn spawn_server(static_dir: Option<PathBuf>) -> ServerHandle {
         .with_port(0)
         .with_static_dir(static_dir)
         .with_llm_client(stub_llm_client())
+        .with_no_tts(true)
         .spawn()
         .await
         .expect("spawn server")
@@ -390,6 +393,7 @@ pub async fn spawn_seeded_server(seed: u64, static_dir: Option<PathBuf>) -> Serv
         .with_port(0)
         .with_static_dir(static_dir)
         .with_llm_client(stub_llm_client())
+        .with_no_tts(true)
         .spawn_with_options(TableOptions::seeded(seed).with_pacing(PacingMode::Immediate))
         .await
         .expect("spawn seeded server")
@@ -401,6 +405,7 @@ pub async fn spawn_with_wall_factory(seed: u64, factory: WallProviderFactory) ->
         .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
         .with_port(0)
         .with_llm_client(stub_llm_client())
+        .with_no_tts(true)
         .spawn_with_options(
             TableOptions::with_wall_factory(seed, factory).with_pacing(PacingMode::Immediate),
         )
@@ -523,7 +528,9 @@ pub async fn recv_non_ping_msg(ws: &mut WsClient) -> ServerMessage {
         match recv_msg(ws).await {
             ServerMessage::ServerPing { .. }
             | ServerMessage::TableBanter { .. }
-            | ServerMessage::LlmStatusNotice { .. } => continue,
+            | ServerMessage::TableBanterAudioReady { .. }
+            | ServerMessage::LlmStatusNotice { .. }
+            | ServerMessage::TtsStatusNotice { .. } => continue,
             other => return other,
         }
     }
@@ -536,7 +543,9 @@ pub async fn recv_snapshot(ws: &mut WsClient) -> TableSnapshot {
             ServerMessage::TableSnapshot(snap) => return snap,
             ServerMessage::LobbyUpdated { .. }
             | ServerMessage::TableBanter { .. }
-            | ServerMessage::LlmStatusNotice { .. } => continue,
+            | ServerMessage::TableBanterAudioReady { .. }
+            | ServerMessage::LlmStatusNotice { .. }
+            | ServerMessage::TtsStatusNotice { .. } => continue,
             other => panic!("expected TableSnapshot, got {other:?}"),
         }
     }
@@ -556,10 +565,36 @@ pub async fn recv_event_batch(
             } => return (from_seq, to_seq, events, updated_legal_actions),
             ServerMessage::LobbyUpdated { .. }
             | ServerMessage::TableBanter { .. }
-            | ServerMessage::LlmStatusNotice { .. } => continue,
+            | ServerMessage::TableBanterAudioReady { .. }
+            | ServerMessage::LlmStatusNotice { .. }
+            | ServerMessage::TtsStatusNotice { .. } => continue,
             other => panic!("expected EventBatch, got {other:?}"),
         }
     }
+}
+
+#[allow(dead_code)]
+pub fn make_pcm16_mono_wav(sample_count: usize, fill_byte: u8) -> Vec<u8> {
+    let data_len = (sample_count * 2) as u32;
+    let riff_len = 36 + data_len;
+    let sample_rate: u32 = 24_000;
+    let byte_rate = sample_rate * 2;
+    let mut out = Vec::with_capacity(44 + data_len as usize);
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&riff_len.to_le_bytes());
+    out.extend_from_slice(b"WAVE");
+    out.extend_from_slice(b"fmt ");
+    out.extend_from_slice(&16_u32.to_le_bytes());
+    out.extend_from_slice(&1_u16.to_le_bytes());
+    out.extend_from_slice(&1_u16.to_le_bytes());
+    out.extend_from_slice(&sample_rate.to_le_bytes());
+    out.extend_from_slice(&byte_rate.to_le_bytes());
+    out.extend_from_slice(&2_u16.to_le_bytes());
+    out.extend_from_slice(&16_u16.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data_len.to_le_bytes());
+    out.resize(44 + data_len as usize, fill_byte);
+    out
 }
 
 #[allow(dead_code)]

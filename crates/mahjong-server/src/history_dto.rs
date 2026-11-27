@@ -32,6 +32,9 @@ pub struct PreferencesData {
     /// Optional persisted base URL for the LAN `llama-server` endpoint.
     #[serde(default)]
     pub llm_base_url: Option<String>,
+    /// Optional persisted base URL for the optional LAN emotional TTS service endpoint.
+    #[serde(default)]
+    pub tts_base_url: Option<String>,
     /// Whether AI personas gently nudge a human player after 15–20 seconds of thinking.
     #[serde(default = "default_true")]
     pub slow_think_nudge_enabled: bool,
@@ -48,6 +51,7 @@ impl Default for PreferencesData {
             default_ai_difficulty: lobby.ai_difficulty,
             default_pace: lobby.pace,
             llm_base_url: None,
+            tts_base_url: None,
             slow_think_nudge_enabled: true,
         }
     }

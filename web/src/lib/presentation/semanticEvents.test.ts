@@ -7,6 +7,7 @@ import {
   createUiActionPromptedEvent,
   mapLocalUiActionToSemanticEvent,
   mapPlayerEventToSemanticEvent,
+  mapQuickEmoteBroadcastToSemanticEvent,
   type SemanticMappingContext,
 } from "./semanticEvents";
 
@@ -357,6 +358,20 @@ describe("semanticEvents", () => {
     expect(upgradedPrompt).toMatchObject({
       type: "UiActionPrompted",
       actions: [{ Pon: { tile: 5 } }, { Ron: { tile: 5 } }],
+    });
+  });
+
+  it("maps QuickEmoteBroadcast with seat, quickEmote, relativeRole, and voicePackId", () => {
+    const mapped = mapQuickEmoteBroadcastToSemanticEvent(
+      { seat: "South", emote: "DealerRigged", text: "发牌员演我" },
+      makeContext("East", 36),
+    );
+    expect(mapped).toMatchObject({
+      type: "QuickEmoteBroadcast",
+      seat: "South",
+      relativeRole: "下家",
+      voicePackId: "pack-south",
+      quickEmote: "DealerRigged",
     });
   });
 });

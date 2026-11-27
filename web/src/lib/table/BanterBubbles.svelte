@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { ActiveBanterVoiceState } from "../audio/audioTypes";
   import type {
     ActiveBanterBubble,
     ActiveBanterMap,
@@ -16,6 +17,10 @@
     rectToPercentStyle,
     type BanterBubbleAnchor,
   } from "./banterLayout";
+  import {
+    isBubbleActivelySpeaking,
+    shouldShowBubbleText,
+  } from "./banterVisibility";
   import type { TableLayout } from "./layout";
 
   interface Props {
@@ -23,6 +28,8 @@
     playerView: PlayerView;
     tableLayout: TableLayout | null;
     activeBubbles: ActiveBanterMap;
+    activeBanterVoice?: ActiveBanterVoiceState | null;
+    hideAiBanterText?: boolean;
     reducedEffects?: boolean;
   }
 
@@ -31,6 +38,8 @@
     playerView,
     tableLayout,
     activeBubbles,
+    activeBanterVoice = null,
+    hideAiBanterText = false,
     reducedEffects = false,
   }: Props = $props();
 
@@ -42,6 +51,7 @@
     moodShortLabel: string;
     moodBadgeBg: string;
     moodBadgeFg: string;
+    speaking: boolean;
   }
 
   const renderedBubbles = $derived.by<RenderedBubble[]>(() => {
@@ -51,12 +61,13 @@
     const items: RenderedBubble[] = [];
     for (const seat of ALL_SEATS) {
       const bubble = activeBubbles[seat];
-      if (!bubble) {
+      if (!bubble || !shouldShowBubbleText(bubble, hideAiBanterText)) {
         continue;
       }
       const seatInfo = snapshot.seats[seatIndex(seat)];
       const slot = seatRelativeSlot(playerView.viewer, seat);
       const anchor = computeBanterBubbleAnchor(tableLayout, slot);
+      const speaking = isBubbleActivelySpeaking(bubble, activeBanterVoice);
       if (
         bubble.kind === "banter" &&
         bubble.personaId !== null &&
@@ -72,6 +83,7 @@
           moodShortLabel: moodMeta.shortLabel,
           moodBadgeBg: moodMeta.badgeBg,
           moodBadgeFg: moodMeta.badgeFg,
+          speaking,
         });
       } else {
         const emoteMeta = bubble.emote ? getQuickEmoteMeta(bubble.emote) : null;
@@ -83,6 +95,7 @@
           moodShortLabel: "快捷互动",
           moodBadgeBg: emoteMeta?.accentHex ?? "#F5BE58",
           moodBadgeFg: "#181A20",
+          speaking: false,
         });
       }
     }
@@ -118,6 +131,9 @@
         <div
           class="comic-bubble tail-{item.anchor.tail}"
           class:comic-bubble-static={reducedEffects}
+          class:comic-bubble-speaking={item.speaking}
+          class:comic-bubble-speaking-static={item.speaking && reducedEffects}
+          data-speaking={item.speaking ? "true" : undefined}
           role="status"
         >
           <div class="comic-bubble-head">
@@ -128,6 +144,13 @@
             >
               {item.moodShortLabel}
             </span>
+            {#if item.speaking}
+              <span
+                class="comic-speaking-dot"
+                class:comic-speaking-dot-static={reducedEffects}
+                aria-label="正在说话"
+              ></span>
+            {/if}
           </div>
           <p class="comic-text">{item.bubble.text}</p>
         </div>
@@ -177,6 +200,37 @@
   }
 
   .comic-bubble-static {
+    animation: none;
+  }
+
+  .comic-bubble-speaking {
+    box-shadow:
+      2px 3px 0 #181a20,
+      0 0 0 2px var(--banter-accent, #e85d3f),
+      0 6px 18px rgba(245, 190, 88, 0.42);
+    animation:
+      banterPop 180ms cubic-bezier(0.22, 1.28, 0.36, 1),
+      bubbleSpeakingPulse 1.15s ease-in-out 180ms infinite;
+  }
+
+  .comic-bubble-speaking-static {
+    animation: none;
+    box-shadow:
+      2px 3px 0 #181a20,
+      0 0 0 2px var(--banter-accent, #e85d3f);
+  }
+
+  .comic-speaking-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+    background: var(--banter-accent, #e85d3f);
+    flex-shrink: 0;
+    margin-left: auto;
+    animation: speakingDotBeat 0.85s ease-in-out infinite;
+  }
+
+  .comic-speaking-dot-static {
     animation: none;
   }
 
@@ -282,6 +336,34 @@
     100% {
       opacity: 1;
       transform: translateY(0) scale(1);
+    }
+  }
+
+  @keyframes bubbleSpeakingPulse {
+    0%,
+    100% {
+      box-shadow:
+        2px 3px 0 #181a20,
+        0 0 0 1.5px var(--banter-accent, #e85d3f),
+        0 6px 14px rgba(0, 0, 0, 0.34);
+    }
+    50% {
+      box-shadow:
+        2px 3px 0 #181a20,
+        0 0 0 2.5px var(--banter-accent, #e85d3f),
+        0 6px 20px rgba(245, 190, 88, 0.55);
+    }
+  }
+
+  @keyframes speakingDotBeat {
+    0%,
+    100% {
+      transform: scale(0.88);
+      opacity: 0.72;
+    }
+    50% {
+      transform: scale(1.22);
+      opacity: 1;
     }
   }
 

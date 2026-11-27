@@ -1,3 +1,7 @@
+import {
+  isHumanVoicePackId,
+  type HumanVoicePackId,
+} from "../audio/voicePackSchema";
 import { createMemoryStorage, type StorageLike } from "../session/storage";
 
 export type IosAudioSessionMode = "playback" | "ambient";
@@ -5,7 +9,12 @@ export type IosAudioSessionMode = "playback" | "ambient";
 export interface DevicePreferences {
   master_volume: number;
   sfx_volume: number;
+  voice_volume: number;
   muted: boolean;
+  tile_call_voice_enabled: boolean;
+  banter_voice_enabled: boolean;
+  hide_banter_bubble_with_voice: boolean;
+  human_voice_pack_id: HumanVoicePackId | null;
   ios_audio_session: IosAudioSessionMode;
   confirm_discard: boolean;
   reduced_effects: boolean;
@@ -32,7 +41,12 @@ export const DEVICE_PREFERENCES_STORAGE_KEY = "majjj.device_preferences";
 const BASE_DEFAULTS: Omit<DevicePreferences, "confirm_discard"> = {
   master_volume: 0.85,
   sfx_volume: 1,
+  voice_volume: 1,
   muted: false,
+  tile_call_voice_enabled: true,
+  banter_voice_enabled: true,
+  hide_banter_bubble_with_voice: false,
+  human_voice_pack_id: null,
   ios_audio_session: "playback",
   reduced_effects: false,
 };
@@ -53,6 +67,19 @@ function normalizeIosAudioSession(
   fallback: IosAudioSessionMode,
 ): IosAudioSessionMode {
   return value === "playback" || value === "ambient" ? value : fallback;
+}
+
+function normalizeHumanVoicePackId(
+  value: unknown,
+  fallback: HumanVoicePackId | null,
+): HumanVoicePackId | null {
+  if (value === null) {
+    return null;
+  }
+  if (typeof value === "string" && isHumanVoicePackId(value)) {
+    return value;
+  }
+  return fallback;
 }
 
 /**
@@ -100,7 +127,7 @@ export function defaultDevicePreferences(
 }
 
 /**
- * Sanitizes and clamps an arbitrary input into the exact 6 `DevicePreferences` fields,
+ * Sanitizes and clamps an arbitrary input into the exact 11 `DevicePreferences` fields,
  * dropping unknown properties (such as table-level `pace`).
  */
 export function normalizeDevicePreferences(
@@ -114,7 +141,24 @@ export function normalizeDevicePreferences(
   return {
     master_volume: clampVolume(record.master_volume, defaults.master_volume),
     sfx_volume: clampVolume(record.sfx_volume, defaults.sfx_volume),
+    voice_volume: clampVolume(record.voice_volume, defaults.voice_volume),
     muted: normalizeBoolean(record.muted, defaults.muted),
+    tile_call_voice_enabled: normalizeBoolean(
+      record.tile_call_voice_enabled,
+      defaults.tile_call_voice_enabled,
+    ),
+    banter_voice_enabled: normalizeBoolean(
+      record.banter_voice_enabled,
+      defaults.banter_voice_enabled,
+    ),
+    hide_banter_bubble_with_voice: normalizeBoolean(
+      record.hide_banter_bubble_with_voice,
+      defaults.hide_banter_bubble_with_voice,
+    ),
+    human_voice_pack_id: normalizeHumanVoicePackId(
+      record.human_voice_pack_id,
+      defaults.human_voice_pack_id,
+    ),
     ios_audio_session: normalizeIosAudioSession(
       record.ios_audio_session,
       defaults.ios_audio_session,

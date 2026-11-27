@@ -7,6 +7,7 @@ cd "$repo_root"
 node -e '
 const fs = require("fs");
 const path = require("path");
+const { execFileSync } = require("child_process");
 
 const cwd = process.cwd();
 const webRoot = path.join(cwd, "web");
@@ -214,7 +215,8 @@ for (const atlasJsonPath of collectFiles(atlasDir).filter((f) => /@2x\.json$/i.t
   }
 }
 
-// 4. AudioSprite .m4a budget: <= 307200 bytes (300 KB) AND parsed mvhd duration < 15.0 s
+// 4. SFX AudioSprite .m4a budget: <= 307200 bytes (300 KB) AND parsed mvhd duration < 15.0 s
+// (Scoped strictly to sfx-sprite*.m4a; VoicePack AudioSprites under assets/vo/ have their own budget.)
 const MAX_M4A_BYTES = 307200;
 const MAX_M4A_DURATION_SEC = 15.0;
 const m4aFiles = [];
@@ -226,9 +228,12 @@ if (!fs.existsSync(srcSpriteM4a)) {
 }
 
 if (fs.existsSync(distDir)) {
-  const distM4as = collectFiles(distAssetsDir).filter((f) => /\.m4a$/i.test(f));
+  const distVoPrefix = path.join(distAssetsDir, "vo") + path.sep;
+  const distM4as = collectFiles(distAssetsDir).filter(
+    (f) => !f.startsWith(distVoPrefix) && /^sfx-sprite.*\.m4a$/i.test(path.basename(f)),
+  );
   if (distM4as.length === 0) {
-    failures.push("web/dist/assets/ contains no built .m4a AudioSprite");
+    failures.push("web/dist/assets/ contains no built sfx-sprite .m4a AudioSprite");
   } else {
     m4aFiles.push(...distM4as);
   }
@@ -249,7 +254,166 @@ for (const file of m4aFiles) {
   }
 }
 
-// 5. PWA manifest integrity (web/public/manifest.webmanifest + icons + web/dist parity)
+// 5. Offline 7-pack VoicePack AudioSprite gate (web/public/assets/vo & web/dist/assets/vo)
+// Single-sourced directly from web/src/lib/audio/voicePackSchema.ts to prevent list drift.
+function loadVoicePackSchemaConstants() {
+  const schemaPath = path.join(srcRoot, "lib", "audio", "voicePackSchema.ts");
+  const src = fs.readFileSync(schemaPath, "utf8");
+  const parseConstStringArray = (name) => {
+    const match = src.match(new RegExp(`export const ${name}\\s*=\\s*\\[([\\s\\S]*?)\\]\\s*as const;`));
+    if (!match) {
+      throw new Error(`Could not locate ${name} in ${path.relative(cwd, schemaPath)}`);
+    }
+    return [...match[1].matchAll(/"([a-z0-9_]+)"/g)].map((m) => m[1]);
+  };
+  const speechMatch = src.match(
+    /export const VOICE_SLOT_SPEECH_TEXT:\s*Record<VoiceSlotId,\s*string>\s*=\s*\{([\s\S]*?)\};/,
+  );
+  if (!speechMatch) {
+    throw new Error(`Could not locate VOICE_SLOT_SPEECH_TEXT in ${path.relative(cwd, schemaPath)}`);
+  }
+  const packIds = [
+    ...parseConstStringArray("AI_VOICE_PACK_IDS"),
+    ...parseConstStringArray("HUMAN_VOICE_PACK_IDS"),
+  ];
+  const slots = [...speechMatch[1].matchAll(/([a-z0-9_]+)\s*:\s*"[^"]+"/g)].map((m) => m[1]);
+  if (packIds.length !== 7) {
+    throw new Error(`Expected 7 canonical VoicePack IDs in schema, parsed ${packIds.length}`);
+  }
+  if (slots.length !== 46) {
+    throw new Error(`Expected 46 canonical VoicePack slots in schema, parsed ${slots.length}`);
+  }
+  return { packIds, slots };
+}
+
+const { packIds: VOICE_PACK_IDS, slots: CANONICAL_VOICE_SLOTS } = loadVoicePackSchemaConstants();
+const MAX_VOICE_PACK_TOTAL_BYTES = 2 * 1024 * 1024; // 2.0 MiB single-binary budget ceiling
+const hasAfinfo = process.platform === "darwin" && fs.existsSync("/usr/bin/afinfo");
+
+function validateVoicePackRoot(voRoot) {
+  const relRoot = path.relative(cwd, voRoot);
+  if (!fs.existsSync(voRoot)) {
+    failures.push(`${relRoot}: missing VoicePack directory`);
+    return;
+  }
+
+  let totalBytes = 0;
+  for (const packId of VOICE_PACK_IDS) {
+    const packDir = path.join(voRoot, packId);
+    const manifestPath = path.join(packDir, "manifest.json");
+    const spritePath = path.join(packDir, "sprite.m4a");
+    if (!fs.existsSync(manifestPath)) {
+      failures.push(`${relRoot}/${packId}: missing manifest.json`);
+      continue;
+    }
+    if (!fs.existsSync(spritePath)) {
+      failures.push(`${relRoot}/${packId}: missing sprite.m4a`);
+      continue;
+    }
+
+    try {
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+      if (manifest.pack_id !== packId) {
+        failures.push(`${relRoot}/${packId}/manifest.json: pack_id "${manifest.pack_id}" != "${packId}"`);
+      }
+      if (manifest.audio !== "sprite.m4a") {
+        failures.push(`${relRoot}/${packId}/manifest.json: audio "${manifest.audio}" != "sprite.m4a"`);
+      }
+      if (!(typeof manifest.duration === "number" && manifest.duration > 0)) {
+        failures.push(`${relRoot}/${packId}/manifest.json: invalid duration ${manifest.duration}`);
+      }
+      const sprites = manifest.sprites;
+      if (!sprites || typeof sprites !== "object" || Array.isArray(sprites)) {
+        failures.push(`${relRoot}/${packId}/manifest.json: missing sprites object`);
+        continue;
+      }
+
+      const keys = Object.keys(sprites);
+      const keySet = new Set(keys);
+      const missingSlots = CANONICAL_VOICE_SLOTS.filter((s) => !keySet.has(s));
+      const extraSlots = keys.filter((k) => !CANONICAL_VOICE_SLOTS.includes(k));
+      if (missingSlots.length > 0) {
+        failures.push(`${relRoot}/${packId}/manifest.json: missing canonical slots: ${missingSlots.join(", ")}`);
+      }
+      if (extraSlots.length > 0) {
+        failures.push(`${relRoot}/${packId}/manifest.json: unexpected extra slots: ${extraSlots.join(", ")}`);
+      }
+
+      const bytes = fs.statSync(spritePath).size;
+      if (bytes <= 1024) {
+        failures.push(`${relRoot}/${packId}/sprite.m4a: file too small (${bytes} bytes)`);
+      }
+      totalBytes += bytes;
+
+      const mvhdSec = readM4aDurationSeconds(spritePath);
+      if (!(mvhdSec > 0)) {
+        failures.push(`${relRoot}/${packId}/sprite.m4a: invalid mvhd duration ${mvhdSec}`);
+      }
+      let durationBoundSec = mvhdSec;
+      if (hasAfinfo) {
+        const out = execFileSync("/usr/bin/afinfo", [spritePath], { encoding: "utf8" });
+        const m = out.match(/estimated duration:\s*([0-9.]+)\s*sec/);
+        if (!m || !(Number(m[1]) > 0)) {
+          failures.push(`${relRoot}/${packId}/sprite.m4a: afinfo reported invalid duration`);
+        } else {
+          durationBoundSec = Math.min(durationBoundSec, Number(m[1]));
+        }
+      }
+
+      const ordered = CANONICAL_VOICE_SLOTS.filter((s) => Array.isArray(sprites[s])).map((s) => ({
+        slot: s,
+        start: sprites[s][0],
+        dur: sprites[s][1],
+      })).sort((a, b) => a.start - b.start);
+
+      for (let i = 0; i < ordered.length; i += 1) {
+        const cur = ordered[i];
+        if (
+          typeof cur.start !== "number" ||
+          typeof cur.dur !== "number" ||
+          !Number.isFinite(cur.start) ||
+          !Number.isFinite(cur.dur) ||
+          cur.start < 0 ||
+          cur.dur <= 0
+        ) {
+          failures.push(`${relRoot}/${packId}/manifest.json: invalid slice for ${cur.slot}`);
+          continue;
+        }
+        if (cur.start + cur.dur > manifest.duration + 0.001) {
+          failures.push(
+            `${relRoot}/${packId}/manifest.json: ${cur.slot} end ${(cur.start + cur.dur).toFixed(4)}s > manifest.duration ${manifest.duration}s`,
+          );
+        }
+        if (cur.start + cur.dur > durationBoundSec + 0.05) {
+          failures.push(
+            `${relRoot}/${packId}/manifest.json: ${cur.slot} end ${(cur.start + cur.dur).toFixed(4)}s > audio duration ${durationBoundSec.toFixed(4)}s`,
+          );
+        }
+        if (i > 0) {
+          const prev = ordered[i - 1];
+          if (cur.start < prev.start + prev.dur - 1e-6) {
+            failures.push(`${relRoot}/${packId}/manifest.json: slot ${cur.slot} overlaps ${prev.slot}`);
+          }
+        }
+      }
+    } catch (err) {
+      failures.push(`${relRoot}/${packId}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  if (totalBytes > MAX_VOICE_PACK_TOTAL_BYTES) {
+    failures.push(
+      `${relRoot}: total VoicePack .m4a size ${totalBytes} bytes exceeds ${MAX_VOICE_PACK_TOTAL_BYTES} bytes (2.0 MiB)`,
+    );
+  }
+}
+
+validateVoicePackRoot(path.join(publicDir, "assets", "vo"));
+if (fs.existsSync(distDir)) {
+  validateVoicePackRoot(path.join(distAssetsDir, "vo"));
+}
+
+// 6. PWA manifest integrity (web/public/manifest.webmanifest + icons + web/dist parity)
 const publicManifestPath = path.join(publicDir, "manifest.webmanifest");
 if (!fs.existsSync(publicManifestPath)) {
   failures.push("missing web/public/manifest.webmanifest");

@@ -22,6 +22,11 @@ export interface LlmStatusNoticeState {
   message: string;
 }
 
+export interface TtsStatusNoticeState {
+  available: boolean;
+  message: string;
+}
+
 export interface SessionState {
   connectionStatus: ConnectionStatus;
   snapshot: TableSnapshot | null;
@@ -31,6 +36,7 @@ export interface SessionState {
   lastRejectedReason: string | null;
   lastErrorNotice: string | null;
   llmStatusNotice: LlmStatusNoticeState | null;
+  ttsStatusNotice: TtsStatusNoticeState | null;
   lastPongTsMs: number | null;
 }
 
@@ -56,6 +62,7 @@ export function createInitialSessionState(): SessionState {
     lastRejectedReason: null,
     lastErrorNotice: null,
     llmStatusNotice: null,
+    ttsStatusNotice: null,
     lastPongTsMs: null,
   };
 }
@@ -626,6 +633,24 @@ export function reduceServerMessage(
       },
       effects: [],
     };
+  }
+
+  if ("TtsStatusNotice" in message) {
+    const { available, message: noticeText } = message.TtsStatusNotice;
+    return {
+      state: {
+        ...state,
+        ttsStatusNotice: {
+          available,
+          message: noticeText,
+        },
+      },
+      effects: [],
+    };
+  }
+
+  if ("TableBanterAudioReady" in message) {
+    return { state, effects: [] };
   }
 
   if ("ServerPong" in message) {

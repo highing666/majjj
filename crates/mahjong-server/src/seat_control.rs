@@ -5,6 +5,9 @@ use mahjong_ai::AiStyle;
 use mahjong_core::{PublicPhase, Seat};
 use uuid::Uuid;
 
+use crate::persona::{
+    is_valid_human_voice_pack_id, HUMAN_VOICE_PACK_FEMALE, HUMAN_VOICE_PACK_MALE,
+};
 use crate::protocol::{SeatKind, ServerMessage, TablePhase};
 use crate::session::{SeatRecord, TableSession};
 
@@ -56,6 +59,44 @@ fn effective_nickname(raw: &str, seat: Seat) -> String {
 }
 
 impl TableSession {
+    pub(crate) fn default_human_voice_pack(&self, excluding_seat: Option<Seat>) -> String {
+        let mut male_count = 0usize;
+        let mut female_count = 0usize;
+        for slot in &self.seats {
+            if slot.info.kind != SeatKind::Human || Some(slot.info.seat) == excluding_seat {
+                continue;
+            }
+            match slot.info.voice_pack_id.as_deref() {
+                Some(HUMAN_VOICE_PACK_MALE) => male_count += 1,
+                Some(HUMAN_VOICE_PACK_FEMALE) => female_count += 1,
+                _ => {}
+            }
+        }
+        if male_count <= female_count {
+            HUMAN_VOICE_PACK_MALE.to_string()
+        } else {
+            HUMAN_VOICE_PACK_FEMALE.to_string()
+        }
+    }
+
+    pub(crate) fn handle_set_seat_voice_pack(&mut self, conn_id: u64, voice_pack_id: String) {
+        let Some((seat, tx)) = self.require_seated_human(conn_id, "selecting a voice pack") else {
+            return;
+        };
+        let trimmed = voice_pack_id.trim();
+        if !is_valid_human_voice_pack_id(trimmed) {
+            Self::send_error(
+                &tx,
+                format!(
+                    "invalid human voice_pack_id '{trimmed}'; expected '{HUMAN_VOICE_PACK_MALE}' or '{HUMAN_VOICE_PACK_FEMALE}'"
+                ),
+            );
+            return;
+        }
+        self.seats[seat.index()].info.voice_pack_id = Some(trimmed.to_string());
+        self.broadcast_lobby_updated(None);
+    }
+
     /// Returns `true` when `seat` is currently driven by the AI decision pool
     /// (either an `Ai` seat or a `Human` seat with temporary `ai_assisted` enabled).
     pub(crate) fn is_ai_controlled(&self, seat: Seat) -> bool {
@@ -243,6 +284,7 @@ impl TableSession {
         let _ = self.bump_seat_generation(seat);
         self.in_flight_ai.retain(|k| k.seat != seat);
 
+        let fallback_voice_pack = self.default_human_voice_pack(Some(seat));
         let slot = &mut self.seats[seat.index()];
         slot.info.connected = true;
         slot.info.ai_assisted = false;
@@ -250,6 +292,14 @@ impl TableSession {
         slot.info.ai_style = None;
         slot.info.persona_id = None;
         slot.info.mood = None;
+        if !slot
+            .info
+            .voice_pack_id
+            .as_deref()
+            .is_some_and(is_valid_human_voice_pack_id)
+        {
+            slot.info.voice_pack_id = Some(fallback_voice_pack);
+        }
         if slot.info.nickname.trim().is_empty() {
             slot.info.nickname = effective_nickname(caller.nickname, seat);
         }
@@ -277,6 +327,7 @@ impl TableSession {
             self.history.record_nickname(caller.nickname);
         }
 
+        let human_voice_pack = self.default_human_voice_pack(Some(seat));
         let slot = &mut self.seats[seat.index()];
         slot.info.kind = SeatKind::Human;
         slot.info.nickname = effective_nickname(caller.nickname, seat);
@@ -286,6 +337,7 @@ impl TableSession {
         slot.info.ai_style = None;
         slot.info.persona_id = None;
         slot.info.mood = None;
+        slot.info.voice_pack_id = Some(human_voice_pack);
         slot.client_id = Some(caller.client_id.to_string());
         slot.seat_token = Some(caller.seat_token.to_string());
 
