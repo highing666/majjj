@@ -10,54 +10,41 @@ use mahjong_server::static_assets::{EmbeddedStaticAssets, StaticAssetError, Stat
 
 const MAX_TOTAL_M4A_BYTES: usize = 2 * 1024 * 1024; // 2.0 MiB budget ceiling
 
-const CANONICAL_VOICE_SLOTS: [&str; 46] = [
-    "m1",
-    "m2",
-    "m3",
-    "m4",
-    "m5",
-    "m6",
-    "m7",
-    "m8",
-    "m9",
-    "s1",
-    "s2",
-    "s3",
-    "s4",
-    "s5",
-    "s6",
-    "s7",
-    "s8",
-    "s9",
-    "p1",
-    "p2",
-    "p3",
-    "p4",
-    "p5",
-    "p6",
-    "p7",
-    "p8",
-    "p9",
-    "z1",
-    "z2",
-    "z3",
-    "z4",
-    "z5",
-    "z6",
-    "z7",
-    "pong",
-    "kong",
-    "concealed_kong",
-    "zimo",
-    "ron",
-    "rob_kong",
-    "emote_is_that_it",
-    "emote_hurry_up",
-    "emote_spare_me",
-    "emote_nice_play",
-    "emote_dealer_rigged",
-    "emote_going_big",
-];
+const VOICE_PACK_SCHEMA_TS: &str = include_str!("../../../web/src/lib/audio/voicePackSchema.ts");
+
+fn canonical_voice_slots_from_schema() -> Vec<&'static str> {
+    let (_, after_marker) = VOICE_PACK_SCHEMA_TS
+        .split_once("export const VOICE_SLOT_SPEECH_TEXT:")
+        .expect("VOICE_SLOT_SPEECH_TEXT declaration in voicePackSchema.ts");
+    let (_, body) = after_marker
+        .split_once('{')
+        .expect("opening brace for VOICE_SLOT_SPEECH_TEXT");
+    let (entries, _) = body
+        .split_once("};")
+        .expect("closing brace for VOICE_SLOT_SPEECH_TEXT");
+
+    let slots: Vec<&'static str> = entries
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with("//") {
+                return None;
+            }
+            let (key, rest) = trimmed.split_once(':')?;
+            if rest.trim_start().starts_with('"') {
+                Some(key.trim())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(
+        slots.len(),
+        46,
+        "voicePackSchema.ts must define 46 canonical slots"
+    );
+    slots
+}
 
 fn all_canonical_voice_pack_ids() -> Vec<&'static str> {
     let mut ids: Vec<&'static str> = PersonaId::ALL
@@ -73,6 +60,7 @@ fn embedded_assets_serve_all_seven_voice_packs_within_budget_and_404_unknown() {
     let assets = EmbeddedStaticAssets;
     let pack_ids = all_canonical_voice_pack_ids();
     assert_eq!(pack_ids.len(), 7);
+    let canonical_slots = canonical_voice_slots_from_schema();
 
     let mut total_m4a_bytes = 0usize;
 
@@ -109,12 +97,12 @@ fn embedded_assets_serve_all_seven_voice_packs_within_budget_and_404_unknown() {
             .expect("manifest sprites must be a JSON object");
         assert_eq!(
             sprites.len(),
-            CANONICAL_VOICE_SLOTS.len(),
+            canonical_slots.len(),
             "{pack_id} must contain exactly 46 canonical slots"
         );
 
-        let mut slices = Vec::with_capacity(CANONICAL_VOICE_SLOTS.len());
-        for slot in CANONICAL_VOICE_SLOTS {
+        let mut slices = Vec::with_capacity(canonical_slots.len());
+        for &slot in &canonical_slots {
             let pair = sprites
                 .get(slot)
                 .and_then(serde_json::Value::as_array)

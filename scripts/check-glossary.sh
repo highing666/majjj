@@ -10,16 +10,43 @@ forbidden_zh='房间|牌山|牌堆|舍牌区|弃牌|废牌|副露|亮牌|碰牌|
 forbidden_rob='抢杠([^胡]|$)'
 forbidden_en='(^|[^A-Za-z0-9_])(Room|Fulu|taatsu|Taatsu)([^A-Za-z0-9_]|$)'
 
+# Verify GLOSSARY.md _Avoid_ entries cannot silently drift from the enforced patterns above.
+FORBIDDEN_ZH="$forbidden_zh" FORBIDDEN_ROB="$forbidden_rob" node -e '
+const fs = require("fs");
+const glossary = fs.readFileSync("GLOSSARY.md", "utf8");
+const re = new RegExp(process.env.FORBIDDEN_ZH + "|" + process.env.FORBIDDEN_ROB);
+// Generic or ambiguous prose terms intentionally excluded from raw-text grep bans.
+const exempt = new Set([
+  "筒索万", "牌组", "组合", "眼", "山牌", "河牌", "台", "翻",
+  "座位号", "席位", "本家", "我方", "自己", "左手家", "前家",
+  "右手家", "后家", "对面", "一场", "风圈", "轮", "一局",
+]);
+const uncovered = [];
+for (const line of glossary.split("\n")) {
+  const m = line.match(/^_Avoid_：(.+)$/);
+  if (!m) continue;
+  for (const term of m[1].split("、").map((s) => s.trim()).filter(Boolean)) {
+    if (!exempt.has(term) && !re.test(term)) {
+      uncovered.push(term);
+    }
+  }
+}
+if (uncovered.length > 0) {
+  console.error("ERROR: GLOSSARY.md _Avoid_ terms missing from scripts/check-glossary.sh:", uncovered.join(", "));
+  process.exit(1);
+}
+'
+
+shopt -s nullglob
 scan_targets=(
   crates/
   web/src/
   web/index.html
   web/scripts/
-  scripts/windows-llm/
-  docs/windows-llm-deployment.md
-  scripts/windows-tts/
-  docs/windows-tts-deployment.md
+  scripts/windows-*/
+  docs/*-deployment.md
 )
+shopt -u nullglob
 
 if grep -rnE "$forbidden_zh|$forbidden_rob|$forbidden_en" "${scan_targets[@]}"; then
   echo "ERROR: forbidden GLOSSARY.md synonym found under scanned source/script/doc targets" >&2

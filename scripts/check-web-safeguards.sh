@@ -255,24 +255,38 @@ for (const file of m4aFiles) {
 }
 
 // 5. Offline 7-pack VoicePack AudioSprite gate (web/public/assets/vo & web/dist/assets/vo)
-const VOICE_PACK_IDS = [
-  "quick_hothead",
-  "tea_sarcasm",
-  "stubborn_blamer",
-  "chaos_instigator",
-  "tilted_master",
-  "human_male",
-  "human_female",
-];
-const CANONICAL_VOICE_SLOTS = [
-  "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9",
-  "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9",
-  "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9",
-  "z1", "z2", "z3", "z4", "z5", "z6", "z7",
-  "pong", "kong", "concealed_kong", "zimo", "ron", "rob_kong",
-  "emote_is_that_it", "emote_hurry_up", "emote_spare_me",
-  "emote_nice_play", "emote_dealer_rigged", "emote_going_big",
-];
+// Single-sourced directly from web/src/lib/audio/voicePackSchema.ts to prevent list drift.
+function loadVoicePackSchemaConstants() {
+  const schemaPath = path.join(srcRoot, "lib", "audio", "voicePackSchema.ts");
+  const src = fs.readFileSync(schemaPath, "utf8");
+  const parseConstStringArray = (name) => {
+    const match = src.match(new RegExp(`export const ${name}\\s*=\\s*\\[([\\s\\S]*?)\\]\\s*as const;`));
+    if (!match) {
+      throw new Error(`Could not locate ${name} in ${path.relative(cwd, schemaPath)}`);
+    }
+    return [...match[1].matchAll(/"([a-z0-9_]+)"/g)].map((m) => m[1]);
+  };
+  const speechMatch = src.match(
+    /export const VOICE_SLOT_SPEECH_TEXT:\s*Record<VoiceSlotId,\s*string>\s*=\s*\{([\s\S]*?)\};/,
+  );
+  if (!speechMatch) {
+    throw new Error(`Could not locate VOICE_SLOT_SPEECH_TEXT in ${path.relative(cwd, schemaPath)}`);
+  }
+  const packIds = [
+    ...parseConstStringArray("AI_VOICE_PACK_IDS"),
+    ...parseConstStringArray("HUMAN_VOICE_PACK_IDS"),
+  ];
+  const slots = [...speechMatch[1].matchAll(/([a-z0-9_]+)\s*:\s*"[^"]+"/g)].map((m) => m[1]);
+  if (packIds.length !== 7) {
+    throw new Error(`Expected 7 canonical VoicePack IDs in schema, parsed ${packIds.length}`);
+  }
+  if (slots.length !== 46) {
+    throw new Error(`Expected 46 canonical VoicePack slots in schema, parsed ${slots.length}`);
+  }
+  return { packIds, slots };
+}
+
+const { packIds: VOICE_PACK_IDS, slots: CANONICAL_VOICE_SLOTS } = loadVoicePackSchemaConstants();
 const MAX_VOICE_PACK_TOTAL_BYTES = 2 * 1024 * 1024; // 2.0 MiB single-binary budget ceiling
 const hasAfinfo = process.platform === "darwin" && fs.existsSync("/usr/bin/afinfo");
 
