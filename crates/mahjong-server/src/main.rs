@@ -35,9 +35,9 @@ struct Cli {
     #[arg(long, env = "MAJJJ_PORT", default_value_t = 8789)]
     port: u16,
 
-    /// IP address to bind.
-    #[arg(long, env = "MAJJJ_BIND", default_value = "0.0.0.0")]
-    bind: IpAddr,
+    /// IP address to bind (defaults to dual-stack `[::]`, falling back to `0.0.0.0` if IPv6 is unavailable).
+    #[arg(long, env = "MAJJJ_BIND")]
+    bind: Option<IpAddr>,
 
     /// Optional directory containing built frontend static assets (`web/dist`).
     #[arg(long, env = "MAJJJ_STATIC_DIR")]
@@ -84,8 +84,7 @@ struct Cli {
 
 impl From<Cli> for ServerConfig {
     fn from(cli: Cli) -> Self {
-        Self::default()
-            .with_bind(cli.bind)
+        let mut cfg = Self::default()
             .with_port(cli.port)
             .with_static_dir(cli.static_dir)
             .with_data_dir(resolve_data_dir(cli.data_dir))
@@ -94,7 +93,11 @@ impl From<Cli> for ServerConfig {
             .with_headless(cli.headless)
             .with_llm_url(cli.llm_url)
             .with_tts_url(cli.tts_url)
-            .with_no_tts(cli.no_tts)
+            .with_no_tts(cli.no_tts);
+        if let Some(bind) = cli.bind {
+            cfg = cfg.with_bind(bind);
+        }
+        cfg
     }
 }
 
@@ -244,7 +247,7 @@ async fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use std::net::{IpAddr, Ipv4Addr};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
     use std::path::PathBuf;
     use std::sync::Mutex;
 
@@ -259,13 +262,15 @@ mod tests {
     #[test]
     fn cli_defaults_and_majjj_port_env_override() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var("MAJJJ_BIND");
         std::env::remove_var("MAJJJ_PORT");
         std::env::remove_var("MAJJJ_AI_THREADS");
         std::env::remove_var("MAJJJ_NO_OPEN");
         std::env::remove_var("MAJJJ_HEADLESS");
         let default_cli = Cli::try_parse_from(["mahjong-server"]).expect("parse defaults");
         let default_cfg = ServerConfig::from(default_cli);
-        assert_eq!(default_cfg.bind, IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+        assert_eq!(default_cfg.bind, IpAddr::V6(Ipv6Addr::UNSPECIFIED));
+        assert!(!default_cfg.is_bind_explicit());
         assert_eq!(default_cfg.port, 8789);
         assert_eq!(default_cfg.static_dir, None);
         assert_eq!(default_cfg.ai_threads, default_ai_threads());
@@ -273,10 +278,14 @@ mod tests {
         assert!(!default_cfg.headless);
 
         std::env::set_var("MAJJJ_PORT", "9876");
+        std::env::set_var("MAJJJ_BIND", "::");
         let env_cli = Cli::try_parse_from(["mahjong-server"]).expect("parse with MAJJJ_PORT");
         std::env::remove_var("MAJJJ_PORT");
+        std::env::remove_var("MAJJJ_BIND");
         let env_cfg = ServerConfig::from(env_cli);
         assert_eq!(env_cfg.port, 9876);
+        assert_eq!(env_cfg.bind, IpAddr::V6(Ipv6Addr::UNSPECIFIED));
+        assert!(env_cfg.is_bind_explicit());
     }
 
     #[test]

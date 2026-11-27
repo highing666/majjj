@@ -42,7 +42,7 @@ shutdown_url="${MAJJJ_SHUTDOWN_URL:-http://127.0.0.1:${port}/api/shutdown}"
 if command -v curl >/dev/null 2>&1; then
   if health_body="$(curl -fsS --max-time 1 "$health_url" 2>/dev/null)"; then
     if printf '%s' "$health_body" | grep -Eq '"app"[[:space:]]*:[[:space:]]*"majjj"'; then
-      curl -fsS --max-time 2 -X POST "$shutdown_url" >/dev/null 2>&1 || true
+      curl -fsS --max-time 2 -X POST -H 'Content-Type: application/json' "$shutdown_url" >/dev/null 2>&1 || true
       i=0
       while [ "$i" -lt 20 ]; do
         if ! curl -fsS --max-time 1 "$health_url" >/dev/null 2>&1; then

@@ -456,7 +456,7 @@ pub async fn http_request_with_body(
         .method(method)
         .uri(uri_path)
         .header("Host", addr.to_string());
-    if body.is_some() {
+    if body.is_some() || method.eq_ignore_ascii_case("POST") {
         builder = builder.header(CONTENT_TYPE, "application/json");
     }
     let req = builder.body(Full::new(payload)).expect("build request");

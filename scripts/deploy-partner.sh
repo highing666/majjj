@@ -150,7 +150,7 @@ stop_remote_server() {
   ssh "$ssh_target" "
     $stop_cmd
     if command -v curl >/dev/null 2>&1; then
-      curl -fsS --max-time 2 -X POST \"http://127.0.0.1:${port}/api/shutdown\" >/dev/null 2>&1 || true
+      curl -fsS --max-time 2 -X POST -H 'Content-Type: application/json' \"http://127.0.0.1:${port}/api/shutdown\" >/dev/null 2>&1 || true
     fi
     if command -v pkill >/dev/null 2>&1; then
       pkill -TERM -f \"^\${bin}( |\$)\" >/dev/null 2>&1 || true

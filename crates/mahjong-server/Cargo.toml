@@ -20,6 +20,7 @@ rayon.workspace = true
 rust-embed.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+socket2 = "0.6"
 thiserror.workspace = true
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync", "time", "signal", "fs"] }
 ts-rs.workspace = true
@@ -28,6 +29,7 @@ uuid = { version = "1", features = ["v4"] }
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
 tokio-tungstenite = "0.26"
+tower = { version = "0.5", features = ["util"] }
 
 [lints]
 workspace = true

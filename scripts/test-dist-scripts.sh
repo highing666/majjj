@@ -106,6 +106,7 @@ mode="\${STUB_CURL_MODE:-down}"
 include_code=0
 method="GET"
 url=""
+has_json_ct=0
 while [ "\$#" -gt 0 ]; do
   case "\$1" in
     -w)
@@ -116,7 +117,13 @@ while [ "\$#" -gt 0 ]; do
       shift
       method="\$1"
       ;;
-    --max-time|-o|-H|-d|--data)
+    -H)
+      shift
+      if [ "\$1" = "Content-Type: application/json" ]; then
+        has_json_ct=1
+      fi
+      ;;
+    --max-time|-o|-d|--data)
       shift
       ;;
     http://*|https://*)
@@ -143,6 +150,10 @@ emit_resp() {
 case "\$mode" in
   healthy)
     if [ "\$method" = "POST" ] && [[ "\$url" == */api/shutdown ]]; then
+      if [ "\$has_json_ct" -ne 1 ]; then
+        emit_resp 415 '{"error":"Content-Type must be application/json"}'
+        exit 22
+      fi
       printf 'shutdown_requested\n' >> "$log_dir/calls.log"
       rm -f "$log_dir/server_ready"
       emit_resp 200 '{"ok":true}'

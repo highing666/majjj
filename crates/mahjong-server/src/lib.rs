@@ -11,11 +11,13 @@ pub mod lan;
 mod lan_http;
 pub mod lifecycle;
 pub mod llm;
+mod net_bind;
 pub mod pacing;
 pub mod persona;
 pub mod persona_memory;
 pub mod protocol;
 mod seat_control;
+pub mod security;
 pub mod server;
 pub mod session;
 pub mod static_assets;
@@ -33,7 +35,8 @@ pub use llm::{
     OpenAiLlmClient, DEFAULT_LLM_BASE_URL,
 };
 pub use pacing::PacingMode;
-pub use server::{HeartbeatConfig, ServerConfig, ServerError, ServerHandle};
+pub use security::ClientTrustTier;
+pub use server::{HeartbeatConfig, ServerConfig, ServerError, ServerHandle, TestRouterHandle};
 pub use session::{BoxedWallProvider, TableOptions, WallProviderFactory};
 pub use tts::{
     resolve_tts_base_url, HttpTtsClient, TtsAudioOutput, TtsClient, TtsError, TtsFuture,

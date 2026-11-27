@@ -1,6 +1,6 @@
 //! Axum HTTP/WebSocket router, server lifecycle, and health/static endpoints.
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -8,7 +8,7 @@ use std::time::Duration;
 use axum::body::Bytes;
 use axum::extract::ws::{Message as WsMessage, WebSocket};
 use axum::extract::{ConnectInfo, Path, Request, State, WebSocketUpgrade};
-use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, HOST};
+use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -17,7 +17,6 @@ use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use thiserror::Error;
-use tokio::net::TcpListener;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, MissedTickBehavior};
@@ -26,12 +25,15 @@ use crate::ai_pool::default_ai_threads;
 use crate::banter_audio::is_valid_banter_id;
 use crate::history_dto::ClearHistoryRequest;
 use crate::lan::read_local_hostname;
-use crate::lifecycle::{
-    is_loopback_peer, spawn_idle_shutdown_monitor, IdleTimeouts, WsConnectionTracker,
-};
+use crate::lifecycle::{spawn_idle_shutdown_monitor, IdleTimeouts, WsConnectionTracker};
 use crate::llm::{resolve_llm_base_url, LlmClient, OpenAiLlmClient};
+use crate::net_bind::bind_tcp_listener;
 use crate::persona_memory::ClearPersonaMemoryRequest;
 use crate::protocol::{HealthResponse, ServerMessage};
+use crate::security::{
+    classify_request_trust_tier, has_json_content_type, is_same_origin_ws_request,
+    minimal_forbidden_response, unsupported_media_type_json_response, ClientTrustTier,
+};
 use crate::session::{OutboundSignal, TableOptions, TableRuntime};
 use crate::static_assets::{
     DiskStaticAssets, EmbeddedStaticAssets, StaticAssetError, StaticAssetSource,
@@ -65,8 +67,10 @@ impl Default for HeartbeatConfig {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct ServerConfig {
-    /// IP address to bind (defaults to `0.0.0.0`).
+    /// IP address to bind (defaults to dual-stack `[::]`).
     pub bind: IpAddr,
+    /// Tracks whether the caller explicitly configured `bind` (disables automatic IPv4 fallback).
+    bind_explicit: bool,
     /// TCP port to bind (defaults to `8789`; `0` may be passed explicitly in tests).
     pub port: u16,
     /// Optional built frontend static asset directory.
@@ -98,7 +102,8 @@ pub struct ServerConfig {
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            bind: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            bind: IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+            bind_explicit: false,
             port: 8789,
             static_dir: None,
             data_dir: None,
@@ -201,6 +206,21 @@ impl ServerHandle {
     }
 }
 
+/// Full-stack Axum router and shutdown signal handle returned by
+/// [`ServerConfig::build_router_with_options`] for socket-free integration tests.
+pub struct TestRouterHandle {
+    /// Complete production Axum `Router` including trust-tier, remote guard, WS, and API layers.
+    pub router: Router,
+    /// Receiver observing whether `POST /api/shutdown` triggered server shutdown.
+    pub shutdown_rx: watch::Receiver<bool>,
+}
+
+impl std::fmt::Debug for TestRouterHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TestRouterHandle").finish_non_exhaustive()
+    }
+}
+
 #[derive(Clone)]
 struct AppState {
     port: u16,
@@ -213,11 +233,18 @@ struct AppState {
 }
 
 impl ServerConfig {
-    /// Overrides the IP address to bind.
+    /// Overrides the IP address to bind explicitly (disables implicit `[::]` -> `0.0.0.0` fallback).
     #[must_use]
     pub fn with_bind(mut self, bind: IpAddr) -> Self {
         self.bind = bind;
+        self.bind_explicit = true;
         self
+    }
+
+    /// Returns `true` when `bind` was explicitly configured rather than left at the default `[::]`.
+    #[must_use]
+    pub const fn is_bind_explicit(&self) -> bool {
+        self.bind_explicit
     }
 
     /// Overrides the TCP port to bind (`0` selects an ephemeral port in tests).
@@ -326,51 +353,60 @@ impl ServerConfig {
         self.spawn_with_options(TableOptions::default()).await
     }
 
-    /// Binds the TCP socket immediately and spawns the server with custom [`TableOptions`]
-    /// (e.g. deterministic wall and seating seeds in tests).
+    /// Builds the complete production Axum [`Router`] (with full trust-tier, remote-isolation,
+    /// WebSocket origin, and API middleware stack) without binding a TCP socket.
+    ///
+    /// Intended for deterministic in-process integration tests that inject
+    /// `ConnectInfo<SocketAddr>` into requests (e.g. via `tower::ServiceExt::oneshot`).
     ///
     /// # Errors
     ///
-    /// Returns [`ServerError::InvalidAiThreads`] if `ai_threads == 0`,
-    /// [`ServerError::AiPool`] if the AI thread pool cannot be constructed,
-    /// [`ServerError::StaticDir`] if `static_dir` cannot be opened,
-    /// [`ServerError::Bind`] if binding `bind:port` fails, or
-    /// [`ServerError::LlmUnavailable`] if the mandatory LAN LLM health probe fails.
-    pub async fn spawn_with_options(
+    /// Returns [`ServerError::InvalidAiThreads`], [`ServerError::AiPool`],
+    /// [`ServerError::StaticDir`], [`ServerError::DataDir`], or [`ServerError::LlmUnavailable`]
+    /// under the same conditions as [`Self::spawn_with_options`].
+    pub async fn build_router_with_options(
         self,
-        mut options: TableOptions,
-    ) -> Result<ServerHandle, ServerError> {
+        options: TableOptions,
+    ) -> Result<TestRouterHandle, ServerError> {
         if self.ai_threads == 0 {
             return Err(ServerError::InvalidAiThreads(0));
         }
+        let static_assets = self.build_static_assets()?;
+        let effective_port = if self.port == 0 { 8789 } else { self.port };
+        let (state, shutdown_rx) = self
+            .init_app_state(options, static_assets, effective_port, None)
+            .await?;
+        let router = build_router(state);
+        Ok(TestRouterHandle {
+            router,
+            shutdown_rx,
+        })
+    }
+
+    fn build_static_assets(&self) -> Result<Arc<dyn StaticAssetSource>, ServerError> {
+        match &self.static_dir {
+            Some(dir) => Ok(Arc::new(DiskStaticAssets::new(dir).map_err(|source| {
+                ServerError::StaticDir {
+                    path: dir.clone(),
+                    source,
+                }
+            })?)),
+            None => Ok(Arc::new(EmbeddedStaticAssets)),
+        }
+    }
+
+    async fn init_app_state(
+        self,
+        mut options: TableOptions,
+        static_assets: Arc<dyn StaticAssetSource>,
+        port: u16,
+        local_hostname: Option<String>,
+    ) -> Result<(AppState, watch::Receiver<bool>), ServerError> {
         if options.data_dir().is_none() {
             if let Some(dir) = &self.data_dir {
                 options = options.with_data_dir(dir.clone());
             }
         }
-
-        let static_assets: Arc<dyn StaticAssetSource> =
-            match &self.static_dir {
-                Some(dir) => Arc::new(DiskStaticAssets::new(dir).map_err(|source| {
-                    ServerError::StaticDir {
-                        path: dir.clone(),
-                        source,
-                    }
-                })?),
-                None => Arc::new(EmbeddedStaticAssets),
-            };
-
-        let bind_addr = SocketAddr::new(self.bind, self.port);
-        let listener = TcpListener::bind(bind_addr)
-            .await
-            .map_err(|source| ServerError::Bind {
-                addr: bind_addr,
-                source,
-            })?;
-        let local_addr = listener.local_addr().map_err(|source| ServerError::Bind {
-            addr: bind_addr,
-            source,
-        })?;
 
         let (persisted_llm_url, persisted_tts_url) = match options.data_dir() {
             Some(dir) => {
@@ -408,11 +444,6 @@ impl ServerConfig {
                 reason: err.to_string(),
             })?;
 
-        let local_hostname = tokio::task::spawn_blocking(read_local_hostname)
-            .await
-            .ok()
-            .flatten();
-
         if options.llm_client().is_none() {
             options = options.with_llm_client(Arc::clone(&llm_client));
         }
@@ -437,34 +468,71 @@ impl ServerConfig {
         }
 
         let session = TableRuntime::try_with_options_and_threads(
-            local_addr.port(),
+            port,
             local_hostname,
             options,
             self.ai_threads,
         )?;
-        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let ws_tracker = WsConnectionTracker::new();
-        let monitor_handle = if self.headless {
-            None
-        } else {
-            let phase_rx = session.subscribe_phase().await;
-            Some(spawn_idle_shutdown_monitor(
-                self.idle_timeouts,
-                ws_tracker.subscribe(),
-                phase_rx,
-                shutdown_tx.clone(),
-            ))
-        };
-
         let state = AppState {
-            port: local_addr.port(),
+            port,
             headless: self.headless,
             session,
             static_assets,
             heartbeat: self.heartbeat,
-            shutdown_tx: shutdown_tx.clone(),
+            shutdown_tx,
             ws_tracker,
         };
+        Ok((state, shutdown_rx))
+    }
+
+    /// Binds the TCP socket immediately and spawns the server with custom [`TableOptions`]
+    /// (e.g. deterministic wall and seating seeds in tests).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServerError::InvalidAiThreads`] if `ai_threads == 0`,
+    /// [`ServerError::AiPool`] if the AI thread pool cannot be constructed,
+    /// [`ServerError::StaticDir`] if `static_dir` cannot be opened,
+    /// [`ServerError::Bind`] if binding `bind:port` fails, or
+    /// [`ServerError::LlmUnavailable`] if the mandatory LAN LLM health probe fails.
+    pub async fn spawn_with_options(
+        self,
+        options: TableOptions,
+    ) -> Result<ServerHandle, ServerError> {
+        if self.ai_threads == 0 {
+            return Err(ServerError::InvalidAiThreads(0));
+        }
+
+        let static_assets = self.build_static_assets()?;
+        let (listener, local_addr) =
+            bind_tcp_listener(self.bind, self.port, self.bind_explicit).await?;
+
+        let local_hostname = tokio::task::spawn_blocking(read_local_hostname)
+            .await
+            .ok()
+            .flatten();
+
+        let headless = self.headless;
+        let idle_timeouts = self.idle_timeouts;
+        let (state, mut shutdown_rx) = self
+            .init_app_state(options, static_assets, local_addr.port(), local_hostname)
+            .await?;
+
+        let monitor_handle = if headless {
+            None
+        } else {
+            let phase_rx = state.session.subscribe_phase().await;
+            Some(spawn_idle_shutdown_monitor(
+                idle_timeouts,
+                state.ws_tracker.subscribe(),
+                phase_rx,
+                state.shutdown_tx.clone(),
+            ))
+        };
+
+        let shutdown_tx = state.shutdown_tx.clone();
         let router = build_router(state);
 
         let join_handle = tokio::spawn(async move {
@@ -508,11 +576,45 @@ fn build_router(state: AppState) -> Router {
         .route("/api", any(api_not_found))
         .layer(middleware::from_fn(api_no_store_middleware));
 
+    let ws_router = Router::new()
+        .route("/ws", get(ws_handler))
+        .route_layer(middleware::from_fn(ws_origin_guard_middleware));
+
     Router::new()
         .merge(api_router)
-        .route("/ws", get(ws_handler))
+        .merge(ws_router)
         .fallback(get(static_asset_handler))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            trust_and_remote_guard_middleware,
+        ))
         .with_state(state)
+}
+
+async fn trust_and_remote_guard_middleware(
+    State(_state): State<AppState>,
+    mut req: Request,
+    next: Next,
+) -> Response {
+    let peer = req
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ConnectInfo(addr)| *addr);
+    let tier = classify_request_trust_tier(peer, req.headers());
+    req.extensions_mut().insert(tier);
+
+    if tier.is_remote() {
+        return minimal_forbidden_response();
+    }
+
+    next.run(req).await
+}
+
+async fn ws_origin_guard_middleware(req: Request, next: Next) -> Response {
+    if !is_same_origin_ws_request(req.headers()) {
+        return minimal_forbidden_response();
+    }
+    next.run(req).await
 }
 
 async fn api_no_store_middleware(req: Request, next: Next) -> Response {
@@ -531,20 +633,32 @@ fn json_with_no_store<T: Serialize>(status: StatusCode, payload: &T) -> Response
     response
 }
 
+fn extract_trust_tier(extensions: &axum::http::Extensions, headers: &HeaderMap) -> ClientTrustTier {
+    extensions
+        .get::<ClientTrustTier>()
+        .copied()
+        .unwrap_or_else(|| {
+            let peer = extensions
+                .get::<ConnectInfo<SocketAddr>>()
+                .map(|ConnectInfo(addr)| *addr);
+            classify_request_trust_tier(peer, headers)
+        })
+}
+
 async fn shutdown_handler(
     extensions: axum::http::Extensions,
+    headers: HeaderMap,
     State(state): State<AppState>,
 ) -> Response {
-    let peer = extensions
-        .get::<ConnectInfo<SocketAddr>>()
-        .map(|ConnectInfo(addr)| *addr);
-    let status = if state.headless || !is_loopback_peer(peer) {
-        StatusCode::FORBIDDEN
-    } else {
-        let _ = state.shutdown_tx.send(true);
-        StatusCode::OK
-    };
-    let mut response = status.into_response();
+    let tier = extract_trust_tier(&extensions, &headers);
+    if state.headless || !tier.is_loopback() {
+        return minimal_forbidden_response();
+    }
+    if !has_json_content_type(&headers) {
+        return unsupported_media_type_json_response();
+    }
+    let _ = state.shutdown_tx.send(true);
+    let mut response = StatusCode::OK.into_response();
     response
         .headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -578,7 +692,14 @@ async fn history_export_handler(State(state): State<AppState>) -> Response {
     json_with_no_store(StatusCode::OK, &payload)
 }
 
-async fn history_clear_handler(State(state): State<AppState>, body: Bytes) -> Response {
+async fn history_clear_handler(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Response {
+    if !has_json_content_type(&headers) {
+        return unsupported_media_type_json_response();
+    }
     let Ok(req) = serde_json::from_slice::<ClearHistoryRequest>(&body) else {
         return json_with_no_store(
             StatusCode::BAD_REQUEST,
@@ -605,7 +726,14 @@ async fn persona_memory_handler(State(state): State<AppState>) -> Response {
     json_with_no_store(StatusCode::OK, &payload)
 }
 
-async fn persona_memory_clear_handler(State(state): State<AppState>, body: Bytes) -> Response {
+async fn persona_memory_clear_handler(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Response {
+    if !has_json_content_type(&headers) {
+        return unsupported_media_type_json_response();
+    }
     let Ok(req) = serde_json::from_slice::<ClearPersonaMemoryRequest>(&body) else {
         return json_with_no_store(
             StatusCode::BAD_REQUEST,
@@ -650,11 +778,12 @@ async fn api_not_found() -> Response {
 
 async fn ws_handler(
     ws: WebSocketUpgrade,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    extensions: axum::http::Extensions,
     headers: HeaderMap,
     State(state): State<AppState>,
 ) -> Response {
-    let host_is_loopback = compute_host_is_loopback(Some(peer), &headers);
+    let tier = extract_trust_tier(&extensions, &headers);
+    let host_is_loopback = tier.is_loopback();
     let runtime = state.session.clone();
     let heartbeat = state.heartbeat;
     let ws_tracker = state.ws_tracker.clone();
@@ -793,32 +922,6 @@ async fn send_server_message(
         .map_err(|_| ())
 }
 
-fn compute_host_is_loopback(peer: Option<SocketAddr>, headers: &HeaderMap) -> bool {
-    if !is_loopback_peer(peer) {
-        return false;
-    }
-    if let Some(host_val) = headers.get(HOST).and_then(|v| v.to_str().ok()) {
-        return is_loopback_host_header(host_val);
-    }
-    true
-}
-
-fn is_loopback_host_header(host: &str) -> bool {
-    let trimmed = host.trim();
-    if trimmed.starts_with('[') {
-        if let Some(end) = trimmed.find(']') {
-            let inner = &trimmed[1..end];
-            return inner == "::1";
-        }
-        return false;
-    }
-    let host_only = match trimmed.rsplit_once(':') {
-        Some((h, port)) if !h.contains(':') && port.chars().all(|c| c.is_ascii_digit()) => h,
-        _ => trimmed,
-    };
-    host_only.eq_ignore_ascii_case("localhost") || host_only == "127.0.0.1" || host_only == "::1"
-}
-
 async fn static_asset_handler(State(state): State<AppState>, uri: Uri) -> Response {
     let uri_path = uri.path().to_owned();
     let source = Arc::clone(&state.static_assets);
@@ -847,8 +950,8 @@ mod tests {
     use std::sync::Arc;
 
     use axum::extract::{ConnectInfo, State};
-    use axum::http::header::CACHE_CONTROL;
-    use axum::http::{Extensions, StatusCode};
+    use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, HOST};
+    use axum::http::{Extensions, HeaderMap, HeaderValue, StatusCode};
     use tokio::sync::watch;
 
     use super::{shutdown_handler, AppState, HeartbeatConfig};
@@ -862,6 +965,15 @@ mod tests {
             ext.insert(ConnectInfo(addr));
         }
         ext
+    }
+
+    fn json_headers(host: Option<&str>) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        if let Some(h) = host {
+            headers.insert(HOST, HeaderValue::from_str(h).unwrap());
+        }
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        headers
     }
 
     fn test_state(headless: bool) -> (AppState, watch::Receiver<bool>) {
@@ -879,7 +991,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn shutdown_handler_allows_loopback_and_rejects_non_loopback_and_headless() {
+    async fn shutdown_handler_requires_loopback_peer_and_host_json_content_type_and_non_headless() {
         // Non-loopback IPv4 -> 403 + no-store + does not shut down
         let (state, rx) = test_state(false);
         let resp = shutdown_handler(
@@ -887,6 +999,7 @@ mod tests {
                 IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50)),
                 44444,
             ))),
+            json_headers(Some("127.0.0.1:8789")),
             State(state),
         )
         .await;
@@ -899,38 +1012,39 @@ mod tests {
         );
         assert!(!*rx.borrow());
 
-        // Non-loopback IPv4-mapped IPv6 -> 403 + no-store
+        // Loopback peer with public Host header (local reverse proxy) -> 403 + no-store
         let (state, rx) = test_state(false);
         let resp = shutdown_handler(
             extensions_with_peer(Some(SocketAddr::new(
-                IpAddr::V6(Ipv4Addr::new(10, 0, 0, 9).to_ipv6_mapped()),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
                 44444,
             ))),
+            json_headers(Some("majjj.example.com:8789")),
             State(state),
         )
         .await;
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-        assert_eq!(
-            resp.headers()
-                .get(CACHE_CONTROL)
-                .and_then(|v| v.to_str().ok()),
-            Some("no-store")
-        );
         assert!(!*rx.borrow());
 
         // Missing ConnectInfo -> 403 + no-store
         let (state, rx) = test_state(false);
-        let resp = shutdown_handler(extensions_with_peer(None), State(state)).await;
+        let resp = shutdown_handler(
+            extensions_with_peer(None),
+            json_headers(Some("127.0.0.1:8789")),
+            State(state),
+        )
+        .await;
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
         assert!(!*rx.borrow());
 
-        // Headless mode -> 403 + no-store even for 127.0.0.1
+        // Headless mode -> 403 + no-store even for 127.0.0.1 + localhost + JSON
         let (state, rx) = test_state(true);
         let resp = shutdown_handler(
             extensions_with_peer(Some(SocketAddr::new(
                 IpAddr::V4(Ipv4Addr::LOCALHOST),
                 44444,
             ))),
+            json_headers(Some("127.0.0.1:8789")),
             State(state),
         )
         .await;
@@ -943,13 +1057,37 @@ mod tests {
         );
         assert!(!*rx.borrow());
 
-        // IPv6 loopback ::1 -> 200 + no-store + shutdown triggered
+        // Loopback peer + loopback Host without JSON Content-Type -> 415 + no-store
+        let (state, rx) = test_state(false);
+        let mut plain_headers = HeaderMap::new();
+        plain_headers.insert(HOST, HeaderValue::from_static("[::1]:8789"));
+        plain_headers.insert(CONTENT_TYPE, HeaderValue::from_static("text/plain"));
+        let resp = shutdown_handler(
+            extensions_with_peer(Some(SocketAddr::new(
+                IpAddr::V6(Ipv6Addr::LOCALHOST),
+                44444,
+            ))),
+            plain_headers,
+            State(state),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        assert_eq!(
+            resp.headers()
+                .get(CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok()),
+            Some("no-store")
+        );
+        assert!(!*rx.borrow());
+
+        // IPv6 loopback ::1 + [::1]:8789 + application/json -> 200 + no-store + shutdown triggered
         let (state, rx) = test_state(false);
         let resp = shutdown_handler(
             extensions_with_peer(Some(SocketAddr::new(
                 IpAddr::V6(Ipv6Addr::LOCALHOST),
                 44444,
             ))),
+            json_headers(Some("[::1]:8789")),
             State(state),
         )
         .await;
