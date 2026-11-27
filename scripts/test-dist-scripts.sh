@@ -4,6 +4,26 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo_root"
 
+run_mac=1
+run_win=1
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --mac-only)
+      run_mac=1
+      run_win=0
+      ;;
+    --win-only)
+      run_mac=0
+      run_win=1
+      ;;
+    *)
+      echo "Usage: $0 [--mac-only | --win-only]" >&2
+      exit 1
+      ;;
+  esac
+  shift
+done
+
 fail() {
   echo "FAIL: $*" >&2
   exit 1
@@ -36,6 +56,18 @@ assert_file_contains() {
   fi
   if ! grep -Fq "$needle" "$file"; then
     fail "$label: $file missing '$needle'"
+  fi
+}
+
+assert_file_matches() {
+  local file="$1"
+  local pattern="$2"
+  local label="$3"
+  if [ ! -f "$file" ]; then
+    fail "$label: missing file $file"
+  fi
+  if ! grep -Eq "$pattern" "$file"; then
+    fail "$label: $file did not match /$pattern/"
   fi
 }
 
@@ -226,8 +258,10 @@ EOF
 
   assert_file_contains "$plist" "<key>LSUIElement</key>" "Info.plist LSUIElement"
   assert_file_contains "$plist" "<true/>" "Info.plist LSUIElement true"
+  assert_file_contains "$plist" "<key>NSLocalNetworkUsageDescription</key>" "Info.plist NSLocalNetworkUsageDescription"
   assert_file_contains "$plist" "<string>Majjj</string>" "Info.plist CFBundleExecutable"
-  assert_file_contains "$root/logs/calls.log" "codesign --force --sign -" "install-local must codesign"
+  assert_file_matches "$root/logs/calls.log" "^codesign --force --sign - --identifier com\\.majjj\\.launcher " "install-local must codesign binary with stable bundle identifier"
+  assert_file_matches "$root/logs/calls.log" "^codesign --force --sign - ${app_dir}$" "install-local must codesign Majjj.app bundle"
 
   # 3b. Cold start -> log rotation, --no-open, browser fallback
   mkdir -p "$root/home/Library/Logs/majjj"
@@ -308,7 +342,9 @@ EOF
   assert_file_contains "$root/logs/calls.log" "server.log" "LLM startup alert must include log path"
 }
 
-test_install_and_launcher
+if [ "$run_mac" -eq 1 ]; then
+  test_install_and_launcher
+fi
 
 # 4. Slice 3: uninstall-local.sh stops server, removes app & binaries, preserves JSONL/preferences
 test_uninstall_preserves_data() {
@@ -355,7 +391,9 @@ EOF
   assert_file_contains "$data_dir/hands.jsonl" '"hand_id":"h1"' "hands.jsonl preserved on idempotent uninstall"
 }
 
-test_uninstall_preserves_data
+if [ "$run_mac" -eq 1 ]; then
+  test_uninstall_preserves_data
+fi
 
 # 5. Slice 4: deploy-partner.sh pre-flight guard, SHA-256, codesign, backup, rollback & sync-app
 test_deploy_partner() {
@@ -474,7 +512,7 @@ EOF
     "$repo_root/scripts/deploy-partner.sh" --force --bin "$root/bin-v2"
 
   assert_file_contains "$root/logs/calls.log" "ssh target=partner@partner.local" "deploy reads .deploy.local user@host"
-  assert_file_contains "$root/logs/calls.log" "codesign --force --sign -" "deploy must codesign uploaded binary"
+  assert_file_matches "$root/logs/calls.log" "^codesign --force --sign - --identifier com\\.majjj\\.launcher " "deploy must codesign uploaded binary with stable bundle identifier"
   cmp -s "$root/bin-v2" "$remote_bin_dir/majjj" || fail "remote majjj should match v2"
   cmp -s "$root/bin-v1" "$remote_bin_dir/majjj.prev" || fail "remote majjj.prev should backup v1"
 
@@ -506,6 +544,7 @@ EOF
 
   assert_file_contains "$root/logs/calls.log" "ssh target=alice@override.local" "--host and --user must override .deploy.local"
   assert_file_contains "$root/logs/calls.log" "shutdown_requested" "rollback must gracefully stop healthy remote server"
+  assert_file_matches "$root/logs/calls.log" "^codesign --force --sign - --identifier com\\.majjj\\.launcher " "rollback must codesign restored binary with stable bundle identifier"
   cmp -s "$root/bin-v1" "$remote_bin_dir/majjj" || fail "rollback must restore v1 from majjj.prev"
 
   # 5f. --sync-app without --bin still deploys default binary (MAJJJ_BIN) AND syncs Majjj.app
@@ -520,6 +559,8 @@ EOF
   [ -x "$remote_app/Contents/MacOS/Majjj" ] || fail "--sync-app must deploy executable Majjj launcher"
   [ -f "$remote_app/Contents/Info.plist" ] || fail "--sync-app must deploy Info.plist"
   [ -f "$remote_app/Contents/Resources/Majjj.icns" ] || fail "--sync-app must deploy Majjj.icns"
+  assert_file_contains "$remote_app/Contents/Info.plist" "<key>NSLocalNetworkUsageDescription</key>" "--sync-app Info.plist must include NSLocalNetworkUsageDescription"
+  assert_file_matches "$root/logs/calls.log" "^codesign --force --sign - .*/Applications/Majjj\\.app\\.tmp$" "--sync-app must codesign Majjj.app remotely after scp"
   cmp -s "$root/bin-v2" "$remote_bin_dir/majjj" || fail "--sync-app without --bin must deploy default binary"
   cmp -s "$root/bin-v1" "$remote_bin_dir/majjj.prev" || fail "--sync-app without --bin must backup previous binary"
 
@@ -575,8 +616,37 @@ EOF
   assert_file_contains "$root/logs/calls.log" "dest=partner@192.168.1.20:" "IPv4 scp destination must remain unbracketed"
 }
 
-test_deploy_partner
+if [ "$run_mac" -eq 1 ]; then
+  test_deploy_partner
+fi
 
+# 5b. Real macOS codesign smoke check (Darwin only; runs unstubbed codesign)
+test_real_darwin_codesign() {
+  local root
+  root="$(make_test_env darwin-codesign)"
+  trap "rm -rf '$root'" RETURN
+
+  cp /bin/echo "$root/sample-macho"
+  chmod 755 "$root/sample-macho"
+
+  HOME="$root/home" \
+    "$repo_root/scripts/install-local.sh" --bin "$root/sample-macho" >/dev/null
+
+  local installed_bin="$root/home/Library/Application Support/majjj/bin/majjj"
+  local app_dir="$root/home/Applications/Majjj.app"
+
+  local bin_info
+  bin_info="$(codesign -dvv "$installed_bin" 2>&1)"
+  assert_contains "$bin_info" "Identifier=com.majjj.launcher" "real codesign must pin binary identifier to com.majjj.launcher"
+  codesign --verify --strict "$installed_bin" || fail "real codesign --verify failed for installed majjj binary"
+  codesign --verify --strict "$app_dir" || fail "real codesign --verify failed for Majjj.app"
+}
+
+if [ "$run_mac" -eq 1 ] && [ "$(uname -s)" = "Darwin" ] && command -v codesign >/dev/null 2>&1; then
+  test_real_darwin_codesign
+fi
+
+if [ "$run_win" -eq 1 ]; then
 # 6. Windows llama-server deployment scripts offline contract tests
 node --test "$repo_root/scripts/windows-llm/test-scripts.mjs"
 
@@ -604,6 +674,7 @@ resolve_python3() {
 python3_bin="$(resolve_python3)" || fail "no working python3 interpreter found for windows-tts unit tests"
 "$python3_bin" -B -m unittest discover -s "$repo_root/scripts/windows-tts/server" -p "test_*.py" -v
 "$python3_bin" -B -m unittest "$repo_root/scripts/windows-tts/test_voice_pack_pipeline.py" -v
+fi
 
 # 8. Documentation IPv6 privacy guardrail self-test
 "$repo_root/scripts/check-doc-privacy.sh" >/dev/null

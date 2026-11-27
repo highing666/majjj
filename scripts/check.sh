@@ -51,7 +51,8 @@ fi
 run_web=1
 run_rust=1
 run_ai_heavy=1
-run_dist_scripts=1
+run_dist_scripts_mac=1
+run_dist_scripts_win=1
 
 changed_files=""
 filter_by_changes=0
@@ -78,7 +79,8 @@ if [ "$filter_by_changes" -eq 1 ]; then
   run_web=0
   run_rust=0
   run_ai_heavy=0
-  run_dist_scripts=0
+  run_dist_scripts_mac=0
+  run_dist_scripts_win=0
 
   if printf '%s\n' "$changed_files" | grep -qE '^(web/|scripts/check-web-safeguards\.sh$)'; then
     run_web=1
@@ -89,8 +91,11 @@ if [ "$filter_by_changes" -eq 1 ]; then
   if printf '%s\n' "$changed_files" | grep -qE '^crates/(mahjong-ai|mahjong-core)/'; then
     run_ai_heavy=1
   fi
-  if printf '%s\n' "$changed_files" | grep -qE '^(scripts/|packaging/|Makefile$)'; then
-    run_dist_scripts=1
+  if printf '%s\n' "$changed_files" | grep -qE '^(scripts/[^/]+$|packaging/|Makefile$)'; then
+    run_dist_scripts_mac=1
+  fi
+  if printf '%s\n' "$changed_files" | grep -qE '^(scripts/windows-|scripts/test-dist-scripts\.sh$|docs/windows-)'; then
+    run_dist_scripts_win=1
   fi
 fi
 
@@ -111,8 +116,12 @@ if [ "$run_web" -eq 1 ]; then
   ./scripts/check-web-safeguards.sh
 fi
 
-if [ "$run_dist_scripts" -eq 1 ]; then
+if [ "$run_dist_scripts_mac" -eq 1 ] && [ "$run_dist_scripts_win" -eq 1 ]; then
   ./scripts/test-dist-scripts.sh
+elif [ "$run_dist_scripts_mac" -eq 1 ]; then
+  ./scripts/test-dist-scripts.sh --mac-only
+elif [ "$run_dist_scripts_win" -eq 1 ]; then
+  ./scripts/test-dist-scripts.sh --win-only
 fi
 
 # 2. Heavier Rust clippy, crate boundary checks (after clippy warms cargo cache), tests & AI smoke gate
