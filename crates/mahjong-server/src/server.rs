@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use axum::body::Bytes;
 use axum::extract::ws::{Message as WsMessage, WebSocket};
-use axum::extract::{ConnectInfo, Path, Request, State, WebSocketUpgrade};
+use axum::extract::{ConnectInfo, FromRef, Path, Request, State, WebSocketUpgrade};
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, RETRY_AFTER, SET_COOKIE};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::middleware::{self, Next};
@@ -24,7 +24,7 @@ use tokio::time::{Instant, MissedTickBehavior};
 use crate::ai_pool::default_ai_threads;
 use crate::banter_audio::is_valid_banter_id;
 use crate::history_dto::ClearHistoryRequest;
-use crate::lan::read_local_hostname;
+use crate::lan::{read_local_hostname, PublicIpv6UrlInfo};
 use crate::lifecycle::{spawn_idle_shutdown_monitor, IdleTimeouts, WsConnectionTracker};
 use crate::llm::{resolve_llm_base_url, LlmClient, OpenAiLlmClient};
 use crate::net_bind::bind_tcp_listener;
@@ -34,6 +34,7 @@ use crate::public_url::{normalize_public_url, PublicUrlError};
 use crate::remote_access::{
     build_session_set_cookie_header, RemoteAccessManager, RemoteAuthOutcome,
 };
+use crate::remote_control::{self, RemoteControlState};
 use crate::remote_gate::remote_gate_response;
 use crate::security::{
     classify_request_trust_tier, has_json_content_type, is_same_origin_ws_request,
@@ -106,6 +107,8 @@ pub struct ServerConfig {
     pub public_url: Option<String>,
     /// Whether `远程联机` starts enabled immediately on startup (`--allow-remote` / `MAJJJ_ALLOW_REMOTE`).
     pub allow_remote: bool,
+    /// Optional deterministic public IPv6 discovery snapshot (primarily for automated tests).
+    public_ipv6_override: Option<PublicIpv6UrlInfo>,
 }
 
 impl Default for ServerConfig {
@@ -128,6 +131,7 @@ impl Default for ServerConfig {
             tts_client: None,
             public_url: None,
             allow_remote: false,
+            public_ipv6_override: None,
         }
     }
 }
@@ -262,6 +266,13 @@ struct AppState {
     shutdown_tx: watch::Sender<bool>,
     ws_tracker: WsConnectionTracker,
     remote_access: RemoteAccessManager,
+    remote_control: RemoteControlState,
+}
+
+impl FromRef<AppState> for RemoteControlState {
+    fn from_ref(state: &AppState) -> Self {
+        state.remote_control.clone()
+    }
 }
 
 impl ServerConfig {
@@ -387,6 +398,14 @@ impl ServerConfig {
         self
     }
 
+    /// Injects a deterministic [`PublicIpv6UrlInfo`] snapshot instead of reading live OS interfaces
+    /// (primarily for deterministic offline tests).
+    #[must_use]
+    pub fn with_public_ipv6_urls(mut self, info: PublicIpv6UrlInfo) -> Self {
+        self.public_ipv6_override = Some(info);
+        self
+    }
+
     /// Binds the TCP socket immediately (failing on port conflicts without fallback) and
     /// spawns the Axum HTTP/WebSocket server on the current Tokio runtime.
     ///
@@ -417,14 +436,14 @@ impl ServerConfig {
         if self.ai_threads == 0 {
             return Err(ServerError::InvalidAiThreads(0));
         }
-        let _cli_public_url = match self.public_url.as_deref() {
+        let cli_public_url = match self.public_url.as_deref() {
             Some(raw) => Some(normalize_public_url(raw)?),
             None => None,
         };
         let static_assets = self.build_static_assets()?;
         let effective_port = if self.port == 0 { 8789 } else { self.port };
         let (state, shutdown_rx) = self
-            .init_app_state(options, static_assets, effective_port, None)
+            .init_app_state(options, static_assets, effective_port, None, cli_public_url)
             .await?;
         let remote_access = state.remote_access.clone();
         let router = build_router(state);
@@ -453,6 +472,7 @@ impl ServerConfig {
         static_assets: Arc<dyn StaticAssetSource>,
         port: u16,
         local_hostname: Option<String>,
+        cli_public_url: Option<String>,
     ) -> Result<(AppState, watch::Receiver<bool>), ServerError> {
         if options.data_dir().is_none() {
             if let Some(dir) = &self.data_dir {
@@ -531,6 +551,13 @@ impl ServerConfig {
         if self.allow_remote {
             let _ = remote_access.enable();
         }
+        let remote_control = RemoteControlState {
+            port,
+            cli_public_url,
+            public_ipv6_override: self.public_ipv6_override,
+            session: session.clone(),
+            remote_access: remote_access.clone(),
+        };
         let state = AppState {
             port,
             headless: self.headless,
@@ -540,6 +567,7 @@ impl ServerConfig {
             shutdown_tx,
             ws_tracker,
             remote_access,
+            remote_control,
         };
         Ok((state, shutdown_rx))
     }
@@ -578,7 +606,13 @@ impl ServerConfig {
         let headless = self.headless;
         let idle_timeouts = self.idle_timeouts;
         let (state, mut shutdown_rx) = self
-            .init_app_state(options, static_assets, local_addr.port(), local_hostname)
+            .init_app_state(
+                options,
+                static_assets,
+                local_addr.port(),
+                local_hostname,
+                cli_public_url.clone(),
+            )
             .await?;
 
         let monitor_handle = if headless {
@@ -636,6 +670,7 @@ fn build_router(state: AppState) -> Router {
         )
         .route("/api/banter-audio/{banter_id}", get(banter_audio_handler))
         .route("/api/remote-auth", post(remote_auth_handler))
+        .merge(remote_control::router())
         .route("/api/shutdown", post(shutdown_handler))
         .route("/api/{*rest}", any(api_not_found))
         .route("/api", any(api_not_found))
@@ -1179,15 +1214,25 @@ mod tests {
 
     fn test_state(headless: bool) -> (AppState, watch::Receiver<bool>) {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let session = TableRuntime::new(8789);
+        let remote_access = RemoteAccessManager::new();
+        let remote_control = super::RemoteControlState {
+            port: 8789,
+            cli_public_url: None,
+            public_ipv6_override: None,
+            session: session.clone(),
+            remote_access: remote_access.clone(),
+        };
         let state = AppState {
             port: 8789,
             headless,
-            session: TableRuntime::new(8789),
+            session,
             static_assets: Arc::new(NoopStaticAssets),
             heartbeat: HeartbeatConfig::default(),
             shutdown_tx,
             ws_tracker: WsConnectionTracker::new(),
-            remote_access: RemoteAccessManager::new(),
+            remote_access,
+            remote_control,
         };
         (state, shutdown_rx)
     }

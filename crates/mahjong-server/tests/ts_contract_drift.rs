@@ -17,9 +17,11 @@ use mahjong_server::persona_memory::{
 };
 use mahjong_server::protocol::{
     ClientMessage, DestructiveOpKind, HealthResponse, LanUrlInfo, LobbyConfig,
-    PendingDestructiveOp, QuickEmote, RemoteAuthRequest, RemoteAuthResponse, SeatInfo, SeatKind,
-    SeatingRule, ServerMessage, TablePace, TablePhase, TableSnapshot,
+    PendingDestructiveOp, QuickEmote, RemoteAccessStatusResponse, RemoteAuthRequest,
+    RemoteAuthResponse, SeatInfo, SeatKind, SeatingRule, ServerMessage, SetPublicUrlRequest,
+    TablePace, TablePhase, TableSnapshot,
 };
+use mahjong_server::public_url::PublicUrlSource;
 use ts_rs::TS;
 
 fn generated_bindings_dir() -> PathBuf {
@@ -37,6 +39,9 @@ fn export_all_contract_types(out_dir: &Path) {
     HealthResponse::export_all_to(out_dir).expect("export HealthResponse bindings");
     RemoteAuthRequest::export_all_to(out_dir).expect("export RemoteAuthRequest bindings");
     RemoteAuthResponse::export_all_to(out_dir).expect("export RemoteAuthResponse bindings");
+    RemoteAccessStatusResponse::export_all_to(out_dir)
+        .expect("export RemoteAccessStatusResponse bindings");
+    SetPublicUrlRequest::export_all_to(out_dir).expect("export SetPublicUrlRequest bindings");
     StatsResponse::export_all_to(out_dir).expect("export StatsResponse bindings");
     HistoryExportResponse::export_all_to(out_dir).expect("export HistoryExportResponse bindings");
     ClearHistoryRequest::export_all_to(out_dir).expect("export ClearHistoryRequest bindings");
@@ -145,7 +150,9 @@ fn server_and_core_ts_bindings_match_committed_files_with_zero_drift() {
             "PreferencesData.ts",
             "PublicPhase.ts",
             "PublicSeatView.ts",
+            "PublicUrlSource.ts",
             "QuickEmote.ts",
+            "RemoteAccessStatusResponse.ts",
             "RemoteAuthRequest.ts",
             "RemoteAuthResponse.ts",
             "RevealedHand.ts",
@@ -157,6 +164,7 @@ fn server_and_core_ts_bindings_match_committed_files_with_zero_drift() {
             "SeatKind.ts",
             "SeatingRule.ts",
             "ServerMessage.ts",
+            "SetPublicUrlRequest.ts",
             "StatsResponse.ts",
             "Suit.ts",
             "TablePace.ts",
@@ -169,7 +177,7 @@ fn server_and_core_ts_bindings_match_committed_files_with_zero_drift() {
             "Wind.ts",
             "WinnerSettlement.ts",
         ],
-        "exact set of 66 exported server, remote auth, history, persona memory, AI, persona, and core TypeScript files"
+        "exact set of 69 exported server, remote control/auth, history, persona memory, AI, persona, and core TypeScript files"
     );
 
     for (name, contents) in &expected_files {
@@ -463,6 +471,29 @@ fn frozen_server_protocol_types_roundtrip_serde_json_without_loss() {
     let auth_resp_back: RemoteAuthResponse =
         serde_json::from_str(&serde_json::to_string(&auth_resp).unwrap()).unwrap();
     assert_eq!(auth_resp_back, auth_resp);
+
+    let set_public_url_req = SetPublicUrlRequest {
+        public_url: Some("http://majjj.example.com:8789".to_string()),
+    };
+    let set_public_url_back: SetPublicUrlRequest =
+        serde_json::from_str(&serde_json::to_string(&set_public_url_req).unwrap()).unwrap();
+    assert_eq!(set_public_url_back, set_public_url_req);
+
+    let remote_status = RemoteAccessStatusResponse {
+        enabled: true,
+        passcode: Some("ABCD2345".to_string()),
+        active_remote_connections: 2,
+        public_url_override: Some("http://majjj.example.com:8789".to_string()),
+        public_url_source: PublicUrlSource::Preferences,
+        persisted_public_url: Some("http://majjj.example.com:8789".to_string()),
+        preferred_ipv6_url: Some("http://[2001:db9:1::10]:8789".to_string()),
+        ipv6_urls: vec!["http://[2001:db9:1::10]:8789".to_string()],
+        invite_base_url: Some("http://majjj.example.com:8789".to_string()),
+        invite_url: Some("http://majjj.example.com:8789/?code=ABCD2345".to_string()),
+    };
+    let remote_status_back: RemoteAccessStatusResponse =
+        serde_json::from_str(&serde_json::to_string(&remote_status).unwrap()).unwrap();
+    assert_eq!(remote_status_back, remote_status);
 
     let memory_resp = PersonaMemoryResponse {
         schema_version: 1,

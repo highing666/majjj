@@ -11,6 +11,8 @@
   import type { Seat } from "../protocol/generated/Seat";
   import type { SeatInfo } from "../protocol/generated/SeatInfo";
   import type { TableSnapshot } from "../protocol/generated/TableSnapshot";
+  import RemoteAccessPanel from "../remote/RemoteAccessPanel.svelte";
+  import type { RemoteAccessState } from "../remote/remoteAccessController";
   import LobbyConfigFields from "./LobbyConfigFields.svelte";
   import { buildLobbyTableViewModel, type LobbyTableSlot } from "./lobbyTable";
 
@@ -28,6 +30,13 @@
     onOpenSettings?: () => void;
     onOpenHistory?: () => void;
     onTakeOverSeat?: (seatInfo: SeatInfo) => void;
+    remoteAccessState?: RemoteAccessState | null;
+    onRefreshRemoteAccess?: () => void;
+    onEnableRemoteAccess?: () => void;
+    onDisableRemoteAccess?: () => void;
+    onResetRemoteCode?: () => void;
+    onSaveRemotePublicUrl?: (publicUrl: string | null) => Promise<boolean>;
+    onSelectRemoteBaseUrl?: (baseUrl: string | null) => void;
   }
 
   let {
@@ -44,6 +53,13 @@
     onOpenSettings,
     onOpenHistory,
     onTakeOverSeat,
+    remoteAccessState = null,
+    onRefreshRemoteAccess,
+    onEnableRemoteAccess,
+    onDisableRemoteAccess,
+    onResetRemoteCode,
+    onSaveRemotePublicUrl,
+    onSelectRemoteBaseUrl,
   }: Props = $props();
 
   let lastAppliedNickname = $state("");
@@ -652,79 +668,93 @@
   </div>
 
   {#if tableModel.showLanPanel}
-    <aside class="card lan-panel">
-      <h2>手机扫码入桌</h2>
-      <p class="subtitle">
-        同一家庭 Wi-Fi 下的 iPhone 可直接用系统相机扫码，在 Safari 零安装打开。
-      </p>
+    <div class="lobby-sidebar">
+      <aside class="card lan-panel">
+        <h2>手机扫码入桌</h2>
+        <p class="subtitle">
+          同一家庭 Wi-Fi 下的 iPhone 可直接用系统相机扫码，在 Safari 零安装打开。
+        </p>
 
-      {#if activeIpv4Url}
-        <div class="qr-frame">
-          {#if qrDataUrl}
-            <img
-              class="qr-image"
-              src={qrDataUrl}
-              alt="局域网扫码入桌二维码"
-              width="220"
-              height="220"
-            />
-          {:else if qrError}
-            <p class="qr-fallback">{qrError}</p>
-          {:else}
-            <p class="qr-fallback">正在生成二维码…</p>
+        {#if activeIpv4Url}
+          <div class="qr-frame">
+            {#if qrDataUrl}
+              <img
+                class="qr-image"
+                src={qrDataUrl}
+                alt="局域网扫码入桌二维码"
+                width="220"
+                height="220"
+              />
+            {:else if qrError}
+              <p class="qr-fallback">{qrError}</p>
+            {:else}
+              <p class="qr-fallback">正在生成二维码…</p>
+            {/if}
+          </div>
+
+          {#if ipv4Urls.length > 1}
+            <label class="config-field">
+              <span class="field-label">备选局域网网卡 IP</span>
+              <select
+                class="select-input"
+                value={activeIpv4Url}
+                onchange={handleIpv4Switch}
+              >
+                {#each ipv4Urls as url (url)}
+                  <option value={url}>{url}</option>
+                {/each}
+              </select>
+            </label>
           {/if}
-        </div>
 
-        {#if ipv4Urls.length > 1}
-          <label class="config-field">
-            <span class="field-label">备选局域网网卡 IP</span>
-            <select
-              class="select-input"
-              value={activeIpv4Url}
-              onchange={handleIpv4Switch}
-            >
-              {#each ipv4Urls as url (url)}
-                <option value={url}>{url}</option>
-              {/each}
-            </select>
-          </label>
+          <div class="url-box">
+            <span class="field-label">当前局域网 IPv4 地址</span>
+            <div class="url-row">
+              <code class="url-code">{activeIpv4Url}</code>
+              <button
+                class="btn btn-subtle copy-btn"
+                type="button"
+                onclick={() => copyUrl(activeIpv4Url, "ipv4")}
+              >
+                {copiedLabel === "ipv4" ? "已复制" : "复制"}
+              </button>
+            </div>
+          </div>
+        {:else}
+          <div class="qr-empty">
+            暂未检测到可用的私有局域网 IPv4 地址，请确认宿主机已连接家庭 Wi-Fi 或有线网。
+          </div>
         {/if}
 
-        <div class="url-box">
-          <span class="field-label">当前局域网 IPv4 地址</span>
-          <div class="url-row">
-            <code class="url-code">{activeIpv4Url}</code>
-            <button
-              class="btn btn-subtle copy-btn"
-              type="button"
-              onclick={() => copyUrl(activeIpv4Url, "ipv4")}
-            >
-              {copiedLabel === "ipv4" ? "已复制" : "复制"}
-            </button>
+        {#if localHostnameUrl}
+          <div class="url-box">
+            <span class="field-label">宿主机 .local 名称地址</span>
+            <div class="url-row">
+              <code class="url-code">{localHostnameUrl}</code>
+              <button
+                class="btn btn-subtle copy-btn"
+                type="button"
+                onclick={() => copyUrl(localHostnameUrl, "local")}
+              >
+                {copiedLabel === "local" ? "已复制" : "复制"}
+              </button>
+            </div>
           </div>
-        </div>
-      {:else}
-        <div class="qr-empty">
-          暂未检测到可用的私有局域网 IPv4 地址，请确认宿主机已连接家庭 Wi-Fi 或有线网。
-        </div>
-      {/if}
+        {/if}
+      </aside>
 
-      {#if localHostnameUrl}
-        <div class="url-box">
-          <span class="field-label">宿主机 .local 名称地址</span>
-          <div class="url-row">
-            <code class="url-code">{localHostnameUrl}</code>
-            <button
-              class="btn btn-subtle copy-btn"
-              type="button"
-              onclick={() => copyUrl(localHostnameUrl, "local")}
-            >
-              {copiedLabel === "local" ? "已复制" : "复制"}
-            </button>
-          </div>
-        </div>
+      {#if tableModel.showHostRemotePanel && remoteAccessState?.visible && onRefreshRemoteAccess && onEnableRemoteAccess && onDisableRemoteAccess && onResetRemoteCode && onSaveRemotePublicUrl && onSelectRemoteBaseUrl}
+        <RemoteAccessPanel
+          state={remoteAccessState}
+          onRefresh={onRefreshRemoteAccess}
+          onEnable={onEnableRemoteAccess}
+          onDisable={onDisableRemoteAccess}
+          onResetCode={onResetRemoteCode}
+          onSavePublicUrl={onSaveRemotePublicUrl}
+          onSelectBaseUrl={onSelectRemoteBaseUrl}
+        />
       {/if}
-    </aside>
+    </div>
   {/if}
 </section>
 
@@ -1263,6 +1293,12 @@
     min-width: 144px;
     padding: 11px 22px;
     font-size: 16px;
+  }
+
+  .lobby-sidebar {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
   }
 
   .lan-panel {

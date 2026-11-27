@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::persona::{PersonaId, PersonaMood};
+use crate::public_url::PublicUrlSource;
 
 /// Top-level lifecycle phase of a single active `TableSession`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, TS)]
@@ -155,6 +156,38 @@ pub struct RemoteAuthResponse {
     pub message: String,
     /// Cooldown seconds returned when rate-limited (`429 Too Many Requests`).
     pub retry_after_secs: Option<u32>,
+}
+
+/// Request payload for `POST /api/remote-access/public-url`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct SetPublicUrlRequest {
+    /// Normalized `http://` or `https://` origin to persist in `preferences.json`, or `None`/blank to clear.
+    pub public_url: Option<String>,
+}
+
+/// Response payload for Loopback-only host remote-access control endpoints (`GET/POST /api/remote-access*`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct RemoteAccessStatusResponse {
+    /// Whether `远程联机` is currently enabled.
+    pub enabled: bool,
+    /// Active 8-character `入桌口令` (`Some` only when `enabled == true`).
+    pub passcode: Option<String>,
+    /// Live count of currently connected remote WebSocket clients.
+    pub active_remote_connections: u32,
+    /// Effective custom public origin override (`CLI/ENV > preferences.json`), if configured.
+    pub public_url_override: Option<String>,
+    /// Origin source of `public_url_override` (`"cli"`, `"preferences"`, or `"none"`).
+    pub public_url_source: PublicUrlSource,
+    /// Custom public origin currently persisted in `preferences.json` (independent of CLI override).
+    pub persisted_public_url: Option<String>,
+    /// Preferred stable public IPv6 URL (`http://[<ipv6>]:<port>`), if discovered.
+    pub preferred_ipv6_url: Option<String>,
+    /// All discovered global-unicast public IPv6 URLs ordered with stable addresses first.
+    pub ipv6_urls: Vec<String>,
+    /// Resolved preferred invite base URL (`public_url_override` > `preferred_ipv6_url`).
+    pub invite_base_url: Option<String>,
+    /// Full shareable invite URL with `?code=<passcode>` when enabled and a base URL is available.
+    pub invite_url: Option<String>,
 }
 
 /// Response payload for `GET /api/health`.

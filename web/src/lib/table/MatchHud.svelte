@@ -42,6 +42,10 @@
     onTogglePace: () => void;
     onOpenSettings: () => void;
     onDisband: () => void;
+    showRemoteAccess?: boolean;
+    remoteAccessEnabled?: boolean;
+    remoteToolbarLabel?: string;
+    onOpenRemoteAccess?: () => void;
     onToggleAiAssist: (seat: Seat, enabled: boolean) => void;
     onAction: (action: PlayerAction) => void;
     onSendQuickEmote: (emote: QuickEmote) => boolean;
@@ -71,6 +75,10 @@
     onTogglePace,
     onOpenSettings,
     onDisband,
+    showRemoteAccess = false,
+    remoteAccessEnabled = false,
+    remoteToolbarLabel = "远程联机",
+    onOpenRemoteAccess,
     onToggleAiAssist,
     onAction,
     onSendQuickEmote,
@@ -118,6 +126,20 @@
 </div>
 
 <div class="glass-top-right">
+  {#if showRemoteAccess && onOpenRemoteAccess}
+    <button
+      class="glass-btn"
+      class:glass-btn-remote-on={remoteAccessEnabled}
+      type="button"
+      aria-label="打开远程联机管理面板"
+      onclick={onOpenRemoteAccess}
+    >
+      {#if remoteAccessEnabled}
+        <span class="remote-dot" aria-hidden="true"></span>
+      {/if}
+      {remoteToolbarLabel}
+    </button>
+  {/if}
   <button
     class="glass-btn"
     type="button"
@@ -261,6 +283,24 @@
     background: rgba(212, 168, 87, 0.24);
     border-color: rgba(245, 190, 88, 0.78);
     color: #f5be58;
+  }
+
+  .glass-btn-remote-on {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: rgba(30, 107, 82, 0.42);
+    border-color: rgba(110, 231, 183, 0.78);
+    color: #d1fae5;
+  }
+
+  .remote-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #34d399;
+    box-shadow: 0 0 6px rgba(52, 211, 153, 0.85);
+    flex: 0 0 auto;
   }
 
   .match-floating-top {

@@ -42,6 +42,12 @@
   import type { TablePace } from "./lib/protocol/generated/TablePace";
   import type { Tile } from "./lib/protocol/generated/Tile";
   import { seatIndex } from "./lib/protocol/seats";
+  import {
+    buildRemoteToolbarLabel,
+    createRemoteAccessController,
+    type RemoteAccessState,
+  } from "./lib/remote/remoteAccessController";
+  import RemoteAccessModal from "./lib/remote/RemoteAccessModal.svelte";
   import { createTableClient } from "./lib/session/client";
   import type { SessionState } from "./lib/session/reducer";
   import DestructiveOpModal from "./lib/table/DestructiveOpModal.svelte";
@@ -98,10 +104,14 @@
   const shutdownController = createShutdownController({
     onShutdownSuccess: () => client.dispose(),
   });
+  const remoteAccessController = createRemoteAccessController();
   const historyController = createHistoryController();
   const ttsNoticeController = createTtsNoticeController();
   let sessionState = $state<SessionState>(client.getState());
   let shutdownState = $state<ShutdownState>(shutdownController.getState());
+  let remoteAccessState = $state<RemoteAccessState>(
+    remoteAccessController.getState(),
+  );
   let historyState = $state<HistoryState>(historyController.getState());
   let ttsNoticeState = $state<TtsNoticeViewState>(
     ttsNoticeController.getState(),
@@ -119,6 +129,7 @@
     audioRouter.getActiveBanterVoice(),
   );
   let settingsOpen = $state(false);
+  let remoteAccessModalOpen = $state(false);
   let lastSyncedVoicePackKey: string | null = null;
   let takeOverTarget = $state<{
     seatInfo: SeatInfo;
@@ -132,6 +143,9 @@
     });
     const unsubscribeShutdown = shutdownController.subscribe((next) => {
       shutdownState = next;
+    });
+    const unsubscribeRemoteAccess = remoteAccessController.subscribe((next) => {
+      remoteAccessState = next;
     });
     const unsubscribeHistory = historyController.subscribe((next) => {
       historyState = next;
@@ -190,6 +204,7 @@
       unsubscribePrefs();
       unsubscribeTtsNotice();
       unsubscribeHistory();
+      unsubscribeRemoteAccess();
       unsubscribeShutdown();
       unsubscribeClient();
       viewportDisplay.dispose();
@@ -261,8 +276,28 @@
   });
 
   $effect(() => {
-    shutdownController.syncHostIsLoopback(snapshot?.host_is_loopback === true);
+    const isLoopback = snapshot?.host_is_loopback === true;
+    shutdownController.syncHostIsLoopback(isLoopback);
+    remoteAccessController.syncHostIsLoopback(isLoopback);
     historyController.syncClientIsRemote(isRemote);
+    if (!isLoopback) {
+      remoteAccessModalOpen = false;
+    }
+  });
+
+  $effect(() => {
+    if (
+      !remoteAccessState.visible ||
+      (!remoteAccessState.status?.enabled && !remoteAccessModalOpen)
+    ) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      void remoteAccessController.refresh();
+    }, 5000);
+    return () => {
+      window.clearInterval(timer);
+    };
   });
 
   $effect(() => {
@@ -332,6 +367,7 @@
   );
   const hasModalOpen = $derived(
     settingsOpen ||
+      remoteAccessModalOpen ||
       historyState.open ||
       takeOverTarget !== null ||
       viewportState.showRotateOverlay ||
@@ -419,6 +455,14 @@
       );
       client.setSeatVoicePack(voicePackId);
     }
+  }
+
+  function openRemoteAccessModal(): void {
+    if (!remoteAccessState.visible) {
+      return;
+    }
+    remoteAccessModalOpen = true;
+    void remoteAccessController.refresh();
   }
 
   function openTakeOverModal(seatInfo: SeatInfo, kind: TakeOverKind): void {
@@ -553,6 +597,13 @@
       onTakeOverSeat={isRemote
         ? undefined
         : (seatInfo) => openTakeOverModal(seatInfo, "offline_human")}
+      {remoteAccessState}
+      onRefreshRemoteAccess={() => void remoteAccessController.refresh()}
+      onEnableRemoteAccess={() => void remoteAccessController.enable()}
+      onDisableRemoteAccess={() => void remoteAccessController.disable()}
+      onResetRemoteCode={() => void remoteAccessController.resetCode()}
+      onSaveRemotePublicUrl={(url) => remoteAccessController.savePublicUrl(url)}
+      onSelectRemoteBaseUrl={(url) => remoteAccessController.selectBaseUrl(url)}
     />
   {:else if presentedSnapshot.phase === "InMatch"}
     <section class="match-shell" class:match-shell-immersive={isSeatedMatch}>
@@ -621,6 +672,12 @@
               handleSetPace(currentPace === "Fast" ? "Standard" : "Fast")}
             onOpenSettings={() => (settingsOpen = true)}
             onDisband={() => client.requestDisbandMatch()}
+            showRemoteAccess={remoteAccessState.visible}
+            remoteAccessEnabled={remoteAccessState.status?.enabled === true}
+            remoteToolbarLabel={buildRemoteToolbarLabel(
+              remoteAccessState.status,
+            )}
+            onOpenRemoteAccess={openRemoteAccessModal}
             onToggleAiAssist={(seat, enabled) => client.toggleAiAssist(seat, enabled)}
             onAction={handleActionBar}
             onSendQuickEmote={(emote) => client.sendQuickEmote(emote)}
@@ -833,6 +890,18 @@
     onResetPreferences={() => preferencesStore.reset()}
     onChangePace={handleSettingsPaceChange}
     onClose={() => (settingsOpen = false)}
+  />
+
+  <RemoteAccessModal
+    open={remoteAccessModalOpen}
+    state={remoteAccessState}
+    onClose={() => (remoteAccessModalOpen = false)}
+    onRefresh={() => void remoteAccessController.refresh()}
+    onEnable={() => void remoteAccessController.enable()}
+    onDisable={() => void remoteAccessController.disable()}
+    onResetCode={() => void remoteAccessController.resetCode()}
+    onSavePublicUrl={(url) => remoteAccessController.savePublicUrl(url)}
+    onSelectBaseUrl={(url) => remoteAccessController.selectBaseUrl(url)}
   />
 
   <HistoryModal

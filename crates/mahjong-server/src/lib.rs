@@ -18,6 +18,7 @@ pub mod persona_memory;
 pub mod protocol;
 pub mod public_url;
 pub mod remote_access;
+mod remote_control;
 mod remote_gate;
 mod seat_control;
 pub mod security;

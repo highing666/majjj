@@ -62,6 +62,8 @@ export interface LobbyTableViewModel {
   shuffleNotice: string | null;
   /** Whether the lobby should render the LAN QR / local network aside card (`false` for remote clients). */
   showLanPanel: boolean;
+  /** Whether the lobby should render the loopback-only host remote-access control panel. */
+  showHostRemotePanel: boolean;
   /** Whether the lobby may fetch `/api/preferences` for recent nicknames (`false` for remote clients). */
   shouldFetchPreferences: boolean;
   /** Whether an unseated viewer may take over offline human seats (`false` for remote clients). */
@@ -176,6 +178,7 @@ export function buildLobbyTableViewModel(
     isSeated,
     shuffleNotice,
     showLanPanel: !isRemote,
+    showHostRemotePanel: snapshot.host_is_loopback && !isRemote,
     shouldFetchPreferences: !isRemote,
     canTakeOverOfflineHuman: !isRemote && !isSeated,
   };
