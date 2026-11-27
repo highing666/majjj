@@ -2,6 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+app_bundle_id="com.majjj.launcher"
 
 usage() {
   cat >&2 <<EOF
@@ -174,6 +175,12 @@ stop_remote_server() {
   "
 }
 
+remote_codesign_bin_snippet() {
+  local target_var="$1"
+  printf 'if command -v codesign >/dev/null 2>&1; then codesign --force --sign - --identifier %s "$%s"; fi' \
+    "$app_bundle_id" "$target_var"
+}
+
 sync_remote_app() {
   local stage_dir
   stage_dir="$(mktemp -d)"
@@ -181,19 +188,27 @@ sync_remote_app() {
   "$repo_root/scripts/install-local.sh" --app-only --app-dir "$stage_dir/Majjj.app" >/dev/null
   ssh "$ssh_target" "mkdir -p \"\$HOME/Applications\" && rm -rf \"\$HOME/Applications/Majjj.app.tmp\""
   scp -rq "$stage_dir/Majjj.app" "${scp_target}:'Applications/Majjj.app.tmp'"
-  ssh "$ssh_target" "rm -rf \"\$HOME/Applications/Majjj.app\" && mv -f \"\$HOME/Applications/Majjj.app.tmp\" \"\$HOME/Applications/Majjj.app\""
+  ssh "$ssh_target" "
+    set -eu
+    if command -v codesign >/dev/null 2>&1; then
+      codesign --force --sign - \"\$HOME/Applications/Majjj.app.tmp\"
+    fi
+    rm -rf \"\$HOME/Applications/Majjj.app\"
+    mv -f \"\$HOME/Applications/Majjj.app.tmp\" \"\$HOME/Applications/Majjj.app\"
+  "
   echo "Synced Majjj.app -> ${ssh_target}:~/Applications/Majjj.app"
 }
 
 do_rollback() {
   check_partner_idle
   stop_remote_server
-  local path_setup
+  local path_setup codesign_cmd
   if [[ "$remote_bin_rel" == /* ]]; then
     path_setup="bin='$remote_bin_rel'"
   else
     path_setup="bin=\"\$HOME/$remote_bin_rel\""
   fi
+  codesign_cmd="$(remote_codesign_bin_snippet prev)"
   ssh "$ssh_target" "
     set -eu
     $path_setup
@@ -203,9 +218,7 @@ do_rollback() {
       exit 1
     fi
     chmod 755 \"\$prev\"
-    if command -v codesign >/dev/null 2>&1; then
-      codesign --force --sign - \"\$prev\"
-    fi
+    $codesign_cmd
     mv -f \"\$prev\" \"\$bin\"
   "
   echo "Rolled back ${ssh_target}:${remote_bin_rel} from majjj.prev"
@@ -222,7 +235,7 @@ do_push() {
 
   stop_remote_server
 
-  local dir_setup bin_setup tmp_setup
+  local dir_setup bin_setup tmp_setup codesign_cmd
   if [[ "$remote_bin_rel" == /* ]]; then
     dir_setup="rdir='$remote_dir_rel'"
     bin_setup="bin='$remote_bin_rel'"
@@ -232,6 +245,7 @@ do_push() {
     bin_setup="bin=\"\$HOME/$remote_bin_rel\""
     tmp_setup="tmp=\"\$HOME/$remote_tmp_rel\""
   fi
+  codesign_cmd="$(remote_codesign_bin_snippet tmp)"
 
   ssh "$ssh_target" "$dir_setup && mkdir -p \"\$rdir\""
   scp -q "$local_bin" "${scp_target}:'${remote_tmp_rel}'"
@@ -248,9 +262,7 @@ do_push() {
       exit 1
     fi
     chmod 755 \"\$tmp\"
-    if command -v codesign >/dev/null 2>&1; then
-      codesign --force --sign - \"\$tmp\"
-    fi
+    $codesign_cmd
     if [ -f \"\$bin\" ]; then
       cp -p \"\$bin\" \"\$prev\"
     fi

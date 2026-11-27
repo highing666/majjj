@@ -2,6 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+app_bundle_id="com.majjj.launcher"
 
 usage() {
   cat >&2 <<EOF
@@ -79,7 +80,7 @@ if [ "$app_only" -eq 0 ]; then
   cp "$bin_path" "$tmp_bin"
   chmod 755 "$tmp_bin"
   if command -v codesign >/dev/null 2>&1; then
-    codesign --force --sign - "$tmp_bin"
+    codesign --force --sign - --identifier "$app_bundle_id" "$tmp_bin"
   fi
   mv -f "$tmp_bin" "$dest_bin"
   trap - EXIT
@@ -88,7 +89,7 @@ fi
 mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
 cp "$icon_src" "$app_dir/Contents/Resources/Majjj.icns"
 
-cat > "$app_dir/Contents/Info.plist" <<'PLIST'
+cat > "$app_dir/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -102,7 +103,7 @@ cat > "$app_dir/Contents/Info.plist" <<'PLIST'
   <key>CFBundleIconFile</key>
   <string>Majjj</string>
   <key>CFBundleIdentifier</key>
-  <string>com.majjj.launcher</string>
+  <string>${app_bundle_id}</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
@@ -115,6 +116,8 @@ cat > "$app_dir/Contents/Info.plist" <<'PLIST'
   <string>1</string>
   <key>LSUIElement</key>
   <true/>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Majjj 需要访问本地网络以连接局域网牌友推理与语音服务。</string>
 </dict>
 </plist>
 PLIST
@@ -228,6 +231,9 @@ exit 0
 LAUNCHER
 
 chmod 755 "$app_dir/Contents/MacOS/Majjj"
+if command -v codesign >/dev/null 2>&1; then
+  codesign --force --sign - "$app_dir"
+fi
 echo "Installed Majjj.app -> $app_dir"
 if [ "$app_only" -eq 0 ]; then
   echo "Installed binary -> $HOME/Library/Application Support/majjj/bin/majjj"
