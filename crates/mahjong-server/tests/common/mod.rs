@@ -8,6 +8,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use axum::body::Body;
+use axum::extract::ConnectInfo;
+use axum::http::{HeaderMap, Method, StatusCode as AxumStatusCode};
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
@@ -27,6 +30,7 @@ use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Notify};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+use tower::ServiceExt;
 
 type BanterResponder =
     Box<dyn Fn(&BanterGenerationRequest) -> Result<BanterOutput, LlmError> + Send + Sync>;
@@ -486,6 +490,94 @@ pub async fn http_request_with_body(
         .to_bytes()
         .to_vec();
     (status, headers, body)
+}
+
+#[allow(dead_code)]
+pub async fn raw_http_request(
+    connect_addr: SocketAddr,
+    method: &str,
+    uri_path: &str,
+    headers: &[(&str, &str)],
+    body: &[u8],
+) -> (StatusCode, hyper::HeaderMap, Vec<u8>) {
+    let stream = TcpStream::connect(connect_addr)
+        .await
+        .expect("connect to server");
+    let io = TokioIo::new(stream);
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
+        .await
+        .expect("http1 handshake");
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+
+    let mut builder = Request::builder().method(method).uri(uri_path);
+    for &(name, value) in headers {
+        builder = builder.header(name, value);
+    }
+    let req = builder
+        .body(Full::new(Bytes::copy_from_slice(body)))
+        .expect("build http request");
+    let res = sender.send_request(req).await.expect("send http request");
+    let status = res.status();
+    let resp_headers = res.headers().clone();
+    let resp_body = res
+        .into_body()
+        .collect()
+        .await
+        .expect("collect response body")
+        .to_bytes()
+        .to_vec();
+    (status, resp_headers, resp_body)
+}
+
+#[allow(dead_code)]
+pub async fn send_router_request(
+    router: &axum::Router,
+    peer: Option<SocketAddr>,
+    method: Method,
+    uri: &str,
+    headers: &[(&str, &str)],
+    body: impl Into<Body>,
+) -> (AxumStatusCode, HeaderMap, Vec<u8>) {
+    let mut builder = axum::http::Request::builder().method(method).uri(uri);
+    for &(name, value) in headers {
+        builder = builder.header(name, value);
+    }
+    let mut req = builder.body(body.into()).expect("build router request");
+    if let Some(addr) = peer {
+        req.extensions_mut().insert(ConnectInfo(addr));
+    }
+    let resp = router
+        .clone()
+        .oneshot(req)
+        .await
+        .expect("router oneshot response");
+    let status = resp.status();
+    let resp_headers = resp.headers().clone();
+    let bytes = resp
+        .into_body()
+        .collect()
+        .await
+        .expect("collect response body")
+        .to_bytes()
+        .to_vec();
+    (status, resp_headers, bytes)
+}
+
+#[allow(dead_code)]
+pub fn assert_minimal_403(status: AxumStatusCode, headers: &HeaderMap, body: &[u8], context: &str) {
+    assert_eq!(status, AxumStatusCode::FORBIDDEN, "{context}");
+    assert_eq!(
+        headers.get(CACHE_CONTROL).and_then(|v| v.to_str().ok()),
+        Some("no-store"),
+        "{context}: must send Cache-Control: no-store"
+    );
+    assert!(
+        body.is_empty(),
+        "{context}: minimal 403 must not leak app fingerprint, got {:?}",
+        String::from_utf8_lossy(body)
+    );
 }
 
 #[allow(dead_code)]

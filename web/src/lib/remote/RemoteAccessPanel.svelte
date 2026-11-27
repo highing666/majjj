@@ -2,30 +2,17 @@
   import QRCode from "qrcode";
   import {
     resolveActiveRemoteEntry,
+    type RemoteAccessActions,
     type RemoteAccessState,
   } from "./remoteAccessController";
 
   interface Props {
     state: RemoteAccessState;
+    actions: RemoteAccessActions;
     embedded?: boolean;
-    onRefresh: () => void;
-    onEnable: () => void;
-    onDisable: () => void;
-    onResetCode: () => void;
-    onSavePublicUrl: (publicUrl: string | null) => Promise<boolean>;
-    onSelectBaseUrl: (baseUrl: string | null) => void;
   }
 
-  let {
-    state: remoteState,
-    embedded = false,
-    onRefresh,
-    onEnable,
-    onDisable,
-    onResetCode,
-    onSavePublicUrl,
-    onSelectBaseUrl,
-  }: Props = $props();
+  let { state: remoteState, actions, embedded = false }: Props = $props();
 
   let qrDataUrl = $state<string | null>(null);
   let qrError = $state<string | null>(null);
@@ -103,14 +90,16 @@
   async function handlePublicUrlSubmit(event: SubmitEvent): Promise<void> {
     event.preventDefault();
     const trimmed = publicUrlDraft.trim();
-    const ok = await onSavePublicUrl(trimmed.length > 0 ? trimmed : null);
+    const ok = await actions.onSavePublicUrl(
+      trimmed.length > 0 ? trimmed : null,
+    );
     if (ok) {
       publicUrlDirty = false;
     }
   }
 
   async function handleClearPublicUrl(): Promise<void> {
-    const ok = await onSavePublicUrl(null);
+    const ok = await actions.onSavePublicUrl(null);
     if (ok) {
       publicUrlDraft = "";
       publicUrlDirty = false;
@@ -119,7 +108,7 @@
 
   function handleIpv6Select(event: Event): void {
     const raw = (event.currentTarget as HTMLSelectElement).value;
-    onSelectBaseUrl(raw === "" ? null : raw);
+    actions.onSelectAddress(raw === "" ? null : raw);
   }
 
   function sourceLabel(): string {
@@ -163,7 +152,7 @@
         class="btn btn-subtle refresh-btn"
         type="button"
         disabled={remoteState.loading || busy}
-        onclick={onRefresh}
+        onclick={actions.onRefresh}
       >
         {remoteState.loading ? "刷新中…" : "刷新"}
       </button>
@@ -179,7 +168,7 @@
           class="btn btn-jade toggle-btn"
           type="button"
           disabled={busy}
-          onclick={onEnable}
+          onclick={actions.onEnable}
         >
           {busy ? "处理中…" : "一键开启远程联机"}
         </button>
@@ -188,7 +177,7 @@
           class="btn btn-danger toggle-btn"
           type="button"
           disabled={busy}
-          onclick={onDisable}
+          onclick={actions.onDisable}
         >
           {busy ? "处理中…" : "关闭远程联机"}
         </button>
@@ -196,7 +185,7 @@
           class="btn btn-subtle reset-btn"
           type="button"
           disabled={busy}
-          onclick={onResetCode}
+          onclick={actions.onResetCode}
         >
           重置口令
         </button>
@@ -364,7 +353,7 @@
               {/if}
               {#each ipv6Urls as url, idx (url)}
                 <option value={url}>
-                  {url}{idx === 0 ? "（首选稳定）" : ""}
+                  {url}{idx === 0 ? "（首选）" : ""}
                 </option>
               {/each}
             </select>
@@ -374,7 +363,7 @@
             <button
               class="btn btn-subtle small-btn"
               type="button"
-              onclick={() => onSelectBaseUrl(null)}
+              onclick={() => actions.onSelectAddress(null)}
             >
               切回自定义公网域名
             </button>

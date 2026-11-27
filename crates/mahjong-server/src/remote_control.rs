@@ -1,24 +1,20 @@
 //! Loopback-only host control plane for `远程联机` lifecycle, passcode rotation,
 //! public IPv6 discovery reporting, and custom public entry persistence.
 
-use std::net::SocketAddr;
-
 use axum::body::Bytes;
-use axum::extract::{ConnectInfo, FromRef, State};
-use axum::http::header::CACHE_CONTROL;
-use axum::http::{Extensions, HeaderMap, HeaderValue, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::extract::{FromRef, State};
+use axum::http::StatusCode;
+use axum::middleware;
+use axum::response::Response;
 use axum::routing::{get, post};
-use axum::{Json, Router};
-use serde::Serialize;
+use axum::Router;
 
 use crate::lan::{discover_system_public_ipv6_urls, PublicIpv6UrlInfo};
 use crate::protocol::{RemoteAccessStatusResponse, SetPublicUrlRequest};
 use crate::public_url::resolve_public_entry;
 use crate::remote_access::RemoteAccessManager;
 use crate::security::{
-    classify_request_trust_tier, has_json_content_type, minimal_forbidden_response,
-    unsupported_media_type_json_response, ClientTrustTier,
+    json_with_no_store, require_json_post_middleware, require_loopback_middleware,
 };
 use crate::session::TableRuntime;
 use crate::storage::PublicUrlSaveError;
@@ -89,6 +85,8 @@ where
             "/api/remote-access/public-url",
             post(set_public_url_handler),
         )
+        .route_layer(middleware::from_fn(require_json_post_middleware))
+        .route_layer(middleware::from_fn(require_loopback_middleware))
 }
 
 fn compose_invite_url(base_url: &str, passcode: &str) -> String {
@@ -96,82 +94,24 @@ fn compose_invite_url(base_url: &str, passcode: &str) -> String {
     format!("{trimmed}/?code={passcode}")
 }
 
-fn json_with_no_store<T: Serialize>(status: StatusCode, payload: &T) -> Response {
-    let mut response = (status, Json(payload)).into_response();
-    response
-        .headers_mut()
-        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    response
-}
-
-fn require_loopback(extensions: &Extensions, headers: &HeaderMap) -> bool {
-    let tier = extensions
-        .get::<ClientTrustTier>()
-        .copied()
-        .unwrap_or_else(|| {
-            let peer = extensions
-                .get::<ConnectInfo<SocketAddr>>()
-                .map(|ConnectInfo(addr)| *addr);
-            classify_request_trust_tier(peer, headers)
-        });
-    tier.is_loopback()
-}
-
-async fn get_status_handler(
-    extensions: Extensions,
-    headers: HeaderMap,
-    State(state): State<RemoteControlState>,
-) -> Response {
-    if !require_loopback(&extensions, &headers) {
-        return minimal_forbidden_response();
-    }
+async fn get_status_handler(State(state): State<RemoteControlState>) -> Response {
     let payload = state.build_status_response().await;
     json_with_no_store(StatusCode::OK, &payload)
 }
 
-async fn enable_handler(
-    extensions: Extensions,
-    headers: HeaderMap,
-    State(state): State<RemoteControlState>,
-) -> Response {
-    if !require_loopback(&extensions, &headers) {
-        return minimal_forbidden_response();
-    }
-    if !has_json_content_type(&headers) {
-        return unsupported_media_type_json_response();
-    }
+async fn enable_handler(State(state): State<RemoteControlState>) -> Response {
     let _ = state.remote_access.enable();
     let payload = state.build_status_response().await;
     json_with_no_store(StatusCode::OK, &payload)
 }
 
-async fn disable_handler(
-    extensions: Extensions,
-    headers: HeaderMap,
-    State(state): State<RemoteControlState>,
-) -> Response {
-    if !require_loopback(&extensions, &headers) {
-        return minimal_forbidden_response();
-    }
-    if !has_json_content_type(&headers) {
-        return unsupported_media_type_json_response();
-    }
+async fn disable_handler(State(state): State<RemoteControlState>) -> Response {
     state.remote_access.disable();
     let payload = state.build_status_response().await;
     json_with_no_store(StatusCode::OK, &payload)
 }
 
-async fn reset_code_handler(
-    extensions: Extensions,
-    headers: HeaderMap,
-    State(state): State<RemoteControlState>,
-) -> Response {
-    if !require_loopback(&extensions, &headers) {
-        return minimal_forbidden_response();
-    }
-    if !has_json_content_type(&headers) {
-        return unsupported_media_type_json_response();
-    }
+async fn reset_code_handler(State(state): State<RemoteControlState>) -> Response {
     if state.remote_access.reset_code().is_none() {
         return json_with_no_store(
             StatusCode::CONFLICT,
@@ -182,18 +122,7 @@ async fn reset_code_handler(
     json_with_no_store(StatusCode::OK, &payload)
 }
 
-async fn set_public_url_handler(
-    extensions: Extensions,
-    headers: HeaderMap,
-    State(state): State<RemoteControlState>,
-    body: Bytes,
-) -> Response {
-    if !require_loopback(&extensions, &headers) {
-        return minimal_forbidden_response();
-    }
-    if !has_json_content_type(&headers) {
-        return unsupported_media_type_json_response();
-    }
+async fn set_public_url_handler(State(state): State<RemoteControlState>, body: Bytes) -> Response {
     let Ok(req) = serde_json::from_slice::<SetPublicUrlRequest>(&body) else {
         return json_with_no_store(
             StatusCode::BAD_REQUEST,

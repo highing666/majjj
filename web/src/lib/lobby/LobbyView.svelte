@@ -12,7 +12,10 @@
   import type { SeatInfo } from "../protocol/generated/SeatInfo";
   import type { TableSnapshot } from "../protocol/generated/TableSnapshot";
   import RemoteAccessPanel from "../remote/RemoteAccessPanel.svelte";
-  import type { RemoteAccessState } from "../remote/remoteAccessController";
+  import type {
+    RemoteAccessActions,
+    RemoteAccessState,
+  } from "../remote/remoteAccessController";
   import LobbyConfigFields from "./LobbyConfigFields.svelte";
   import { buildLobbyTableViewModel, type LobbyTableSlot } from "./lobbyTable";
 
@@ -31,12 +34,7 @@
     onOpenHistory?: () => void;
     onTakeOverSeat?: (seatInfo: SeatInfo) => void;
     remoteAccessState?: RemoteAccessState | null;
-    onRefreshRemoteAccess?: () => void;
-    onEnableRemoteAccess?: () => void;
-    onDisableRemoteAccess?: () => void;
-    onResetRemoteCode?: () => void;
-    onSaveRemotePublicUrl?: (publicUrl: string | null) => Promise<boolean>;
-    onSelectRemoteBaseUrl?: (baseUrl: string | null) => void;
+    remoteAccessActions?: RemoteAccessActions | null;
   }
 
   let {
@@ -54,12 +52,7 @@
     onOpenHistory,
     onTakeOverSeat,
     remoteAccessState = null,
-    onRefreshRemoteAccess,
-    onEnableRemoteAccess,
-    onDisableRemoteAccess,
-    onResetRemoteCode,
-    onSaveRemotePublicUrl,
-    onSelectRemoteBaseUrl,
+    remoteAccessActions = null,
   }: Props = $props();
 
   let lastAppliedNickname = $state("");
@@ -73,8 +66,10 @@
   let recentNicknames = $state<string[]>([]);
   let activePersonaSeat = $state<Seat | null>(null);
 
+  const tableModel = $derived(buildLobbyTableViewModel(snapshot));
+
   $effect(() => {
-    if (snapshot.client_is_remote) {
+    if (!tableModel.shouldFetchPreferences) {
       recentNicknames = [];
       return;
     }
@@ -152,7 +147,6 @@
     };
   });
 
-  const tableModel = $derived(buildLobbyTableViewModel(snapshot));
   const isSeated = $derived(tableModel.isSeated);
   const humanCount = $derived(
     snapshot.seats.filter((seatInfo) => seatInfo.kind === "Human").length,
@@ -743,15 +737,10 @@
         {/if}
       </aside>
 
-      {#if tableModel.showHostRemotePanel && remoteAccessState?.visible && onRefreshRemoteAccess && onEnableRemoteAccess && onDisableRemoteAccess && onResetRemoteCode && onSaveRemotePublicUrl && onSelectRemoteBaseUrl}
+      {#if tableModel.showHostRemotePanel && remoteAccessState?.visible && remoteAccessActions}
         <RemoteAccessPanel
           state={remoteAccessState}
-          onRefresh={onRefreshRemoteAccess}
-          onEnable={onEnableRemoteAccess}
-          onDisable={onDisableRemoteAccess}
-          onResetCode={onResetRemoteCode}
-          onSavePublicUrl={onSaveRemotePublicUrl}
-          onSelectBaseUrl={onSelectRemoteBaseUrl}
+          actions={remoteAccessActions}
         />
       {/if}
     </div>

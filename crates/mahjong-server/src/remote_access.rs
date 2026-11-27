@@ -286,16 +286,14 @@ impl RemoteAccessManager {
     /// Immediately disables `远程联机`, wipes the active passcode and all remote session tokens,
     /// and notifies all connected remote WebSocket tasks to disconnect immediately.
     pub fn disable(&self) {
-        {
-            let mut state = self
-                .inner
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            state.enabled = false;
-            state.passcode = None;
-            state.sessions.clear();
-        }
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.enabled = false;
+        state.passcode = None;
+        state.sessions.clear();
         self.inner.revocation_tx.send_modify(|epoch| {
             *epoch = epoch.wrapping_add(1);
         });
@@ -393,37 +391,48 @@ impl RemoteAccessManager {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !state.enabled || state.sessions.is_empty() {
-            return false;
+        find_valid_session_token(&state, headers).is_some()
+    }
+
+    /// Subscribes to the remote-access revocation watch channel (`disable()` increments the epoch).
+    #[must_use]
+    pub fn subscribe_revocation(&self) -> watch::Receiver<u64> {
+        self.inner.revocation_tx.subscribe()
+    }
+
+    /// Validates the `majjj_remote_session` cookie in `headers` and atomically subscribes to
+    /// revocation signals under the state lock so no `disable()` -> `enable()` window can be missed
+    /// between upgrade validation and WebSocket task polling.
+    #[must_use]
+    pub fn validate_session_cookie_with_revocation(
+        &self,
+        headers: &HeaderMap,
+    ) -> Option<(String, watch::Receiver<u64>)> {
+        let state = self
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let token = find_valid_session_token(&state, headers)?;
+        let revocation_rx = self.inner.revocation_tx.subscribe();
+        Some((token, revocation_rx))
+    }
+
+    /// Tracks one active remote WebSocket connection via an RAII counter guard.
+    #[must_use]
+    pub fn track_remote_ws(&self) -> RemoteWsGuard {
+        self.inner.active_remote_ws.fetch_add(1, Ordering::AcqRel);
+        RemoteWsGuard {
+            active_remote_ws: Arc::clone(&self.inner.active_remote_ws),
         }
-        for cookie_header in headers.get_all(COOKIE) {
-            let Ok(raw) = cookie_header.to_str() else {
-                continue;
-            };
-            for part in raw.split(';') {
-                let Some((name, value)) = part.split_once('=') else {
-                    continue;
-                };
-                if name.trim() == REMOTE_SESSION_COOKIE_NAME {
-                    let token = value.trim();
-                    if !token.is_empty() && state.sessions.contains(token) {
-                        return true;
-                    }
-                }
-            }
-        }
-        false
     }
 
     /// Registers an active remote WebSocket connection and returns an RAII guard together with
     /// a revocation receiver that triggers immediately if `disable()` is called.
     #[must_use]
     pub fn enter_remote_ws(&self) -> (RemoteWsGuard, watch::Receiver<u64>) {
-        let revocation_rx = self.inner.revocation_tx.subscribe();
-        self.inner.active_remote_ws.fetch_add(1, Ordering::AcqRel);
-        let guard = RemoteWsGuard {
-            active_remote_ws: Arc::clone(&self.inner.active_remote_ws),
-        };
+        let revocation_rx = self.subscribe_revocation();
+        let guard = self.track_remote_ws();
         (guard, revocation_rx)
     }
 
@@ -464,6 +473,29 @@ pub fn build_session_set_cookie_header(session_token: &str) -> HeaderValue {
         "{REMOTE_SESSION_COOKIE_NAME}={session_token}; HttpOnly; SameSite=Lax; Path=/"
     ))
     .expect("hex remote session token produces valid Set-Cookie header")
+}
+
+fn find_valid_session_token(state: &RemoteAccessState, headers: &HeaderMap) -> Option<String> {
+    if !state.enabled || state.sessions.is_empty() {
+        return None;
+    }
+    for cookie_header in headers.get_all(COOKIE) {
+        let Ok(raw) = cookie_header.to_str() else {
+            continue;
+        };
+        for part in raw.split(';') {
+            let Some((name, value)) = part.split_once('=') else {
+                continue;
+            };
+            if name.trim() == REMOTE_SESSION_COOKIE_NAME {
+                let token = value.trim();
+                if !token.is_empty() && state.sessions.contains(token) {
+                    return Some(token.to_owned());
+                }
+            }
+        }
+    }
+    None
 }
 
 fn rate_limit_key(peer: Option<SocketAddr>) -> RateLimitKey {

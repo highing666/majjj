@@ -3,10 +3,13 @@
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
+use axum::extract::{ConnectInfo, Request};
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, HOST, ORIGIN};
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::http::{Extensions, HeaderMap, HeaderValue, Method, StatusCode};
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use serde::Serialize;
 
 /// Three-tier network trust boundary derived from TCP peer address AND HTTP `Host` header.
 ///
@@ -192,26 +195,66 @@ pub fn minimal_forbidden_response() -> Response {
     response
 }
 
-/// Returns a `415 Unsupported Media Type` JSON response with `Cache-Control: no-store` for
-/// mutating `POST /api/*` requests missing `Content-Type: application/json`.
+/// Serializes `payload` as JSON with `status` and `Cache-Control: no-store`.
 #[must_use]
-pub fn unsupported_media_type_json_response() -> Response {
-    let mut response = (
-        StatusCode::UNSUPPORTED_MEDIA_TYPE,
-        Json(serde_json::json!({ "error": "Content-Type must be application/json" })),
-    )
-        .into_response();
+pub(crate) fn json_with_no_store<T: Serialize>(status: StatusCode, payload: &T) -> Response {
+    let mut response = (status, Json(payload)).into_response();
     response
         .headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     response
 }
 
-const fn is_ipv6_link_local(ip: Ipv6Addr) -> bool {
+/// Extracts the cached [`ClientTrustTier`] inserted by the top-level guard middleware, falling
+/// back to classifying from `ConnectInfo<SocketAddr>` + `Host` header when invoked directly.
+#[must_use]
+pub(crate) fn extract_request_trust_tier(
+    extensions: &Extensions,
+    headers: &HeaderMap,
+) -> ClientTrustTier {
+    extensions
+        .get::<ClientTrustTier>()
+        .copied()
+        .unwrap_or_else(|| {
+            let peer = extensions
+                .get::<ConnectInfo<SocketAddr>>()
+                .map(|ConnectInfo(addr)| *addr);
+            classify_request_trust_tier(peer, headers)
+        })
+}
+
+/// Middleware restricting a route tree strictly to `Loopback` (`peer + Host` both loopback).
+pub(crate) async fn require_loopback_middleware(req: Request, next: Next) -> Response {
+    let tier = extract_request_trust_tier(req.extensions(), req.headers());
+    if !tier.is_loopback() {
+        return minimal_forbidden_response();
+    }
+    next.run(req).await
+}
+
+/// Middleware enforcing `Content-Type: application/json` on `POST` requests (CSRF guard).
+pub(crate) async fn require_json_post_middleware(req: Request, next: Next) -> Response {
+    if *req.method() == Method::POST && !has_json_content_type(req.headers()) {
+        return unsupported_media_type_json_response();
+    }
+    next.run(req).await
+}
+
+/// Returns a `415 Unsupported Media Type` JSON response with `Cache-Control: no-store` for
+/// mutating `POST /api/*` requests missing `Content-Type: application/json`.
+#[must_use]
+pub fn unsupported_media_type_json_response() -> Response {
+    json_with_no_store(
+        StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        &serde_json::json!({ "error": "Content-Type must be application/json" }),
+    )
+}
+
+pub(crate) const fn is_ipv6_link_local(ip: Ipv6Addr) -> bool {
     (ip.segments()[0] & 0xffc0) == 0xfe80
 }
 
-const fn is_ipv6_ula(ip: Ipv6Addr) -> bool {
+pub(crate) const fn is_ipv6_ula(ip: Ipv6Addr) -> bool {
     (ip.segments()[0] & 0xfe00) == 0xfc00
 }
 
@@ -303,7 +346,7 @@ fn parse_port(raw: &str) -> Option<u16> {
     if raw.is_empty() || !raw.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    raw.parse::<u16>().ok()
+    raw.parse::<u16>().ok().filter(|&port| port != 0)
 }
 
 fn is_valid_hostname(host: &str) -> bool {
@@ -452,6 +495,10 @@ mod tests {
             "majjj.example.com:8789",
             "[240e:1234::1]:8789",
             "203.0.113.5:8789",
+            "localhost:0",
+            "127.0.0.1:0",
+            "[::1]:0",
+            "192.168.5.10:0",
             "localhost:notaport",
             "localhost:99999",
             "user@localhost:8789",
@@ -573,6 +620,7 @@ mod tests {
             ("https://localhost", "localhost:80"),
             ("null", "localhost:8789"),
             ("file://localhost", "localhost:8789"),
+            ("http://localhost:0", "localhost:0"),
             ("http://localhost:8789/extra", "localhost:8789"),
             ("http://[::1]:8789", "127.0.0.1:8789"),
         ] {

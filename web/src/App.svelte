@@ -44,7 +44,9 @@
   import { seatIndex } from "./lib/protocol/seats";
   import {
     buildRemoteToolbarLabel,
+    createRemoteAccessActions,
     createRemoteAccessController,
+    type RemoteAccessActions,
     type RemoteAccessState,
   } from "./lib/remote/remoteAccessController";
   import RemoteAccessModal from "./lib/remote/RemoteAccessModal.svelte";
@@ -105,6 +107,9 @@
     onShutdownSuccess: () => client.dispose(),
   });
   const remoteAccessController = createRemoteAccessController();
+  const remoteAccessActions: RemoteAccessActions = createRemoteAccessActions(
+    remoteAccessController,
+  );
   const historyController = createHistoryController();
   const ttsNoticeController = createTtsNoticeController();
   let sessionState = $state<SessionState>(client.getState());
@@ -598,12 +603,7 @@
         ? undefined
         : (seatInfo) => openTakeOverModal(seatInfo, "offline_human")}
       {remoteAccessState}
-      onRefreshRemoteAccess={() => void remoteAccessController.refresh()}
-      onEnableRemoteAccess={() => void remoteAccessController.enable()}
-      onDisableRemoteAccess={() => void remoteAccessController.disable()}
-      onResetRemoteCode={() => void remoteAccessController.resetCode()}
-      onSaveRemotePublicUrl={(url) => remoteAccessController.savePublicUrl(url)}
-      onSelectRemoteBaseUrl={(url) => remoteAccessController.selectBaseUrl(url)}
+      {remoteAccessActions}
     />
   {:else if presentedSnapshot.phase === "InMatch"}
     <section class="match-shell" class:match-shell-immersive={isSeatedMatch}>
@@ -733,7 +733,23 @@
           </div>
         {/if}
         <section class="card placeholder-card">
-          <h1>对局进行中</h1>
+          <div class="observer-header">
+            <h1>对局进行中</h1>
+            {#if activeSnap.host_is_loopback && remoteAccessState.visible}
+              <button
+                class="btn btn-subtle observer-remote-btn"
+                class:observer-remote-btn-on={remoteAccessState.status?.enabled === true}
+                type="button"
+                aria-label="打开远程联机管理面板"
+                onclick={openRemoteAccessModal}
+              >
+                {#if remoteAccessState.status?.enabled === true}
+                  <span class="observer-remote-dot" aria-hidden="true"></span>
+                {/if}
+                {buildRemoteToolbarLabel(remoteAccessState.status)}
+              </button>
+            {/if}
+          </div>
           <p class="placeholder-note">
             {activeSnap.client_is_remote
               ? "当前本机未入座。你可以经确认后接管空余 AI 座位中途加入本小局。"
@@ -895,13 +911,8 @@
   <RemoteAccessModal
     open={remoteAccessModalOpen}
     state={remoteAccessState}
+    actions={remoteAccessActions}
     onClose={() => (remoteAccessModalOpen = false)}
-    onRefresh={() => void remoteAccessController.refresh()}
-    onEnable={() => void remoteAccessController.enable()}
-    onDisable={() => void remoteAccessController.disable()}
-    onResetCode={() => void remoteAccessController.resetCode()}
-    onSavePublicUrl={(url) => remoteAccessController.savePublicUrl(url)}
-    onSelectBaseUrl={(url) => remoteAccessController.selectBaseUrl(url)}
   />
 
   <HistoryModal
@@ -993,6 +1004,37 @@
   .placeholder-card h1 {
     margin: 0;
     font-size: 22px;
+  }
+
+  .observer-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .observer-remote-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 11px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .observer-remote-btn-on {
+    background: var(--jade-soft);
+    border-color: #6bc4a2;
+    color: var(--jade);
+  }
+
+  .observer-remote-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--jade);
   }
 
   .placeholder-note {

@@ -5,6 +5,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::process::Command;
 
 use crate::protocol::LanUrlInfo;
+use crate::security::{is_ipv6_link_local, is_ipv6_ula};
 
 const EXCLUDED_INTERFACE_PREFIXES: [&str; 5] = ["utun", "bridge", "awdl", "llw", "lo"];
 
@@ -207,12 +208,10 @@ fn is_public_unicast_ipv6(ip: Ipv6Addr) -> bool {
     }
 
     let segments = ip.segments();
-    let is_link_local = (segments[0] & 0xffc0) == 0xfe80;
-    let is_ula = (segments[0] & 0xfe00) == 0xfc00;
     let is_documentation = segments[0] == 0x2001 && segments[1] == 0x0db8;
     let is_global_unicast = (segments[0] & 0xe000) == 0x2000;
 
-    is_global_unicast && !is_link_local && !is_ula && !is_documentation
+    is_global_unicast && !is_ipv6_link_local(ip) && !is_ipv6_ula(ip) && !is_documentation
 }
 
 fn lan_ipv4_priority(ip: Ipv4Addr) -> Option<u8> {

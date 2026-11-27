@@ -5,11 +5,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::body::Body;
-use axum::extract::ConnectInfo;
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, COOKIE, ORIGIN, RETRY_AFTER, SET_COOKIE};
-use axum::http::{Method, Request, StatusCode};
-use common::{no_reaction_wall, yield_tasks, ScriptedLlmClient, TempDirGuard, VirtualClient};
-use http_body_util::BodyExt;
+use axum::http::{Method, StatusCode};
+use common::{
+    assert_minimal_403, no_reaction_wall, send_router_request, yield_tasks, ScriptedLlmClient,
+    TempDirGuard, VirtualClient,
+};
 use mahjong_ai::AiDifficulty;
 use mahjong_core::{build_preset_wall, MatchMode, PlayerAction, PresetWallProvider, Seat, Tile};
 use mahjong_server::banter::QUICK_EMOTE_COOLDOWN;
@@ -28,7 +29,6 @@ use mahjong_server::static_assets::EmbeddedStaticAssets;
 use mahjong_server::{
     BanterAudioCache, ClientTrustTier, PacingMode, ServerConfig, TestRouterHandle,
 };
-use tower::ServiceExt;
 
 async fn build_remote_router(
     allow_remote: bool,
@@ -48,39 +48,6 @@ async fn build_remote_router(
         .expect("build full-stack remote test router")
 }
 
-async fn send_router_request(
-    router: &axum::Router,
-    peer: Option<SocketAddr>,
-    method: Method,
-    uri: &str,
-    headers: &[(&str, &str)],
-    body: impl Into<Body>,
-) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
-    let mut builder = Request::builder().method(method).uri(uri);
-    for &(name, value) in headers {
-        builder = builder.header(name, value);
-    }
-    let mut req = builder.body(body.into()).expect("build router request");
-    if let Some(addr) = peer {
-        req.extensions_mut().insert(ConnectInfo(addr));
-    }
-    let resp = router
-        .clone()
-        .oneshot(req)
-        .await
-        .expect("router oneshot response");
-    let status = resp.status();
-    let resp_headers = resp.headers().clone();
-    let bytes = resp
-        .into_body()
-        .collect()
-        .await
-        .expect("collect response body")
-        .to_bytes()
-        .to_vec();
-    (status, resp_headers, bytes)
-}
-
 fn extract_cookie_pair(headers: &axum::http::HeaderMap) -> String {
     let raw = headers
         .get(SET_COOKIE)
@@ -97,25 +64,6 @@ fn extract_cookie_pair(headers: &axum::http::HeaderMap) -> String {
         "unexpected cookie name: {pair}"
     );
     pair.to_string()
-}
-
-fn assert_minimal_403(
-    status: StatusCode,
-    headers: &axum::http::HeaderMap,
-    body: &[u8],
-    context: &str,
-) {
-    assert_eq!(status, StatusCode::FORBIDDEN, "{context}");
-    assert_eq!(
-        headers.get(CACHE_CONTROL).and_then(|v| v.to_str().ok()),
-        Some("no-store"),
-        "{context}: expected Cache-Control: no-store"
-    );
-    assert!(
-        body.is_empty(),
-        "{context}: minimal 403 must not leak body, got {:?}",
-        String::from_utf8_lossy(body)
-    );
 }
 
 #[tokio::test(start_paused = true)]

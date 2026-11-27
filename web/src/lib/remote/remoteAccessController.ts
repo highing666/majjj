@@ -56,6 +56,39 @@ export interface RemoteAccessController {
   clearFeedback(): void;
 }
 
+export interface RemoteAccessActions {
+  onEnable: () => void;
+  onDisable: () => void;
+  onResetCode: () => void;
+  onSavePublicUrl: (publicUrl: string | null) => Promise<boolean>;
+  onSelectAddress: (baseUrl: string | null) => void;
+  onRefresh: () => void;
+}
+
+/**
+ * Bundles the six host remote-access callbacks for panel/modal/lobby prop forwarding.
+ */
+export function createRemoteAccessActions(
+  controller: RemoteAccessController,
+): RemoteAccessActions {
+  return {
+    onEnable: () => {
+      void controller.enable();
+    },
+    onDisable: () => {
+      void controller.disable();
+    },
+    onResetCode: () => {
+      void controller.resetCode();
+    },
+    onSavePublicUrl: (publicUrl) => controller.savePublicUrl(publicUrl),
+    onSelectAddress: (baseUrl) => controller.selectBaseUrl(baseUrl),
+    onRefresh: () => {
+      void controller.refresh();
+    },
+  };
+}
+
 const JSON_HEADERS: Record<string, string> = {
   "Content-Type": "application/json",
 };

@@ -1,30 +1,18 @@
 <script lang="ts">
   import RemoteAccessPanel from "./RemoteAccessPanel.svelte";
-  import type { RemoteAccessState } from "./remoteAccessController";
+  import type {
+    RemoteAccessActions,
+    RemoteAccessState,
+  } from "./remoteAccessController";
 
   interface Props {
     open: boolean;
     state: RemoteAccessState;
+    actions: RemoteAccessActions;
     onClose: () => void;
-    onRefresh: () => void;
-    onEnable: () => void;
-    onDisable: () => void;
-    onResetCode: () => void;
-    onSavePublicUrl: (publicUrl: string | null) => Promise<boolean>;
-    onSelectBaseUrl: (baseUrl: string | null) => void;
   }
 
-  let {
-    open,
-    state,
-    onClose,
-    onRefresh,
-    onEnable,
-    onDisable,
-    onResetCode,
-    onSavePublicUrl,
-    onSelectBaseUrl,
-  }: Props = $props();
+  let { open, state, actions, onClose }: Props = $props();
 
   function handleKeyDown(event: KeyboardEvent): void {
     if (!open) {
@@ -74,16 +62,7 @@
         </button>
       </header>
 
-      <RemoteAccessPanel
-        {state}
-        embedded={true}
-        {onRefresh}
-        {onEnable}
-        {onDisable}
-        {onResetCode}
-        {onSavePublicUrl}
-        {onSelectBaseUrl}
-      />
+      <RemoteAccessPanel {state} {actions} embedded={true} />
     </div>
   </div>
 {/if}

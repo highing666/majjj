@@ -3,6 +3,7 @@ import type { RemoteAccessStatusResponse } from "../protocol/generated/RemoteAcc
 import {
   buildRemoteToolbarLabel,
   composeRemoteInviteUrl,
+  createRemoteAccessActions,
   createRemoteAccessController,
   resolveActiveRemoteEntry,
   type RemoteAccessFetch,
@@ -263,5 +264,37 @@ describe("remoteAccessController", () => {
         makeStatus({ enabled: true, active_remote_connections: 2 }),
       ),
     ).toBe("远程 · 2");
+  });
+
+  it("bundles all six remote-access callbacks via createRemoteAccessActions", async () => {
+    const enabled = makeStatus({
+      enabled: true,
+      passcode: "ABCD2345",
+      invite_url: "http://[2001:db9:1::10]:8789/?code=ABCD2345",
+    });
+    const fetchFn = vi.fn<RemoteAccessFetch>(async () =>
+      mockJsonResponse(200, enabled),
+    );
+    const ctrl = createRemoteAccessController({ fetchFn });
+    ctrl.syncHostIsLoopback(true);
+    await vi.waitFor(() => {
+      expect(ctrl.getState().status?.enabled).toBe(true);
+    });
+
+    const actions = createRemoteAccessActions(ctrl);
+    actions.onSelectAddress("http://[2001:db9:1::20]:8789");
+    expect(ctrl.getState().selectedBaseUrl).toBe(
+      "http://[2001:db9:1::20]:8789",
+    );
+    expect(await actions.onSavePublicUrl("http://majjj.example.com:8789")).toBe(
+      true,
+    );
+    actions.onRefresh();
+    actions.onEnable();
+    actions.onResetCode();
+    actions.onDisable();
+    await vi.waitFor(() => {
+      expect(fetchFn.mock.calls.length).toBeGreaterThanOrEqual(3);
+    });
   });
 });

@@ -4,55 +4,13 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::process::Command;
 use std::time::Duration;
 
-use common::{connect_ws, fetch_health, recv_snapshot, send_msg};
-use http_body_util::{BodyExt, Full};
-use hyper::body::Bytes;
+use common::{connect_ws, fetch_health, raw_http_request, recv_snapshot, send_msg};
 use hyper::header::{CACHE_CONTROL, CONTENT_TYPE, HOST};
-use hyper::{Request, StatusCode};
-use hyper_util::rt::TokioIo;
+use hyper::StatusCode;
 use mahjong_server::protocol::ClientMessage;
 use mahjong_server::ServerConfig;
-use tokio::net::TcpStream;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-
-async fn raw_http_request(
-    connect_addr: SocketAddr,
-    method: &str,
-    uri_path: &str,
-    headers: &[(&str, &str)],
-    body: &[u8],
-) -> (StatusCode, hyper::HeaderMap, Vec<u8>) {
-    let stream = TcpStream::connect(connect_addr)
-        .await
-        .expect("connect to server");
-    let io = TokioIo::new(stream);
-    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
-        .await
-        .expect("http1 handshake");
-    tokio::spawn(async move {
-        let _ = conn.await;
-    });
-
-    let mut builder = Request::builder().method(method).uri(uri_path);
-    for &(name, value) in headers {
-        builder = builder.header(name, value);
-    }
-    let req = builder
-        .body(Full::new(Bytes::copy_from_slice(body)))
-        .expect("build http request");
-    let res = sender.send_request(req).await.expect("send http request");
-    let status = res.status();
-    let resp_headers = res.headers().clone();
-    let resp_body = res
-        .into_body()
-        .collect()
-        .await
-        .expect("collect response body")
-        .to_bytes()
-        .to_vec();
-    (status, resp_headers, resp_body)
-}
 
 #[tokio::test]
 async fn default_dual_stack_listener_accepts_both_ipv4_and_ipv6_loopback_and_enforces_guards() {

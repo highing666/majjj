@@ -4,59 +4,17 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use common::{connect_ws, recv_snapshot, send_msg};
+use common::{connect_ws, raw_http_request, recv_snapshot, send_msg};
 use futures_util::StreamExt;
-use http_body_util::{BodyExt, Full};
-use hyper::body::Bytes;
 use hyper::header::{CACHE_CONTROL, CONTENT_TYPE, COOKIE, HOST, ORIGIN, SET_COOKIE};
-use hyper::{Request, StatusCode};
-use hyper_util::rt::TokioIo;
+use hyper::StatusCode;
 use mahjong_server::protocol::{
     ClientMessage, LanUrlInfo, RemoteAccessStatusResponse, RemoteAuthResponse, ServerMessage,
 };
 use mahjong_server::{BanterAudioCache, IdleTimeouts, ServerConfig, TableOptions};
-use tokio::net::TcpStream;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
-
-async fn raw_http_request(
-    connect_addr: SocketAddr,
-    method: &str,
-    uri_path: &str,
-    headers: &[(&str, &str)],
-    body: &[u8],
-) -> (StatusCode, hyper::HeaderMap, Vec<u8>) {
-    let stream = TcpStream::connect(connect_addr)
-        .await
-        .expect("connect to server");
-    let io = TokioIo::new(stream);
-    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
-        .await
-        .expect("http1 handshake");
-    tokio::spawn(async move {
-        let _ = conn.await;
-    });
-
-    let mut builder = Request::builder().method(method).uri(uri_path);
-    for &(name, value) in headers {
-        builder = builder.header(name, value);
-    }
-    let req = builder
-        .body(Full::new(Bytes::copy_from_slice(body)))
-        .expect("build http request");
-    let res = sender.send_request(req).await.expect("send http request");
-    let status = res.status();
-    let resp_headers = res.headers().clone();
-    let resp_body = res
-        .into_body()
-        .collect()
-        .await
-        .expect("collect response body")
-        .to_bytes()
-        .to_vec();
-    (status, resp_headers, resp_body)
-}
 
 async fn recv_pong<S>(ws: &mut S, expected_ts_ms: u64)
 where
@@ -526,6 +484,140 @@ async fn host_http_control_endpoints_drive_live_remote_ws_reset_code_and_instant
         }
     }
     assert!(saw_notice, "remote WS must receive RemoteAccessDisabled");
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn remote_ws_still_disconnects_on_immediate_disable_then_enable() {
+    let server = ServerConfig::default()
+        .with_port(0)
+        .with_no_open(true)
+        .with_allow_remote(true)
+        .with_llm_client(common::stub_llm_client())
+        .with_no_tts(true)
+        .spawn()
+        .await
+        .expect("spawn dual-stack server with remote enabled");
+
+    let port = server.addr().port();
+    let v6_addr = SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), port);
+    let public_host = format!("majjj.example.com:{port}");
+    let public_origin = format!("http://{public_host}");
+    let code1 = server.remote_access().passcode().expect("initial passcode");
+
+    let (auth_st, auth_hdrs, _) = raw_http_request(
+        v6_addr,
+        "POST",
+        "/api/remote-auth",
+        &[
+            (HOST.as_str(), public_host.as_str()),
+            (CONTENT_TYPE.as_str(), "application/json"),
+        ],
+        format!(r#"{{"code":"{code1}"}}"#).as_bytes(),
+    )
+    .await;
+    assert_eq!(auth_st, StatusCode::OK);
+    let old_cookie = auth_hdrs
+        .get(SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .trim()
+        .to_string();
+
+    let mut ws_req = format!("ws://{v6_addr}/ws")
+        .into_client_request()
+        .expect("ws req");
+    ws_req
+        .headers_mut()
+        .insert(HOST, public_host.parse().unwrap());
+    ws_req
+        .headers_mut()
+        .insert(ORIGIN, public_origin.parse().unwrap());
+    ws_req
+        .headers_mut()
+        .insert(COOKIE, old_cookie.parse().unwrap());
+    let (mut remote_ws, _) = connect_async(ws_req).await.expect("remote ws connect");
+    send_msg(
+        &mut remote_ws,
+        &ClientMessage::Hello {
+            client_id: "remote-fast-toggle".to_string(),
+            nickname: "快切远客".to_string(),
+            table_id: None,
+            seat_token: None,
+        },
+    )
+    .await;
+    let _ = recv_snapshot(&mut remote_ws).await;
+    assert_eq!(server.remote_access().active_remote_connections(), 1);
+
+    // Immediately disable() and re-enable() back-to-back without yielding.
+    server.remote_access().disable();
+    let code2 = server.remote_access().enable();
+    assert!(server.remote_access().is_enabled());
+    assert_ne!(code1, code2);
+
+    // The pre-revocation remote WS must STILL receive RemoteAccessDisabled and close!
+    let mut saw_notice = false;
+    let mut saw_close = false;
+    for _ in 0..5 {
+        match tokio::time::timeout(Duration::from_secs(2), remote_ws.next())
+            .await
+            .expect("revoked remote WS must close even after immediate re-enable")
+        {
+            Some(Ok(WsMessage::Text(text))) => {
+                if matches!(
+                    serde_json::from_str::<ServerMessage>(&text).unwrap(),
+                    ServerMessage::RemoteAccessDisabled { .. }
+                ) {
+                    saw_notice = true;
+                }
+            }
+            Some(Ok(WsMessage::Close(_))) | None => {
+                saw_close = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        saw_notice,
+        "revoked remote WS must receive ServerMessage::RemoteAccessDisabled on fast disable->enable"
+    );
+    assert!(
+        saw_close,
+        "revoked remote WS must close on fast disable->enable"
+    );
+
+    for _ in 0..40 {
+        if server.remote_access().active_remote_connections() == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(server.remote_access().active_remote_connections(), 0);
+
+    // Reconnecting with the wiped old cookie must still be rejected even though remote is re-enabled.
+    let mut stale_ws_req = format!("ws://{v6_addr}/ws")
+        .into_client_request()
+        .expect("stale ws req");
+    stale_ws_req
+        .headers_mut()
+        .insert(HOST, public_host.parse().unwrap());
+    stale_ws_req
+        .headers_mut()
+        .insert(ORIGIN, public_origin.parse().unwrap());
+    stale_ws_req
+        .headers_mut()
+        .insert(COOKIE, old_cookie.parse().unwrap());
+    let stale_err = connect_async(stale_ws_req)
+        .await
+        .expect_err("old cookie must stay revoked after disable->enable");
+    assert!(stale_err.to_string().contains("403"));
 
     server.shutdown().await;
 }

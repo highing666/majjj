@@ -3,17 +3,14 @@ mod common;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use axum::body::Body;
-use axum::extract::ConnectInfo;
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, COOKIE, SET_COOKIE};
-use axum::http::{HeaderMap, Method, Request, StatusCode};
-use common::TempDirGuard;
-use http_body_util::BodyExt;
+use axum::http::{Method, StatusCode};
+use common::{assert_minimal_403, send_router_request, TempDirGuard};
 use mahjong_server::lan::PublicIpv6UrlInfo;
 use mahjong_server::protocol::{RemoteAccessStatusResponse, RemoteAuthResponse};
 use mahjong_server::public_url::PublicUrlSource;
 use mahjong_server::storage::HistoryStore;
 use mahjong_server::{ServerConfig, TableOptions, TestRouterHandle};
-use tower::ServiceExt;
 
 async fn build_control_router(
     allow_remote: bool,
@@ -39,53 +36,6 @@ async fn build_control_router(
     cfg.build_router_with_options(TableOptions::default())
         .await
         .expect("build full-stack remote-control test router")
-}
-
-async fn send_router_request(
-    router: &axum::Router,
-    peer: Option<SocketAddr>,
-    method: Method,
-    uri: &str,
-    headers: &[(&str, &str)],
-    body: impl Into<Body>,
-) -> (StatusCode, HeaderMap, Vec<u8>) {
-    let mut builder = Request::builder().method(method).uri(uri);
-    for &(name, value) in headers {
-        builder = builder.header(name, value);
-    }
-    let mut req = builder.body(body.into()).expect("build router request");
-    if let Some(addr) = peer {
-        req.extensions_mut().insert(ConnectInfo(addr));
-    }
-    let resp = router
-        .clone()
-        .oneshot(req)
-        .await
-        .expect("router oneshot response");
-    let status = resp.status();
-    let resp_headers = resp.headers().clone();
-    let bytes = resp
-        .into_body()
-        .collect()
-        .await
-        .expect("collect response body")
-        .to_bytes()
-        .to_vec();
-    (status, resp_headers, bytes)
-}
-
-fn assert_minimal_403(status: StatusCode, headers: &HeaderMap, body: &[u8], context: &str) {
-    assert_eq!(status, StatusCode::FORBIDDEN, "{context}");
-    assert_eq!(
-        headers.get(CACHE_CONTROL).and_then(|v| v.to_str().ok()),
-        Some("no-store"),
-        "{context}: expected Cache-Control: no-store"
-    );
-    assert!(
-        body.is_empty(),
-        "{context}: minimal 403 must not leak body, got {:?}",
-        String::from_utf8_lossy(body)
-    );
 }
 
 #[tokio::test]

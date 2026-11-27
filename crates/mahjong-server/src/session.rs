@@ -387,8 +387,7 @@ pub(crate) struct ClientConnection {
     pub(crate) seat_token: String,
     pub(crate) nickname: String,
     pub(crate) seat: Option<Seat>,
-    pub(crate) host_is_loopback: bool,
-    pub(crate) is_remote: bool,
+    pub(crate) trust_tier: ClientTrustTier,
     pub(crate) tx: mpsc::UnboundedSender<OutboundSignal>,
 }
 
@@ -653,10 +652,12 @@ impl TableSession {
             }
             _ => None,
         };
-        let (lan_urls, host_is_loopback, client_is_remote) = if conn.is_remote {
-            (LanUrlInfo::default(), false, true)
+        let host_is_loopback = conn.trust_tier.is_loopback();
+        let client_is_remote = conn.trust_tier.is_remote();
+        let lan_urls = if client_is_remote {
+            LanUrlInfo::default()
         } else {
-            (self.lan_urls(), conn.host_is_loopback, false)
+            self.lan_urls()
         };
         TableSnapshot {
             table_id: self.table_id.clone(),
@@ -819,8 +820,7 @@ impl TableSession {
             seat_token: seat_token.clone(),
             nickname,
             seat: restored_seat,
-            host_is_loopback: trust_tier.is_loopback(),
-            is_remote: trust_tier.is_remote(),
+            trust_tier,
             tx: tx.clone(),
         };
         let snapshot = self.build_snapshot(&conn);

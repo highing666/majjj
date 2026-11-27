@@ -13,9 +13,8 @@ use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get, post};
-use axum::{Json, Router};
+use axum::Router;
 use futures_util::{SinkExt, StreamExt};
-use serde::Serialize;
 use thiserror::Error;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
@@ -37,8 +36,9 @@ use crate::remote_access::{
 use crate::remote_control::{self, RemoteControlState};
 use crate::remote_gate::remote_gate_response;
 use crate::security::{
-    classify_request_trust_tier, has_json_content_type, is_same_origin_ws_request,
-    minimal_forbidden_response, unsupported_media_type_json_response, ClientTrustTier,
+    classify_request_trust_tier, extract_request_trust_tier, has_json_content_type,
+    is_same_origin_ws_request, json_with_no_store, minimal_forbidden_response,
+    unsupported_media_type_json_response, ClientTrustTier,
 };
 use crate::session::{OutboundSignal, TableOptions, TableRuntime};
 use crate::static_assets::{
@@ -748,32 +748,12 @@ async fn api_no_store_middleware(req: Request, next: Next) -> Response {
     response
 }
 
-fn json_with_no_store<T: Serialize>(status: StatusCode, payload: &T) -> Response {
-    let mut response = (status, Json(payload)).into_response();
-    response
-        .headers_mut()
-        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    response
-}
-
-fn extract_trust_tier(extensions: &axum::http::Extensions, headers: &HeaderMap) -> ClientTrustTier {
-    extensions
-        .get::<ClientTrustTier>()
-        .copied()
-        .unwrap_or_else(|| {
-            let peer = extensions
-                .get::<ConnectInfo<SocketAddr>>()
-                .map(|ConnectInfo(addr)| *addr);
-            classify_request_trust_tier(peer, headers)
-        })
-}
-
 async fn shutdown_handler(
     extensions: axum::http::Extensions,
     headers: HeaderMap,
     State(state): State<AppState>,
 ) -> Response {
-    let tier = extract_trust_tier(&extensions, &headers);
+    let tier = extract_request_trust_tier(&extensions, &headers);
     if state.headless || !tier.is_loopback() {
         return minimal_forbidden_response();
     }
@@ -974,7 +954,18 @@ async fn ws_handler(
     headers: HeaderMap,
     State(state): State<AppState>,
 ) -> Response {
-    let tier = extract_trust_tier(&extensions, &headers);
+    let tier = extract_request_trust_tier(&extensions, &headers);
+    let remote_session = if tier.is_remote() {
+        let Some((session_token, revocation_rx)) = state
+            .remote_access
+            .validate_session_cookie_with_revocation(&headers)
+        else {
+            return minimal_forbidden_response();
+        };
+        Some((session_token, revocation_rx))
+    } else {
+        None
+    };
     let runtime = state.session.clone();
     let heartbeat = state.heartbeat;
     let ws_tracker = state.ws_tracker.clone();
@@ -988,6 +979,7 @@ async fn ws_handler(
             heartbeat,
             ws_tracker,
             remote_access,
+            remote_session,
             shutdown_rx,
         )
     })
@@ -1002,6 +994,7 @@ async fn wait_remote_revocation(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_ws_connection(
     socket: WebSocket,
     runtime: TableRuntime,
@@ -1009,18 +1002,29 @@ async fn handle_ws_connection(
     heartbeat: HeartbeatConfig,
     ws_tracker: WsConnectionTracker,
     remote_access: RemoteAccessManager,
+    remote_session: Option<(String, watch::Receiver<u64>)>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) {
     let _ws_guard = ws_tracker.enter();
-    let (_remote_ws_guard, mut remote_revocation_rx) = if trust_tier.is_remote() {
-        let (guard, rx) = remote_access.enter_remote_ws();
-        (Some(guard), Some(rx))
-    } else {
-        (None, None)
-    };
+    let (_remote_ws_guard, mut remote_revocation_rx, remote_session_token) =
+        if let Some((session_token, revocation_rx)) = remote_session {
+            (
+                Some(remote_access.track_remote_ws()),
+                Some(revocation_rx),
+                Some(session_token),
+            )
+        } else {
+            (None, None, None)
+        };
     let (mut ws_tx, mut ws_rx) = socket.split();
 
-    if trust_tier.is_remote() && !remote_access.is_enabled() {
+    let already_revoked = remote_session_token
+        .as_deref()
+        .is_some_and(|token| !remote_access.is_valid_session(token))
+        || remote_revocation_rx
+            .as_ref()
+            .is_some_and(|rx| rx.has_changed().unwrap_or(true));
+    if already_revoked {
         let _ = send_server_message(
             &mut ws_tx,
             &ServerMessage::RemoteAccessDisabled {
@@ -1057,18 +1061,16 @@ async fn handle_ws_connection(
                     break;
                 }
             }
-            res = wait_remote_revocation(&mut remote_revocation_rx) => {
-                if res.is_err() || !remote_access.is_enabled() {
-                    let _ = send_server_message(
-                        &mut ws_tx,
-                        &ServerMessage::RemoteAccessDisabled {
-                            message: "宿主已关闭远程联机，连接已断开".to_string(),
-                        },
-                    )
-                    .await;
-                    close_ws_gracefully(&mut ws_tx).await;
-                    break;
-                }
+            _res = wait_remote_revocation(&mut remote_revocation_rx) => {
+                let _ = send_server_message(
+                    &mut ws_tx,
+                    &ServerMessage::RemoteAccessDisabled {
+                        message: "宿主已关闭远程联机，连接已断开".to_string(),
+                    },
+                )
+                .await;
+                close_ws_gracefully(&mut ws_tx).await;
+                break;
             }
             outbound = rx.recv() => {
                 match outbound {
