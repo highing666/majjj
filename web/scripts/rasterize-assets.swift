@@ -13,11 +13,20 @@ struct AlphaColorSpec: Decodable {
     let alpha: Double
 }
 
+struct ArtBoxSpec: Decodable {
+    let insetX: Double
+    let insetY: Double
+    let width: Double
+    let height: Double
+}
+
 struct GeometrySpec: Decodable {
     let cornerRadius: Double
     let standingTopCap: Double
     let laidIvoryWall: Double
     let laidJadeLip: Double
+    let artBox: ArtBoxSpec
+    let bambooWidths: [String: Double]
 }
 
 struct TypographySpec: Decodable {
@@ -34,7 +43,6 @@ struct PaletteSpec: Decodable {
     let crimson: String
     let jade: String
     let cobalt: String
-    let goldAccent: String
     let ivoryTop: String
     let ivoryMid: String
     let ivoryBot: String
@@ -136,7 +144,6 @@ struct TileTheme {
     let crimson: CGColor
     let jade: CGColor
     let cobalt: CGColor
-    let goldAccent: CGColor
 
     init(spec: StyleASpec) {
         self.fontPS = spec.typography.primaryFont
@@ -172,7 +179,6 @@ struct TileTheme {
         self.crimson = cgColorFromHex(p.crimson)
         self.jade = cgColorFromHex(p.jade)
         self.cobalt = cgColorFromHex(p.cobalt)
-        self.goldAccent = cgColorFromHex(p.goldAccent)
     }
 
     func resolve(_ key: String) -> CGColor {
@@ -1045,13 +1051,15 @@ func drawTileFace(_ ctx: CGContext, frame: CGRect, tileIndex: Int, laid: Bool, s
     addRoundedRect(ctx, rect: face, radius: theme.cornerRadius - 0.6)
     ctx.clip()
 
-    let insetX: CGFloat = 4.2
-    let insetY: CGFloat = 5.0
+    let insetX = CGFloat(spec.geometry.artBox.insetX)
+    let insetY = CGFloat(spec.geometry.artBox.insetY)
+    let artBoxW = CGFloat(spec.geometry.artBox.width)
+    let artBoxH = CGFloat(spec.geometry.artBox.height)
     let targetW = face.width - insetX * 2
     let targetH = face.height - insetY * 2
-    let uniformScale = min(targetW / 100.0, targetH / 112.0)
-    let artW = 100.0 * uniformScale
-    let artH = 112.0 * uniformScale
+    let uniformScale = min(targetW / artBoxW, targetH / artBoxH)
+    let artW = artBoxW * uniformScale
+    let artH = artBoxH * uniformScale
     let artX = face.midX - artW * 0.5
     let artY = face.midY - artH * 0.5
 
@@ -1069,8 +1077,8 @@ func drawTileFace(_ ctx: CGContext, frame: CGRect, tileIndex: Int, laid: Bool, s
         let rank = tileIndex - 9 + 1
         if rank == 1 {
             drawEngravedOneBamboo(ctx, theme: theme)
-        } else if let entries = spec.bamboo[String(rank)] {
-            let bw: CGFloat = rank <= 4 ? 16.2 : (rank <= 6 ? 14.8 : 12.6)
+        } else if let entries = spec.bamboo[String(rank)], let rawBw = spec.geometry.bambooWidths[String(rank)] {
+            let bw = CGFloat(rawBw)
             for entry in entries {
                 drawCarvedBambooStalk(
                     ctx,

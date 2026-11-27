@@ -29,7 +29,6 @@ const PALETTE = {
   crimson: STYLE_A_SPEC.palette.crimson,
   jade: STYLE_A_SPEC.palette.jade,
   cobalt: STYLE_A_SPEC.palette.cobalt,
-  goldAccent: STYLE_A_SPEC.palette.goldAccent,
   ivoryTop: STYLE_A_SPEC.palette.ivoryTop,
   ivoryMid: STYLE_A_SPEC.palette.ivoryMid,
   ivoryBot: STYLE_A_SPEC.palette.ivoryBot,
@@ -259,7 +258,7 @@ function tileFaceInnerSvg(tileIndex) {
     if (rank === 1) {
       return drawEngravedOneBambooSvg();
     }
-    const bw = rank <= 4 ? 16.2 : rank <= 6 ? 14.8 : 12.6;
+    const bw = GEOM.bambooWidths[String(rank)];
     return STYLE_A_SPEC.bamboo[String(rank)]
       .map(({ x, y, h, color, angle }) =>
         drawCarvedBambooSvg(x, y, h, PALETTE[color], bw, angle),
@@ -378,13 +377,12 @@ function buildBodySvg(kind) {
 
 function buildTileSvg(tileIndex, laid = false) {
   const face = faceRectFor(laid);
-  const insetX = 4.2;
-  const insetY = 5.0;
+  const { insetX, insetY, width: artBoxW, height: artBoxH } = GEOM.artBox;
   const targetW = face.w - insetX * 2;
   const targetH = face.h - insetY * 2;
-  const uniformScale = Math.min(targetW / 100, targetH / 112);
-  const artW = 100 * uniformScale;
-  const artH = 112 * uniformScale;
+  const uniformScale = Math.min(targetW / artBoxW, targetH / artBoxH);
+  const artW = artBoxW * uniformScale;
+  const artH = artBoxH * uniformScale;
   const artX = face.x + face.w * 0.5 - artW * 0.5;
   const artY = face.y + face.h * 0.5 - artH * 0.5;
 

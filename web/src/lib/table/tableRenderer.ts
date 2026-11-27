@@ -307,10 +307,6 @@ export class TableSceneRenderer {
     }
   }
 
-  tick(_deltaMs: number): void {
-    // Intentionally a no-op: frameless hand turn cues stay static and flicker-free (ADR-0013).
-  }
-
   private notifyLayoutChange(layout: TableLayout): void {
     const key = [
       `${layout.width}x${layout.height}`,
@@ -1262,14 +1258,15 @@ export class TableSceneRenderer {
     }
 
     if (state.drag !== null) {
+      const handCx = layout.viewerHandRect.x + layout.viewerHandRect.width / 2;
       const guideY = layout.bottomHandY - 36;
       const guideHalfW = Math.min(180, layout.width * 0.3);
       const guide = new Graphics();
       const color = state.drag.readyToCommit ? ACTIVE_GLOW : BRASS;
       const alpha = state.drag.readyToCommit ? 0.92 : 0.48;
       guide
-        .moveTo(layout.cx - guideHalfW, guideY + 12)
-        .quadraticCurveTo(layout.cx, guideY - 16, layout.cx + guideHalfW, guideY + 12)
+        .moveTo(handCx - guideHalfW, guideY + 12)
+        .quadraticCurveTo(handCx, guideY - 16, handCx + guideHalfW, guideY + 12)
         .stroke({ width: state.drag.readyToCommit ? 3 : 2, color, alpha });
       this.ghostLayer.addChild(guide);
     }

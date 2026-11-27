@@ -378,7 +378,7 @@ describe("TableSceneRenderer standing vs laid bodies & Scheme B integration", ()
         (c) => c instanceof Graphics && c.label === "turn-stage-wash",
       );
 
-    // 1. discard_drawn (desktop): drawn gap + 5px lift + ▼ caret + stage wash, zero hand frames, safe tick
+    // 1. discard_drawn (desktop): drawn gap + 5px lift + ▼ caret + stage wash, zero hand frames
     renderer.resize(1280, 720);
     renderer.render({
       snapshot: makeSnapshot(),
@@ -403,9 +403,6 @@ describe("TableSceneRenderer standing vs laid bodies & Scheme B integration", ()
     const closedPitch = secondClosedSprite.x - firstClosedSprite.x;
     expect(drawnTileSprite.x - lastClosedSprite.x).toBeGreaterThan(closedPitch);
 
-    renderer.tick(425);
-    expectFramelessAndFullBrightness(14);
-
     // 2. discard_drawn (short landscape): drawn lift is 3px + ▼ caret, zero hand frames
     renderer.resize(844, 390);
     renderer.render({
@@ -420,7 +417,7 @@ describe("TableSceneRenderer standing vs laid bodies & Scheme B integration", ()
     const shortSprites = expectFramelessAndFullBrightness(14);
     expect(shortSprites[0].y - shortSprites[13].y).toBe(3);
 
-    // 3. reducedEffects: static cues, zero hand frames, tick remains a safe no-op
+    // 3. reducedEffects: static cues, zero hand frames
     renderer.resize(1280, 720);
     renderer.render({
       snapshot: makeSnapshot(),
@@ -430,7 +427,6 @@ describe("TableSceneRenderer standing vs laid bodies & Scheme B integration", ()
     });
     expect(hasStageWash()).toBe(true);
     expect(collectTexts(viewerHandLayer)).toContain("▼");
-    renderer.tick(425);
     expectFramelessAndFullBrightness(14);
 
     // 4. discard_post_pon (drawn_tile: null): no ▼, no per-tile gold boxes, keeps stage wash

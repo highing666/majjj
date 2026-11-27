@@ -9,20 +9,15 @@ import {
   computeSeatBadgeLayout,
   computeTableLayout,
   computeViewerHandSlots,
-  MELD_GROUP_GAP,
-  MELD_TILE_GAP,
   type Rect,
-  type TableLayoutOptions,
 } from "./layout";
-
-function rectsOverlap(a: Rect, b: Rect): boolean {
-  return (
-    a.x < b.x + b.width &&
-    a.x + a.width > b.x &&
-    a.y < b.y + b.height &&
-    a.y + a.height > b.y
-  );
-}
+import {
+  ADR_0013_VIEWPORT_MATRIX,
+  computeBottomMeldRect,
+  computeTestMeldSpan,
+  rectsOverlap,
+  VIEWER_MELD_SCENARIOS,
+} from "./testFixtures";
 
 function expectInsideBounds(rect: Rect, width: number, height: number): void {
   expect(rect.x).toBeGreaterThanOrEqual(0);
@@ -38,57 +33,8 @@ function expectRectContains(outer: Rect, inner: Rect): void {
   expect(inner.y + inner.height).toBeLessThanOrEqual(outer.y + outer.height);
 }
 
-function computeMeldSpan(tileCount: number, groupCount: number, tileW: number): number {
-  if (tileCount <= 0) {
-    return 0;
-  }
-  const groups = Math.max(1, groupCount);
-  return (
-    tileCount * tileW +
-    Math.max(0, tileCount - groups) * MELD_TILE_GAP +
-    Math.max(0, groups - 1) * MELD_GROUP_GAP
-  );
-}
-
-const VIEWPORT_MATRIX = [
-  // 4 core target devices from ADR-0013 / Spec #96 (full & browser/Safari-bar states)
-  { name: '14" MBP full 1512x982', width: 1512, height: 982, wide: true, minHandW: 74, minRiverW: 46, minMeldW: 38 },
-  { name: '14" MBP browser 1512x860', width: 1512, height: 860, wide: true, minHandW: 74, minRiverW: 46, minMeldW: 38 },
-  { name: '13" MBA M2 full 1470x956', width: 1470, height: 956, wide: true, minHandW: 71, minRiverW: 46, minMeldW: 37 },
-  { name: '13" MBA M2 browser 1470x835', width: 1470, height: 835, wide: true, minHandW: 71, minRiverW: 46, minMeldW: 37 },
-  { name: "iPhone 13 Pro full 844x390", width: 844, height: 390, wide: true, minHandW: 41, minRiverW: 28, minMeldW: 20 },
-  { name: "iPhone 13 Pro Safari 844x325", width: 844, height: 325, wide: true, minHandW: 41, minRiverW: 18, minMeldW: 20 },
-  { name: "iPhone 17 full 874x402", width: 874, height: 402, wide: true, minHandW: 43, minRiverW: 28, minMeldW: 21 },
-  { name: "iPhone 17 Safari 874x335", width: 874, height: 335, wide: true, minHandW: 43, minRiverW: 19, minMeldW: 21 },
-  // Standard / ultra-wide / compact landscape + narrow portrait fallbacks
-  { name: "desktop FHD 1920x1080", width: 1920, height: 1080, wide: true, minHandW: 88, minRiverW: 46, minMeldW: 38 },
-  { name: "Mac wide 1440x900", width: 1440, height: 900, wide: true, minHandW: 69, minRiverW: 46, minMeldW: 36 },
-  { name: "Mac laptop 1280x720", width: 1280, height: 720, wide: true, minHandW: 60, minRiverW: 46, minMeldW: 31 },
-  { name: "desktop 1024x720", width: 1024, height: 720, wide: true, minHandW: 43, minRiverW: 40, minMeldW: 22 },
-  { name: "compact landscape 760x340", width: 760, height: 340, wide: true, minHandW: 36, minRiverW: 20, minMeldW: 18 },
-  { name: "SE landscape 568x320", width: 568, height: 320, wide: true, minHandW: 22, minRiverW: 18, minMeldW: 12 },
-  { name: "iPhone portrait fallback 390x844", width: 390, height: 844, wide: false, minHandW: 23, minRiverW: 15, minMeldW: 14 },
-  { name: "SE portrait fallback 320x568", width: 320, height: 568, wide: false, minHandW: 19, minRiverW: 14, minMeldW: 12 },
-] as const;
-
-const VIEWER_MELD_SCENARIOS: ReadonlyArray<{
-  label: string;
-  options: Required<TableLayoutOptions>;
-}> = [
-  { label: "0 melds (13+1)", options: { bottomMeldTileCount: 0, bottomMeldGroupCount: 0, viewerClosedCount: 13, viewerHasDrawn: true } },
-  { label: "1 pon (10+1)", options: { bottomMeldTileCount: 3, bottomMeldGroupCount: 1, viewerClosedCount: 10, viewerHasDrawn: true } },
-  { label: "1 pon post-pon (10+0)", options: { bottomMeldTileCount: 3, bottomMeldGroupCount: 1, viewerClosedCount: 10, viewerHasDrawn: false } },
-  { label: "1 kong (10+1)", options: { bottomMeldTileCount: 4, bottomMeldGroupCount: 1, viewerClosedCount: 10, viewerHasDrawn: true } },
-  { label: "2 pons (7+1)", options: { bottomMeldTileCount: 6, bottomMeldGroupCount: 2, viewerClosedCount: 7, viewerHasDrawn: true } },
-  { label: "2 kongs (7+1)", options: { bottomMeldTileCount: 8, bottomMeldGroupCount: 2, viewerClosedCount: 7, viewerHasDrawn: true } },
-  { label: "3 pons (4+1)", options: { bottomMeldTileCount: 9, bottomMeldGroupCount: 3, viewerClosedCount: 4, viewerHasDrawn: true } },
-  { label: "3 kongs (4+1)", options: { bottomMeldTileCount: 12, bottomMeldGroupCount: 3, viewerClosedCount: 4, viewerHasDrawn: true } },
-  { label: "4 pons (1+1)", options: { bottomMeldTileCount: 12, bottomMeldGroupCount: 4, viewerClosedCount: 1, viewerHasDrawn: true } },
-  { label: "4 kongs (1+1)", options: { bottomMeldTileCount: 16, bottomMeldGroupCount: 4, viewerClosedCount: 1, viewerHasDrawn: true } },
-];
-
 describe("Cross-column enlarged theater computeTableLayout (ADR-0013)", () => {
-  it.each(VIEWPORT_MATRIX)(
+  it.each(ADR_0013_VIEWPORT_MATRIX)(
     "produces enlarged, capped, zero-overlap layout on $name ($width x $height)",
     ({ width, height, wide, minHandW, minRiverW, minMeldW }) => {
       const layout = computeTableLayout(width, height);
@@ -215,7 +161,7 @@ describe("Cross-column enlarged theater computeTableLayout (ADR-0013)", () => {
 
       // Multi-meld 对门 (2-4 melds, up to 4 tiles each): zero overlap with all core regions
       for (const meldCount of [2, 3, 4]) {
-        const totalTopMeldW = computeMeldSpan(meldCount * 4, meldCount, layout.meldTileW);
+        const totalTopMeldW = computeTestMeldSpan(meldCount * 4, meldCount, layout.meldTileW);
         const multiTopMeldRect: Rect = {
           x: layout.melds.top.x - totalTopMeldW,
           y: layout.melds.top.y,
@@ -255,7 +201,7 @@ describe("Cross-column enlarged theater computeTableLayout (ADR-0013)", () => {
   );
 
   it("maintains strict in-bounds and zero-overlap across all viewports for 0..4 viewer melds (pons and kongs)", () => {
-    for (const vp of VIEWPORT_MATRIX) {
+    for (const vp of ADR_0013_VIEWPORT_MATRIX) {
       for (const scenario of VIEWER_MELD_SCENARIOS) {
         const {
           bottomMeldTileCount,
@@ -269,6 +215,10 @@ describe("Cross-column enlarged theater computeTableLayout (ADR-0013)", () => {
         expect(layout.handTileW, `${tag} handTileW cap`).toBeLessThanOrEqual(88);
         expect(layout.riverTileW, `${tag} riverTileW cap`).toBeLessThanOrEqual(46);
         expect(layout.meldTileW, `${tag} meldTileW cap`).toBeLessThanOrEqual(38);
+        // Table center `cx` stays centered on the table regardless of viewer melds so feltBackdrop spotlight never drifts
+        expect(layout.cx, `${tag} cx stays at table center`).toBe(
+          Math.round(layout.centerStage.x + layout.centerStage.width / 2),
+        );
 
         // Viewer hand slots align pixel-for-pixel with viewerHandRect
         const handSlots = computeViewerHandSlots(layout, viewerClosedCount, viewerHasDrawn);
@@ -279,7 +229,7 @@ describe("Cross-column enlarged theater computeTableLayout (ADR-0013)", () => {
           layout.viewerHandRect.x + layout.viewerHandRect.width,
         );
 
-        const sampleMeldW = computeMeldSpan(3, 1, layout.meldTileW);
+        const sampleMeldW = computeTestMeldSpan(3, 1, layout.meldTileW);
         const coreBoxes: Array<[string, Rect]> = [
           ["topLeftSafe", layout.topLeftSafeRect],
           ["topRightSafe", layout.topRightSafeRect],
@@ -334,18 +284,12 @@ describe("Cross-column enlarged theater computeTableLayout (ADR-0013)", () => {
           coreBoxes.push(["quickEmoteDock", computeQuickEmoteDockRect(layout)]);
         }
 
-        if (bottomMeldTileCount > 0) {
-          const bottomMeldW = computeMeldSpan(
-            bottomMeldTileCount,
-            bottomMeldGroupCount,
-            layout.meldTileW,
-          );
-          const bottomMeldRect: Rect = {
-            x: layout.melds.bottom.x - bottomMeldW,
-            y: layout.melds.bottom.y,
-            width: bottomMeldW,
-            height: layout.meldTileH,
-          };
+        const bottomMeldRect = computeBottomMeldRect(
+          layout,
+          bottomMeldTileCount,
+          bottomMeldGroupCount,
+        );
+        if (bottomMeldRect !== null) {
           coreBoxes.push(["bottomMelds", bottomMeldRect]);
           if (vp.wide) {
             expect(

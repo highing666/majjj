@@ -127,7 +127,6 @@ export interface TurnCueState {
   showStageWash: boolean;
   animateBreath: boolean;
   highlightDrawnTile: boolean;
-  highlightClosedHand: boolean;
   turnPillText: string | null;
   waitHintText: string | null;
   dimViewerHand: boolean;
@@ -615,7 +614,6 @@ export function deriveTurnCueState(
       showStageWash: false,
       animateBreath: false,
       highlightDrawnTile: false,
-      highlightClosedHand: false,
       turnPillText: null,
       waitHintText: null,
       dimViewerHand: false,
@@ -635,7 +633,6 @@ export function deriveTurnCueState(
       showStageWash: true,
       animateBreath: !reducedEffects,
       highlightDrawnTile: false,
-      highlightClosedHand: false,
       turnPillText: null,
       waitHintText: null,
       dimViewerHand: false,
@@ -656,7 +653,6 @@ export function deriveTurnCueState(
       showStageWash: true,
       animateBreath: !reducedEffects,
       highlightDrawnTile: isDrawnTurn,
-      highlightClosedHand: !isDrawnTurn,
       turnPillText: isDrawnTurn
         ? "轮到你出牌"
         : "轮到你出牌 · 碰后请择牌打出",
@@ -679,7 +675,6 @@ export function deriveTurnCueState(
     showStageWash: false,
     animateBreath: false,
     highlightDrawnTile: false,
-    highlightClosedHand: false,
     turnPillText: null,
     waitHintText,
     dimViewerHand: false,

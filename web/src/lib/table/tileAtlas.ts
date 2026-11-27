@@ -804,10 +804,9 @@ function drawBambooTile(ctx: CanvasRenderingContext2D, rank: number): void {
   }
 
   // Variant A Bamboo: strictly zero blue; emerald jade & crimson with symmetric M/W 8-bamboo.
-  const entries = STYLE_A_SPEC.bamboo[
-    String(rank) as keyof typeof STYLE_A_SPEC.bamboo
-  ] as readonly BambooStalkSpec[];
-  const bw = rank <= 4 ? 16.2 : rank <= 6 ? 14.8 : 12.6;
+  const rankKey = String(rank) as keyof typeof STYLE_A_SPEC.bamboo;
+  const entries = STYLE_A_SPEC.bamboo[rankKey] as readonly BambooStalkSpec[];
+  const bw = STYLE_A_GEOMETRY.bambooWidths[rankKey];
   for (const entry of entries) {
     drawCarvedBambooStalk(
       ctx,
@@ -1033,13 +1032,13 @@ function drawTileArtwork(
   roundRectPath(ctx, face.x, face.y, face.w, face.h, CORNER_RADIUS - 0.6);
   ctx.clip();
 
-  const insetX = 4.2;
-  const insetY = 5.0;
+  const { insetX, insetY, width: artBoxW, height: artBoxH } =
+    STYLE_A_GEOMETRY.artBox;
   const targetW = face.w - insetX * 2;
   const targetH = face.h - insetY * 2;
-  const uniformScale = Math.min(targetW / 100, targetH / 112);
-  const artW = 100 * uniformScale;
-  const artH = 112 * uniformScale;
+  const uniformScale = Math.min(targetW / artBoxW, targetH / artBoxH);
+  const artW = artBoxW * uniformScale;
+  const artH = artBoxH * uniformScale;
   const artX = face.x + face.w * 0.5 - artW * 0.5;
   const artY = face.y + face.h * 0.5 - artH * 0.5;
 

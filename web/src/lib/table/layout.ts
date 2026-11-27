@@ -84,6 +84,51 @@ export const MELD_GROUP_GAP = 8;
 const OPP_HAND_GAP = 1;
 const TILE_ASPECT = 1.35;
 
+export const QUICK_EMOTE_DOCK_METRICS = {
+  compactMaxWidth: 700,
+  compactMinWingWidth: 190,
+  compactHeight: 64,
+  desktopHeight: 84,
+  portraitHeight: 44,
+  reservePadY: 4,
+} as const;
+
+export interface QuickEmoteDockMetricsInput {
+  width: number;
+  height: number;
+  isShortLandscape: boolean;
+  rightWingWidth: number;
+}
+
+/**
+ * Single-sourced compact breakpoint shared by `layout.ts` right-wing reservation
+ * and `banterLayout.ts` / `QuickEmoteBar.svelte`.
+ */
+export function isCompactQuickEmoteViewport(
+  input: QuickEmoteDockMetricsInput,
+): boolean {
+  return (
+    input.isShortLandscape ||
+    input.height > input.width ||
+    input.width < QUICK_EMOTE_DOCK_METRICS.compactMaxWidth ||
+    input.rightWingWidth < QUICK_EMOTE_DOCK_METRICS.compactMinWingWidth
+  );
+}
+
+/**
+ * Single-sourced `QuickEmoteBar` dock height (px) shared by `layout.ts` and `banterLayout.ts`.
+ */
+export function computeQuickEmoteDockHeight(
+  input: QuickEmoteDockMetricsInput,
+): number {
+  if (input.height > input.width) {
+    return QUICK_EMOTE_DOCK_METRICS.portraitHeight;
+  }
+  return isCompactQuickEmoteViewport(input)
+    ? QUICK_EMOTE_DOCK_METRICS.compactHeight
+    : QUICK_EMOTE_DOCK_METRICS.desktopHeight;
+}
+
 const LANDSCAPE_LAYOUT_PROFILE = {
   wingRatioDesktop: 0.145,
   wingMinDesktop: 176,
@@ -227,6 +272,35 @@ function computeViewerHandSpan(
     Math.max(0, closedCount - 1) * handGap +
     (hasDrawn ? drawnGap + tileW : 0)
   );
+}
+
+interface NormalizedTableLayoutOptions {
+  meldTiles: number;
+  meldGroups: number;
+  hasDrawn: boolean;
+  effectiveClosed: number;
+  handTileCount: number;
+}
+
+function normalizeTableLayoutOptions(
+  options: TableLayoutOptions,
+): NormalizedTableLayoutOptions {
+  const meldTiles = Math.max(0, Math.floor(options.bottomMeldTileCount ?? 0));
+  const meldGroups =
+    meldTiles > 0 ? Math.max(1, Math.floor(options.bottomMeldGroupCount ?? 1)) : 0;
+  const hasDrawn = options.viewerHasDrawn ?? true;
+  const effectiveClosed = clamp(
+    Math.floor(options.viewerClosedCount ?? 13),
+    hasDrawn ? 0 : 1,
+    13,
+  );
+  return {
+    meldTiles,
+    meldGroups,
+    hasDrawn,
+    effectiveClosed,
+    handTileCount: effectiveClosed + (hasDrawn ? 1 : 0),
+  };
 }
 
 interface ViewerHandRectParams {
@@ -453,8 +527,9 @@ function computeLandscapeTheaterLayout(
   const bottomSideGap = isShortLandscape ? 6 : 10;
   const bottomCorridorLeft = bottomBadge.x + bottomBadge.width + bottomSideGap;
   const bottomCorridorRight = rightWing.x - bottomSideGap;
-  const actualCorridorW = Math.max(120, bottomCorridorRight - bottomCorridorLeft);
-  const totalBottomCorridorW = Math.max(260, actualCorridorW);
+  const corridorW = Math.max(120, bottomCorridorRight - bottomCorridorLeft);
+  // Floor baseline sizing at 260px so narrow viewports start from readable tile proportions before clamping to corridorW
+  const sizingCorridorW = Math.max(260, corridorW);
 
   const handGap = isShortLandscape
     ? profile.handGapCompact
@@ -468,7 +543,7 @@ function computeLandscapeTheaterLayout(
       : Math.round(profile.drawnGapDesktop * 0.72);
 
   const maxHandWByCorridor = Math.floor(
-    (totalBottomCorridorW - 12 * handGap - drawnGap) / 14,
+    (sizingCorridorW - 12 * handGap - drawnGap) / 14,
   );
   const maxHandWByHeight = Math.round(
     (height * (isShortLandscape ? 0.185 : profile.handHeightFraction)) /
@@ -495,18 +570,9 @@ function computeLandscapeTheaterLayout(
   );
 
   // Dynamic bottom-right meld reservation & strict zero-overlap corridor fit for 0..4 melds
-  const meldTiles = Math.max(0, Math.floor(options.bottomMeldTileCount ?? 0));
-  const meldGroups =
-    meldTiles > 0 ? Math.max(1, Math.floor(options.bottomMeldGroupCount ?? 1)) : 0;
+  const { meldTiles, meldGroups, hasDrawn, effectiveClosed, handTileCount } =
+    normalizeTableLayoutOptions(options);
   let meldSepGap = meldTiles > 0 ? (isShortLandscape ? 8 : 14) : 0;
-
-  const hasDrawn = options.viewerHasDrawn ?? true;
-  const effectiveClosed = clamp(
-    Math.floor(options.viewerClosedCount ?? 13),
-    hasDrawn ? 0 : 1,
-    13,
-  );
-  const handTileCount = effectiveClosed + (hasDrawn ? 1 : 0);
 
   const calcMeldReserve = (mw: number, sep: number): number =>
     meldTiles > 0 ? computeMeldSpan(meldTiles, meldGroups, mw) + sep : 0;
@@ -514,32 +580,33 @@ function computeLandscapeTheaterLayout(
   if (
     computeViewerHandSpan(effectiveClosed, hasDrawn, handTileW, handGap, drawnGap) +
       calcMeldReserve(meldTileW, meldSepGap) >
-    actualCorridorW
+    corridorW
   ) {
-    const fixedHandGaps =
-      Math.max(0, effectiveClosed - 1) * handGap + (hasDrawn ? drawnGap : 0);
-    const availForHand = actualCorridorW - calcMeldReserve(meldTileW, meldSepGap);
+    const fixedHandGaps = computeViewerHandSpan(
+      effectiveClosed,
+      hasDrawn,
+      0,
+      handGap,
+      drawnGap,
+    );
+    const availForHand = corridorW - calcMeldReserve(meldTileW, meldSepGap);
     const maxFitHandW = Math.floor((availForHand - fixedHandGaps) / handTileCount);
 
     if (maxFitHandW >= Math.min(18, handTileW)) {
       handTileW = Math.max(10, Math.min(handTileW, maxFitHandW));
     } else {
       const meldFixedGaps =
-        meldTiles > 0
-          ? Math.max(0, meldTiles - meldGroups) * MELD_TILE_GAP +
-            Math.max(0, meldGroups - 1) * MELD_GROUP_GAP +
-            meldSepGap
-          : 0;
+        meldTiles > 0 ? computeMeldSpan(meldTiles, meldGroups, 0) + meldSepGap : 0;
       const budget = Math.max(
         handTileCount * 10 + meldTiles * 8,
-        actualCorridorW - fixedHandGaps - meldFixedGaps,
+        corridorW - fixedHandGaps - meldFixedGaps,
       );
       const currentSum = handTileCount * handTileW + meldTiles * meldTileW;
       if (currentSum > 0 && budget < currentSum) {
         const scale = budget / currentSum;
         meldTileW = Math.max(10, Math.floor(meldTileW * scale));
         const remForHand =
-          actualCorridorW - calcMeldReserve(meldTileW, meldSepGap) - fixedHandGaps;
+          corridorW - calcMeldReserve(meldTileW, meldSepGap) - fixedHandGaps;
         handTileW = Math.max(
           10,
           Math.min(handTileW, Math.floor(remForHand / handTileCount)),
@@ -548,14 +615,19 @@ function computeLandscapeTheaterLayout(
       if (
         computeViewerHandSpan(effectiveClosed, hasDrawn, handTileW, handGap, drawnGap) +
           calcMeldReserve(meldTileW, meldSepGap) >
-        actualCorridorW
+        corridorW
       ) {
         drawnGap = Math.max(4, Math.min(drawnGap, 6));
         meldSepGap = meldTiles > 0 ? Math.min(meldSepGap, 6) : 0;
-        const tightHandGaps =
-          Math.max(0, effectiveClosed - 1) * handGap + (hasDrawn ? drawnGap : 0);
+        const tightHandGaps = computeViewerHandSpan(
+          effectiveClosed,
+          hasDrawn,
+          0,
+          handGap,
+          drawnGap,
+        );
         const rem =
-          actualCorridorW - calcMeldReserve(meldTileW, meldSepGap) - tightHandGaps;
+          corridorW - calcMeldReserve(meldTileW, meldSepGap) - tightHandGaps;
         handTileW = Math.max(8, Math.min(handTileW, Math.floor(rem / handTileCount)));
       }
     }
@@ -678,9 +750,14 @@ function computeLandscapeTheaterLayout(
     height: wingPocketH,
   };
 
-  // QuickEmoteBar sits at bottom of rightWing (64px compact / 84px desktop)
+  // QuickEmoteBar sits at bottom of rightWing (single-sourced with banterLayout.ts)
   const quickEmoteReserveH =
-    isShortLandscape || width < 700 || wingW < 190 ? 68 : 88;
+    computeQuickEmoteDockHeight({
+      width,
+      height,
+      isShortLandscape,
+      rightWingWidth: wingW,
+    }) + QUICK_EMOTE_DOCK_METRICS.reservePadY;
   const wingMidTop = leftPocket.y + leftPocket.height + wingInnerGap + 2;
   const leftMidBottom = bottomBadge.y - wingInnerGap - 2;
   const rightMidBottom = height - bottomPad - quickEmoteReserveH - wingInnerGap;
@@ -803,8 +880,8 @@ function computeLandscapeTheaterLayout(
   return {
     width,
     height,
-    // Keep `cx` aligned with viewer hand center so hand-relative guides and slots stay aligned
-    cx: handCenterX,
+    // Keep `cx` at table center so feltBackdrop spotlight stays centered regardless of viewer melds
+    cx: centerCx,
     cy,
     margin,
     topMargin: wingTop,
@@ -908,12 +985,8 @@ function computePortraitFallbackLayout(
     Math.min(19, maxHandW),
     36,
   );
-  const hasDrawn = options.viewerHasDrawn ?? true;
-  const effectiveClosed = clamp(
-    Math.floor(options.viewerClosedCount ?? 13),
-    hasDrawn ? 0 : 1,
-    13,
-  );
+  const { meldTiles, meldGroups, hasDrawn, effectiveClosed } =
+    normalizeTableLayoutOptions(options);
   const { handTileH, bottomHandY, viewerHandRect } = buildViewerHandRect({
     centerX: width / 2,
     height,
@@ -936,9 +1009,6 @@ function computePortraitFallbackLayout(
 
   let meldTileW = clamp(Math.round(handTileW * 0.65), 14, 22);
   let bottomBadgeW = clamp(Math.round(width * 0.4), 116, 156);
-  const meldTiles = Math.max(0, Math.floor(options.bottomMeldTileCount ?? 0));
-  const meldGroups =
-    meldTiles > 0 ? Math.max(1, Math.floor(options.bottomMeldGroupCount ?? 1)) : 0;
   if (meldTiles > 0) {
     const portraitMeldGap = 6;
     const rawSpan = computeMeldSpan(meldTiles, meldGroups, meldTileW);
@@ -950,9 +1020,7 @@ function computePortraitFallbackLayout(
         bottomBadgeW = width - margin * 2 - portraitMeldGap - rawSpan;
       } else {
         bottomBadgeW = minBadgeW;
-        const fixedMeldGaps =
-          Math.max(0, meldTiles - meldGroups) * MELD_TILE_GAP +
-          Math.max(0, meldGroups - 1) * MELD_GROUP_GAP;
+        const fixedMeldGaps = computeMeldSpan(meldTiles, meldGroups, 0);
         meldTileW = Math.max(
           8,
           Math.floor((maxMeldW - fixedMeldGaps) / meldTiles),
@@ -1471,8 +1539,8 @@ export function computeViewerHandSlots(
     bottomHandY: y,
   } = layout;
 
-  const closedW = safeClosed * tw + Math.max(0, safeClosed - 1) * gap;
-  const fullW = closedW + (hasDrawn ? drawnGap + tw : 0);
+  const closedW = computeViewerHandSpan(safeClosed, false, tw, gap, drawnGap);
+  const fullW = computeViewerHandSpan(safeClosed, hasDrawn, tw, gap, drawnGap);
   const handCenter = layout.viewerHandRect.x + layout.viewerHandRect.width / 2;
   const startX = Math.round(handCenter - fullW / 2);
 

@@ -173,9 +173,8 @@
       }
     };
 
-    const handleTickerFrame = (ticker: { deltaMS: number }) => {
+    const handleTickerFrame = () => {
       if (!disposed && !document.hidden) {
-        renderer?.tick(ticker.deltaMS);
         onFrameTick?.();
       }
     };
