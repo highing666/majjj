@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "${MAJJJ_ALLOW_MAIN_PUSH:-0}" = "1" ]; then
+  exit 0
+fi
+
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  if [ -z "${remote_ref:-}" ]; then
+    continue
+  fi
+  if [ "$remote_ref" = "refs/heads/main" ]; then
+    echo "ERROR: Direct pushes to 'main' are blocked by .githooks/pre-push." >&2
+    echo "Push a feature branch and open a pull request instead." >&2
+    echo "For intentional emergency pushes, re-run with MAJJJ_ALLOW_MAIN_PUSH=1." >&2
+    exit 1
+  fi
+done
+
+exit 0

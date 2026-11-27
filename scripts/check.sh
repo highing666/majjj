@@ -53,6 +53,7 @@ run_rust=1
 run_ai_heavy=1
 run_dist_scripts_mac=1
 run_dist_scripts_win=1
+run_githooks=1
 
 changed_files=""
 filter_by_changes=0
@@ -81,6 +82,7 @@ if [ "$filter_by_changes" -eq 1 ]; then
   run_ai_heavy=0
   run_dist_scripts_mac=0
   run_dist_scripts_win=0
+  run_githooks=0
 
   if printf '%s\n' "$changed_files" | grep -qE '^(web/|scripts/check-web-safeguards\.sh$)'; then
     run_web=1
@@ -97,11 +99,18 @@ if [ "$filter_by_changes" -eq 1 ]; then
   if printf '%s\n' "$changed_files" | grep -qE '^(scripts/windows-|scripts/test-dist-scripts\.sh$|docs/windows-)'; then
     run_dist_scripts_win=1
   fi
+  if printf '%s\n' "$changed_files" | grep -qE '^(\.githooks/|scripts/test-githooks\.sh$)'; then
+    run_githooks=1
+  fi
 fi
 
 # 1. Fail-fast static & frontend checks
 ./scripts/check-glossary.sh
 ./scripts/check-doc-privacy.sh
+
+if [ "$run_githooks" -eq 1 ]; then
+  ./scripts/test-githooks.sh
+fi
 
 if [ "$run_rust" -eq 1 ]; then
   cargo fmt --all -- --check
