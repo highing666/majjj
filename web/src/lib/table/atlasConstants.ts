@@ -26,6 +26,8 @@ export const STYLE_A_SPEC = styleASpecJson;
 export const ATLAS_GRID = STYLE_A_SPEC.grid;
 export const ATLAS_TILE_FRAME_COUNT = ATLAS_GRID.tileCount;
 export const ATLAS_REQUIRED_BODY_FRAMES = ATLAS_GRID.bodyFrames;
+export const STYLE_A_GEOMETRY = STYLE_A_SPEC.geometry;
+export const STYLE_A_TYPOGRAPHY = STYLE_A_SPEC.typography;
 export const STYLE_A_PALETTE = STYLE_A_SPEC.palette;
 
 export function toRgbaCss(color: SpecAlphaColor): string {

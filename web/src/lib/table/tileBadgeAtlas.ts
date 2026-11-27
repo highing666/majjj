@@ -56,13 +56,14 @@ interface AtlasMetaShape {
 const LAID_BACK_FRAME_KEY = ATLAS_REQUIRED_BODY_FRAMES[4];
 
 /**
- * Display sizes matching the `136:184` laid-tile frame aspect ratio
- * while preserving `ActionBar`, `SettlementModal`, and `MatchSummaryView` cadence.
+ * Display sizes matching the `184:248` laid-tile frame aspect ratio:
+ * keeps `ActionBar` `xs` compact while enlarging `SettlementModal` and
+ * `MatchSummaryView` (`sm` / `md`) per ADR-0013.
  */
 export const TILE_BADGE_DIMENSIONS: Record<TileBadgeSize, TileBadgeDimensions> = {
   xs: { width: 22, height: 30 },
-  sm: { width: 26, height: 35 },
-  md: { width: 32, height: 43 },
+  sm: { width: 30, height: 41 },
+  md: { width: 38, height: 52 },
 };
 
 const ATLAS_DATA = atlasMetaJson as unknown as AtlasMetaShape;

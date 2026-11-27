@@ -192,15 +192,15 @@
               {#each melds as meld, mIdx (`${hand.seat}:fm:${mIdx}`)}
                 <span class="meld-pill">
                   {#each meld.tiles as slot, tIdx (`${hand.seat}:fm:${mIdx}:${tIdx}`)}
-                    <TileBadge tile={slot.tile} faceUp={slot.faceUp} size="xs" />
+                    <TileBadge tile={slot.tile} faceUp={slot.faceUp} size="sm" />
                   {/each}
                 </span>
               {/each}
               {#each hand.closed_tiles as tile, tIdx (`${hand.seat}:fc:${tIdx}:${tile}`)}
-                <TileBadge {tile} size="xs" />
+                <TileBadge {tile} size="sm" />
               {/each}
               {#if hand.drawn_tile !== null}
-                <TileBadge tile={hand.drawn_tile} size="xs" highlighted />
+                <TileBadge tile={hand.drawn_tile} size="sm" highlighted />
               {/if}
             </div>
           </div>

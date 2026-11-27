@@ -1,9 +1,68 @@
-<svg viewBox="0 0 100 136" xmlns="http://www.w3.org/2000/svg">
-  <rect x="2.5" y="1.5" width="95" height="133" rx="11" fill="#186258" stroke="#091D1B" stroke-width="1.8"/>
-  <rect x="2.5" y="7.5" width="95" height="125" rx="10.5" fill="#F6EFE0" stroke="#1C1917" stroke-width="2.6"/>
-  <rect x="4" y="8.3" width="92" height="5.5" rx="3" fill="#FFFDF8" opacity="0.88"/>
-  <rect x="4" y="124.5" width="92" height="7.5" rx="3" fill="#E2D4B7"/>
-  <g transform="translate(0 8.50) scale(1 0.9308)">
-    <image href="../illustrations/art-a-1sou.png" x="5" y="10" width="90" height="110" preserveAspectRatio="xMidYMid meet"/>
+<svg viewBox="0 0 100 135" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="ivoryFaceGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FFFEFA"/>
+      <stop offset="75%" stop-color="#F8F3E8"/>
+      <stop offset="100%" stop-color="#ECE2CE"/>
+    </linearGradient>
+    <linearGradient id="ivoryWallGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#E7DBC5"/>
+      <stop offset="100%" stop-color="#D3C2A3"/>
+    </linearGradient>
+    <linearGradient id="jadeStandingGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1EA67A"/>
+      <stop offset="18%" stop-color="#0E7A56"/>
+      <stop offset="100%" stop-color="#074B34"/>
+    </linearGradient>
+    <linearGradient id="jadeBackFaceGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1EA67A"/>
+      <stop offset="50%" stop-color="#0E7A56"/>
+      <stop offset="100%" stop-color="#074B34"/>
+    </linearGradient>
+    <linearGradient id="jadeLipGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0E7A56"/>
+      <stop offset="60%" stop-color="#074B34"/>
+      <stop offset="100%" stop-color="#04291D"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="1.5" width="96" height="132" rx="11.5" fill="url(#jadeStandingGrad)"/>
+  <rect x="6" y="2.2" width="88" height="3.0" rx="1.5" fill="rgba(216, 255, 240, 0.26)"/>
+  <rect x="2" y="11.4" width="96" height="6" fill="rgba(4, 43, 30, 0.34)"/>
+  <rect x="2" y="14" width="96" height="119.5" rx="11.0" fill="url(#ivoryFaceGrad)" stroke="rgba(82, 69, 53, 0.28)" stroke-width="0.95"/>
+  <rect x="4" y="14" width="92" height="3.2" rx="1.6" fill="rgba(255, 255, 255, 0.88)"/>
+  <rect x="2" y="1.5" width="96" height="132" rx="11.5" fill="none" stroke="rgba(5, 51, 36, 0.65)" stroke-width="0.85"/>
+  <g transform="translate(6.20 24.69) scale(0.8760)">
+    <g>
+    <path d="M 16 98 Q 50 94 84 74" fill="none" stroke="#0C7D49" stroke-width="4.4" stroke-linecap="round"/>
+    <g transform="translate(23 94) rotate(-146)"><path d="M 0 0 Q 7.20 -4.20 16 0 Q 7.20 4.20 0 0 Z" fill="#0C7D49"/></g><g transform="translate(34 92) rotate(-106)"><path d="M 0 0 Q 6.30 -3.80 14 0 Q 6.30 3.80 0 0 Z" fill="#0C7D49"/></g><g transform="translate(78 76) rotate(-31.5)"><path d="M 0 0 Q 6.75 -4.00 15 0 Q 6.75 4.00 0 0 Z" fill="#0C7D49"/></g><g transform="translate(71 79) rotate(20.1)"><path d="M 0 0 Q 5.85 -3.60 13 0 Q 5.85 3.60 0 0 Z" fill="#0C7D49"/></g>
+    <path d="M 47 74 L 44 89 M 56 72 L 55 86" fill="none" stroke="#C81D1D" stroke-width="2.8" stroke-linecap="round"/>
+    <g transform="translate(58 65) rotate(18.3)">
+      <path d="M 0 0 Q 17.60 -4.80 32 0 Q 17.60 4.80 0 0 Z" fill="#C81D1D"/>
+      <path d="M 4 0 L 27 0" stroke="#FFFEFA" stroke-width="1.25"/>
+    </g><g transform="translate(58 65) rotate(29.8)">
+      <path d="M 0 0 Q 20.35 -5.40 37 0 Q 20.35 5.40 0 0 Z" fill="#0C7D49"/>
+      <path d="M 4 0 L 32 0" stroke="#FFFEFA" stroke-width="1.25"/>
+    </g><g transform="translate(58 65) rotate(41.3)">
+      <path d="M 0 0 Q 22.00 -5.40 40 0 Q 22.00 5.40 0 0 Z" fill="#144692"/>
+      <path d="M 4 0 L 35 0" stroke="#FFFEFA" stroke-width="1.25"/>
+    </g><g transform="translate(58 65) rotate(52.7)">
+      <path d="M 0 0 Q 19.80 -5.00 36 0 Q 19.80 5.00 0 0 Z" fill="#0C7D49"/>
+      <path d="M 4 0 L 31 0" stroke="#FFFEFA" stroke-width="1.25"/>
+    </g><g transform="translate(58 65) rotate(64.2)">
+      <path d="M 0 0 Q 16.50 -4.60 30 0 Q 16.50 4.60 0 0 Z" fill="#C81D1D"/>
+      <path d="M 4 0 L 25 0" stroke="#FFFEFA" stroke-width="1.25"/>
+    </g>
+    <g transform="translate(0.8 1.1)"><path d="M 34 24 C 27 34 23 45 27 55 C 31 69 42 78 52 77 C 63 76 71 69 72 60 C 72 47 62 39 53 33 C 51 28 52 23 48 20 C 44 17 37 18 34 24 Z" fill="rgba(255, 255, 255, 0.78)"/></g>
+    <path d="M 34 24 C 27 34 23 45 27 55 C 31 69 42 78 52 77 C 63 76 71 69 72 60 C 72 47 62 39 53 33 C 51 28 52 23 48 20 C 44 17 37 18 34 24 Z" fill="#0C7D49"/>
+    <path d="M 34 37 Q 41 40 48 35" fill="none" stroke="#FFFEFA" stroke-width="2.0" stroke-linecap="round"/>
+    <path d="M 32 46 Q 30 64 46 71 Q 48 60 44 50 Z" fill="#C81D1D"/>
+    <path d="M 44 41 Q 63 39 74 58 Q 66 69 51 69 Q 42 55 44 41 Z" fill="#144692"/>
+    <path d="M 49 47 Q 58 47 66 54 M 49 54 Q 58 55 67 60 M 51 61 Q 57 62 63 65" fill="none" stroke="#FFFEFA" stroke-width="1.65" stroke-linecap="round"/>
+    <path d="M 34 22 Q 44 10 59 10 Q 53 18 49 22 Q 42 21 34 22 Z" fill="#C81D1D"/>
+    <path d="M 39 19 Q 46 15 53 13" fill="none" stroke="#FFFEFA" stroke-width="1.3" stroke-linecap="round"/>
+    <path d="M 32 24 L 18 27.5 L 31 31 Z" fill="#C81D1D"/>
+    <circle cx="36.7" cy="26.0" r="3.2" fill="#FFFEFA"/>
+    <circle cx="36.75" cy="26.05" r="1.65" fill="#16181D"/>
+  </g>
   </g>
 </svg>

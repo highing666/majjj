@@ -1,7 +1,35 @@
-<svg viewBox="0 0 100 136" xmlns="http://www.w3.org/2000/svg">
-  
-  <rect x="2.5" y="2.5" width="95" height="131" rx="10.5" fill="#186258" stroke="#091D1B" stroke-width="2.6"/>
-  <rect x="12.5" y="12.5" width="75" height="111.0" rx="7" fill="none" stroke="rgba(167, 243, 208, 0.42)" stroke-width="2.2"/>
-       <path d="M50 44.0 L66 68.0 L50 92.0 L34 68.0 Z" fill="none" stroke="rgba(167, 243, 208, 0.42)" stroke-width="2.2"/>
-       <circle cx="50" cy="68.0" r="5" fill="rgba(212, 168, 87, 0.55)"/>
+<svg viewBox="0 0 100 135" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="ivoryFaceGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FFFEFA"/>
+      <stop offset="75%" stop-color="#F8F3E8"/>
+      <stop offset="100%" stop-color="#ECE2CE"/>
+    </linearGradient>
+    <linearGradient id="ivoryWallGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#E7DBC5"/>
+      <stop offset="100%" stop-color="#D3C2A3"/>
+    </linearGradient>
+    <linearGradient id="jadeStandingGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1EA67A"/>
+      <stop offset="18%" stop-color="#0E7A56"/>
+      <stop offset="100%" stop-color="#074B34"/>
+    </linearGradient>
+    <linearGradient id="jadeBackFaceGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1EA67A"/>
+      <stop offset="50%" stop-color="#0E7A56"/>
+      <stop offset="100%" stop-color="#074B34"/>
+    </linearGradient>
+    <linearGradient id="jadeLipGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0E7A56"/>
+      <stop offset="60%" stop-color="#074B34"/>
+      <stop offset="100%" stop-color="#04291D"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="96" height="131.5" rx="11.5" fill="url(#ivoryWallGrad)"/>
+  <rect x="2" y="2" width="96" height="122.0" rx="11.5" fill="url(#jadeStandingGrad)"/>
+  <rect x="2" y="2" width="96" height="111.5" rx="11.0" fill="url(#jadeBackFaceGrad)"/>
+  <rect x="12.5" y="11.5" width="75.0" height="92.5" rx="6.5" fill="none" stroke="rgba(184, 245, 222, 0.42)" stroke-width="1.7"/>
+  <path d="M 50 39.8 L 63 57.8 L 50 75.8 L 37 57.8 Z" fill="none" stroke="rgba(184, 245, 222, 0.42)" stroke-width="1.7"/>
+  <circle cx="50" cy="57.8" r="4" fill="rgba(232, 192, 106, 0.68)"/>
+  <rect x="2" y="2" width="96" height="131.5" rx="11.5" fill="none" stroke="rgba(5, 51, 36, 0.65)" stroke-width="0.95"/>
 </svg>
