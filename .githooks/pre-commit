@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+current_branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+if [ "$current_branch" = "main" ] && [ "${MAJJJ_ALLOW_MAIN_COMMIT:-0}" != "1" ]; then
+  echo "ERROR: Direct commits to 'main' are blocked by .githooks/pre-commit." >&2
+  echo "Create a feature branch first (e.g. git checkout -b fix/<name> or feat/<name>)." >&2
+  echo "For intentional emergency commits, re-run with MAJJJ_ALLOW_MAIN_COMMIT=1." >&2
+  exit 1
+fi
+
 exec ./scripts/check.sh --sandbox --staged
