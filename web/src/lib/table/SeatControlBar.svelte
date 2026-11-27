@@ -62,26 +62,22 @@
     {#if controlItems.length > 0}
       <div class="seat-control-bar">
         {#each controlItems as item (item.seat)}
-          {#if !(showReclaim && item.isSelf)}
-            <div class="seat-chip">
-              <span class="seat-chip-name">{item.displayName}</span>
-              {#if item.isOffline}
-                <span class="tag tag-offline">离线</span>
-              {/if}
-              {#if item.aiAssisted}
-                <span class="tag tag-self">AI 托管中</span>
-              {/if}
-              <button
-                class="btn btn-chip"
-                class:btn-jade={!item.aiAssisted}
-                type="button"
-                {disabled}
-                onclick={() => onToggleAiAssist(item.seat, item.nextEnabled)}
-              >
-                {item.actionLabel}
-              </button>
-            </div>
-          {/if}
+          <div class="seat-chip">
+            <span class="seat-chip-name">{item.displayName}</span>
+            <span class="tag tag-offline">离线</span>
+            {#if item.aiAssisted}
+              <span class="tag tag-self">AI 托管中</span>
+            {/if}
+            <button
+              class="btn btn-chip"
+              class:btn-jade={!item.aiAssisted}
+              type="button"
+              {disabled}
+              onclick={() => onToggleAiAssist(item.seat, item.nextEnabled)}
+            >
+              {item.actionLabel}
+            </button>
+          </div>
         {/each}
       </div>
     {/if}
