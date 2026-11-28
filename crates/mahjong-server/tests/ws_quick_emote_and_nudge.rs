@@ -22,19 +22,27 @@ use mahjong_server::ServerConfig;
 
 fn emote_nudge_responder(request: &BanterGenerationRequest) -> Result<BanterOutput, LlmError> {
     let user_prompt = &request.user_prompt;
+    if user_prompt.contains("牌友接茬判断") {
+        return Ok(BanterOutput::silent(PersonaMood::Deadpan));
+    }
     let (mood, text) = if user_prompt.contains("快捷互动回应") {
+        let header = user_prompt.lines().next().unwrap_or(user_prompt);
         let matched_label = QuickEmote::ALL
             .iter()
-            .find(|e| user_prompt.contains(e.label()))
+            .find(|e| header.contains(e.label()))
             .map_or("快捷互动", |e| e.label());
         (
             PersonaMood::Smug,
             format!("还「{matched_label}」呢？有本事下巡别点炮！"),
         )
     } else {
-        (PersonaMood::Plotting, "开局手气稳得一批！".to_string())
+        return Ok(BanterOutput::silent(PersonaMood::Deadpan));
     };
-    Ok(BanterOutput { mood, text })
+    Ok(BanterOutput {
+        speak: true,
+        mood,
+        text,
+    })
 }
 
 fn no_reaction_factory() -> WallProviderFactory {
@@ -109,15 +117,15 @@ async fn real_ws_quick_emotes_broadcast_trigger_ai_replies_and_nudge_persists_ac
     )
     .await;
 
-    // East receives QuickEmoteBroadcast + 2 AI TableBanter replies referencing 「发牌员演我」.
+    // East receives QuickEmoteBroadcast + 1 immediate idle AI TableBanter reply referencing 「什么破手气」.
     let mut east_saw_broadcast = false;
     let mut ai_reply_seats = Vec::new();
-    while !(east_saw_broadcast && ai_reply_seats.len() >= 2) {
+    while !(east_saw_broadcast && !ai_reply_seats.is_empty()) {
         match recv_msg(&mut east).await {
             ServerMessage::QuickEmoteBroadcast { seat, emote, text } => {
                 assert_eq!(seat, Seat::East);
                 assert_eq!(emote, QuickEmote::DealerRigged);
-                assert_eq!(text, "发牌员演我");
+                assert_eq!(text, "什么破手气");
                 east_saw_broadcast = true;
             }
             ServerMessage::TableBanter {
@@ -126,10 +134,11 @@ async fn real_ws_quick_emotes_broadcast_trigger_ai_replies_and_nudge_persists_ac
                 reply_to_seat: Some(Seat::East),
                 ..
             } => {
-                assert!(text.contains("发牌员演我"));
+                assert!(text.contains("什么破手气"));
                 ai_reply_seats.push(seat);
             }
             ServerMessage::TableBanter { .. }
+            | ServerMessage::PersonaMoodUpdated { .. }
             | ServerMessage::TableBanterAudioReady { .. }
             | ServerMessage::TableBanterAudioFallback { .. }
             | ServerMessage::TtsStatusNotice { .. }
@@ -138,8 +147,8 @@ async fn real_ws_quick_emotes_broadcast_trigger_ai_replies_and_nudge_persists_ac
             other => panic!("unexpected msg on east WS: {other:?}"),
         }
     }
-    assert_eq!(ai_reply_seats.len(), 2);
-    assert_ne!(ai_reply_seats[0], ai_reply_seats[1]);
+    assert_eq!(ai_reply_seats.len(), 1);
+    assert!(matches!(ai_reply_seats[0], Seat::West | Seat::North));
 
     // South peer also received QuickEmoteBroadcast.
     loop {
@@ -147,7 +156,7 @@ async fn real_ws_quick_emotes_broadcast_trigger_ai_replies_and_nudge_persists_ac
             ServerMessage::QuickEmoteBroadcast { seat, emote, text } => {
                 assert_eq!(seat, Seat::East);
                 assert_eq!(emote, QuickEmote::DealerRigged);
-                assert_eq!(text, "发牌员演我");
+                assert_eq!(text, "什么破手气");
                 break;
             }
             ServerMessage::TableBanter { .. }

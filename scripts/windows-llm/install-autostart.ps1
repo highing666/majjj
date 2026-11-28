@@ -22,9 +22,11 @@ param(
     [ValidateRange(1, 65535)]
     [int]$Port = 8080,
     [ValidateRange(1, 16)]
-    [int]$ParallelSlots = 3,
+    [int]$ParallelSlots = 2,
     [ValidateRange(1024, 131072)]
-    [int]$ContextSize = 12288,
+    [int]$ContextSize = 16384,
+    [ValidateRange(-1, 4096)]
+    [int]$ReasoningBudget = 256,
     [switch]$Uninstall
 )
 
@@ -72,7 +74,8 @@ $ArgParts = @(
     '-BindHost', $BindHost,
     '-Port', [string]$Port,
     '-ParallelSlots', [string]$ParallelSlots,
-    '-ContextSize', [string]$ContextSize
+    '-ContextSize', [string]$ContextSize,
+    '-ReasoningBudget', [string]$ReasoningBudget
 )
 if (-not [string]::IsNullOrWhiteSpace($ModelPath)) {
     $ArgParts += @('-ModelPath', "`"$ModelPath`"")

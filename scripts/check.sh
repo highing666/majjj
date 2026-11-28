@@ -96,7 +96,7 @@ if [ "$filter_by_changes" -eq 1 ]; then
   if printf '%s\n' "$changed_files" | grep -qE '^(scripts/[^/]+$|packaging/|Makefile$)'; then
     run_dist_scripts_mac=1
   fi
-  if printf '%s\n' "$changed_files" | grep -qE '^(scripts/windows-|scripts/test-dist-scripts\.sh$|docs/windows-)'; then
+  if printf '%s\n' "$changed_files" | grep -qE '^(scripts/windows-|scripts/test-dist-scripts\.sh$|docs/windows-|web/src/lib/audio/voicePackSchema\.ts$)'; then
     run_dist_scripts_win=1
   fi
   if printf '%s\n' "$changed_files" | grep -qE '^(\.githooks/|scripts/test-githooks\.sh$)'; then

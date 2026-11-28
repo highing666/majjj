@@ -216,7 +216,7 @@ pub enum QuickEmote {
     SpareMe,
     /// 「666 / 漂亮」
     NicePlay,
-    /// 「发牌员演我」
+    /// 「什么破手气」
     DealerRigged,
     /// 「这把我要胡大的」
     GoingBig,
@@ -241,7 +241,7 @@ impl QuickEmote {
             Self::HurryUp => "搞快点",
             Self::SpareMe => "别点我 / 求放过",
             Self::NicePlay => "666 / 漂亮",
-            Self::DealerRigged => "发牌员演我",
+            Self::DealerRigged => "什么破手气",
             Self::GoingBig => "这把我要胡大的",
         }
     }
@@ -418,6 +418,12 @@ pub enum ServerMessage {
         event_seq: u64,
         reply_to_seat: Option<Seat>,
     },
+    /// Silent facial/emotional mood update (`牌友情绪`) when an AI chooses not to speak.
+    PersonaMoodUpdated {
+        seat: Seat,
+        persona_id: PersonaId,
+        mood: PersonaMood,
+    },
     /// Lightweight notification that synthesized `BanterVoice` WAV audio is ready for same-origin fetch.
     TableBanterAudioReady {
         banter_id: String,
@@ -439,4 +445,22 @@ pub enum ServerMessage {
     LlmStatusNotice { available: bool, message: String },
     /// Status notice emitted when the optional LAN TTS service is unavailable, backs off, or recovers.
     TtsStatusNotice { available: bool, message: String },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::QuickEmote;
+
+    #[test]
+    fn quick_emote_dealer_rigged_uses_natural_copy_with_stable_wire_key() {
+        assert_eq!(
+            serde_json::to_string(&QuickEmote::DealerRigged).expect("serialize DealerRigged"),
+            "\"DealerRigged\""
+        );
+        assert_eq!(QuickEmote::DealerRigged.label(), "什么破手气");
+        for emote in QuickEmote::ALL {
+            assert!(!emote.label().is_empty());
+            assert!(!emote.label().contains("发牌员"));
+        }
+    }
 }

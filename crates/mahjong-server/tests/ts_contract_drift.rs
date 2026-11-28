@@ -240,7 +240,7 @@ fn frozen_server_protocol_types_roundtrip_serde_json_without_loss() {
         SeatInfo {
             seat: Seat::South,
             kind: SeatKind::Ai,
-            nickname: "急眼快攻哥".to_string(),
+            nickname: "大川".to_string(),
             connected: true,
             ai_assisted: false,
             ai_difficulty: Some(AiDifficulty::Strong),
@@ -418,6 +418,11 @@ fn frozen_server_protocol_types_roundtrip_serde_json_without_loss() {
             text: "五巡就胡，你们太慢了！".to_string(),
             event_seq: 18,
             reply_to_seat: Some(Seat::East),
+        },
+        ServerMessage::PersonaMoodUpdated {
+            seat: Seat::South,
+            persona_id: PersonaId::QuickHothead,
+            mood: PersonaMood::Plotting,
         },
         ServerMessage::TableBanterAudioReady {
             banter_id: "b-1".to_string(),

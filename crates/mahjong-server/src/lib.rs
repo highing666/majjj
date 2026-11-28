@@ -6,6 +6,7 @@ pub use mahjong_core;
 pub mod ai_pool;
 pub mod banter;
 pub mod banter_audio;
+pub mod banter_context;
 pub mod history_dto;
 pub mod lan;
 mod lan_http;

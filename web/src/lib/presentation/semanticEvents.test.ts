@@ -363,7 +363,7 @@ describe("semanticEvents", () => {
 
   it("maps QuickEmoteBroadcast with seat, quickEmote, relativeRole, and voicePackId", () => {
     const mapped = mapQuickEmoteBroadcastToSemanticEvent(
-      { seat: "South", emote: "DealerRigged", text: "发牌员演我" },
+      { seat: "South", emote: "DealerRigged", text: "什么破手气" },
       makeContext("East", 36),
     );
     expect(mapped).toMatchObject({

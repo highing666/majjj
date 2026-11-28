@@ -42,17 +42,17 @@ if (-not (Test-Path -LiteralPath $OutputDir)) {
 }
 
 $Personas = @(
-    @{ Id = 'QuickHothead';    Name = '急眼快攻哥'; Speaker = 'Eric' },
-    @{ Id = 'TeaSarcasm';      Name = '阴阳茶艺师'; Speaker = 'Serena' },
-    @{ Id = 'StubbornBlamer';  Name = '嘴硬死磕王'; Speaker = 'Dylan' },
-    @{ Id = 'ChaosInstigator'; Name = '拱火乐子人'; Speaker = 'Vivian' },
-    @{ Id = 'TiltedMaster';    Name = '红温老雀神'; Speaker = 'Uncle_Fu' }
+    @{ Id = 'QuickHothead';    Name = '大川'; Speaker = 'Eric' },
+    @{ Id = 'TeaSarcasm';      Name = '小晚'; Speaker = 'Serena' },
+    @{ Id = 'StubbornBlamer';  Name = '大鹏'; Speaker = 'Dylan' },
+    @{ Id = 'ChaosInstigator'; Name = '小桃'; Speaker = 'Vivian' },
+    @{ Id = 'TiltedMaster';    Name = '老陈'; Speaker = 'Uncle_Fu' }
 )
 
 $MoodLines = @(
     @{ Mood = 'Smug';     Text = '哈哈哈，五巡自摸基本胡，手速快过你们做大牌！' },
     @{ Mood = 'Mocking';  Text = '哎哟，您这手牌打得可真稳呢，生怕别人碰着呀？' },
-    @{ Mood = 'Tilted';   Text = '啧，刚补杠就被抢杠胡？！发牌员你是不是演我！' },
+    @{ Mood = 'Tilted';   Text = '啧，刚补杠就被抢杠胡？！今天这破手气真绝了！' },
     @{ Mood = 'Nervous';  Text = '等等，这张发财我可不太敢舍，别回头又点炮了。' },
     @{ Mood = 'Plotting'; Text = '哼哼，你们先接着互掐吧，好戏还在后头呢。' },
     @{ Mood = 'Deadpan';  Text = '行行行，算你手气好，下小局咱牌河里接着算账。' }

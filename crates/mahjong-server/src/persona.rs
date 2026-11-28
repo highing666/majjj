@@ -7,15 +7,15 @@ use ts_rs::TS;
 /// Canonical identifier for the five built-in sharp-tongued table personas (`牌友角色`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS)]
 pub enum PersonaId {
-    /// 急眼快攻哥（默认快攻牌风）
+    /// 大川（川渝急性子爽快哥们，默认快攻牌风）
     QuickHothead,
-    /// 阴阳茶艺师（默认防守做大牌牌风）
+    /// 小晚（温婉腹黑爱翻旧账姐妹，默认防守做大牌牌风）
     TeaSarcasm,
-    /// 嘴硬死磕王（默认快攻牌风）
+    /// 大鹏（京片子嘴贫死磕哥们，默认快攻牌风）
     StubbornBlamer,
-    /// 拱火乐子人（默认均衡牌风）
+    /// 小桃（网感强爱吃瓜补刀妹妹，默认均衡牌风）
     ChaosInstigator,
-    /// 红温老雀神（默认防守做大牌牌风）
+    /// 老陈（爱端前辈架子吃亏秒红温老哥，默认防守做大牌牌风）
     TiltedMaster,
 }
 
@@ -85,42 +85,42 @@ impl PersonaId {
         match self {
             Self::QuickHothead => PersonaSpec {
                 id: Self::QuickHothead,
-                display_name: "急眼快攻哥",
+                display_name: "大川",
                 default_style: AiStyle::AggressiveFast,
                 initial_mood: PersonaMood::Smug,
-                tagline: "嘴快手快，0番也狂吹",
+                tagline: "川渝急性子，快攻抢节奏",
                 voice_pack_id: "quick_hothead",
             },
             Self::TeaSarcasm => PersonaSpec {
                 id: Self::TeaSarcasm,
-                display_name: "阴阳茶艺师",
+                display_name: "小晚",
                 default_style: AiStyle::DefensiveBigHand,
                 initial_mood: PersonaMood::Mocking,
-                tagline: "笑里藏刀，专爱翻旧账",
+                tagline: "笑里藏刀，爱记仇翻旧账",
                 voice_pack_id: "tea_sarcasm",
             },
             Self::StubbornBlamer => PersonaSpec {
                 id: Self::StubbornBlamer,
-                display_name: "嘴硬死磕王",
+                display_name: "大鹏",
                 default_style: AiStyle::AggressiveFast,
                 initial_mood: PersonaMood::Deadpan,
-                tagline: "死磕到底，点炮全怪发牌员",
+                tagline: "京片子嘴贫，死磕不服输",
                 voice_pack_id: "stubborn_blamer",
             },
             Self::ChaosInstigator => PersonaSpec {
                 id: Self::ChaosInstigator,
-                display_name: "拱火乐子人",
+                display_name: "小桃",
                 default_style: AiStyle::Balanced,
                 initial_mood: PersonaMood::Plotting,
-                tagline: "专业拱火，最爱补刀拆台",
+                tagline: "网感损友，吃瓜拱火爱补刀",
                 voice_pack_id: "chaos_instigator",
             },
             Self::TiltedMaster => PersonaSpec {
                 id: Self::TiltedMaster,
-                display_name: "红温老雀神",
+                display_name: "老陈",
                 default_style: AiStyle::DefensiveBigHand,
                 initial_mood: PersonaMood::Smug,
-                tagline: "自封牌桌导师，一输就破防",
+                tagline: "爱端前辈架子，吃亏秒破防",
                 voice_pack_id: "tilted_master",
             },
         }
@@ -177,31 +177,63 @@ mod tests {
         let names: HashSet<&str> = PersonaId::ALL.iter().map(|p| p.display_name()).collect();
         assert_eq!(names.len(), 5);
 
-        assert_eq!(PersonaId::QuickHothead.display_name(), "急眼快攻哥");
+        assert_eq!(PersonaId::QuickHothead.display_name(), "大川");
         assert_eq!(
             PersonaId::QuickHothead.default_style(),
             AiStyle::AggressiveFast
         );
-        assert_eq!(PersonaId::TeaSarcasm.display_name(), "阴阳茶艺师");
+        assert_eq!(PersonaId::QuickHothead.voice_pack_id(), "quick_hothead");
+
+        assert_eq!(PersonaId::TeaSarcasm.display_name(), "小晚");
         assert_eq!(
             PersonaId::TeaSarcasm.default_style(),
             AiStyle::DefensiveBigHand
         );
-        assert_eq!(PersonaId::StubbornBlamer.display_name(), "嘴硬死磕王");
+        assert_eq!(PersonaId::TeaSarcasm.voice_pack_id(), "tea_sarcasm");
+
+        assert_eq!(PersonaId::StubbornBlamer.display_name(), "大鹏");
         assert_eq!(
             PersonaId::StubbornBlamer.default_style(),
             AiStyle::AggressiveFast
         );
-        assert_eq!(PersonaId::ChaosInstigator.display_name(), "拱火乐子人");
+        assert_eq!(PersonaId::StubbornBlamer.voice_pack_id(), "stubborn_blamer");
+
+        assert_eq!(PersonaId::ChaosInstigator.display_name(), "小桃");
         assert_eq!(
             PersonaId::ChaosInstigator.default_style(),
             AiStyle::Balanced
         );
-        assert_eq!(PersonaId::TiltedMaster.display_name(), "红温老雀神");
+        assert_eq!(
+            PersonaId::ChaosInstigator.voice_pack_id(),
+            "chaos_instigator"
+        );
+
+        assert_eq!(PersonaId::TiltedMaster.display_name(), "老陈");
         assert_eq!(
             PersonaId::TiltedMaster.default_style(),
             AiStyle::DefensiveBigHand
         );
+        assert_eq!(PersonaId::TiltedMaster.voice_pack_id(), "tilted_master");
+
+        // Persistence & wire keys remain 100% invariant for persona_memory.json and avatar atlas.
+        let serialized: Vec<String> = PersonaId::ALL
+            .iter()
+            .map(|p| serde_json::to_string(p).expect("serialize persona id"))
+            .collect();
+        assert_eq!(
+            serialized,
+            vec![
+                "\"QuickHothead\"",
+                "\"TeaSarcasm\"",
+                "\"StubbornBlamer\"",
+                "\"ChaosInstigator\"",
+                "\"TiltedMaster\"",
+            ]
+        );
+        for pid in PersonaId::ALL {
+            assert!(!pid.spec().tagline.is_empty());
+            assert!(!pid.spec().tagline.contains("发牌员"));
+        }
     }
 
     #[test]

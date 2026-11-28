@@ -15,7 +15,9 @@ use common::{connect_and_hello, recv_msg, recv_snapshot, send_msg, tile, tiles, 
 use mahjong_ai::AiDifficulty;
 use mahjong_core::{build_preset_wall, MatchMode, PlayerAction, PresetWallProvider, Seat};
 use mahjong_server::persona::{PersonaId, PersonaMood};
-use mahjong_server::protocol::{ClientMessage, SeatingRule, ServerMessage, TablePace, TablePhase};
+use mahjong_server::protocol::{
+    ClientMessage, QuickEmote, SeatingRule, ServerMessage, TablePace, TablePhase,
+};
 use mahjong_server::session::{BoxedWallProvider, TableOptions, WallProviderFactory};
 use mahjong_server::{LlmClient, PacingMode, ServerConfig, ServerError};
 use tokio::net::TcpListener;
@@ -24,8 +26,10 @@ use tokio::sync::watch;
 #[derive(Debug, Clone)]
 enum FakeCompletionMode {
     Ok {
+        speak: bool,
         mood: &'static str,
         text: &'static str,
+        reasoning_content: Option<&'static str>,
     },
     ThinkingLeak,
     Slow(Duration),
@@ -129,13 +133,26 @@ async fn fake_chat_completions(
     state.requests.lock().expect("lock requests").push(body);
     let mode = state.mode.lock().expect("lock mode").clone();
     match mode {
-        FakeCompletionMode::Ok { mood, text } => {
-            let content = serde_json::json!({ "mood": mood, "text": text }).to_string();
+        FakeCompletionMode::Ok {
+            speak,
+            mood,
+            text,
+            reasoning_content,
+        } => {
+            let content =
+                serde_json::json!({ "speak": speak, "mood": mood, "text": text }).to_string();
+            let mut message = serde_json::json!({
+                "role": "assistant",
+                "content": content,
+            });
+            if let Some(reasoning) = reasoning_content {
+                message["reasoning_content"] = serde_json::json!(reasoning);
+            }
             (
                 StatusCode::OK,
                 Json(serde_json::json!({
                     "choices": [{
-                        "message": { "role": "assistant", "content": content }
+                        "message": message
                     }]
                 })),
             )
@@ -146,14 +163,15 @@ async fn fake_chat_completions(
                 "choices": [{
                     "message": {
                         "role": "assistant",
-                        "content": "<think>secret</think>{\"mood\":\"Smug\",\"text\":\"穿帮了\"}"
+                        "content": "<think>secret</think>{\"speak\":true,\"mood\":\"Smug\",\"text\":\"穿帮了\"}"
                     }
                 }]
             })),
         ),
         FakeCompletionMode::Slow(delay) => {
             tokio::time::sleep(delay).await;
-            let content = serde_json::json!({ "mood": "Deadpan", "text": "迟到了" }).to_string();
+            let content = serde_json::json!({ "speak": true, "mood": "Deadpan", "text": "迟到了" })
+                .to_string();
             (
                 StatusCode::OK,
                 Json(serde_json::json!({
@@ -199,8 +217,10 @@ async fn startup_gate_enforces_reachable_llm_precedence_and_binary_exit_on_failu
 
     // 2. Reachable /health but empty /v1/models -> must also fail startup!
     let fake = FakeLlamaServer::start(FakeCompletionMode::Ok {
+        speak: true,
         mood: "Smug",
         text: "测试台词",
+        reasoning_content: None,
     })
     .await;
     fake.set_models(Vec::new());
@@ -290,8 +310,10 @@ async fn startup_gate_enforces_reachable_llm_precedence_and_binary_exit_on_failu
 #[tokio::test]
 async fn fake_llama_server_end_to_end_json_schema_banter_timeout_and_recovery() {
     let fake = FakeLlamaServer::start(FakeCompletionMode::Ok {
+        speak: true,
         mood: "Smug",
         text: "开局手牌顺得很，你们都别想胡！",
+        reasoning_content: Some("起手牌型很顺，主动挑衅一句最贴合人设"),
     })
     .await;
 
@@ -329,9 +351,7 @@ async fn fake_llama_server_end_to_end_json_schema_banter_timeout_and_recovery() 
         .with_llm_url(Some(fake.base_url()))
         .with_no_tts(true)
         .spawn_with_options(
-            TableOptions::with_wall_factory(42, factory)
-                .with_pacing(PacingMode::Immediate)
-                .with_banter_sync_cap(Duration::from_millis(350)),
+            TableOptions::with_wall_factory(42, factory).with_pacing(PacingMode::Immediate),
         )
         .await
         .expect("spawn server against local fake llama-server");
@@ -367,15 +387,25 @@ async fn fake_llama_server_end_to_end_json_schema_banter_timeout_and_recovery() 
     let start_snap = recv_snapshot(&mut east).await;
     assert_eq!(start_snap.phase, TablePhase::InMatch);
 
-    // 1. Receive opening TableBanter from real OpenAiLlmClient -> fake llama-server.
-    let opening_banter = loop {
+    // 1. Trigger autonomous banter via QuickEmote (no forced HandStarted opening banter) and verify
+    // exact OpenAI request body sent to fake llama-server (native thinking + {speak, mood, text}).
+    send_msg(
+        &mut east,
+        &ClientMessage::SendQuickEmote {
+            emote: QuickEmote::IsThatIt,
+        },
+    )
+    .await;
+    let emote_banter = loop {
         match recv_msg(&mut east).await {
             msg @ ServerMessage::TableBanter { .. } => break msg,
-            ServerMessage::LobbyUpdated { .. } | ServerMessage::ServerPing { .. } => continue,
-            other => panic!("expected opening TableBanter, got {other:?}"),
+            ServerMessage::QuickEmoteBroadcast { .. }
+            | ServerMessage::LobbyUpdated { .. }
+            | ServerMessage::ServerPing { .. } => continue,
+            other => panic!("expected QuickEmote TableBanter, got {other:?}"),
         }
     };
-    match opening_banter {
+    match emote_banter {
         ServerMessage::TableBanter { mood, text, .. } => {
             assert_eq!(mood, PersonaMood::Smug);
             assert_eq!(text, "开局手牌顺得很，你们都别想胡！");
@@ -383,18 +413,28 @@ async fn fake_llama_server_end_to_end_json_schema_banter_timeout_and_recovery() 
         _ => unreachable!(),
     }
 
-    // Verify exact OpenAI request body sent to fake llama-server.
     let reqs = fake.recorded_requests();
-    assert_eq!(reqs.len(), 1);
+    assert!(!reqs.is_empty());
     assert_eq!(reqs[0]["model"], "Qwen3.5-9B-Q5_K_M.gguf");
-    assert_eq!(reqs[0]["chat_template_kwargs"]["enable_thinking"], false);
+    assert_eq!(reqs[0]["max_tokens"], 512);
+    assert_eq!(reqs[0]["chat_template_kwargs"]["enable_thinking"], true);
     assert_eq!(reqs[0]["response_format"]["type"], "json_schema");
     assert_eq!(reqs[0]["response_format"]["json_schema"]["strict"], true);
+    assert_eq!(
+        reqs[0]["response_format"]["json_schema"]["schema"]["required"],
+        serde_json::json!(["speak", "mood", "text"])
+    );
+    assert_eq!(
+        reqs[0]["response_format"]["json_schema"]["schema"]["properties"]["text"]["minLength"],
+        0
+    );
 
-    // 2. East wins Hand 1 by Tsumo -> HandSettled triggers banter with all 4 revealed hands!
+    // 2. East wins Hand 1 by Tsumo -> HandSettled triggers non-blocking banter with all 4 revealed hands!
     fake.set_mode(FakeCompletionMode::Ok {
+        speak: true,
         mood: "Mocking",
-        text: "哟哟哟，第一手就自摸红中，发牌员是你亲戚吧？",
+        text: "哟哟哟，第一手就自摸红中，手气这么离谱？",
+        reasoning_content: Some("东家第一手直接自摸红中，必须调侃一下"),
     });
     send_msg(
         &mut east,
@@ -413,25 +453,29 @@ async fn fake_llama_server_end_to_end_json_schema_banter_timeout_and_recovery() 
             ServerMessage::EventBatch { to_seq, .. } => {
                 settled_seq = to_seq;
             }
-            ServerMessage::TableBanter { mood, text, .. } => {
+            ServerMessage::TableBanter { mood, text, .. } if text.contains("红中") => {
                 assert_eq!(mood, PersonaMood::Mocking);
-                assert!(text.contains("红中"));
                 saw_settlement_banter = true;
             }
-            ServerMessage::ServerPing { .. } | ServerMessage::LobbyUpdated { .. } => {}
+            ServerMessage::TableBanter { .. }
+            | ServerMessage::ServerPing { .. }
+            | ServerMessage::LobbyUpdated { .. } => {}
             other => panic!("unexpected message on HandSettled: {other:?}"),
         }
     }
     let reqs_after_settle = fake.recorded_requests();
-    let settle_user_prompt = reqs_after_settle[1]["messages"][1]["content"]
-        .as_str()
-        .expect("settlement user prompt");
+    let saw_revealed_prompt = reqs_after_settle.iter().any(|req| {
+        req["messages"][1]["content"]
+            .as_str()
+            .is_some_and(|p| p.contains("四家摊开手牌") && p.contains("白板"))
+    });
     assert!(
-        settle_user_prompt.contains("四家摊开手牌") && settle_user_prompt.contains("白板"),
-        "HandSettled prompt must reveal all 4 hands: {settle_user_prompt}"
+        saw_revealed_prompt,
+        "HandSettled prompt must reveal all 4 hands: {reqs_after_settle:?}"
     );
 
-    // 3. Switch fake server to ThinkingLeak -> confirm Hand 2 -> must emit LlmStatusNotice { available: false }!
+    // 3. Switch fake server to ThinkingLeak -> confirm Hand 2 -> East discards 1m -> South Pons & discards
+    // -> South's post-discard self-check-in hits ThinkingLeak -> emits LlmStatusNotice { available: false }!
     fake.set_mode(FakeCompletionMode::ThinkingLeak);
     send_msg(
         &mut east,
@@ -443,28 +487,17 @@ async fn fake_llama_server_end_to_end_json_schema_banter_timeout_and_recovery() 
     )
     .await;
 
-    let mut hand2_seq = settled_seq;
-    let mut saw_outage_notice = false;
-    while !saw_outage_notice {
+    let hand2_seq = loop {
         match recv_msg(&mut east).await {
-            ServerMessage::EventBatch { to_seq, .. } => {
-                hand2_seq = to_seq;
-            }
-            ServerMessage::LlmStatusNotice { available, message } => {
-                assert!(!available);
-                assert!(message.contains("思考链"));
-                saw_outage_notice = true;
-            }
-            ServerMessage::ServerPing { .. } | ServerMessage::LobbyUpdated { .. } => {}
-            other => panic!("unexpected message on thinking leak: {other:?}"),
+            ServerMessage::EventBatch { to_seq, .. } => break to_seq,
+            ServerMessage::TableBanter { .. }
+            | ServerMessage::PersonaMoodUpdated { .. }
+            | ServerMessage::ServerPing { .. }
+            | ServerMessage::LobbyUpdated { .. } => {}
+            other => panic!("unexpected message confirming Hand 2: {other:?}"),
         }
-    }
+    };
 
-    // 4. Switch fake server back to Ok -> East discards 1m -> South Pons 1m -> emits recovery LlmStatusNotice + TableBanter!
-    fake.set_mode(FakeCompletionMode::Ok {
-        mood: "Tilted",
-        text: "碰你这张一万，看你还怎么装！",
-    });
     send_msg(
         &mut east,
         &ClientMessage::SubmitAction {
@@ -478,38 +511,101 @@ async fn fake_llama_server_end_to_end_json_schema_banter_timeout_and_recovery() 
     )
     .await;
 
+    let mut saw_outage_notice = false;
+    while !saw_outage_notice {
+        match recv_msg(&mut east).await {
+            ServerMessage::LlmStatusNotice { available, message } => {
+                assert!(!available);
+                assert!(message.contains("思考链"));
+                saw_outage_notice = true;
+            }
+            ServerMessage::EventBatch { .. }
+            | ServerMessage::ServerPing { .. }
+            | ServerMessage::LobbyUpdated { .. } => {}
+            other => panic!("unexpected message on thinking leak: {other:?}"),
+        }
+    }
+
+    // 4. Switch fake server back to Ok -> trigger QuickEmote -> emits recovery LlmStatusNotice + TableBanter!
+    fake.set_mode(FakeCompletionMode::Ok {
+        speak: true,
+        mood: "Tilted",
+        text: "碰完照样回喷，看你还怎么装！",
+        reasoning_content: Some("局域网推理已恢复"),
+    });
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    send_msg(
+        &mut east,
+        &ClientMessage::SendQuickEmote {
+            emote: QuickEmote::HurryUp,
+        },
+    )
+    .await;
+
     let mut saw_recovery = false;
-    let mut saw_pon_banter = false;
-    while !(saw_recovery && saw_pon_banter) {
+    let mut saw_recovered_banter = false;
+    while !(saw_recovery && saw_recovered_banter) {
         match recv_msg(&mut east).await {
             ServerMessage::LlmStatusNotice { available, .. } if available => {
                 saw_recovery = true;
             }
-            ServerMessage::TableBanter {
-                seat,
-                persona_id,
-                mood,
-                text,
-                ..
-            } => {
-                assert_eq!(seat, Seat::South);
-                assert_eq!(persona_id, PersonaId::QuickHothead);
+            ServerMessage::TableBanter { mood, text, .. } => {
                 assert_eq!(mood, PersonaMood::Tilted);
-                assert_eq!(text, "碰你这张一万，看你还怎么装！");
-                saw_pon_banter = true;
+                assert_eq!(text, "碰完照样回喷，看你还怎么装！");
+                saw_recovered_banter = true;
             }
-            ServerMessage::EventBatch { .. }
+            ServerMessage::QuickEmoteBroadcast { .. }
+            | ServerMessage::EventBatch { .. }
             | ServerMessage::ServerPing { .. }
             | ServerMessage::LobbyUpdated { .. } => {}
             other => panic!("unexpected message during recovery: {other:?}"),
         }
     }
 
-    // 5. Verify Slow (> sync cap) and Http500 directly through OpenAiLlmClient & real HTTP server.
-    fake.set_mode(FakeCompletionMode::Http500);
+    // 5. Verify silent mood (speak: false + empty text + reasoning_content), >40-char safety clamp,
+    // relaxed default timeout (20s), Slow timeout error, and Http500 directly through OpenAiLlmClient.
+    assert_eq!(
+        mahjong_server::llm::DEFAULT_REQUEST_TIMEOUT,
+        Duration::from_secs(20)
+    );
     let http_client = mahjong_server::OpenAiLlmClient::new(&fake.base_url())
         .expect("build client")
         .with_request_timeout(Duration::from_millis(200));
+
+    fake.set_mode(FakeCompletionMode::Ok {
+        speak: false,
+        mood: "Plotting",
+        text: "",
+        reasoning_content: Some("先憋着不开口，暗中切到阴险表情"),
+    });
+    let silent = http_client
+        .generate_banter(mahjong_server::BanterGenerationRequest::new("sys", "usr"))
+        .await
+        .expect("speak: false with empty text and reasoning_content must succeed");
+    assert_eq!(
+        silent,
+        mahjong_server::BanterOutput {
+            speak: false,
+            mood: PersonaMood::Plotting,
+            text: String::new(),
+        }
+    );
+
+    fake.set_mode(FakeCompletionMode::Ok {
+        speak: true,
+        mood: "Tilted",
+        text: "一二三四五六七八九十一二三四五六七八九十一二三四五六七八九十一二三四五六七八九十一二三四五六七八",
+        reasoning_content: Some("情绪失控输出超长文本"),
+    });
+    let clamped = http_client
+        .generate_banter(mahjong_server::BanterGenerationRequest::new("sys", "usr"))
+        .await
+        .expect("runaway >40-char text must be safely clamped");
+    assert!(clamped.speak);
+    assert_eq!(clamped.mood, PersonaMood::Tilted);
+    assert_eq!(clamped.text.chars().count(), 40);
+
+    fake.set_mode(FakeCompletionMode::Http500);
     let err_500 = http_client
         .generate_banter(mahjong_server::BanterGenerationRequest::new("sys", "usr"))
         .await

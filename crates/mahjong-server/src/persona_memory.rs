@@ -10,7 +10,7 @@ use mahjong_core::{HandOutcome, HandSettlement, MatchSummary, RevealedMeld, Seat
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::banter::format_tile_zh;
+use crate::banter::{format_tile_zh, persona_voice_guide};
 use crate::llm::MemoryNoteRequest;
 use crate::persona::PersonaId;
 use crate::protocol::{SeatInfo, SeatKind};
@@ -439,7 +439,7 @@ impl PersonaMemoryStore {
         }
 
         Some(format!(
-            "【牌友记忆（仅含当前同桌熟人记录，可顺势翻旧账）】\n{}",
+            "【5. 跨对局牌友记忆（仅含当前同桌熟人，聊天时顺手化用旧账即可，别生硬念统计数字）】\n{}",
             lines.join("\n")
         ))
     }
@@ -620,15 +620,14 @@ fn load_pairs_tolerant(
 }
 
 fn note_system_prompt(persona_id: PersonaId) -> String {
-    let spec = persona_id.spec();
+    let voice = persona_voice_guide(persona_id);
     format!(
-        "你是麻将牌友角色「{}」（{}）。\n\
-请把刚发生的牌局名场面或终局结果浓缩成 1 句写进「恩怨小本本」的记仇或得意笔记。\n\
+        "{voice}\n\
+请把刚发生的牌局名场面或终局结果浓缩成 1 句写进「恩怨小本本」的熟人记仇或得意笔记。\n\
 严格要求：\n\
 1. 仅输出合法 JSON：{{\"note\":\"...\"}}，严禁输出思考过程、<think> 标签或多余解释。\n\
-2. note 必须是 8 到 28 字的中文口语单句（绝不超过 30 字），保留你的人设口吻并点明对方昵称与核心事件。\n\
-3. 只引用输入中明确给出的事实，严禁编造牌名或数字。",
-        spec.display_name, spec.tagline
+2. note 必须是 8 到 28 字的鲜活中文口语单句（绝不超过 30 字），贴合你的真实性格口吻并点明对方昵称与核心事件。\n\
+3. 只引用输入中明确给出的事实，严禁编造牌名或数字。"
     )
 }
 
@@ -1019,5 +1018,19 @@ mod tests {
         let ctx_stranger =
             store.build_prompt_memory_context(PersonaId::TeaSarcasm, &["陌生人".to_string()]);
         assert!(ctx_stranger.is_none());
+    }
+
+    #[test]
+    fn memory_note_system_prompts_use_humanized_personas_without_dealer_bias() {
+        for pid in PersonaId::ALL {
+            let prompt = super::note_system_prompt(pid);
+            assert!(
+                prompt.contains(pid.display_name()),
+                "missing humanized name {} in note prompt",
+                pid.display_name()
+            );
+            assert!(!prompt.contains("发牌员"));
+            assert!(prompt.contains("恩怨小本本"));
+        }
     }
 }

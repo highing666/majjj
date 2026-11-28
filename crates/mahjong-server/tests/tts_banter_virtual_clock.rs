@@ -238,26 +238,34 @@ async fn start_solo_match(
 
 #[tokio::test(start_paused = true)]
 async fn banter_broadcasts_immediately_without_waiting_on_tts_and_synthesizes_once() {
-    let wav_opening = make_sample_wav(0x11, 1200);
+    let wav_emote = make_sample_wav(0x11, 1200);
     let wav_pon = make_sample_wav(0x22, 1600);
     let llm = ScriptedLlmClient::from_replies(vec![
+        // 1. QuickEmote reply (b-1)
         PlannedReply::Immediate(Ok(BanterOutput {
+            speak: true,
             mood: PersonaMood::Plotting,
             text: "开局这牌有点东西！".to_string(),
         })),
+        // 2. South post-Pon discard self-check-in (b-2)
         PlannedReply::Immediate(Ok(BanterOutput {
+            speak: true,
             mood: PersonaMood::Smug,
             text: "碰你一万，节奏我拿捏了！".to_string(),
         })),
+        // West / North / follow-ups stay silent so only b-1 & b-2 trigger TTS.
+        PlannedReply::Immediate(Ok(BanterOutput::silent(PersonaMood::Deadpan))),
+        PlannedReply::Immediate(Ok(BanterOutput::silent(PersonaMood::Deadpan))),
+        PlannedReply::Immediate(Ok(BanterOutput::silent(PersonaMood::Deadpan))),
     ]);
     let tts = ScriptedTtsClient::new(
         true,
         vec![
             PlannedTtsReply::Immediate(Ok(TtsAudioOutput {
-                wav_bytes: wav_opening.clone(),
+                wav_bytes: wav_emote.clone(),
                 duration_ms: 820,
             })),
-            // Slow TTS (1200ms) must NOT delay TableBanter or the 1.5s highlight sync window!
+            // Slow TTS (1200ms) must NOT delay TableBanter or gameplay!
             PlannedTtsReply::Delayed(
                 Duration::from_millis(1200),
                 Ok(TtsAudioOutput {
@@ -278,6 +286,15 @@ async fn banter_broadcasts_immediately_without_waiting_on_tts_and_synthesizes_on
     let mut observer = VirtualClient::connect(&runtime, "obs", "旁观者").await;
     let start_snap = start_solo_match(&runtime, &mut east).await;
     let _ = observer.recv_snapshot().await;
+
+    // Trigger b-1 via QuickEmote.
+    east.send(
+        &runtime,
+        &ClientMessage::SendQuickEmote {
+            emote: QuickEmote::NicePlay,
+        },
+    )
+    .await;
     yield_tasks().await;
 
     let open_msgs = east.drain_all();
@@ -288,7 +305,7 @@ async fn banter_broadcasts_immediately_without_waiting_on_tts_and_synthesizes_on
             ServerMessage::TableBanter { banter_id, .. } => Some(banter_id.clone()),
             _ => None,
         })
-        .expect("opening TableBanter");
+        .expect("emote TableBanter");
     assert_eq!(open_id, "b-1");
     assert!(
         open_msgs.iter().any(|m| matches!(
@@ -296,15 +313,15 @@ async fn banter_broadcasts_immediately_without_waiting_on_tts_and_synthesizes_on
             ServerMessage::TableBanterAudioReady { banter_id, audio_url, duration_ms, .. }
                 if banter_id == "b-1" && audio_url == "/api/banter-audio/b-1" && *duration_ms == 820
         )),
-        "opening TableBanterAudioReady missing: {open_msgs:?}"
+        "b-1 TableBanterAudioReady missing: {open_msgs:?}"
     );
     assert_eq!(
         runtime.get_banter_audio("b-1").as_deref(),
-        Some(wav_opening.as_slice())
+        Some(wav_emote.as_slice())
     );
 
-    // East discards 1m -> South Pons 1m. LLM is immediate while TTS takes 1200ms.
-    // TableBanter AND South's follow-up discard must proceed IMMEDIATELY at t=0 without waiting 1200ms!
+    // East discards 1m -> South Pons 1m and immediately discards (b-2). LLM is immediate while TTS takes 1200ms.
+    // TableBanter AND South's discard must proceed IMMEDIATELY at t=0 without waiting 1200ms!
     east.send(
         &runtime,
         &ClientMessage::SubmitAction {
@@ -332,7 +349,7 @@ async fn banter_broadcasts_immediately_without_waiting_on_tts_and_synthesizes_on
             } if text.contains("碰你一万") => Some(banter_id.clone()),
             _ => None,
         })
-        .expect("immediate Pon TableBanter must arrive before TTS completes");
+        .expect("immediate South TableBanter must arrive before TTS completes");
     assert_eq!(pon_banter_id, "b-2");
     assert!(
         immediate_msgs.iter().any(|m| matches!(
@@ -340,7 +357,7 @@ async fn banter_broadcasts_immediately_without_waiting_on_tts_and_synthesizes_on
             ServerMessage::EventBatch { events, .. }
                 if events.iter().any(|e| matches!(e.kind, PlayerEventKind::TileDiscarded { seat: Seat::South, .. }))
         )),
-        "highlight sync must unblock immediately once TableBanter is broadcast, not wait on TTS: {immediate_msgs:?}"
+        "gameplay must proceed immediately without waiting on TTS: {immediate_msgs:?}"
     );
     assert!(
         !immediate_msgs
@@ -393,18 +410,24 @@ async fn banter_broadcasts_immediately_without_waiting_on_tts_and_synthesizes_on
 async fn settlement_quick_emote_and_slow_think_nudge_use_expected_deadlines() {
     let wav_settle = make_sample_wav(0x33, 2000);
     let llm = ScriptedLlmClient::with_banter_fn(|req| {
+        if req.user_prompt.contains("牌友接茬判断") {
+            return Ok(BanterOutput::silent(PersonaMood::Deadpan));
+        }
         if req.user_prompt.contains("四家摊开手牌") || req.user_prompt.contains("结算") {
             Ok(BanterOutput {
+                speak: true,
                 mood: PersonaMood::Tilted,
                 text: "开局自摸这也太离谱了！".to_string(),
             })
         } else if req.user_prompt.contains("快捷互动") {
             Ok(BanterOutput {
+                speak: true,
                 mood: PersonaMood::Mocking,
                 text: "别急，这就打给你看！".to_string(),
             })
         } else {
             Ok(BanterOutput {
+                speak: true,
                 mood: PersonaMood::Deadpan,
                 text: "局中正常吐槽一句。".to_string(),
             })
@@ -430,7 +453,7 @@ async fn settlement_quick_emote_and_slow_think_nudge_use_expected_deadlines() {
     yield_tasks().await;
     let _ = east.drain_all();
 
-    // Quick emote trigger -> in-hand deadline 2500ms.
+    // Quick emote trigger -> in-hand deadline 5000ms.
     east.send(
         &runtime,
         &ClientMessage::SendQuickEmote {
@@ -441,14 +464,14 @@ async fn settlement_quick_emote_and_slow_think_nudge_use_expected_deadlines() {
     yield_tasks().await;
     let _ = east.drain_all();
 
-    // Slow-think nudge after 16s -> in-hand deadline 2500ms.
+    // Slow-think nudge after 16s -> in-hand deadline 5000ms.
     tokio::time::advance(SLOW_THINK_NUDGE_DELAY + Duration::from_millis(100)).await;
     yield_tasks().await;
     let _ = east.drain_all();
     let in_hand_tts_count = tts.captured().len();
     assert!(
-        in_hand_tts_count >= 3,
-        "expected opening + quick-emote + slow-think nudge TTS calls, got {in_hand_tts_count}"
+        in_hand_tts_count >= 2,
+        "expected quick-emote + slow-think nudge TTS calls, got {in_hand_tts_count}"
     );
 
     // East wins by Tsumo -> settlement banter (and any settlement chain reply) gets 5000ms deadline.
@@ -516,10 +539,14 @@ async fn stale_tts_is_discarded_on_deadline_same_seat_override_next_hand_takeove
     // Part A: In-hand deadline_ms (5000ms) expiry drops late audio and emits TableBanterAudioFallback
     // without tripping TtsStatusNotice.
     {
-        let llm = ScriptedLlmClient::from_outputs(vec![BanterOutput {
-            mood: PersonaMood::Smug,
-            text: "超过五秒的语音必须静默回退".to_string(),
-        }]);
+        let llm = ScriptedLlmClient::from_outputs(vec![
+            BanterOutput {
+                speak: true,
+                mood: PersonaMood::Smug,
+                text: "超过五秒的语音必须静默回退".to_string(),
+            },
+            BanterOutput::silent(PersonaMood::Deadpan),
+        ]);
         let tts = ScriptedTtsClient::new(
             true,
             vec![PlannedTtsReply::Delayed(
@@ -547,6 +574,13 @@ async fn stale_tts_is_discarded_on_deadline_same_seat_override_next_hand_takeove
         );
         let mut east = VirtualClient::connect(&runtime, "e1", "小王").await;
         let _ = start_solo_match(&runtime, &mut east).await;
+        east.send(
+            &runtime,
+            &ClientMessage::SendQuickEmote {
+                emote: QuickEmote::IsThatIt,
+            },
+        )
+        .await;
         yield_tasks().await;
         let _ = east.drain_all();
 
@@ -580,10 +614,12 @@ async fn stale_tts_is_discarded_on_deadline_same_seat_override_next_hand_takeove
         let gate_old = Arc::new(Notify::new());
         let llm = ScriptedLlmClient::from_outputs(vec![
             BanterOutput {
+                speak: true,
                 mood: PersonaMood::Deadpan,
                 text: "第一句同座旧台词".to_string(),
             },
             BanterOutput {
+                speak: true,
                 mood: PersonaMood::Smug,
                 text: "第二句同座新台词覆盖！".to_string(),
             },
@@ -604,7 +640,7 @@ async fn stale_tts_is_discarded_on_deadline_same_seat_override_next_hand_takeove
                 })),
             ],
         );
-        // Only ONE AI seat (South) so both opening and quick-emote reply come from Seat::South!
+        // Only ONE AI seat (South) so both quick-emote replies come from Seat::South!
         let wall = no_reaction_wall();
         let factory: WallProviderFactory = Arc::new(move || {
             BoxedWallProvider(Box::new(PresetWallProvider::single(
@@ -658,6 +694,13 @@ async fn stale_tts_is_discarded_on_deadline_same_seat_override_next_hand_takeove
         .await;
         east.send(&runtime, &ClientMessage::StartMatch).await;
         let _ = east.recv_snapshot().await;
+        east.send(
+            &runtime,
+            &ClientMessage::SendQuickEmote {
+                emote: QuickEmote::NicePlay,
+            },
+        )
+        .await;
         yield_tasks().await;
         let first_msgs = east.drain_all();
         assert!(first_msgs.iter().any(|m| matches!(
@@ -665,10 +708,10 @@ async fn stale_tts_is_discarded_on_deadline_same_seat_override_next_hand_takeove
             ServerMessage::TableBanter { banter_id, seat: Seat::South, .. } if banter_id == "b-1"
         )));
 
-        // Advance 500ms (still within 5000ms deadline) and trigger quick emote -> South emits b-2!
+        // Advance 500ms (still within 5000ms deadline) and trigger West's quick emote -> South emits b-2!
         // Because b-1 is still in-flight, b-2 waits in the single pending slot (serialized, not sent concurrently).
         tokio::time::advance(Duration::from_millis(500)).await;
-        east.send(
+        west.send(
             &runtime,
             &ClientMessage::SendQuickEmote {
                 emote: QuickEmote::IsThatIt,
@@ -717,29 +760,21 @@ async fn stale_tts_is_discarded_on_deadline_same_seat_override_next_hand_takeove
         let gate_settle = Arc::new(Notify::new());
         let llm = ScriptedLlmClient::from_outputs(vec![
             BanterOutput {
-                mood: PersonaMood::Deadpan,
-                text: "开局".to_string(),
-            },
-            BanterOutput {
+                speak: true,
                 mood: PersonaMood::Tilted,
                 text: "上一小局结算迟到的语音".to_string(),
             },
+            BanterOutput::silent(PersonaMood::Deadpan),
         ]);
         let tts = ScriptedTtsClient::new(
             true,
-            vec![
-                PlannedTtsReply::Immediate(Ok(TtsAudioOutput {
-                    wav_bytes: make_sample_wav(1, 512),
-                    duration_ms: 400,
-                })),
-                PlannedTtsReply::Gated(
-                    Arc::clone(&gate_settle),
-                    Ok(TtsAudioOutput {
-                        wav_bytes: make_sample_wav(2, 512),
-                        duration_ms: 900,
-                    }),
-                ),
-            ],
+            vec![PlannedTtsReply::Gated(
+                Arc::clone(&gate_settle),
+                Ok(TtsAudioOutput {
+                    wav_bytes: make_sample_wav(2, 512),
+                    duration_ms: 900,
+                }),
+            )],
         );
         let runtime = TableRuntime::with_options(
             8789,
@@ -793,11 +828,11 @@ async fn stale_tts_is_discarded_on_deadline_same_seat_override_next_hand_takeove
         assert!(
             !after_next_hand.iter().any(|m| matches!(
                 m,
-                ServerMessage::TableBanterAudioReady { banter_id, .. } if banter_id == "b-2"
+                ServerMessage::TableBanterAudioReady { banter_id, .. } if banter_id == "b-1"
             )),
             "previous hand TTS must be discarded after ConfirmNextHand: {after_next_hand:?}"
         );
-        assert!(runtime.get_banter_audio("b-2").is_none());
+        assert!(runtime.get_banter_audio("b-1").is_none());
     }
 
     // Part D: Takeover and Disband discard in-flight TTS cleanly.
@@ -806,10 +841,12 @@ async fn stale_tts_is_discarded_on_deadline_same_seat_override_next_hand_takeove
         let gate_disband = Arc::new(Notify::new());
         let llm = ScriptedLlmClient::from_outputs(vec![
             BanterOutput {
+                speak: true,
                 mood: PersonaMood::Smug,
                 text: "接管前的话".to_string(),
             },
             BanterOutput {
+                speak: true,
                 mood: PersonaMood::Smug,
                 text: "解散前的话".to_string(),
             },
@@ -852,6 +889,13 @@ async fn stale_tts_is_discarded_on_deadline_same_seat_override_next_hand_takeove
         let mut observer = VirtualClient::connect(&runtime, "obs", "客串").await;
         let _ = start_solo_match(&runtime, &mut east).await;
         let _ = observer.recv_snapshot().await;
+        east.send(
+            &runtime,
+            &ClientMessage::SendQuickEmote {
+                emote: QuickEmote::IsThatIt,
+            },
+        )
+        .await;
         yield_tasks().await;
         let open_msgs = east.drain_all();
         let _ = observer.drain_all();
@@ -863,7 +907,7 @@ async fn stale_tts_is_discarded_on_deadline_same_seat_override_next_hand_takeove
                 } => Some((banter_id.clone(), *seat)),
                 _ => None,
             })
-            .expect("opening banter");
+            .expect("emote banter");
 
         // Observer takes over that exact AI seat.
         observer
@@ -897,6 +941,13 @@ async fn stale_tts_is_discarded_on_deadline_same_seat_override_next_hand_takeove
         let _ = east.recv_snapshot().await;
         east.send(&runtime, &ClientMessage::StartMatch).await;
         let _ = east.recv_snapshot().await;
+        east.send(
+            &runtime,
+            &ClientMessage::SendQuickEmote {
+                emote: QuickEmote::GoingBig,
+            },
+        )
+        .await;
         yield_tasks().await;
         let match2_msgs = east.drain_all();
         let b2_id = match2_msgs
@@ -928,8 +979,12 @@ async fn stale_tts_is_discarded_on_deadline_same_seat_override_next_hand_takeove
 
 #[tokio::test(start_paused = true)]
 async fn consecutive_failures_enter_15s_cooldown_skip_upstream_and_recover_via_health_probe() {
-    let llm = ScriptedLlmClient::with_banter_fn(|_| {
+    let llm = ScriptedLlmClient::with_banter_fn(|req| {
+        if req.user_prompt.contains("牌友接茬判断") {
+            return Ok(BanterOutput::silent(PersonaMood::Deadpan));
+        }
         Ok(BanterOutput {
+            speak: true,
             mood: PersonaMood::Smug,
             text: "继续互怼不停歇！".to_string(),
         })
@@ -969,9 +1024,21 @@ async fn consecutive_failures_enter_15s_cooldown_skip_upstream_and_recover_via_h
     );
     let mut east = VirtualClient::connect(&runtime, "e1", "小王").await;
     let _ = start_solo_match(&runtime, &mut east).await;
+    east.send(
+        &runtime,
+        &ClientMessage::SetSlowThinkNudge { enabled: false },
+    )
+    .await;
+    east.send(
+        &runtime,
+        &ClientMessage::SendQuickEmote {
+            emote: QuickEmote::GoingBig,
+        },
+    )
+    .await;
     yield_tasks().await;
 
-    // Startup health probe succeeded (1 call), opening banter triggered failure #1 (no outage yet).
+    // Startup health probe succeeded (1 call), first emote triggered failure #1 (no outage yet).
     assert_eq!(tts.health_calls(), 1);
     assert_eq!(tts.captured().len(), 1);
     let msgs_1 = east.drain_all();
@@ -982,7 +1049,10 @@ async fn consecutive_failures_enter_15s_cooldown_skip_upstream_and_recover_via_h
     // Mark TTS unhealthy so the 15s probe will initially fail too.
     tts.set_healthy(false);
 
-    // Quick emote #1 triggers failure #2 -> trips breaker -> emits TtsStatusNotice(available=false)!
+    // Quick emote #2 (after 4s cooldown) triggers failure #2 -> trips breaker -> emits TtsStatusNotice(available=false)!
+    tokio::time::advance(Duration::from_secs(5)).await;
+    yield_tasks().await;
+    let _ = east.drain_all();
     east.send(
         &runtime,
         &ClientMessage::SendQuickEmote {
@@ -1002,7 +1072,6 @@ async fn consecutive_failures_enter_15s_cooldown_skip_upstream_and_recover_via_h
         )),
         "2nd consecutive TTS failure must emit TtsStatusNotice(available=false): {msgs_2:?}"
     );
-    // Advance slightly past any 650ms delayed follow-up reply from QuickEmote #1 before checking cooldown skip.
     tokio::time::advance(Duration::from_secs(1)).await;
     yield_tasks().await;
     let _ = east.drain_all();
@@ -1082,6 +1151,7 @@ async fn consecutive_failures_enter_15s_cooldown_skip_upstream_and_recover_via_h
 async fn startup_unhealthy_tts_notifies_hello_clients_without_blocking_and_recovers() {
     let llm = ScriptedLlmClient::with_banter_fn(|_| {
         Ok(BanterOutput {
+            speak: true,
             mood: PersonaMood::Deadpan,
             text: "语音没开照样吐槽".to_string(),
         })
@@ -1120,8 +1190,15 @@ async fn startup_unhealthy_tts_notifies_hello_clients_without_blocking_and_recov
         "client connecting after startup probe failure must receive TtsStatusNotice(false): {hello_followup:?}"
     );
 
-    // Match starts cleanly and emits TableBanter without calling synthesize during cooldown.
+    // Match starts cleanly and QuickEmote emits TableBanter without calling synthesize during cooldown.
     let _ = start_solo_match(&runtime, &mut east).await;
+    east.send(
+        &runtime,
+        &ClientMessage::SendQuickEmote {
+            emote: QuickEmote::IsThatIt,
+        },
+    )
+    .await;
     yield_tasks().await;
     let open_msgs = east.drain_all();
     assert!(open_msgs
@@ -1151,8 +1228,12 @@ async fn runtime_audio_cache_respects_lru_ttl_and_no_tts_emits_banter_id_only() 
         Duration::from_secs(60),
         5 * 1024 * 1024,
     )));
-    let llm = ScriptedLlmClient::with_banter_fn(|_| {
+    let llm = ScriptedLlmClient::with_banter_fn(|req| {
+        if req.user_prompt.contains("牌友接茬判断") {
+            return Ok(BanterOutput::silent(PersonaMood::Deadpan));
+        }
         Ok(BanterOutput {
+            speak: true,
             mood: PersonaMood::Smug,
             text: "缓存淘汰测试".to_string(),
         })
@@ -1176,6 +1257,18 @@ async fn runtime_audio_cache_respects_lru_ttl_and_no_tts_emits_banter_id_only() 
     );
     let mut east = VirtualClient::connect(&runtime, "e1", "小王").await;
     let _ = start_solo_match(&runtime, &mut east).await;
+    east.send(
+        &runtime,
+        &ClientMessage::SetSlowThinkNudge { enabled: false },
+    )
+    .await;
+    east.send(
+        &runtime,
+        &ClientMessage::SendQuickEmote {
+            emote: QuickEmote::NicePlay,
+        },
+    )
+    .await;
     yield_tasks().await;
     let _ = east.drain_all();
     assert!(runtime.get_banter_audio("b-1").is_some());
@@ -1239,6 +1332,14 @@ async fn runtime_audio_cache_respects_lru_ttl_and_no_tts_emits_banter_id_only() 
         "--no-tts must send TtsStatusNotice(available=false) on Hello: {hello_msgs:?}"
     );
     let _ = start_solo_match(&runtime_no_tts, &mut east2).await;
+    east2
+        .send(
+            &runtime_no_tts,
+            &ClientMessage::SendQuickEmote {
+                emote: QuickEmote::IsThatIt,
+            },
+        )
+        .await;
     yield_tasks().await;
     let msgs = east2.drain_all();
     assert!(msgs
@@ -1252,8 +1353,12 @@ async fn runtime_audio_cache_respects_lru_ttl_and_no_tts_emits_banter_id_only() 
 
 #[tokio::test(start_paused = true)]
 async fn timeout_and_deadline_exceeded_emit_fallback_without_tripping_circuit_breaker() {
-    let llm = ScriptedLlmClient::with_banter_fn(|_| {
+    let llm = ScriptedLlmClient::with_banter_fn(|req| {
+        if req.user_prompt.contains("牌友接茬判断") {
+            return Ok(BanterOutput::silent(PersonaMood::Deadpan));
+        }
         Ok(BanterOutput {
+            speak: true,
             mood: PersonaMood::Smug,
             text: "超时和408都不能误报服务不可用！".to_string(),
         })
@@ -1331,6 +1436,18 @@ async fn timeout_and_deadline_exceeded_emit_fallback_without_tripping_circuit_br
     let _ = north.recv_snapshot().await;
     east.send(&runtime, &ClientMessage::StartMatch).await;
     let _ = east.recv_snapshot().await;
+    east.send(
+        &runtime,
+        &ClientMessage::SetSlowThinkNudge { enabled: false },
+    )
+    .await;
+    east.send(
+        &runtime,
+        &ClientMessage::SendQuickEmote {
+            emote: QuickEmote::GoingBig,
+        },
+    )
+    .await;
     yield_tasks().await;
     let _ = east.drain_all();
 
@@ -1426,8 +1543,12 @@ async fn timeout_and_deadline_exceeded_emit_fallback_without_tripping_circuit_br
 #[tokio::test(start_paused = true)]
 async fn single_in_flight_slot_supersedes_queued_line_and_emits_fallback() {
     let gate_first = Arc::new(Notify::new());
-    let llm = ScriptedLlmClient::with_banter_fn(|_| {
+    let llm = ScriptedLlmClient::with_banter_fn(|req| {
+        if req.user_prompt.contains("牌友接茬判断") {
+            return Ok(BanterOutput::silent(PersonaMood::Deadpan));
+        }
         Ok(BanterOutput {
+            speak: true,
             mood: PersonaMood::Smug,
             text: "单在途加一槽最新顶替测试！".to_string(),
         })
@@ -1466,22 +1587,11 @@ async fn single_in_flight_slot_supersedes_queued_line_and_emits_fallback() {
     );
     let mut east = VirtualClient::connect(&runtime, "e1", "小王").await;
     let mut west = VirtualClient::connect(&runtime, "w1", "阿西").await;
-    east.send(
-        &runtime,
-        &ClientMessage::JoinSeat {
-            seat: Some(Seat::East),
-        },
-    )
-    .await;
-    let _ = east.recv_snapshot().await;
-    west.send(
-        &runtime,
-        &ClientMessage::JoinSeat {
-            seat: Some(Seat::West),
-        },
-    )
-    .await;
-    let _ = west.recv_snapshot().await;
+    for (c, seat) in [(&mut east, Seat::East), (&mut west, Seat::West)] {
+        c.send(&runtime, &ClientMessage::JoinSeat { seat: Some(seat) })
+            .await;
+        let _ = c.recv_snapshot().await;
+    }
     east.send(
         &runtime,
         &ClientMessage::SetSeatPersona {
@@ -1501,23 +1611,13 @@ async fn single_in_flight_slot_supersedes_queued_line_and_emits_fallback() {
     east.send(&runtime, &ClientMessage::StartMatch).await;
     let _ = east.recv_snapshot().await;
     let _ = west.recv_snapshot().await;
-    yield_tasks().await;
-    let open_msgs = east.drain_all();
-    let _ = west.drain_all();
-    let b1_id = open_msgs
-        .iter()
-        .find_map(|m| match m {
-            ServerMessage::TableBanter { banter_id, .. } => Some(banter_id.clone()),
-            _ => None,
-        })
-        .expect("opening banter b-1");
-    assert_eq!(b1_id, "b-1");
-    assert_eq!(tts.captured().len(), 1);
+    east.send(
+        &runtime,
+        &ClientMessage::SetSlowThinkNudge { enabled: false },
+    )
+    .await;
 
-    // While b-1 is gated in-flight, East sends a quick emote -> both South (b-2) and North (b-3)
-    // reply simultaneously. Only b-1 stays in-flight; b-3 supersedes b-2 in the single pending slot
-    // and emits TableBanterAudioFallback for b-2 immediately!
-    tokio::time::advance(Duration::from_millis(200)).await;
+    // 1. East QuickEmote(IsThatIt, idx 0) -> wakes AI seat A (b-1, TTS gated in-flight).
     east.send(
         &runtime,
         &ClientMessage::SendQuickEmote {
@@ -1526,41 +1626,72 @@ async fn single_in_flight_slot_supersedes_queued_line_and_emits_fallback() {
     )
     .await;
     yield_tasks().await;
-    let after_emote = east.drain_all();
+    let open_msgs = east.drain_all();
     let _ = west.drain_all();
-    let emitted_banters: Vec<(String, Seat)> = after_emote
+    let (b1_id, b1_seat) = open_msgs
         .iter()
-        .filter_map(|m| match m {
+        .find_map(|m| match m {
             ServerMessage::TableBanter {
                 banter_id, seat, ..
             } => Some((banter_id.clone(), *seat)),
             _ => None,
         })
-        .collect();
-    assert_eq!(
-        emitted_banters.len(),
-        2,
-        "expected both South and North AI seats to reply: {after_emote:?}"
-    );
-    let (b2_id, b2_seat) = &emitted_banters[0];
-    let (b3_id, b3_seat) = &emitted_banters[1];
-    assert_ne!(b2_seat, b3_seat);
+        .expect("b-1 banter");
+    assert_eq!(b1_id, "b-1");
+    assert_eq!(tts.captured().len(), 1);
+
+    // 2. West QuickEmote(HurryUp, idx 1) -> wakes the OTHER AI seat B (b-2, enters single pending slot).
+    tokio::time::advance(Duration::from_millis(200)).await;
+    west.send(
+        &runtime,
+        &ClientMessage::SendQuickEmote {
+            emote: QuickEmote::HurryUp,
+        },
+    )
+    .await;
+    yield_tasks().await;
+    let after_b2 = east.drain_all();
+    let (b2_id, b2_seat) = after_b2
+        .iter()
+        .find_map(|m| match m {
+            ServerMessage::TableBanter {
+                banter_id, seat, ..
+            } => Some((banter_id.clone(), *seat)),
+            _ => None,
+        })
+        .expect("b-2 banter");
+    assert_eq!(b2_id, "b-2");
+    assert_ne!(b2_seat, b1_seat);
+
+    // 3. After East's 4s emote cooldown (t = 4.3s < 5s TTS deadline), East sends QuickEmote(IsThatIt, idx 0) ->
+    // wakes seat A again (b-3): b-3 supersedes b-2 (different seat!) in the pending slot -> emits
+    // TableBanterAudioFallback(b-2) immediately, AND supersedes b-1 on seat A!
+    tokio::time::advance(Duration::from_millis(4100)).await;
+    east.send(
+        &runtime,
+        &ClientMessage::SendQuickEmote {
+            emote: QuickEmote::IsThatIt,
+        },
+    )
+    .await;
+    yield_tasks().await;
+
+    let after_emotes = east.drain_all();
     assert_eq!(
         tts.captured().len(),
         1,
         "must keep strictly 1 in-flight request while b-1 is running"
     );
     assert!(
-        after_emote.iter().any(|m| matches!(
+        after_emotes.iter().any(|m| matches!(
             m,
             ServerMessage::TableBanterAudioFallback { banter_id, seat }
-                if banter_id == b2_id && seat == b2_seat
+                if banter_id == "b-2" && *seat == b2_seat
         )),
-        "superseded queued {b2_id} must emit TableBanterAudioFallback immediately: {after_emote:?}"
+        "superseded queued b-2 must emit TableBanterAudioFallback immediately: {after_emotes:?}"
     );
 
-    // Release b-1 -> b-1 finishes on the upstream stub (discarded as stale because its seat
-    // already spoke again during the quick emote), AND b-3 promotes directly (b-2 was NEVER sent!).
+    // Release b-1 -> b-1 is discarded as stale (seat A moved to b-3), AND b-3 promotes directly (b-2 was NEVER sent!).
     gate_first.notify_waiters();
     yield_tasks().await;
     let after_release = east.drain_all();
@@ -1569,16 +1700,91 @@ async fn single_in_flight_slot_supersedes_queued_line_and_emits_fallback() {
             m,
             ServerMessage::TableBanterAudioReady { banter_id, .. } if banter_id == "b-1"
         )),
-        "b-1 was superseded by same-seat emote reply and must not broadcast stale audio: {after_release:?}"
+        "b-1 was superseded by same-seat reply and must not broadcast stale audio: {after_release:?}"
     );
     assert!(
         after_release.iter().any(|m| matches!(
             m,
             ServerMessage::TableBanterAudioReady { banter_id, duration_ms: 830, .. }
-                if banter_id == b3_id
+                if banter_id == "b-3"
         )),
-        "latest queued {b3_id} must promote and finish after b-1: {after_release:?}"
+        "latest queued b-3 must promote and finish after b-1: {after_release:?}"
     );
     let sent_ids: Vec<String> = tts.captured().into_iter().map(|r| r.request_id).collect();
-    assert_eq!(sent_ids, vec!["b-1".to_string(), b3_id.clone()]);
+    assert_eq!(sent_ids, vec!["b-1".to_string(), "b-3".to_string()]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn silent_mood_decision_emits_persona_mood_updated_without_triggering_tts_or_banter() {
+    let llm = ScriptedLlmClient::from_replies(vec![PlannedReply::Immediate(Ok(
+        BanterOutput::silent(PersonaMood::Plotting),
+    ))]);
+    let tts = ScriptedTtsClient::new(
+        true,
+        vec![PlannedTtsReply::Immediate(Ok(TtsAudioOutput {
+            wav_bytes: make_sample_wav(0x77, 1600),
+            duration_ms: 800,
+        }))],
+    );
+    let wall = no_reaction_wall();
+    let factory: WallProviderFactory = Arc::new(move || {
+        BoxedWallProvider(Box::new(PresetWallProvider::single(
+            Seat::East,
+            wall.clone(),
+        )))
+    });
+    let runtime = TableRuntime::with_options(
+        8789,
+        None,
+        TableOptions::with_wall_factory(91, factory)
+            .with_pacing(PacingMode::Immediate)
+            .with_llm_client(llm)
+            .with_tts_client(tts.clone()),
+    );
+
+    let mut east = VirtualClient::connect(&runtime, "tts-silent-e", "房主").await;
+    east.send(
+        &runtime,
+        &ClientMessage::JoinSeat {
+            seat: Some(Seat::East),
+        },
+    )
+    .await;
+    let _ = east.recv_snapshot().await;
+    east.send(&runtime, &ClientMessage::StartMatch).await;
+    let _ = east.recv_snapshot().await;
+    east.send(
+        &runtime,
+        &ClientMessage::SendQuickEmote {
+            emote: QuickEmote::IsThatIt,
+        },
+    )
+    .await;
+    yield_tasks().await;
+
+    let msgs = east.drain_all();
+    assert!(
+        msgs.iter().any(|m| matches!(
+            m,
+            ServerMessage::PersonaMoodUpdated {
+                mood: PersonaMood::Plotting,
+                ..
+            }
+        )),
+        "expected PersonaMoodUpdated on silent mood change, got {msgs:?}"
+    );
+    assert!(
+        !msgs.iter().any(|m| matches!(
+            m,
+            ServerMessage::TableBanter { .. }
+                | ServerMessage::TableBanterAudioReady { .. }
+                | ServerMessage::TableBanterAudioFallback { .. }
+        )),
+        "speak: false must never emit TableBanter or TTS audio messages: {msgs:?}"
+    );
+    assert!(
+        tts.captured().is_empty(),
+        "speak: false must never invoke TtsClient::synthesize, got {:?}",
+        tts.captured()
+    );
 }

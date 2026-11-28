@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,9 +8,15 @@ import {
   ALL_VOICE_SLOTS,
   VOICE_ACTION_SLOTS,
   VOICE_EMOTE_SLOTS,
+  VOICE_SLOT_SPEECH_TEXT,
   VOICE_TILE_SLOTS,
   parseVoicePackManifest,
 } from "./voicePackSchema";
+
+// SHA-256 of the baked spoken lines recorded into web/public/assets/vo/*/sprite.m4a.
+// Update this only after regenerating all 7 offline VoicePack audio sprites; UI copy lives in QUICK_EMOTE_CATALOG.
+const BAKED_VOICE_SPEECH_TEXT_SHA256 =
+  "e4a2161cb33e529efbc49b8aebc90c0f5c8f28a1ac2f355863994320878d2b7a";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_VO_DIR = path.resolve(__dirname, "../../../public/assets/vo");
@@ -198,5 +205,17 @@ describe("VoicePack manifest parser and committed 7-pack assets", () => {
 
     expect(totalM4aBytes).toBeGreaterThan(0);
     expect(totalM4aBytes).toBeLessThanOrEqual(MAX_TOTAL_M4A_BYTES);
+  });
+
+  it("keeps VOICE_SLOT_SPEECH_TEXT aligned with committed offline VoicePack recordings", () => {
+    const pairs = ALL_VOICE_SLOTS.map((slot) => [slot, VOICE_SLOT_SPEECH_TEXT[slot]]);
+    const actualHash = crypto
+      .createHash("sha256")
+      .update(JSON.stringify(pairs))
+      .digest("hex");
+    expect(
+      actualHash,
+      "VOICE_SLOT_SPEECH_TEXT changed without updating BAKED_VOICE_SPEECH_TEXT_SHA256; keep UI copy edits in QUICK_EMOTE_CATALOG unless re-recording all 7 sprite.m4a packs",
+    ).toBe(BAKED_VOICE_SPEECH_TEXT_SHA256);
   });
 });

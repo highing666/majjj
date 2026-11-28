@@ -1938,11 +1938,11 @@ fn standard_tedashi_long_think_scales_with_wall_progress_and_persona_multipliers
 }
 
 #[tokio::test(start_paused = true)]
-async fn post_sync_banter_ai_turn_refreshes_started_at_and_never_instant_discards() {
+async fn async_banter_never_blocks_post_pon_ai_turn_pacing() {
     // South AI holds 55m 123s 567p 99p 23m E -> East discards 5m -> South Pons 5m.
-    // Highlight sync banter takes 1400ms (just under 1500ms HIGHLIGHT_SYNC_CAP).
-    // After sync_banter finishes, South's follow-up discard MUST still wait its full Fast
-    // humanized window [900..1800]ms (NOT 0ms from a stale pre-banter started_at!).
+    // Even if a slow 3000ms async LLM call is running in the background (e.g. from a QuickEmote),
+    // South's post-Pon follow-up discard MUST NOT block on LLM and still obeys its Fast
+    // humanized window [900..1800]ms directly from the Pon event!
     let wall = build_preset_wall(
         &tiles("5m 1m 4m 7m 1s 4s 7s 1p 4p 7p E S W N"),
         &tiles("5m 5m 1s 2s 3s 5p 6p 7p 9p 9p 2m 3m E"),
@@ -1958,18 +1958,16 @@ async fn post_sync_banter_ai_turn_refreshes_started_at_and_never_instant_discard
             wall.clone(),
         )))
     });
+    let llm_gate = Arc::new(tokio::sync::Notify::new());
     let llm = ScriptedLlmClient::from_replies(vec![
-        // Opening banter (async)
-        PlannedReply::Immediate(Ok(BanterOutput {
-            mood: PersonaMood::Deadpan,
-            text: "开局先看看手气怎么样。".to_string(),
-        })),
-        // Highlight Pon banter taking 1400ms inside 1500ms HIGHLIGHT_SYNC_CAP!
-        PlannedReply::Delayed(
-            Duration::from_millis(1400),
+        // Gated background banter (triggered by QuickEmote) stays in-flight forever until released:
+        // proves gameplay and post-Pon AI pacing NEVER block on LLM!
+        PlannedReply::Gated(
+            Arc::clone(&llm_gate),
             Ok(BanterOutput {
+                speak: true,
                 mood: PersonaMood::Smug,
-                text: "五万碰走，节奏归我了！".to_string(),
+                text: "慢悠悠想完再说，绝不卡牌局！".to_string(),
             }),
         ),
     ]);
@@ -1996,7 +1994,7 @@ async fn post_sync_banter_ai_turn_refreshes_started_at_and_never_instant_discard
         &ClientMessage::UpdateLobbyConfig {
             mode: MatchMode::FreeTable,
             seating: SeatingRule::KeepLobbySeats,
-            ai_difficulty: AiDifficulty::Strong,
+            ai_difficulty: AiDifficulty::Intermediate,
             pace: TablePace::Fast,
         },
     )
@@ -2005,9 +2003,14 @@ async fn post_sync_banter_ai_turn_refreshes_started_at_and_never_instant_discard
     east.send(&runtime, &ClientMessage::StartMatch).await;
     let snap = east.recv_snapshot().await;
 
-    // Advance slightly so opening banter settles cleanly.
-    tokio::time::advance(Duration::from_millis(50)).await;
-    tokio::task::yield_now().await;
+    // Kick off a slow 3000ms background banter call right before East discards 5m.
+    east.send(
+        &runtime,
+        &ClientMessage::SendQuickEmote {
+            emote: mahjong_server::protocol::QuickEmote::IsThatIt,
+        },
+    )
+    .await;
     east.drain_pending();
 
     east.send(
@@ -2023,6 +2026,13 @@ async fn post_sync_banter_ai_turn_refreshes_started_at_and_never_instant_discard
     )
     .await;
     let _ = east.recv_event_batch().await; // TileDiscarded(5m)
+
+    // Let Rayon finish South's fast L2 Pon decision on the worker thread so its ~500ms pacing timer
+    // is registered before Tokio auto-advances past the 20s background LLM timeout!
+    for _ in 0..40 {
+        std::thread::sleep(Duration::from_millis(5));
+        tokio::task::yield_now().await;
+    }
     let (_, _, ev_pon, _) = east.recv_event_batch().await; // South MeldDeclared(Pon)
     assert!(matches!(
         ev_pon[0].kind,
@@ -2032,25 +2042,21 @@ async fn post_sync_banter_ai_turn_refreshes_started_at_and_never_instant_discard
             ..
         }
     ));
+    let pon_landed_at = tokio::time::Instant::now();
 
-    // Wait for the 1400ms highlight TableBanter to arrive.
-    loop {
-        match east.recv_msg().await {
-            ServerMessage::TableBanter { text, .. } if text.contains("五万碰走") => break,
-            ServerMessage::EventBatch { events, .. } => {
-                panic!("South discarded before sync_banter finished: {events:?}");
-            }
-            _ => continue,
-        }
+    // Let Rayon finish South's post-Pon discard decision so its Fast [900..1800]ms timer is armed.
+    for _ in 0..40 {
+        std::thread::sleep(Duration::from_millis(5));
+        tokio::task::yield_now().await;
     }
-    let banter_landed_at = tokio::time::Instant::now();
-
-    // Now wait for South's follow-up discard (skipping any async follow-up TableBanter):
-    // must take full Fast 手切 [900..1800]ms AFTER banter landed!
+    // South's follow-up discard must land within Fast 手切 [900..1800]ms directly after Pon,
+    // while the gated background LLM call is STILL in-flight!
     let ev_follow = loop {
         match east.recv_msg().await {
             ServerMessage::EventBatch { events, .. } => break events,
             ServerMessage::TableBanter { .. }
+            | ServerMessage::PersonaMoodUpdated { .. }
+            | ServerMessage::QuickEmoteBroadcast { .. }
             | ServerMessage::TableBanterAudioReady { .. }
             | ServerMessage::TableBanterAudioFallback { .. }
             | ServerMessage::LobbyUpdated { .. }
@@ -2065,11 +2071,12 @@ async fn post_sync_banter_ai_turn_refreshes_started_at_and_never_instant_discard
             ..
         }
     ));
-    let elapsed_after_banter_ms = tokio::time::Instant::now()
-        .duration_since(banter_landed_at)
+    let elapsed_after_pon_ms = tokio::time::Instant::now()
+        .duration_since(pon_landed_at)
         .as_millis() as u64;
     assert!(
-        (900..=1800).contains(&elapsed_after_banter_ms),
-        "post-sync_banter AI follow-up must wait full [900..1800]ms (not 0ms!), got {elapsed_after_banter_ms}ms"
+        (900..=1800).contains(&elapsed_after_pon_ms),
+        "post-Pon AI follow-up must wait only its Fast [900..1800]ms without blocking on in-flight LLM, got {elapsed_after_pon_ms}ms"
     );
+    llm_gate.notify_waiters();
 }

@@ -94,7 +94,7 @@ describe("@2x comic impasto persona avatar atlas", () => {
   it("projects any (personaId, mood, size) to exact CSS background crop coordinates", () => {
     const projected = projectPersonaAvatar("QuickHothead", "Tilted", 48);
     expect(projected.frameKey).toBe("persona_QuickHothead_Tilted");
-    expect(projected.ariaLabel).toBe("急眼快攻哥 · 红温破防");
+    expect(projected.ariaLabel).toBe("大川 · 红温破防");
     expect(projected.size).toBe(48);
     expect(projected.atlasWidth).toBeLessThanOrEqual(2048);
     expect(projected.atlasHeight).toBeLessThanOrEqual(2048);

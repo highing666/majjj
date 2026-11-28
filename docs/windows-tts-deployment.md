@@ -171,11 +171,11 @@ pwsh -File E:\majjj-tts\start-tts-server.ps1 -RootDir E:\majjj-tts -Backend qwen
 
 | `PersonaId` | 昵称 | 内置 Speaker | `voice_pack_id` |
 | --- | --- | --- | --- |
-| `QuickHothead` | 急眼快攻哥 | `Eric` | `quick_hothead` |
-| `TeaSarcasm` | 阴阳茶艺师 | `Serena` | `tea_sarcasm` |
-| `StubbornBlamer` | 嘴硬死磕王 | `Dylan` | `stubborn_blamer` |
-| `ChaosInstigator` | 拱火乐子人 | `Vivian` | `chaos_instigator` |
-| `TiltedMaster` | 红温老雀神 | `Uncle_Fu` | `tilted_master` |
+| `QuickHothead` | 大川 | `Eric` | `quick_hothead` |
+| `TeaSarcasm` | 小晚 | `Serena` | `tea_sarcasm` |
+| `StubbornBlamer` | 大鹏 | `Dylan` | `stubborn_blamer` |
+| `ChaosInstigator` | 小桃 | `Vivian` | `chaos_instigator` |
+| `TiltedMaster` | 老陈 | `Uncle_Fu` | `tilted_master` |
 
 ---
 
