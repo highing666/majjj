@@ -22,11 +22,11 @@ const EXPECTED_PS_SCRIPTS = [
 
 const EXPECTED_MOODS = ['Smug', 'Mocking', 'Tilted', 'Nervous', 'Plotting', 'Deadpan'];
 const EXPECTED_PERSONAS = [
-  '急眼快攻哥',
-  '阴阳茶艺师',
-  '嘴硬死磕王',
-  '拱火乐子人',
-  '红温老雀神',
+  '大川',
+  '小晚',
+  '大鹏',
+  '小桃',
+  '老陈',
 ];
 
 function readScript(filename) {
@@ -262,7 +262,7 @@ test('deploy-llama-server.ps1 supports idempotent green CUDA & Qwen3.5-9B-Q5_K_M
   assert.match(content, /Range|RangeHeaderValue/i, 'must support resumable HTTP Range chunk downloads');
 });
 
-test('start-llama-server.ps1 uses verified RTX 3060 flags, model swap parameter, detached Win32_Process launch, and /health + /props check', () => {
+test('start-llama-server.ps1 uses 8K/slot context, native thinking with configurable reasoning budget, model swap parameter, detached Win32_Process launch, and /health + /props check', () => {
   const content = readScript('start-llama-server.ps1');
 
   for (const param of [
@@ -272,15 +272,17 @@ test('start-llama-server.ps1 uses verified RTX 3060 flags, model swap parameter,
     '$Port',
     '$ParallelSlots',
     '$ContextSize',
+    '$ReasoningBudget',
     '$Restart',
     '$Foreground',
   ]) {
     assert.ok(content.includes(param), `start-llama-server.ps1 missing parameter ${param}`);
   }
 
-  // Verified defaults & critical flags
-  assert.match(content, /\$ParallelSlots\s*=\s*3\b/, 'default ParallelSlots must be 3');
-  assert.match(content, /\$ContextSize\s*=\s*12288\b/, 'default ContextSize must be 12288');
+  // Verified defaults & critical flags (Spec #105 / Ticket #106)
+  assert.match(content, /\$ParallelSlots\s*=\s*2\b/, 'default ParallelSlots must be 2');
+  assert.match(content, /\$ContextSize\s*=\s*16384\b/, 'default ContextSize must be 16384 (8192/slot)');
+  assert.match(content, /\$ReasoningBudget\s*=\s*256\b/, 'default ReasoningBudget must be 256');
   assert.ok(content.includes('-ngl'), 'must pass -ngl GPU offload flag');
   assert.ok(content.includes('999'), 'must default GPU offload layers to 999');
   assert.ok(content.includes('-fa'), 'must pass -fa Flash Attention flag');
@@ -288,8 +290,15 @@ test('start-llama-server.ps1 uses verified RTX 3060 flags, model swap parameter,
   assert.ok(content.includes('-c'), 'must pass explicit -c context size flag');
   assert.ok(content.includes('--jinja'), 'must enable --jinja template engine');
   assert.ok(content.includes('--chat-template-kwargs'), 'must pass --chat-template-kwargs');
-  assert.ok(content.includes('enable_thinking'), 'must explicitly disable enable_thinking');
+  assert.match(content, /"enable_thinking"\s*:\s*true/, 'must enable native thinking in chat template kwargs');
+  assert.ok(content.includes('--reasoning-format'), 'must pass --reasoning-format for clean reasoning_content separation');
+  assert.ok(content.includes('deepseek'), 'must separate reasoning_content via deepseek format');
   assert.ok(content.includes('--reasoning-budget'), 'must pass --reasoning-budget');
+  assert.match(
+    content,
+    /'--reasoning-budget',\s*\[string\]\$ReasoningBudget/,
+    'must forward configurable $ReasoningBudget to --reasoning-budget',
+  );
   assert.ok(content.includes('--log-file'), 'must configure --log-file');
 
   // PowerShell 7 quote passing & SSH-safe detached process launch
@@ -335,13 +344,25 @@ test('setup-firewall.ps1 enforces idempotent LAN-only inbound rule on TCP port 8
   assert.match(content, /\bAny\b/, 'must guard against wildcard Any remote address');
 });
 
-test('install-autostart.ps1 provides idempotent scheduled task install and uninstall', () => {
+test('install-autostart.ps1 provides idempotent scheduled task install and uninstall with synced defaults', () => {
   const content = readScript('install-autostart.ps1');
 
-  for (const param of ['$TaskName', '$RootDir', '$ModelPath', '$Uninstall']) {
+  for (const param of [
+    '$TaskName',
+    '$RootDir',
+    '$ModelPath',
+    '$ParallelSlots',
+    '$ContextSize',
+    '$ReasoningBudget',
+    '$Uninstall',
+  ]) {
     assert.ok(content.includes(param), `install-autostart.ps1 missing parameter ${param}`);
   }
 
+  assert.match(content, /\$ParallelSlots\s*=\s*2\b/, 'autostart default ParallelSlots must be 2');
+  assert.match(content, /\$ContextSize\s*=\s*16384\b/, 'autostart default ContextSize must be 16384');
+  assert.match(content, /\$ReasoningBudget\s*=\s*256\b/, 'autostart default ReasoningBudget must be 256');
+  assert.ok(content.includes('-ReasoningBudget'), 'autostart must forward -ReasoningBudget to start-llama-server.ps1');
   assert.ok(content.includes('Register-ScheduledTask'), 'must register scheduled task');
   assert.ok(content.includes('Unregister-ScheduledTask'), 'must support uninstalling scheduled task');
   assert.ok(content.includes('-AtStartup'), 'must trigger at system startup');
@@ -349,18 +370,23 @@ test('install-autostart.ps1 provides idempotent scheduled task install and unins
   assert.ok(content.includes('start-llama-server.ps1'), 'scheduled task must invoke start-llama-server.ps1');
 });
 
-test('smoke-test.ps1 verifies /health, /props or /v1/models, strict 6-mood json_schema, zero think leakage, 5 personas, latency & concurrency', () => {
+test('smoke-test.ps1 verifies /health, /props (8K/slot + thinking separation), strict {speak,mood,text} json_schema, reasoning_content separation, 5 humanized personas, latency & 2-way concurrency', () => {
   const content = readScript('smoke-test.ps1');
 
   for (const param of ['$BaseUrl', '$SkipConcurrency', '$Concurrency']) {
     assert.ok(content.includes(param), `smoke-test.ps1 missing parameter ${param}`);
   }
 
+  assert.match(content, /\$Concurrency\s*=\s*2\b/, 'default Concurrency must be 2');
   assert.ok(content.includes('/health'), 'must check /health');
   assert.ok(content.includes('/props') || content.includes('/v1/models'), 'must check /props or /v1/models');
   assert.ok(content.includes('/v1/chat/completions'), 'must test /v1/chat/completions');
   assert.ok(content.includes('json_schema'), 'must enforce OpenAI-compatible json_schema');
   assert.ok(content.includes('additionalProperties'), 'schema must set additionalProperties = false');
+  assert.match(content, /required\s*=\s*@\('speak',\s*'mood',\s*'text'\)/, 'schema must require speak, mood, text');
+  assert.match(content, /speak\s*=\s*@\{[^}]*type\s*=\s*'boolean'/s, 'schema must define boolean speak field');
+  assert.match(content, /minLength\s*=\s*0\b/, 'schema text field must allow minLength = 0 for speak=false');
+  assert.match(content, /enable_thinking\s*=\s*\$true/, 'requests must enable native thinking');
 
   for (const mood of EXPECTED_MOODS) {
     assert.ok(content.includes(`'${mood}'`) || content.includes(`"${mood}"`), `smoke-test.ps1 missing mood ${mood}`);
@@ -370,13 +396,15 @@ test('smoke-test.ps1 verifies /health, /props or /v1/models, strict 6-mood json_
     assert.ok(content.includes(persona), `smoke-test.ps1 missing persona ${persona}`);
   }
 
-  assert.ok(content.includes('<think>'), 'must check for <think> leakage');
-  assert.ok(content.includes('reasoning_content'), 'must check for reasoning_content leakage');
+  assert.ok(!content.includes('发牌员'), 'smoke-test.ps1 must not perpetuate the dealer-blaming trope');
+  assert.ok(content.includes('<think>'), 'must reject <think> tag leakage in content/text');
+  assert.ok(content.includes('reasoning_content'), 'must inspect separated reasoning_content');
+  assert.ok(content.includes('mood,speak,text'), 'must enforce exact sorted JSON keys mood,speak,text');
   assert.ok(content.includes('TTFT'), 'must report TTFT latency');
   assert.ok(content.includes('-Parallel'), 'must support concurrent smoke requests');
 });
 
-test('docs/windows-llm-deployment.md documents all scripts, model swap, troubleshooting, and BENDER benchmark summary', () => {
+test('docs/windows-llm-deployment.md documents all scripts, 8K/slot native thinking flags, reasoning budget tuning, model swap, troubleshooting, and BENDER benchmark summary', () => {
   assert.ok(fs.existsSync(deploymentDocPath), `Missing documentation: ${deploymentDocPath}`);
   const doc = fs.readFileSync(deploymentDocPath, 'utf8');
 
@@ -384,17 +412,27 @@ test('docs/windows-llm-deployment.md documents all scripts, model swap, troubles
     assert.ok(doc.includes(filename), `docs/windows-llm-deployment.md must mention ${filename}`);
   }
 
+  for (const persona of EXPECTED_PERSONAS) {
+    assert.ok(doc.includes(persona), `docs/windows-llm-deployment.md must mention humanized persona ${persona}`);
+  }
+
   for (const marker of [
     '-ModelPath',
+    '-ReasoningBudget',
     'BENDER',
     'RTX 3060',
     'b12760',
     'Qwen3.5-9B-Q5_K_M.gguf',
-    '12288',
-    '7,229 MiB',
-    '7,237 MiB',
-    '155.7 ms',
-    '860.3 ms',
+    '--parallel 2',
+    '16384',
+    '8192',
+    '--reasoning-format deepseek',
+    '--reasoning-budget 256',
+    'enable_thinking',
+    'reasoning_content',
+    '10,349 MiB',
+    '6,323.2 ms',
+    '7,615.9 ms',
     'majjj-llama-server-lan-8080',
   ]) {
     assert.ok(doc.includes(marker), `docs/windows-llm-deployment.md missing expected benchmark/ops detail: ${marker}`);

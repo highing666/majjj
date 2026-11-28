@@ -3,13 +3,16 @@
 .SYNOPSIS
     幂等启动局域网 llama-server 推理服务（默认适配 RTX 3060 12GB + Qwen3.5-9B-Q5_K_M）。
 .DESCRIPTION
-    使用经过真机验证的启动参数（全层 GPU 卸载、Flash Attention、3 路并发、-c 12288、
-    开启 Jinja 模板并彻底关闭思考链）。
+    使用经过真机验证的启动参数（全层 GPU 卸载、Flash Attention、2 路并发、-c 16384
+    即每槽 8192 tokens、开启 Jinja 模板与原生思考模式、通过 deepseek 格式分离思考内容，
+    默认思考预算 256 tokens，可通过 -ReasoningBudget 调优）。
     后台模式通过 Win32_Process.Create 脱离 SSH / 终端会话 Job 对象长期常驻，
     启动后自动轮询 /health 与 /props 验证就绪状态。
     支持仅通过 -ModelPath 切换其他 GGUF 模型权重。
 .EXAMPLE
     pwsh -File .\start-llama-server.ps1
+.EXAMPLE
+    pwsh -File .\start-llama-server.ps1 -ReasoningBudget 192 -Restart
 .EXAMPLE
     pwsh -File .\start-llama-server.ps1 -ModelPath E:\majjj-llm\models\Huihui-Qwen3.5-9B-abliterated.Q5_K_M.gguf -Restart
 .EXAMPLE
@@ -25,9 +28,11 @@ param(
     [ValidateRange(0, 9999)]
     [int]$GpuLayers = 999,
     [ValidateRange(1, 16)]
-    [int]$ParallelSlots = 3,
+    [int]$ParallelSlots = 2,
     [ValidateRange(1024, 131072)]
-    [int]$ContextSize = 12288,
+    [int]$ContextSize = 16384,
+    [ValidateRange(-1, 4096)]
+    [int]$ReasoningBudget = 256,
     [ValidateRange(10, 600)]
     [int]$HealthTimeoutSec = 180,
     [switch]$Restart,
@@ -80,12 +85,25 @@ function Show-ServerPropsSummary {
         } else {
             'unknown'
         }
-        $ReasoningFormat = if ($Props.PSObject.Properties['reasoning_format']) {
+        $GenParams = if (
+            $Props.PSObject.Properties['default_generation_settings'] -and
+            $null -ne $Props.default_generation_settings -and
+            $Props.default_generation_settings.PSObject.Properties['params']
+        ) {
+            $Props.default_generation_settings.params
+        } else {
+            $null
+        }
+        $ReasoningFormat = if ($null -ne $GenParams -and $GenParams.PSObject.Properties['reasoning_format']) {
+            $GenParams.reasoning_format
+        } elseif ($Props.PSObject.Properties['reasoning_format']) {
             $Props.reasoning_format
         } else {
             'n/a'
         }
-        $ReasoningInContent = if ($Props.PSObject.Properties['reasoning_in_content']) {
+        $ReasoningInContent = if ($null -ne $GenParams -and $GenParams.PSObject.Properties['reasoning_in_content']) {
+            $GenParams.reasoning_in_content
+        } elseif ($Props.PSObject.Properties['reasoning_in_content']) {
             $Props.reasoning_in_content
         } else {
             'n/a'
@@ -132,12 +150,17 @@ if ($Restart) {
     }
 }
 
-$ChatTemplateKwargs = '{"enable_thinking": false}'
+$ChatTemplateKwargs = if ($ReasoningBudget -eq 0) {
+    '{"enable_thinking": false}'
+} else {
+    '{"enable_thinking": true}'
+}
+$ReasoningFormat = 'deepseek'
 
 if ($Foreground) {
-    Write-Host "[start] 前台模式启动 llama-server（Bind=${BindHost}:${Port}, Slots=$ParallelSlots, Context=$ContextSize）"
+    Write-Host "[start] 前台模式启动 llama-server（Bind=${BindHost}:${Port}, Slots=$ParallelSlots, Context=$ContextSize, ReasoningBudget=$ReasoningBudget）"
     Write-Host "[start] 模型：$ModelPath"
-    # PowerShell 7 原生参数传递设为 Standard，确保 '{"enable_thinking": false}' 引号完整送达 llama-server
+    # PowerShell 7 原生参数传递设为 Standard，确保 '{"enable_thinking": true}' 引号完整送达 llama-server
     $PSNativeCommandArgumentPassing = 'Standard'
     $ServerArgs = @(
         '-m', $ModelPath,
@@ -149,7 +172,8 @@ if ($Foreground) {
         '-c', [string]$ContextSize,
         '--jinja',
         '--chat-template-kwargs', $ChatTemplateKwargs,
-        '--reasoning-budget', '0',
+        '--reasoning-format', $ReasoningFormat,
+        '--reasoning-budget', [string]$ReasoningBudget,
         '--log-file', $LogFile
     )
     & $LlamaServerExe @ServerArgs
@@ -157,7 +181,7 @@ if ($Foreground) {
 }
 
 # 后台常驻模式：通过 Win32_Process.Create 脱离 SSH / PowerShell 会话 Job
-# 显式转义 JSON 内部双引号，确保 C 运行库 argv 解析出精确的 {"enable_thinking": false}
+# 显式转义 JSON 内部双引号，确保 C 运行库 argv 解析出精确的 {"enable_thinking": true}
 $EscapedTemplateKwargs = $ChatTemplateKwargs.Replace('"', '\"')
 $CommandLine = @(
     "`"$LlamaServerExe`"",
@@ -170,11 +194,12 @@ $CommandLine = @(
     '-c', [string]$ContextSize,
     '--jinja',
     '--chat-template-kwargs', "`"$EscapedTemplateKwargs`"",
-    '--reasoning-budget', '0',
+    '--reasoning-format', $ReasoningFormat,
+    '--reasoning-budget', [string]$ReasoningBudget,
     '--log-file', "`"$LogFile`""
 ) -join ' '
 
-Write-Host "[start] 后台常驻启动 llama-server（Bind=${BindHost}:${Port}, Slots=$ParallelSlots, Context=$ContextSize）..."
+Write-Host "[start] 后台常驻启动 llama-server（Bind=${BindHost}:${Port}, Slots=$ParallelSlots, Context=$ContextSize, ReasoningBudget=$ReasoningBudget）..."
 $CreateResult = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
     CommandLine      = $CommandLine
     CurrentDirectory = $BinDir
