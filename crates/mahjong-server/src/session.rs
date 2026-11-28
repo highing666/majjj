@@ -22,9 +22,10 @@ use crate::ai_pool::{
     PendingAiJob, ScheduledWork,
 };
 use crate::banter::{
-    plan_banter_for_events, plan_chain_followup, plan_quick_emote_reply, plan_slow_think_nudge,
-    BanterChainContext, BanterGuard, BanterPlanContext, BanterSessionState, ChainPrevLine,
-    NudgeTurnKey, PendingBanterJob, SlowThinkTicket, BANTER_CHAIN_REPLY_DELAY,
+    plan_banter_for_events, plan_delayed_followup_job, plan_quick_emote_reply,
+    plan_slow_think_nudge, schedule_chain_followup, BanterChainContext, BanterGuard,
+    BanterPlanContext, BanterSessionState, DelayedBanterFollowup, NudgeTurnKey, PendingBanterJob,
+    SlowThinkTicket, BANTER_CHAIN_REPLY_DELAY, STRONG_RECENCY_MAX_SEQ_DRIFT,
 };
 use crate::banter_audio::{BanterAudioCache, PendingTtsJob, TtsGuard, TtsSessionState};
 use crate::banter_context::{format_view_anchor, seat_display_name, MatchBanterContext};
@@ -33,7 +34,7 @@ use crate::history_dto::{
     MatchSeatRecord, PreferencesData, StatsResponse, HISTORY_SCHEMA_VERSION,
 };
 use crate::lan::{discover_lan_urls, read_local_hostname, read_system_interfaces};
-use crate::llm::{BanterOutput, LlmClient, LlmError};
+use crate::llm::{emit_banter_commit_debug_log, BanterOutput, LlmClient, LlmError};
 use crate::pacing::{
     apply_discard_to_view, compute_ai_turn_trigger, discard_release_delay, target_ai_delay,
     AiTurnTrigger, PacingMode, ReleaseTicket,
@@ -625,6 +626,18 @@ impl TableSession {
             in_flight_seats,
             persona_memory,
             banter_context: &active.banter_context,
+        }
+    }
+
+    fn observe_banter_events(&mut self, emitted: &[RecordedEvent]) {
+        if self.options.llm_client.is_none() || emitted.is_empty() {
+            return;
+        }
+        let seat_infos = self.seat_infos();
+        if let Some(active_mut) = self.active_match.as_mut() {
+            active_mut
+                .banter_context
+                .observe_events(&active_mut.game, &seat_infos, emitted);
         }
     }
 
@@ -1455,6 +1468,12 @@ impl TableSession {
             if emitted.len() >= 2 && !release_delay.is_zero() {
                 let discard_event = emitted.remove(0);
                 let discard_seq = discard_event.seq();
+                let defers_hand_settled = emitted.iter().any(|ev| {
+                    matches!(
+                        active.game.project_event(ev, Seat::East).kind,
+                        PlayerEventKind::HandSettled { .. }
+                    )
+                });
                 let mut public_views = pre_views.take().expect("captured for discard");
                 for view in &mut public_views {
                     apply_discard_to_view(view, seat, tile, from_drawn, discard_seq);
@@ -1463,7 +1482,14 @@ impl TableSession {
                 self.stage_pending_release(discard_seq, public_views, emitted, release_at);
                 let active_ref = self.active_match.as_ref().expect("active match exists");
                 self.broadcast_discard_only_batch(&active_ref.game, &discard_event);
-                self.schedule_banter_for_events(&[discard_event]);
+                if defers_hand_settled {
+                    // Hand already settled (e.g. final-tile DrawGame); record the discard count
+                    // without occupying the AI's slot with a stale mid-hand check-in so
+                    // HandSettled owns the post-hand wake-up cleanly upon release.
+                    self.observe_banter_events(&[discard_event]);
+                } else {
+                    self.schedule_banter_for_events(&[discard_event]);
+                }
                 return;
             }
 
@@ -2036,16 +2062,68 @@ impl TableSession {
         })
     }
 
-    /// Re-checks freshness after a delayed follow-up beat and claims the seat's single in-flight slot.
-    pub(crate) fn try_begin_delayed_banter(&mut self, guard: &mut BanterGuard) -> bool {
-        if !self.is_banter_guard_fresh(guard) {
-            return false;
+    /// Materializes a deferred follow-up banter job AFTER the `~1s` delay elapses:
+    /// verifies match/hand/seq freshness, selects 1 currently idle AI not yet in `spoken_seats`,
+    /// claims its in-flight slot, and builds a fresh 6-block prompt from the latest table state.
+    pub(crate) fn begin_delayed_followup(
+        &mut self,
+        followup: DelayedBanterFollowup,
+    ) -> Option<PendingBanterJob> {
+        self.options.llm_client.as_ref()?;
+        let phase_ok = self.phase == TablePhase::InMatch
+            || (followup.chain.hands_revealed && self.phase == TablePhase::Finished);
+        if !phase_ok {
+            return None;
         }
-        let Some(job_id) = self.banter.try_claim_seat(guard.seat) else {
-            return false;
-        };
-        guard.job_id = job_id;
-        true
+        if followup.require_nudge_enabled {
+            if !self.banter.slow_think_nudge_enabled {
+                return None;
+            }
+            if let Some((target_seat, _)) = followup.target_seat_generation {
+                let target_slot = &self.seats[target_seat.index()];
+                if target_slot.info.kind == SeatKind::Human
+                    && (target_slot.info.ai_assisted || !target_slot.info.connected)
+                {
+                    return None;
+                }
+            }
+        }
+        if let Some((target_seat, target_gen)) = followup.target_seat_generation {
+            if self.seat_generation[target_seat.index()] != target_gen {
+                return None;
+            }
+        }
+
+        let seat_infos = self.seat_infos();
+        let in_flight_seats = self.banter.in_flight_flags();
+        let active = self.active_match.as_ref()?;
+        if active.match_id != followup.match_id
+            || active.hand_generation != followup.hand_generation
+        {
+            return None;
+        }
+        if !followup.chain.hands_revealed {
+            let max_drift = if followup.require_nudge_enabled {
+                0
+            } else {
+                STRONG_RECENCY_MAX_SEQ_DRIFT
+            };
+            if active.game.seq().saturating_sub(followup.event_seq) > max_drift {
+                return None;
+            }
+        }
+
+        let ctx = Self::build_banter_plan_context(
+            active,
+            &seat_infos,
+            &self.seat_generation,
+            in_flight_seats,
+            &self.persona_memory,
+        );
+        let mut job = plan_delayed_followup_job(&ctx, &followup)?;
+        let job_id = self.banter.try_claim_seat(job.guard.seat)?;
+        job.guard.job_id = job_id;
+        Some(job)
     }
 
     pub(crate) fn commit_banter_result(
@@ -2079,30 +2157,33 @@ impl TableSession {
                 }
 
                 if !self.is_banter_guard_fresh(&guard) {
+                    emit_banter_commit_debug_log(
+                        guard.seat,
+                        guard.persona_id,
+                        &output,
+                        "dropped_stale",
+                    );
                     return BanterCommitOutcome::default();
                 }
 
-                tracing::debug!(
-                    seat = ?guard.seat,
-                    persona_id = ?guard.persona_id,
-                    speak = output.speak,
-                    mood = ?output.mood,
-                    text_chars = output.text.chars().count(),
-                    "committing banter decision"
-                );
-
                 if !output.speak {
                     let seat_info = &mut self.seats[guard.seat.index()].info;
-                    if seat_info.mood != Some(output.mood) {
+                    let outcome = if seat_info.mood != Some(output.mood) {
                         seat_info.mood = Some(output.mood);
                         self.broadcast_all(ServerMessage::PersonaMoodUpdated {
                             seat: guard.seat,
                             persona_id: guard.persona_id,
                             mood: output.mood,
                         });
-                    }
+                        "silent_mood_updated"
+                    } else {
+                        "silent_noop"
+                    };
+                    emit_banter_commit_debug_log(guard.seat, guard.persona_id, &output, outcome);
                     return BanterCommitOutcome::default();
                 }
+
+                emit_banter_commit_debug_log(guard.seat, guard.persona_id, &output, "spoken");
 
                 let now = tokio::time::Instant::now();
                 let (banter_id, seat_banter_generation) = self.tts.allocate_banter_id(guard.seat);
@@ -2163,21 +2244,15 @@ impl TableSession {
                 };
 
                 let followup = chain.and_then(|chain| {
-                    let in_flight_seats = self.banter.in_flight_flags();
-                    let active_ref = self.active_match.as_ref()?;
-                    let ctx = Self::build_banter_plan_context(
-                        active_ref,
-                        &seat_infos,
-                        &self.seat_generation,
-                        in_flight_seats,
-                        &self.persona_memory,
-                    );
-                    let prev = ChainPrevLine {
+                    let current_seq = self.active_match.as_ref()?.game.seq();
+                    schedule_chain_followup(
                         guard,
-                        mood: output.mood,
-                        text: &output.text,
-                    };
-                    plan_chain_followup(&ctx, &prev, chain, BANTER_CHAIN_REPLY_DELAY)
+                        output.mood,
+                        &output.text,
+                        chain,
+                        current_seq,
+                        BANTER_CHAIN_REPLY_DELAY,
+                    )
                 });
 
                 BanterCommitOutcome { followup, tts_job }
@@ -2455,8 +2530,13 @@ impl TableSession {
                     && slot.seat_token.as_deref() == Some(&removed.seat_token)
                     && slot.info.connected
                 {
+                    let was_ai_assisted = slot.info.ai_assisted;
                     slot.info.connected = false;
-                    self.banter.clear_nudge_for_seat(seat);
+                    if !was_ai_assisted {
+                        let _ = self.bump_seat_generation(seat);
+                    } else {
+                        self.banter.clear_nudge_for_seat(seat);
+                    }
                     self.broadcast_lobby_updated(None);
                     self.reconcile_pending_destructive_op_on_disconnect();
                 }
@@ -2467,7 +2547,7 @@ impl TableSession {
 
 #[derive(Default)]
 pub(crate) struct BanterCommitOutcome {
-    pub followup: Option<PendingBanterJob>,
+    pub followup: Option<DelayedBanterFollowup>,
     pub tts_job: Option<PendingTtsJob>,
 }
 

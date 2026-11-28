@@ -4,10 +4,10 @@
 use std::fmt::Write as _;
 use std::time::Duration;
 
-use mahjong_ai::{analyze_hand_facts, HandFacts, HandProgression};
+use mahjong_ai::{HandFacts, HandProgression};
 use mahjong_core::{
-    HandOutcome, HandSettlement, KongKind, MeldView, PlayerEventKind, PlayerView, RecordedEvent,
-    RevealedHand, RevealedMeld, Seat, Suit, Tile, WinKind,
+    HandOutcome, HandSettlement, KongKind, MeldView, PlayerEventKind, PlayerView, PublicPhase,
+    RecordedEvent, RevealedHand, RevealedMeld, Seat, Suit, Tile, WinKind,
 };
 
 use crate::banter_context::{
@@ -349,19 +349,28 @@ pub(crate) struct BanterChainContext {
     pub history: Vec<ChainUtterance>,
 }
 
-/// Previous line emitted in an AI banter chain, passed to `plan_chain_followup`.
-pub(crate) struct ChainPrevLine<'a> {
-    pub guard: BanterGuard,
-    pub mood: PersonaMood,
-    pub text: &'a str,
+/// Lightweight delayed follow-up trigger scheduled after a `speak: true` banter commits.
+///
+/// Speaker selection, in-flight slot claiming, and 6-block prompt building are all deferred
+/// until AFTER `delay` (`~1s`) elapses so follow-up speakers are picked from currently idle AI
+/// seats and see the freshest `TableTranscript` and table state.
+#[derive(Debug, Clone)]
+pub(crate) struct DelayedBanterFollowup {
+    pub delay: Duration,
+    pub match_id: u64,
+    pub hand_generation: u64,
+    pub event_seq: u64,
+    pub reply_to_seat: Seat,
+    pub target_seat_generation: Option<(Seat, u64)>,
+    pub require_nudge_enabled: bool,
+    pub chain: BanterChainContext,
 }
 
-/// Scheduled non-blocking LLM banter job ready for asynchronous execution.
+/// Scheduled non-blocking LLM banter job ready for immediate asynchronous execution.
 #[derive(Debug, Clone)]
 pub(crate) struct PendingBanterJob {
     pub guard: BanterGuard,
     pub request: BanterGenerationRequest,
-    pub dispatch_delay: Option<Duration>,
     pub chain: Option<BanterChainContext>,
 }
 
@@ -418,6 +427,60 @@ pub(crate) fn format_mood_zh(mood: PersonaMood) -> &'static str {
         PersonaMood::Nervous => "心虚紧绷",
         PersonaMood::Plotting => "阴险憋大招",
         PersonaMood::Deadpan => "无语装淡定",
+    }
+}
+
+/// Single-sourced Chinese label for [`WinKind`] across prompts and match chronicles.
+pub(crate) fn format_win_kind_zh(kind: WinKind) -> &'static str {
+    match kind {
+        WinKind::Tsumo => "自摸",
+        WinKind::Ron => "点炮胡",
+        WinKind::RobKongHu => "抢杠胡",
+    }
+}
+
+/// Single-sourced Chinese formatting for a public [`MeldView`] with strict opponent
+/// `ConcealedKong` masking (`暗杠一手（牌面保密未知）`).
+pub(crate) fn format_meld_view_zh(
+    seats: &[SeatInfo; 4],
+    speaker: Seat,
+    owner: Seat,
+    meld: &MeldView,
+    reveal_own_concealed: bool,
+) -> String {
+    match meld {
+        MeldView::Pon {
+            tile, from_seat, ..
+        } => format!(
+            "碰{}（取自{}）",
+            format_tile_zh(*tile),
+            seat_direction_and_name(seats, speaker, *from_seat)
+        ),
+        MeldView::ExposedKong {
+            tile, from_seat, ..
+        } => format!(
+            "明杠{}（取自{}）",
+            format_tile_zh(*tile),
+            seat_direction_and_name(seats, speaker, *from_seat)
+        ),
+        MeldView::AddedKong { tile, .. } => format!("补杠{}", format_tile_zh(*tile)),
+        MeldView::ConcealedKong { tile, .. } => match tile {
+            Some(t) if reveal_own_concealed && owner == speaker => {
+                format!("暗杠{}", format_tile_zh(*t))
+            }
+            _ => "暗杠一手（牌面保密未知）".to_string(),
+        },
+        MeldView::Chi {
+            tiles,
+            called_tile,
+            from_seat,
+            ..
+        } => format!(
+            "吃{}（{}，取自{}）",
+            format_tile_zh(*called_tile),
+            format_tiles_zh(tiles),
+            seat_direction_and_name(seats, speaker, *from_seat)
+        ),
     }
 }
 
@@ -635,43 +698,11 @@ fn format_public_meld_summary(
     meld: &MeldView,
     reveal_own_concealed: bool,
 ) -> String {
-    let actor_label = seat_direction_and_name(seats, speaker, actor);
-    match meld {
-        MeldView::Pon {
-            tile, from_seat, ..
-        } => format!(
-            "{actor_label} 碰了 {} 的 {}",
-            seat_direction_and_name(seats, speaker, *from_seat),
-            format_tile_zh(*tile)
-        ),
-        MeldView::ExposedKong {
-            tile, from_seat, ..
-        } => format!(
-            "{actor_label} 明杠了 {} 的 {}",
-            seat_direction_and_name(seats, speaker, *from_seat),
-            format_tile_zh(*tile)
-        ),
-        MeldView::AddedKong { tile, .. } => {
-            format!("{actor_label} 补杠了 {}", format_tile_zh(*tile))
-        }
-        MeldView::ConcealedKong { tile, .. } => match tile {
-            Some(t) if reveal_own_concealed && speaker == actor => {
-                format!("{actor_label} 暗杠了 {}", format_tile_zh(*t))
-            }
-            _ => format!("{actor_label} 暗杠了一手（牌面保密未知）"),
-        },
-        MeldView::Chi {
-            tiles,
-            called_tile,
-            from_seat,
-            ..
-        } => format!(
-            "{actor_label} 吃了 {} 的 {}（{}）",
-            seat_direction_and_name(seats, speaker, *from_seat),
-            format_tile_zh(*called_tile),
-            format_tiles_zh(tiles)
-        ),
-    }
+    format!(
+        "{} {}",
+        seat_direction_and_name(seats, speaker, actor),
+        format_meld_view_zh(seats, speaker, actor, meld, reveal_own_concealed)
+    )
 }
 
 fn compose_scene_and_six_blocks(
@@ -812,11 +843,7 @@ fn format_settlement_summary_lines(
             let tile_name = format_tile_zh(*winning_tile);
             let mut parts = Vec::with_capacity(winners.len());
             for w in winners {
-                let win_kind = match w.win_kind {
-                    WinKind::Tsumo => "自摸",
-                    WinKind::Ron => "点炮胡",
-                    WinKind::RobKongHu => "抢杠胡",
-                };
+                let win_kind = format_win_kind_zh(w.win_kind);
                 let items = if w.items.is_empty() {
                     "基本胡 0 番".to_string()
                 } else {
@@ -916,6 +943,63 @@ fn build_slow_think_nudge_prompt(
     )
 }
 
+struct BanterJobSpec {
+    speaker: Seat,
+    persona_id: PersonaId,
+    event_seq: u64,
+    max_seq_drift: Option<u64>,
+    allow_finished_phase: bool,
+    hands_revealed: bool,
+    reply_to_seat: Option<Seat>,
+    target_seat_generation: Option<(Seat, u64)>,
+    require_nudge_enabled: bool,
+    scene_prompt: String,
+    chain: BanterChainContext,
+}
+
+fn build_banter_job(ctx: &BanterPlanContext<'_>, spec: BanterJobSpec) -> PendingBanterJob {
+    let view = ctx.game.project_view(spec.speaker);
+    let facts = (!spec.hands_revealed).then(|| {
+        ctx.banter_context
+            .current_hand_facts_readonly(spec.speaker, &view)
+    });
+    let local_time = current_local_time_zh();
+    let user_prompt = compose_scene_and_six_blocks(
+        spec.scene_prompt,
+        ctx.banter_context,
+        &SixBlockInput {
+            speaker: spec.speaker,
+            persona_id: spec.persona_id,
+            seats: ctx.seats,
+            view: &view,
+            facts: facts.as_ref(),
+            hands_revealed: spec.hands_revealed,
+            persona_memory: ctx.persona_memory,
+            local_time_zh: &local_time,
+        },
+    );
+    let request = BanterGenerationRequest::new(build_system_prompt(spec.persona_id), user_prompt)
+        .with_speaker(spec.speaker, spec.persona_id);
+    PendingBanterJob {
+        guard: BanterGuard {
+            job_id: 0,
+            match_id: ctx.match_id,
+            seat: spec.speaker,
+            seat_generation: ctx.seat_generation[spec.speaker.index()],
+            persona_id: spec.persona_id,
+            event_seq: spec.event_seq,
+            hand_generation: ctx.hand_generation,
+            max_seq_drift: spec.max_seq_drift,
+            allow_finished_phase: spec.allow_finished_phase,
+            reply_to_seat: spec.reply_to_seat,
+            target_seat_generation: spec.target_seat_generation,
+            require_nudge_enabled: spec.require_nudge_enabled,
+        },
+        request,
+        chain: Some(spec.chain),
+    }
+}
+
 /// Plans 1 asynchronous autonomous banter check-in for an idle AI reacting to a human `QuickEmote`.
 pub(crate) fn plan_quick_emote_reply(
     ctx: &BanterPlanContext<'_>,
@@ -930,50 +1014,29 @@ pub(crate) fn plan_quick_emote_reply(
         .wrapping_add(seq)
         .wrapping_add(emote.index() as u64);
     let (speaker, persona_id) = pick_deterministic_ai(&idle_ai, seed)?;
-    let view = ctx.game.project_view(speaker);
-    let facts = analyze_hand_facts(&view, ctx.banter_context.last_hand_facts(speaker));
-    let local_time = current_local_time_zh();
-    let user_prompt = compose_scene_and_six_blocks(
-        build_quick_emote_reply_prompt(ctx.seats, speaker, sender, emote),
-        ctx.banter_context,
-        &SixBlockInput {
+    Some(build_banter_job(
+        ctx,
+        BanterJobSpec {
             speaker,
             persona_id,
-            seats: ctx.seats,
-            view: &view,
-            facts: Some(&facts),
-            hands_revealed: false,
-            persona_memory: ctx.persona_memory,
-            local_time_zh: &local_time,
-        },
-    );
-    let request = BanterGenerationRequest::new(build_system_prompt(persona_id), user_prompt);
-    Some(PendingBanterJob {
-        guard: BanterGuard {
-            job_id: 0,
-            match_id: ctx.match_id,
-            seat: speaker,
-            seat_generation: ctx.seat_generation[speaker.index()],
-            persona_id,
             event_seq: seq,
-            hand_generation: ctx.hand_generation,
             max_seq_drift: Some(STRONG_RECENCY_MAX_SEQ_DRIFT),
             allow_finished_phase: false,
+            hands_revealed: false,
             reply_to_seat: Some(sender),
             target_seat_generation: None,
             require_nudge_enabled: false,
+            scene_prompt: build_quick_emote_reply_prompt(ctx.seats, speaker, sender, emote),
+            chain: BanterChainContext {
+                trigger: BanterChainTrigger::QuickEmote { sender, emote },
+                hands_revealed: false,
+                replies_emitted: 0,
+                max_replies: MAX_BANTER_CHAIN_REPLIES,
+                spoken_seats: vec![speaker],
+                history: Vec::new(),
+            },
         },
-        request,
-        dispatch_delay: None,
-        chain: Some(BanterChainContext {
-            trigger: BanterChainTrigger::QuickEmote { sender, emote },
-            hands_revealed: false,
-            replies_emitted: 0,
-            max_replies: MAX_BANTER_CHAIN_REPLIES,
-            spoken_seats: vec![speaker],
-            history: Vec::new(),
-        }),
-    })
+    ))
 }
 
 /// Plans 1 playful asynchronous autonomous nudge check-in for an idle AI when a human thinks past threshold.
@@ -985,50 +1048,29 @@ pub(crate) fn plan_slow_think_nudge(
     let idle_ai = idle_ai_persona_seats(ctx.seats, &ctx.in_flight_seats);
     let (speaker, persona_id) = pick_deterministic_ai(&idle_ai, random_pick)?;
     let seq = ctx.game.seq();
-    let view = ctx.game.project_view(speaker);
-    let facts = analyze_hand_facts(&view, ctx.banter_context.last_hand_facts(speaker));
-    let local_time = current_local_time_zh();
-    let user_prompt = compose_scene_and_six_blocks(
-        build_slow_think_nudge_prompt(ctx.seats, speaker, target_seat),
-        ctx.banter_context,
-        &SixBlockInput {
+    Some(build_banter_job(
+        ctx,
+        BanterJobSpec {
             speaker,
             persona_id,
-            seats: ctx.seats,
-            view: &view,
-            facts: Some(&facts),
-            hands_revealed: false,
-            persona_memory: ctx.persona_memory,
-            local_time_zh: &local_time,
-        },
-    );
-    let request = BanterGenerationRequest::new(build_system_prompt(persona_id), user_prompt);
-    Some(PendingBanterJob {
-        guard: BanterGuard {
-            job_id: 0,
-            match_id: ctx.match_id,
-            seat: speaker,
-            seat_generation: ctx.seat_generation[speaker.index()],
-            persona_id,
             event_seq: seq,
-            hand_generation: ctx.hand_generation,
-            max_seq_drift: Some(STRONG_RECENCY_MAX_SEQ_DRIFT),
+            max_seq_drift: Some(0),
             allow_finished_phase: false,
+            hands_revealed: false,
             reply_to_seat: Some(target_seat),
             target_seat_generation: Some((target_seat, ctx.seat_generation[target_seat.index()])),
             require_nudge_enabled: true,
+            scene_prompt: build_slow_think_nudge_prompt(ctx.seats, speaker, target_seat),
+            chain: BanterChainContext {
+                trigger: BanterChainTrigger::SlowThinkNudge { target_seat },
+                hands_revealed: false,
+                replies_emitted: 0,
+                max_replies: MAX_BANTER_CHAIN_REPLIES,
+                spoken_seats: vec![speaker],
+                history: Vec::new(),
+            },
         },
-        request,
-        dispatch_delay: None,
-        chain: Some(BanterChainContext {
-            trigger: BanterChainTrigger::SlowThinkNudge { target_seat },
-            hands_revealed: false,
-            replies_emitted: 0,
-            max_replies: MAX_BANTER_CHAIN_REPLIES,
-            spoken_seats: vec![speaker],
-            history: Vec::new(),
-        }),
-    })
+    ))
 }
 
 /// Plans at most 1 non-blocking autonomous banter check-in for an emitted event batch:
@@ -1036,7 +1078,7 @@ pub(crate) fn plan_slow_think_nudge(
 /// - `HandSettled`: wakes 1 most relevant idle AI (`max_seq_drift: None`, `allow_finished_phase: true`).
 /// - Human `MeldDeclared` (`Pon`/`ExposedKong`/`AddedKong`/`ConcealedKong`): wakes 1 most relevant idle AI
 ///   (`max_seq_drift: Some(STRONG_RECENCY_MAX_SEQ_DRIFT)`).
-/// - AI `TileDiscarded`: wakes that AI if idle (`max_seq_drift: None`).
+/// - AI `TileDiscarded`: wakes that AI if idle and the hand is still `Playing` (`max_seq_drift: None`).
 /// - `TileDrawn`, human `TileDiscarded`, AI `MeldDeclared`, etc.: never wake banter.
 pub(crate) fn plan_banter_for_events(
     ctx: &BanterPlanContext<'_>,
@@ -1055,7 +1097,6 @@ pub(crate) fn plan_banter_for_events(
     }
 
     let idle_ai = idle_ai_persona_seats(ctx.seats, &ctx.in_flight_seats);
-    let local_time = current_local_time_zh();
 
     // 2. HandSettled (Tsumo / Ron / RobKongHu / DrawGame): non-blocking async wake-up of 1 idle AI.
     for event in emitted {
@@ -1068,49 +1109,30 @@ pub(crate) fn plan_banter_for_events(
                 &settlement,
                 event.seq(),
             )?;
-            let view = ctx.game.project_view(seat);
-            let user_prompt = compose_scene_and_six_blocks(
-                build_hand_settled_prompt(ctx.seats, seat, &settlement),
-                ctx.banter_context,
-                &SixBlockInput {
+            let scene_prompt = build_hand_settled_prompt(ctx.seats, seat, &settlement);
+            return Some(build_banter_job(
+                ctx,
+                BanterJobSpec {
                     speaker: seat,
                     persona_id,
-                    seats: ctx.seats,
-                    view: &view,
-                    facts: None,
-                    hands_revealed: true,
-                    persona_memory: ctx.persona_memory,
-                    local_time_zh: &local_time,
-                },
-            );
-            let request =
-                BanterGenerationRequest::new(build_system_prompt(persona_id), user_prompt);
-            return Some(PendingBanterJob {
-                guard: BanterGuard {
-                    job_id: 0,
-                    match_id: ctx.match_id,
-                    seat,
-                    seat_generation: ctx.seat_generation[seat.index()],
-                    persona_id,
                     event_seq: event.seq(),
-                    hand_generation: ctx.hand_generation,
                     max_seq_drift: None,
                     allow_finished_phase: true,
+                    hands_revealed: true,
                     reply_to_seat: None,
                     target_seat_generation: None,
                     require_nudge_enabled: false,
+                    scene_prompt,
+                    chain: BanterChainContext {
+                        trigger: BanterChainTrigger::HandSettled(Box::new(settlement)),
+                        hands_revealed: true,
+                        replies_emitted: 0,
+                        max_replies: MAX_BANTER_CHAIN_REPLIES,
+                        spoken_seats: vec![seat],
+                        history: Vec::new(),
+                    },
                 },
-                request,
-                dispatch_delay: None,
-                chain: Some(BanterChainContext {
-                    trigger: BanterChainTrigger::HandSettled(Box::new(settlement)),
-                    hands_revealed: true,
-                    replies_emitted: 0,
-                    max_replies: MAX_BANTER_CHAIN_REPLIES,
-                    spoken_seats: vec![seat],
-                    history: Vec::new(),
-                }),
-            });
+            ));
         }
     }
 
@@ -1137,69 +1159,51 @@ pub(crate) fn plan_banter_for_events(
                 PlayerEventKind::MeldDeclared { meld, .. } => meld,
                 _ => meld,
             };
-            let view = ctx.game.project_view(speaker);
-            let facts = analyze_hand_facts(&view, ctx.banter_context.last_hand_facts(speaker));
-            let user_prompt = compose_scene_and_six_blocks(
-                build_meld_declared_prompt(
-                    ctx.seats,
-                    speaker,
-                    actor,
-                    &speaker_meld,
-                    view.wall_remaining,
-                ),
-                ctx.banter_context,
-                &SixBlockInput {
-                    speaker,
-                    persona_id,
-                    seats: ctx.seats,
-                    view: &view,
-                    facts: Some(&facts),
-                    hands_revealed: false,
-                    persona_memory: ctx.persona_memory,
-                    local_time_zh: &local_time,
-                },
+            let wall_remaining = ctx.game.project_view(speaker).wall_remaining;
+            let scene_prompt = build_meld_declared_prompt(
+                ctx.seats,
+                speaker,
+                actor,
+                &speaker_meld,
+                wall_remaining,
             );
-            let request =
-                BanterGenerationRequest::new(build_system_prompt(persona_id), user_prompt);
             // Privacy-sanitized meld for follow-up AI speakers (never exposes ConcealedKong tile!).
             let public_meld = match speaker_meld {
                 MeldView::ConcealedKong { seq, .. } => MeldView::ConcealedKong { tile: None, seq },
                 other => other,
             };
-            return Some(PendingBanterJob {
-                guard: BanterGuard {
-                    job_id: 0,
-                    match_id: ctx.match_id,
-                    seat: speaker,
-                    seat_generation: ctx.seat_generation[speaker.index()],
+            return Some(build_banter_job(
+                ctx,
+                BanterJobSpec {
+                    speaker,
                     persona_id,
                     event_seq: event.seq(),
-                    hand_generation: ctx.hand_generation,
                     max_seq_drift: Some(STRONG_RECENCY_MAX_SEQ_DRIFT),
                     allow_finished_phase: false,
+                    hands_revealed: false,
                     reply_to_seat: None,
                     target_seat_generation: None,
                     require_nudge_enabled: false,
-                },
-                request,
-                dispatch_delay: None,
-                chain: Some(BanterChainContext {
-                    trigger: BanterChainTrigger::MeldDeclared {
-                        actor,
-                        meld: public_meld,
-                        wall_remaining: view.wall_remaining,
+                    scene_prompt,
+                    chain: BanterChainContext {
+                        trigger: BanterChainTrigger::MeldDeclared {
+                            actor,
+                            meld: public_meld,
+                            wall_remaining,
+                        },
+                        hands_revealed: false,
+                        replies_emitted: 0,
+                        max_replies: MAX_BANTER_CHAIN_REPLIES,
+                        spoken_seats: vec![speaker],
+                        history: Vec::new(),
                     },
-                    hands_revealed: false,
-                    replies_emitted: 0,
-                    max_replies: MAX_BANTER_CHAIN_REPLIES,
-                    spoken_seats: vec![speaker],
-                    history: Vec::new(),
-                }),
-            });
+                },
+            ));
         }
     }
 
-    // 4. Routine self-check-in: 1 async check-in after an AI completes its own discard (never on draw).
+    // 4. Routine self-check-in: 1 async check-in after an AI completes its own discard (never on draw,
+    // and never when the hand has already transitioned out of Playing such as a final-tile DrawGame).
     for event in emitted {
         let projected = ctx.game.project_event(event, Seat::East);
         if let PlayerEventKind::TileDiscarded { seat, tile, .. } = projected.kind {
@@ -1208,57 +1212,36 @@ pub(crate) fn plan_banter_for_events(
                     return None;
                 }
                 let view = ctx.game.project_view(speaker);
-                let facts = ctx
-                    .banter_context
-                    .last_hand_facts(speaker)
-                    .cloned()
-                    .unwrap_or_else(|| analyze_hand_facts(&view, None));
-                let user_prompt = compose_scene_and_six_blocks(
-                    build_ai_discard_checkin_prompt(tile),
-                    ctx.banter_context,
-                    &SixBlockInput {
+                if view.phase != PublicPhase::Playing {
+                    return None;
+                }
+                return Some(build_banter_job(
+                    ctx,
+                    BanterJobSpec {
                         speaker,
                         persona_id,
-                        seats: ctx.seats,
-                        view: &view,
-                        facts: Some(&facts),
-                        hands_revealed: false,
-                        persona_memory: ctx.persona_memory,
-                        local_time_zh: &local_time,
-                    },
-                );
-                let request =
-                    BanterGenerationRequest::new(build_system_prompt(persona_id), user_prompt);
-                return Some(PendingBanterJob {
-                    guard: BanterGuard {
-                        job_id: 0,
-                        match_id: ctx.match_id,
-                        seat: speaker,
-                        seat_generation: ctx.seat_generation[speaker.index()],
-                        persona_id,
                         event_seq: event.seq(),
-                        hand_generation: ctx.hand_generation,
                         max_seq_drift: None,
                         allow_finished_phase: false,
+                        hands_revealed: false,
                         reply_to_seat: None,
                         target_seat_generation: None,
                         require_nudge_enabled: false,
-                    },
-                    request,
-                    dispatch_delay: None,
-                    chain: Some(BanterChainContext {
-                        trigger: BanterChainTrigger::AiDiscard {
-                            actor: speaker,
-                            tile,
-                            wall_remaining: view.wall_remaining,
+                        scene_prompt: build_ai_discard_checkin_prompt(tile),
+                        chain: BanterChainContext {
+                            trigger: BanterChainTrigger::AiDiscard {
+                                actor: speaker,
+                                tile,
+                                wall_remaining: view.wall_remaining,
+                            },
+                            hands_revealed: false,
+                            replies_emitted: 0,
+                            max_replies: MAX_BANTER_CHAIN_REPLIES,
+                            spoken_seats: vec![speaker],
+                            history: Vec::new(),
                         },
-                        hands_revealed: false,
-                        replies_emitted: 0,
-                        max_replies: MAX_BANTER_CHAIN_REPLIES,
-                        spoken_seats: vec![speaker],
-                        history: Vec::new(),
-                    }),
-                });
+                    },
+                ));
             }
         }
     }
@@ -1266,23 +1249,57 @@ pub(crate) fn plan_banter_for_events(
     None
 }
 
-/// Plans the next serial autonomous AI-to-AI follow-up check-in after a committed `TableBanter`,
-/// strictly capped at `MAX_BANTER_CHAIN_REPLIES` (2) follow-up rounds, selecting only from idle AI seats
-/// that have not yet spoken in this interaction chain.
-pub(crate) fn plan_chain_followup(
-    ctx: &BanterPlanContext<'_>,
-    prev: &ChainPrevLine<'_>,
-    chain: BanterChainContext,
-    reply_delay: Duration,
-) -> Option<PendingBanterJob> {
+/// Schedules a lightweight delayed follow-up trigger after a committed `TableBanter` (`speak: true`),
+/// deferring speaker selection, slot claiming, and 6-block prompt building until after `delay`.
+pub(crate) fn schedule_chain_followup(
+    guard: BanterGuard,
+    mood: PersonaMood,
+    text: &str,
+    mut chain: BanterChainContext,
+    current_seq: u64,
+    delay: Duration,
+) -> Option<DelayedBanterFollowup> {
     let hard_cap = chain.max_replies.min(MAX_BANTER_CHAIN_REPLIES);
     if chain.replies_emitted >= hard_cap {
+        return None;
+    }
+    if !chain.spoken_seats.contains(&guard.seat) {
+        chain.spoken_seats.push(guard.seat);
+    }
+    chain.max_replies = hard_cap;
+    chain.history.push(ChainUtterance {
+        seat: guard.seat,
+        mood,
+        text: text.to_string(),
+    });
+    Some(DelayedBanterFollowup {
+        delay,
+        match_id: guard.match_id,
+        hand_generation: guard.hand_generation,
+        event_seq: current_seq,
+        reply_to_seat: guard.seat,
+        target_seat_generation: guard.target_seat_generation,
+        require_nudge_enabled: guard.require_nudge_enabled,
+        chain,
+    })
+}
+
+/// Materializes the next serial follow-up banter job AFTER the `~1s` beat elapses,
+/// picking 1 currently idle AI not yet in `spoken_seats` and building its fresh 6-block prompt.
+pub(crate) fn plan_delayed_followup_job(
+    ctx: &BanterPlanContext<'_>,
+    followup: &DelayedBanterFollowup,
+) -> Option<PendingBanterJob> {
+    let hard_cap = followup.chain.max_replies.min(MAX_BANTER_CHAIN_REPLIES);
+    if followup.chain.replies_emitted >= hard_cap {
         return None;
     }
 
     let eligible: Vec<(Seat, PersonaId)> = idle_ai_persona_seats(ctx.seats, &ctx.in_flight_seats)
         .into_iter()
-        .filter(|&(seat, _)| seat != prev.guard.seat && !chain.spoken_seats.contains(&seat))
+        .filter(|&(seat, _)| {
+            seat != followup.reply_to_seat && !followup.chain.spoken_seats.contains(&seat)
+        })
         .collect();
 
     let current_seq = ctx.game.seq();
@@ -1291,75 +1308,50 @@ pub(crate) fn plan_chain_followup(
         ctx.match_id
             .wrapping_mul(37)
             .wrapping_add(current_seq)
-            .wrapping_add(u64::from(chain.replies_emitted)),
+            .wrapping_add(u64::from(followup.chain.replies_emitted)),
     )?;
 
-    let view = ctx.game.project_view(next_seat);
-    let own_facts = if chain.hands_revealed {
-        None
-    } else {
-        Some(analyze_hand_facts(
-            &view,
-            ctx.banter_context.last_hand_facts(next_seat),
-        ))
-    };
-
-    let mut next_history = chain.history.clone();
-    next_history.push(ChainUtterance {
-        seat: prev.guard.seat,
-        mood: prev.mood,
-        text: prev.text.to_string(),
-    });
-
-    let local_time = current_local_time_zh();
-    let prompt = compose_scene_and_six_blocks(
-        build_chain_reply_prompt(ctx.seats, next_seat, &next_history, &chain),
-        ctx.banter_context,
-        &SixBlockInput {
-            speaker: next_seat,
-            persona_id: next_persona,
-            seats: ctx.seats,
-            view: &view,
-            facts: own_facts.as_ref(),
-            hands_revealed: chain.hands_revealed,
-            persona_memory: ctx.persona_memory,
-            local_time_zh: &local_time,
-        },
-    );
-
-    let mut next_spoken = chain.spoken_seats;
+    let mut next_spoken = followup.chain.spoken_seats.clone();
     next_spoken.push(next_seat);
 
-    Some(PendingBanterJob {
-        guard: BanterGuard {
-            job_id: 0,
-            match_id: prev.guard.match_id,
-            seat: next_seat,
-            seat_generation: ctx.seat_generation[next_seat.index()],
+    let max_seq_drift = if followup.chain.hands_revealed {
+        None
+    } else if followup.require_nudge_enabled {
+        Some(0)
+    } else {
+        Some(STRONG_RECENCY_MAX_SEQ_DRIFT)
+    };
+
+    let scene_prompt = build_chain_reply_prompt(
+        ctx.seats,
+        next_seat,
+        &followup.chain.history,
+        &followup.chain,
+    );
+
+    Some(build_banter_job(
+        ctx,
+        BanterJobSpec {
+            speaker: next_seat,
             persona_id: next_persona,
-            event_seq: current_seq,
-            hand_generation: prev.guard.hand_generation,
-            max_seq_drift: if chain.hands_revealed {
-                None
-            } else {
-                Some(STRONG_RECENCY_MAX_SEQ_DRIFT)
+            event_seq: followup.event_seq,
+            max_seq_drift,
+            allow_finished_phase: followup.chain.hands_revealed,
+            hands_revealed: followup.chain.hands_revealed,
+            reply_to_seat: Some(followup.reply_to_seat),
+            target_seat_generation: followup.target_seat_generation,
+            require_nudge_enabled: followup.require_nudge_enabled,
+            scene_prompt,
+            chain: BanterChainContext {
+                trigger: followup.chain.trigger.clone(),
+                hands_revealed: followup.chain.hands_revealed,
+                replies_emitted: followup.chain.replies_emitted + 1,
+                max_replies: hard_cap,
+                spoken_seats: next_spoken,
+                history: followup.chain.history.clone(),
             },
-            allow_finished_phase: chain.hands_revealed,
-            reply_to_seat: Some(prev.guard.seat),
-            target_seat_generation: prev.guard.target_seat_generation,
-            require_nudge_enabled: prev.guard.require_nudge_enabled,
         },
-        request: BanterGenerationRequest::new(build_system_prompt(next_persona), prompt),
-        dispatch_delay: Some(reply_delay),
-        chain: Some(BanterChainContext {
-            trigger: chain.trigger,
-            hands_revealed: chain.hands_revealed,
-            replies_emitted: chain.replies_emitted + 1,
-            max_replies: hard_cap,
-            spoken_seats: next_spoken,
-            history: next_history,
-        }),
-    })
+    ))
 }
 
 fn pick_human_meld_speaker(
@@ -1613,7 +1605,7 @@ mod tests {
                 local_time_zh: "周六深夜（周末）",
             },
         );
-        assert!(meld_prompt.contains("暗杠了一手（牌面保密未知）"));
+        assert!(meld_prompt.contains("暗杠一手（牌面保密未知）"));
         assert!(!meld_prompt.contains("发财"));
 
         // Mid-hand chain reply includes prior speaker text + own facts without opponent hidden tiles

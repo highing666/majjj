@@ -7,15 +7,22 @@ use std::sync::RwLock;
 use std::time::Duration;
 
 use hyper::{Method, StatusCode};
+use mahjong_core::Seat;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::lan_http::{
     format_http_error_snippet, resolve_lan_base_url, LanHttpError, ParsedEndpoint,
 };
-use crate::persona::PersonaMood;
+use crate::persona::{PersonaId, PersonaMood};
 use crate::persona_memory::normalize_grudge_note;
 use crate::storage::normalize_single_line_text;
+
+/// Environment variable enabling single-line runtime LLM banter debug logging (`1`/`true`/`yes`/`on`).
+pub const LLM_DEBUG_ENV_VAR: &str = "MAJJJ_LLM_DEBUG";
+
+/// Maximum Unicode scalar characters emitted for `reasoning_content` in a single-line debug log.
+const MAX_DEBUG_REASONING_CHARS: usize = 240;
 
 /// Default LAN Windows `llama-server` endpoint (see Spec #63 / #65).
 pub const DEFAULT_LLM_BASE_URL: &str = "http://192.168.5.50:8080";
@@ -51,6 +58,10 @@ pub struct BanterGenerationRequest {
     pub repeat_penalty: f32,
     /// Maximum completion tokens for a concise single-line JSON output.
     pub max_tokens: u32,
+    /// Optional speaking seat metadata for runtime LLM debug logging.
+    pub seat: Option<Seat>,
+    /// Optional speaking persona metadata for runtime LLM debug logging.
+    pub persona_id: Option<PersonaId>,
 }
 
 impl BanterGenerationRequest {
@@ -65,7 +76,91 @@ impl BanterGenerationRequest {
             presence_penalty: DEFAULT_PRESENCE_PENALTY,
             repeat_penalty: DEFAULT_REPEAT_PENALTY,
             max_tokens: DEFAULT_MAX_TOKENS,
+            seat: None,
+            persona_id: None,
         }
+    }
+
+    /// Attaches speaker seat & persona metadata for runtime debug logs (`MAJJJ_LLM_DEBUG=1`).
+    #[must_use]
+    pub fn with_speaker(mut self, seat: Seat, persona_id: PersonaId) -> Self {
+        self.seat = Some(seat);
+        self.persona_id = Some(persona_id);
+        self
+    }
+}
+
+fn is_truthy_env_flag(raw: &str) -> bool {
+    matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+/// Returns `true` when runtime LLM banter debug logging is enabled via `MAJJJ_LLM_DEBUG`.
+#[must_use]
+pub fn llm_debug_enabled() -> bool {
+    std::env::var(LLM_DEBUG_ENV_VAR)
+        .ok()
+        .is_some_and(|raw| is_truthy_env_flag(&raw))
+}
+
+fn format_bounded_reasoning(reasoning_content: Option<&str>) -> (usize, String) {
+    let Some(raw) = reasoning_content else {
+        return (0, String::new());
+    };
+    let normalized = normalize_single_line_text(raw);
+    let total_chars = normalized.chars().count();
+    if total_chars <= MAX_DEBUG_REASONING_CHARS {
+        return (total_chars, normalized);
+    }
+    let truncated: String = normalized.chars().take(MAX_DEBUG_REASONING_CHARS).collect();
+    (total_chars, format!("{truncated}..."))
+}
+
+/// Formats one single-line structured debug log entry for a parsed LLM banter decision,
+/// including normalized/bounded `reasoning_content` and `speak: true/false`.
+#[must_use]
+pub fn format_banter_debug_log(
+    seat: Option<Seat>,
+    persona_id: Option<PersonaId>,
+    output: &BanterOutput,
+    reasoning_content: Option<&str>,
+) -> String {
+    let seat_str = seat.map_or_else(|| "None".to_string(), |s| format!("{s:?}"));
+    let persona_str = persona_id.map_or_else(|| "None".to_string(), |p| format!("{p:?}"));
+    let (reasoning_chars, reasoning_excerpt) = format_bounded_reasoning(reasoning_content);
+    format!(
+        "[llm-debug] seat={seat_str} persona_id={persona_str} speak={} mood={:?} text={:?} reasoning_chars={reasoning_chars} reasoning_content={reasoning_excerpt:?}",
+        output.speak, output.mood, output.text
+    )
+}
+
+pub(crate) fn emit_banter_debug_log(
+    seat: Option<Seat>,
+    persona_id: Option<PersonaId>,
+    output: &BanterOutput,
+    reasoning_content: Option<&str>,
+) {
+    if llm_debug_enabled() {
+        eprintln!(
+            "{}",
+            format_banter_debug_log(seat, persona_id, output, reasoning_content)
+        );
+    }
+}
+
+pub(crate) fn emit_banter_commit_debug_log(
+    seat: Seat,
+    persona_id: PersonaId,
+    output: &BanterOutput,
+    outcome: &str,
+) {
+    if llm_debug_enabled() {
+        eprintln!(
+            "[llm-debug] commit seat={seat:?} persona_id={persona_id:?} speak={} mood={:?} text={:?} outcome={outcome}",
+            output.speak, output.mood, output.text
+        );
     }
 }
 
@@ -425,8 +520,13 @@ fn build_chat_completions_payload(
     })
 }
 
-/// Validates and parses a raw OpenAI `/v1/chat/completions` JSON response body into [`BanterOutput`].
-fn parse_chat_completion_response(body: &[u8]) -> Result<BanterOutput, LlmError> {
+/// Validates and parses a raw OpenAI `/v1/chat/completions` JSON response body into [`BanterOutput`],
+/// emitting a single-line runtime debug log (including `reasoning_content`) when `MAJJJ_LLM_DEBUG` is enabled.
+fn parse_chat_completion_response_with_meta(
+    body: &[u8],
+    seat: Option<Seat>,
+    persona_id: Option<PersonaId>,
+) -> Result<BanterOutput, LlmError> {
     let (content, reasoning_content) = extract_completion_content(body, "chat completion")?;
     let output: BanterOutput =
         serde_json::from_str(content.trim()).map_err(|err| LlmError::InvalidResponse {
@@ -435,9 +535,6 @@ fn parse_chat_completion_response(body: &[u8]) -> Result<BanterOutput, LlmError>
     if contains_thinking_tag(&output.text) {
         return Err(LlmError::ThinkingLeakage);
     }
-    let reasoning_chars = reasoning_content
-        .as_deref()
-        .map_or(0, |rc| rc.trim().chars().count());
     let text = if output.speak {
         let normalized = normalize_single_line_text(&output.text);
         if normalized.is_empty() {
@@ -447,18 +544,18 @@ fn parse_chat_completion_response(body: &[u8]) -> Result<BanterOutput, LlmError>
     } else {
         String::new()
     };
-    tracing::debug!(
-        speak = output.speak,
-        mood = ?output.mood,
-        text_chars = text.chars().count(),
-        reasoning_chars,
-        "parsed llm banter completion"
-    );
-    Ok(BanterOutput {
+    let parsed = BanterOutput {
         speak: output.speak,
         mood: output.mood,
         text,
-    })
+    };
+    emit_banter_debug_log(seat, persona_id, &parsed, reasoning_content.as_deref());
+    Ok(parsed)
+}
+
+#[cfg(test)]
+fn parse_chat_completion_response(body: &[u8]) -> Result<BanterOutput, LlmError> {
+    parse_chat_completion_response_with_meta(body, None, None)
 }
 
 #[derive(Debug, Deserialize)]
@@ -610,7 +707,7 @@ impl LlmClient for OpenAiLlmClient {
             let body = self
                 .post_chat_completion(&payload, "序列化请求失败")
                 .await?;
-            parse_chat_completion_response(&body)
+            parse_chat_completion_response_with_meta(&body, request.seat, request.persona_id)
         })
     }
 
@@ -840,5 +937,58 @@ mod tests {
             parse_memory_note_response(thinking),
             Err(LlmError::ThinkingLeakage)
         );
+    }
+
+    #[test]
+    fn banter_debug_log_formats_single_line_with_reasoning_content_speak_and_metadata() {
+        use mahjong_core::Seat;
+
+        use super::{format_banter_debug_log, is_truthy_env_flag, MAX_DEBUG_REASONING_CHARS};
+        use crate::persona::PersonaId;
+
+        for truthy in ["1", "true", "TRUE", "yes", "on", " 1 "] {
+            assert!(is_truthy_env_flag(truthy), "expected truthy for {truthy:?}");
+        }
+        for falsy in ["", "0", "false", "no", "off", "maybe"] {
+            assert!(!is_truthy_env_flag(falsy), "expected falsy for {falsy:?}");
+        }
+
+        let spoken = BanterOutput::spoken(PersonaMood::Smug, "稳得很！");
+        let spoken_line = format_banter_debug_log(
+            Some(Seat::South),
+            Some(PersonaId::QuickHothead),
+            &spoken,
+            Some("刚听牌\n进张很宽，顺势得意一句"),
+        );
+        assert!(
+            !spoken_line.contains('\n'),
+            "debug log must be single-line: {spoken_line}"
+        );
+        assert!(spoken_line.contains("seat=South"));
+        assert!(spoken_line.contains("persona_id=QuickHothead"));
+        assert!(spoken_line.contains("speak=true"));
+        assert!(spoken_line.contains("mood=Smug"));
+        assert!(spoken_line.contains("稳得很！"));
+        assert!(spoken_line.contains("reasoning_chars=15"));
+        assert!(spoken_line.contains("reasoning_content=\"刚听牌 进张很宽，顺势得意一句\""));
+
+        let silent = BanterOutput::silent(PersonaMood::Plotting);
+        let long_reasoning = "思".repeat(MAX_DEBUG_REASONING_CHARS + 30);
+        let silent_line = format_banter_debug_log(
+            Some(Seat::West),
+            Some(PersonaId::TeaSarcasm),
+            &silent,
+            Some(&long_reasoning),
+        );
+        assert!(!silent_line.contains('\n'));
+        assert!(silent_line.contains("seat=West"));
+        assert!(silent_line.contains("persona_id=TeaSarcasm"));
+        assert!(silent_line.contains("speak=false"));
+        assert!(silent_line.contains("mood=Plotting"));
+        assert!(silent_line.contains(&format!(
+            "reasoning_chars={}",
+            MAX_DEBUG_REASONING_CHARS + 30
+        )));
+        assert!(silent_line.contains("...\""));
     }
 }

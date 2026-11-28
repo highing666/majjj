@@ -11,11 +11,14 @@ use std::fmt::Write as _;
 
 use mahjong_ai::{analyze_hand_facts, HandFacts, HandProgression};
 use mahjong_core::{
-    HandOutcome, HandSettlement, MatchMode, MeldView, PlayerEventKind, PlayerView, PublicPhase,
+    HandOutcome, HandSettlement, MatchMode, PlayerEventKind, PlayerView, PublicPhase,
     RecordedEvent, Seat, Suit, Tile, WinKind, Wind,
 };
 
-use crate::banter::{format_hand_facts_zh, format_mood_zh, format_own_hand, format_tile_zh};
+use crate::banter::{
+    format_hand_facts_zh, format_meld_view_zh, format_mood_zh, format_own_hand, format_tile_zh,
+    format_win_kind_zh,
+};
 use crate::persona::{PersonaId, PersonaMood};
 use crate::persona_memory::PersonaMemoryStore;
 use crate::protocol::{QuickEmote, SeatInfo, SeatKind};
@@ -361,11 +364,7 @@ impl MatchChronicle {
                         let winner_parts: Vec<String> = winners
                             .iter()
                             .map(|w| {
-                                let wk = match w.win_kind {
-                                    WinKind::Tsumo => "自摸",
-                                    WinKind::Ron => "点炮胡",
-                                    WinKind::RobKongHu => "抢杠胡",
-                                };
+                                let wk = format_win_kind_zh(w.win_kind);
                                 format!(
                                     "{} {wk} {tile_zh}（{}番：{}）",
                                     seat_direction_and_name(seats, speaker, w.seat),
@@ -426,7 +425,7 @@ pub fn format_public_table_portrait(
         }
         let items: Vec<String> = melds
             .iter()
-            .map(|meld| format_meld_view_for_portrait(seats, speaker, seat, meld))
+            .map(|meld| format_meld_view_zh(seats, speaker, seat, meld, true))
             .collect();
         meld_lines.push(format!(
             "{}：{}",
@@ -542,44 +541,6 @@ fn relative_seat_order(speaker: Seat) -> [Seat; 4] {
     ]
 }
 
-fn format_meld_view_for_portrait(
-    seats: &[SeatInfo; 4],
-    speaker: Seat,
-    owner: Seat,
-    meld: &MeldView,
-) -> String {
-    match meld {
-        MeldView::Pon {
-            tile, from_seat, ..
-        } => format!(
-            "碰{}（取自{}）",
-            format_tile_zh(*tile),
-            seat_direction_and_name(seats, speaker, *from_seat)
-        ),
-        MeldView::ExposedKong {
-            tile, from_seat, ..
-        } => format!(
-            "明杠{}（取自{}）",
-            format_tile_zh(*tile),
-            seat_direction_and_name(seats, speaker, *from_seat)
-        ),
-        MeldView::AddedKong { tile, .. } => format!("补杠{}", format_tile_zh(*tile)),
-        MeldView::ConcealedKong { tile, .. } => match tile {
-            Some(t) if owner == speaker => format!("暗杠{}", format_tile_zh(*t)),
-            _ => "暗杠一手（牌面保密未知）".to_string(),
-        },
-        MeldView::Chi {
-            called_tile,
-            from_seat,
-            ..
-        } => format!(
-            "吃{}（取自{}）",
-            format_tile_zh(*called_tile),
-            seat_direction_and_name(seats, speaker, *from_seat)
-        ),
-    }
-}
-
 /// Opening-hand quality snapshot captured at `HandStarted` for one AI seat.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpeningHandSnapshot {
@@ -637,13 +598,24 @@ pub struct TrajectoryStep {
 /// Block 3 state: single-hand opening snapshot & rolling trajectory for one AI seat.
 #[derive(Debug, Clone, Default)]
 pub struct SeatHandTrajectory {
-    pub opening: Option<OpeningHandSnapshot>,
-    pub last_facts: Option<HandFacts>,
+    opening: Option<OpeningHandSnapshot>,
+    last_facts: Option<HandFacts>,
     steps: VecDeque<TrajectoryStep>,
     turn_counter: u32,
 }
 
 impl SeatHandTrajectory {
+    /// Returns the opening hand snapshot captured at `HandStarted`, if any.
+    #[must_use]
+    pub fn opening(&self) -> Option<&OpeningHandSnapshot> {
+        self.opening.as_ref()
+    }
+
+    /// Returns the latest recorded [`HandFacts`] from this seat's own hand step, if any.
+    #[must_use]
+    pub fn last_facts(&self) -> Option<&HandFacts> {
+        self.last_facts.as_ref()
+    }
     /// Captures the opening hand quality at `HandStarted`.
     pub fn reset_for_hand(&mut self, initial_facts: HandFacts) {
         self.opening = Some(OpeningHandSnapshot::from_facts(&initial_facts));
@@ -911,9 +883,9 @@ impl TableTranscript {
 /// within a match and cleanly dropped/reset on new match start or disband.
 #[derive(Debug, Clone, Default)]
 pub struct MatchBanterContext {
-    pub chronicle: MatchChronicle,
-    pub transcript: TableTranscript,
-    pub seat_trajectories: [SeatHandTrajectory; 4],
+    chronicle: MatchChronicle,
+    transcript: TableTranscript,
+    seat_trajectories: [SeatHandTrajectory; 4],
 }
 
 /// Inputs required to format all 6 context blocks for one speaking AI seat.
@@ -951,10 +923,43 @@ impl MatchBanterContext {
         }
     }
 
+    /// Read-only accessor for the match chronicle (Block 1).
+    #[must_use]
+    pub fn chronicle(&self) -> &MatchChronicle {
+        &self.chronicle
+    }
+
+    /// Read-only accessor for the cross-hand public transcript (Block 4).
+    #[must_use]
+    pub fn transcript(&self) -> &TableTranscript {
+        &self.transcript
+    }
+
+    /// Read-only accessor for a single seat's current-hand trajectory (Block 3).
+    #[must_use]
+    pub fn seat_trajectory(&self, seat: Seat) -> &SeatHandTrajectory {
+        &self.seat_trajectories[seat.index()]
+    }
+
+    /// Initializes or resets a single seat's per-hand trajectory with its opening [`HandFacts`].
+    pub fn reset_seat_trajectory(&mut self, seat: Seat, initial_facts: HandFacts) {
+        self.seat_trajectories[seat.index()].reset_for_hand(initial_facts);
+    }
+
     /// Returns the previous [`HandFacts`] snapshot for `seat` in the current hand, if any.
     #[must_use]
     pub fn last_hand_facts(&self, seat: Seat) -> Option<&HandFacts> {
-        self.seat_trajectories[seat.index()].last_facts.as_ref()
+        self.seat_trajectories[seat.index()].last_facts()
+    }
+
+    /// Returns `seat`'s latest recorded [`HandFacts`] from its own hand step without re-comparing
+    /// against itself on off-turn wake-ups, falling back to a read-only baseline (`prev = None`)
+    /// only if `seat` has no snapshot recorded yet this hand.
+    #[must_use]
+    pub(crate) fn current_hand_facts_readonly(&self, seat: Seat, view: &PlayerView) -> HandFacts {
+        self.last_hand_facts(seat)
+            .cloned()
+            .unwrap_or_else(|| analyze_hand_facts(view, None))
     }
 
     /// Records a hand settlement into the match chronicle.
@@ -1378,7 +1383,7 @@ mod tests {
         let view = dummy_view(Seat::South);
         let facts = analyze_hand_facts(&view, None);
         let mut ctx = MatchBanterContext::default();
-        ctx.seat_trajectories[Seat::South.index()].reset_for_hand(facts.clone());
+        ctx.reset_seat_trajectory(Seat::South, facts.clone());
         ctx.record_ai_hand_step(Seat::South, facts.clone(), Some(Tile::new(27).unwrap()));
 
         let mut memory = PersonaMemoryStore::in_memory();

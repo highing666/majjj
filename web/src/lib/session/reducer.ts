@@ -4,6 +4,7 @@ import type { PlayerEvent } from "../protocol/generated/PlayerEvent";
 import type { PlayerHandView } from "../protocol/generated/PlayerHandView";
 import type { PlayerView } from "../protocol/generated/PlayerView";
 import type { Seat } from "../protocol/generated/Seat";
+import type { SeatInfo } from "../protocol/generated/SeatInfo";
 import type { ServerMessage } from "../protocol/generated/ServerMessage";
 import type { TableSnapshot } from "../protocol/generated/TableSnapshot";
 import type { Tile } from "../protocol/generated/Tile";
@@ -478,6 +479,43 @@ function reduceEventBatch(
   };
 }
 
+function updateAiSeat(
+  state: SessionState,
+  seat: Seat,
+  personaId: SeatInfo["persona_id"],
+  mood: SeatInfo["mood"],
+  allowUnsetPersona: boolean,
+): ReduceResult {
+  if (state.snapshot === null) {
+    return { state, effects: [] };
+  }
+  const idx = seatIndex(seat);
+  const currentSeat = state.snapshot.seats[idx];
+  const personaMatches = allowUnsetPersona
+    ? currentSeat.persona_id === null || currentSeat.persona_id === personaId
+    : currentSeat.persona_id === personaId;
+  if (
+    currentSeat.kind !== "Ai" ||
+    !personaMatches ||
+    (currentSeat.persona_id === personaId && currentSeat.mood === mood)
+  ) {
+    return { state, effects: [] };
+  }
+  const nextSeats = state.snapshot.seats.map((entry, i) =>
+    i === idx ? { ...entry, persona_id: personaId, mood } : entry,
+  ) as TableSnapshot["seats"];
+  return {
+    state: {
+      ...state,
+      snapshot: {
+        ...state.snapshot,
+        seats: nextSeats,
+      },
+    },
+    effects: [],
+  };
+}
+
 export function reduceServerMessage(
   state: SessionState,
   message: ServerMessage,
@@ -590,60 +628,13 @@ export function reduceServerMessage(
   }
 
   if ("TableBanter" in message) {
-    if (state.snapshot === null) {
-      return { state, effects: [] };
-    }
     const { seat, persona_id, mood } = message.TableBanter;
-    const idx = seatIndex(seat);
-    const currentSeat = state.snapshot.seats[idx];
-    if (
-      currentSeat.kind !== "Ai" ||
-      (currentSeat.persona_id !== null && currentSeat.persona_id !== persona_id)
-    ) {
-      return { state, effects: [] };
-    }
-    const nextSeats = state.snapshot.seats.map((entry, i) =>
-      i === idx ? { ...entry, persona_id, mood } : entry,
-    ) as TableSnapshot["seats"];
-    return {
-      state: {
-        ...state,
-        snapshot: {
-          ...state.snapshot,
-          seats: nextSeats,
-        },
-      },
-      effects: [],
-    };
+    return updateAiSeat(state, seat, persona_id, mood, true);
   }
 
   if ("PersonaMoodUpdated" in message) {
-    if (state.snapshot === null) {
-      return { state, effects: [] };
-    }
     const { seat, persona_id, mood } = message.PersonaMoodUpdated;
-    const idx = seatIndex(seat);
-    const currentSeat = state.snapshot.seats[idx];
-    if (
-      currentSeat.kind !== "Ai" ||
-      currentSeat.persona_id !== persona_id ||
-      currentSeat.mood === mood
-    ) {
-      return { state, effects: [] };
-    }
-    const nextSeats = state.snapshot.seats.map((entry, i) =>
-      i === idx ? { ...entry, mood } : entry,
-    ) as TableSnapshot["seats"];
-    return {
-      state: {
-        ...state,
-        snapshot: {
-          ...state.snapshot,
-          seats: nextSeats,
-        },
-      },
-      effects: [],
-    };
+    return updateAiSeat(state, seat, persona_id, mood, false);
   }
 
   if ("QuickEmoteBroadcast" in message) {

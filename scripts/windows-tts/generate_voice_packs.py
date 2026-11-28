@@ -139,7 +139,7 @@ CANONICAL_SLOTS: Tuple[VoiceSlotSpec, ...] = (
     VoiceSlotSpec("emote_hurry_up", "emote", "搞快点", EMOTE_STYLE_INSTRUCT),
     VoiceSlotSpec("emote_spare_me", "emote", "别点我，求放过", EMOTE_STYLE_INSTRUCT),
     VoiceSlotSpec("emote_nice_play", "emote", "666，漂亮", EMOTE_STYLE_INSTRUCT),
-    VoiceSlotSpec("emote_dealer_rigged", "emote", "什么破手气", EMOTE_STYLE_INSTRUCT),
+    VoiceSlotSpec("emote_dealer_rigged", "emote", "发牌员演我", EMOTE_STYLE_INSTRUCT),
     VoiceSlotSpec("emote_going_big", "emote", "这把我要胡大的", EMOTE_STYLE_INSTRUCT),
 )
 

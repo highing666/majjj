@@ -17,13 +17,16 @@ use hyper::body::Bytes;
 use hyper::header::{CACHE_CONTROL, CONTENT_TYPE};
 use hyper::{Request, StatusCode};
 use hyper_util::rt::TokioIo;
-use mahjong_core::{build_preset_wall, PlayerAction, PlayerEvent, Tile};
+use mahjong_ai::AiDifficulty;
+use mahjong_core::{build_preset_wall, MatchMode, PlayerAction, PlayerEvent, Seat, Tile};
 use mahjong_server::llm::{
     BanterGenerationRequest, BanterOutput, LlmClient, LlmError, LlmFuture, LlmHealthStatus,
     MemoryNoteRequest,
 };
-use mahjong_server::persona::PersonaMood;
-use mahjong_server::protocol::{ClientMessage, HealthResponse, ServerMessage, TableSnapshot};
+use mahjong_server::persona::{PersonaId, PersonaMood};
+use mahjong_server::protocol::{
+    ClientMessage, HealthResponse, SeatingRule, ServerMessage, TablePace, TablePhase, TableSnapshot,
+};
 use mahjong_server::session::{OutboundSignal, TableOptions, TableRuntime, WallProviderFactory};
 use mahjong_server::{ClientTrustTier, PacingMode, ServerConfig, ServerHandle};
 use tokio::net::TcpStream;
@@ -309,6 +312,60 @@ impl VirtualClient {
             }
         }
     }
+}
+
+#[allow(dead_code)]
+pub async fn start_solo_east_table(
+    runtime: &TableRuntime,
+    east: &mut VirtualClient,
+    mode: MatchMode,
+    ai_personas: [PersonaId; 3],
+    slow_think_nudge_enabled: bool,
+) -> TableSnapshot {
+    east.send(
+        runtime,
+        &ClientMessage::JoinSeat {
+            seat: Some(Seat::East),
+        },
+    )
+    .await;
+    let _ = east.recv_snapshot().await;
+    for (seat, persona_id) in [
+        (Seat::South, ai_personas[0]),
+        (Seat::West, ai_personas[1]),
+        (Seat::North, ai_personas[2]),
+    ] {
+        east.send(
+            runtime,
+            &ClientMessage::SetSeatPersona {
+                seat,
+                persona_id: Some(persona_id),
+            },
+        )
+        .await;
+    }
+    east.send(
+        runtime,
+        &ClientMessage::UpdateLobbyConfig {
+            mode,
+            seating: SeatingRule::KeepLobbySeats,
+            ai_difficulty: AiDifficulty::Strong,
+            pace: TablePace::Standard,
+        },
+    )
+    .await;
+    east.send(
+        runtime,
+        &ClientMessage::SetSlowThinkNudge {
+            enabled: slow_think_nudge_enabled,
+        },
+    )
+    .await;
+    east.send(runtime, &ClientMessage::StartMatch).await;
+    let snap = east.recv_snapshot().await;
+    assert_eq!(snap.phase, TablePhase::InMatch);
+    let _ = east.drain_all();
+    snap
 }
 
 #[allow(dead_code)]

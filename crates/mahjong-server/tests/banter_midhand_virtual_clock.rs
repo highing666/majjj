@@ -4,69 +4,29 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::{
-    no_reaction_wall, pump_ai_turn, tile, tiles, yield_tasks, PlannedReply, ScriptedLlmClient,
-    VirtualClient,
+    no_reaction_wall, pump_ai_turn, start_solo_east_table, tile, tiles, yield_tasks, PlannedReply,
+    ScriptedLlmClient, VirtualClient,
 };
-use mahjong_ai::AiDifficulty;
-use mahjong_core::{build_preset_wall, MatchMode, PlayerAction, PresetWallProvider, Seat};
-use mahjong_server::banter::{BANTER_CHAIN_REPLY_DELAY, STRONG_RECENCY_MAX_SEQ_DRIFT};
+use mahjong_ai::DecisionBudget;
+use mahjong_core::{
+    build_preset_wall, HandOutcome, HandSettlement, MatchMode, PlayerAction, PlayerEventKind,
+    PresetWallProvider, Seat,
+};
+use mahjong_server::banter::{
+    BANTER_CHAIN_REPLY_DELAY, SLOW_THINK_NUDGE_DELAY, STRONG_RECENCY_MAX_SEQ_DRIFT,
+};
 use mahjong_server::llm::BanterOutput;
 use mahjong_server::pacing::PacingMode;
 use mahjong_server::persona::{PersonaId, PersonaMood};
-use mahjong_server::protocol::{
-    ClientMessage, QuickEmote, SeatingRule, ServerMessage, TablePace, TablePhase, TableSnapshot,
-};
+use mahjong_server::protocol::{ClientMessage, QuickEmote, ServerMessage, TablePace};
 use mahjong_server::session::{BoxedWallProvider, TableOptions, TableRuntime, WallProviderFactory};
 use tokio::sync::Notify;
 
-async fn start_solo_east_table(runtime: &TableRuntime, east: &mut VirtualClient) -> TableSnapshot {
-    east.send(
-        runtime,
-        &ClientMessage::JoinSeat {
-            seat: Some(Seat::East),
-        },
-    )
-    .await;
-    let _ = east.recv_snapshot().await;
-    east.send(
-        runtime,
-        &ClientMessage::SetSeatPersona {
-            seat: Seat::South,
-            persona_id: Some(PersonaId::QuickHothead),
-        },
-    )
-    .await;
-    east.send(
-        runtime,
-        &ClientMessage::SetSeatPersona {
-            seat: Seat::West,
-            persona_id: Some(PersonaId::TeaSarcasm),
-        },
-    )
-    .await;
-    east.send(
-        runtime,
-        &ClientMessage::SetSeatPersona {
-            seat: Seat::North,
-            persona_id: Some(PersonaId::ChaosInstigator),
-        },
-    )
-    .await;
-    east.send(
-        runtime,
-        &ClientMessage::UpdateLobbyConfig {
-            mode: MatchMode::FreeTable,
-            seating: SeatingRule::KeepLobbySeats,
-            ai_difficulty: AiDifficulty::Strong,
-            pace: TablePace::Standard,
-        },
-    )
-    .await;
-    east.send(runtime, &ClientMessage::StartMatch).await;
-    let snap = east.recv_snapshot().await;
-    assert_eq!(snap.phase, TablePhase::InMatch);
-    snap
-}
+const DEFAULT_MIDHAND_PERSONAS: [PersonaId; 3] = [
+    PersonaId::QuickHothead,
+    PersonaId::TeaSarcasm,
+    PersonaId::ChaosInstigator,
+];
 
 #[tokio::test(start_paused = true)]
 async fn ai_self_checkin_fires_once_per_ai_discard_never_on_draw_and_dedups_single_in_flight() {
@@ -117,7 +77,15 @@ async fn ai_self_checkin_fires_once_per_ai_discard_never_on_draw_and_dedups_sing
         .with_llm_client(llm.clone());
     let runtime = TableRuntime::with_options(8789, None, options);
     let mut east = VirtualClient::connect(&runtime, "e1", "小王").await;
-    let mut cur_seq = start_solo_east_table(&runtime, &mut east).await.seq;
+    let mut cur_seq = start_solo_east_table(
+        &runtime,
+        &mut east,
+        MatchMode::FreeTable,
+        DEFAULT_MIDHAND_PERSONAS,
+        true,
+    )
+    .await
+    .seq;
 
     // 0 calls on HandStarted.
     yield_tasks().await;
@@ -283,7 +251,14 @@ async fn key_table_moments_human_meld_concealed_kong_quick_emote_and_settlement_
         .with_llm_client(llm.clone());
     let runtime = TableRuntime::with_options(8789, None, options);
     let mut east = VirtualClient::connect(&runtime, "e1", "小王").await;
-    let start_snap = start_solo_east_table(&runtime, &mut east).await;
+    let start_snap = start_solo_east_table(
+        &runtime,
+        &mut east,
+        MatchMode::FreeTable,
+        DEFAULT_MIDHAND_PERSONAS,
+        true,
+    )
+    .await;
 
     // 1. Human QuickEmote wakes EXACTLY 1 idle AI (gated in-flight).
     east.send(
@@ -336,7 +311,7 @@ async fn key_table_moments_human_meld_concealed_kong_quick_emote_and_settlement_
     assert!(
         after_kong[1]
             .user_prompt
-            .contains("暗杠了一手（牌面保密未知）")
+            .contains("暗杠一手（牌面保密未知）")
             && !after_kong[1].user_prompt.contains("发财"),
         "opponent ConcealedKong tile must stay hidden: {}",
         after_kong[1].user_prompt
@@ -401,7 +376,14 @@ async fn serial_followup_chain_waits_1s_caps_at_2_rounds_never_repeats_and_stops
         .with_llm_client(llm.clone());
     let runtime = TableRuntime::with_options(8789, None, options);
     let mut east = VirtualClient::connect(&runtime, "e1", "小王").await;
-    let start_snap = start_solo_east_table(&runtime, &mut east).await;
+    let start_snap = start_solo_east_table(
+        &runtime,
+        &mut east,
+        MatchMode::FreeTable,
+        DEFAULT_MIDHAND_PERSONAS,
+        true,
+    )
+    .await;
 
     // Disable slow-think nudge so advancing 10s tests pure chain capping.
     east.send(
@@ -642,7 +624,15 @@ async fn tiered_staleness_drops_strong_recency_past_drift_while_self_checkin_and
         .with_llm_client(llm.clone());
     let runtime = TableRuntime::with_options(8789, None, options);
     let mut east = VirtualClient::connect(&runtime, "e1", "小王").await;
-    let mut cur_seq = start_solo_east_table(&runtime, &mut east).await.seq;
+    let mut cur_seq = start_solo_east_table(
+        &runtime,
+        &mut east,
+        MatchMode::FreeTable,
+        DEFAULT_MIDHAND_PERSONAS,
+        true,
+    )
+    .await
+    .seq;
     east.send(
         &runtime,
         &ClientMessage::SetSlowThinkNudge { enabled: false },
@@ -738,7 +728,14 @@ async fn tiered_staleness_drops_strong_recency_past_drift_while_self_checkin_and
             .with_llm_client(llm_hand_guard),
     );
     let mut east2 = VirtualClient::connect(&rt2, "e2", "小王").await;
-    let snap2 = start_solo_east_table(&rt2, &mut east2).await;
+    let snap2 = start_solo_east_table(
+        &rt2,
+        &mut east2,
+        MatchMode::FreeTable,
+        DEFAULT_MIDHAND_PERSONAS,
+        true,
+    )
+    .await;
 
     // East declares Tsumo -> HandSettled starts gated silent mood update.
     east2
@@ -827,7 +824,14 @@ async fn human_pon_prefers_idle_ai_victim_and_humanized_ai_discard_triggers_chec
         .with_llm_client(llm.clone());
     let runtime = TableRuntime::with_options(8789, None, options);
     let mut east = VirtualClient::connect(&runtime, "e1", "小王").await;
-    let start_snap = start_solo_east_table(&runtime, &mut east).await;
+    let start_snap = start_solo_east_table(
+        &runtime,
+        &mut east,
+        MatchMode::FreeTable,
+        DEFAULT_MIDHAND_PERSONAS,
+        true,
+    )
+    .await;
 
     // East discards W -> after discard release delay, South draws F, thinks, and discards F!
     east.send(
@@ -907,4 +911,528 @@ async fn human_pon_prefers_idle_ai_victim_and_humanized_ai_discard_triggers_chec
         2,
         "Human Pon must wake exactly 1 idle AI"
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn slow_think_nudge_drops_if_human_acts_or_enables_ai_assist_before_llm_returns() {
+    // Part A: SlowThinkNudge fires (LLM gated) -> human discards (seq advances by >= 1) -> LLM returns -> DROPPED (max_seq_drift == Some(0))!
+    // Part B: SlowThinkNudge fires on a fresh turn (LLM gated) -> human enables AI assist (enabled: true) -> LLM returns -> DROPPED!
+    let gate_after_action = Arc::new(Notify::new());
+    let gate_after_assist = Arc::new(Notify::new());
+    let llm = ScriptedLlmClient::from_replies(vec![
+        // 1. Turn 1 SlowThinkNudge (gated until East discards) -> MUST DROP!
+        PlannedReply::Gated(
+            Arc::clone(&gate_after_action),
+            Ok(BanterOutput::spoken(
+                PersonaMood::Mocking,
+                "出完牌后这句催牌绝不该弹出！",
+            )),
+        ),
+        // 2-4. South, West, North Round 1 self-check-ins (silent so all 3 are idle on East's Turn 2)
+        PlannedReply::Immediate(Ok(BanterOutput::silent(PersonaMood::Deadpan))),
+        PlannedReply::Immediate(Ok(BanterOutput::silent(PersonaMood::Deadpan))),
+        PlannedReply::Immediate(Ok(BanterOutput::silent(PersonaMood::Deadpan))),
+        // 5. Turn 2 SlowThinkNudge (gated until East enables AI assist) -> MUST DROP!
+        PlannedReply::Gated(
+            Arc::clone(&gate_after_assist),
+            Ok(BanterOutput::spoken(
+                PersonaMood::Mocking,
+                "托管接管后这句催牌绝不该弹出！",
+            )),
+        ),
+        // Any subsequent AI self-check-ins stay silent.
+        PlannedReply::Immediate(Ok(BanterOutput::silent(PersonaMood::Deadpan))),
+        PlannedReply::Immediate(Ok(BanterOutput::silent(PersonaMood::Deadpan))),
+        PlannedReply::Immediate(Ok(BanterOutput::silent(PersonaMood::Deadpan))),
+    ]);
+
+    let east_14 = tiles("1m 4m 7m 1s 4s 7s 1p 4p 7p E S W N C");
+    let base_13 = tiles("2m 5m 8m 2s 5s 8s 2p 5p 8p E S W N");
+    let draws = tiles("3m 6m 9m 3s 6s 9s 3p 6p");
+    let wall = build_preset_wall(&east_14, &base_13, &base_13, &base_13, &draws, &[])
+        .expect("nudge staleness wall");
+    let factory: WallProviderFactory = Arc::new(move || {
+        BoxedWallProvider(Box::new(PresetWallProvider::single(
+            Seat::East,
+            wall.clone(),
+        )))
+    });
+
+    let options = TableOptions::with_wall_factory(211, factory)
+        .with_pacing(PacingMode::Humanized)
+        .with_llm_client(llm.clone());
+    let runtime = TableRuntime::with_options(8789, None, options);
+    let mut east = VirtualClient::connect(&runtime, "e1", "小王").await;
+    let start_snap = start_solo_east_table(
+        &runtime,
+        &mut east,
+        MatchMode::FreeTable,
+        DEFAULT_MIDHAND_PERSONAS,
+        true,
+    )
+    .await;
+
+    // Part A: Wait past SLOW_THINK_NUDGE_DELAY so Turn 1 SlowThinkNudge is in-flight (gated).
+    tokio::time::advance(SLOW_THINK_NUDGE_DELAY + Duration::from_millis(100)).await;
+    yield_tasks().await;
+    assert_eq!(
+        llm.captured().len(),
+        1,
+        "Turn 1 SlowThinkNudge should be in-flight"
+    );
+
+    // East acts (discards a legal tile) BEFORE the gated SlowThinkNudge LLM returns!
+    let legal_discard = start_snap
+        .player_view
+        .as_ref()
+        .expect("player_view")
+        .legal_actions
+        .iter()
+        .find(|a| matches!(a, PlayerAction::Discard { .. }))
+        .copied()
+        .expect("legal discard on Turn 1");
+    east.send(
+        &runtime,
+        &ClientMessage::SubmitAction {
+            expected_seq: start_snap.seq,
+            client_action_id: "east-act-before-nudge".to_string(),
+            action: legal_discard,
+        },
+    )
+    .await;
+    yield_tasks().await;
+    let discard_msgs = east.drain_all();
+    assert!(
+        discard_msgs
+            .iter()
+            .any(|m| matches!(m, ServerMessage::EventBatch { .. })),
+        "East discard must be accepted before releasing nudge gate: {discard_msgs:?}"
+    );
+
+    // Release Turn 1 SlowThinkNudge gate -> MUST be dropped because seq already advanced!
+    gate_after_action.notify_waiters();
+    yield_tasks().await;
+    let after_a = east.drain_all();
+    assert!(
+        !after_a.iter().any(|m| matches!(
+            m,
+            ServerMessage::TableBanter { text, .. } if text.contains("出完牌后这句催牌")
+        )),
+        "SlowThinkNudge must drop if human already acted (max_seq_drift == Some(0)): {after_a:?}"
+    );
+
+    // Advance virtual clock through South/West/North humanized turns until East gets Turn 2.
+    let mut turn2_ready = false;
+    for _ in 0..40 {
+        tokio::time::advance(Duration::from_millis(500)).await;
+        pump_ai_turn().await;
+        let _ = east.drain_all();
+        east.send(&runtime, &ClientMessage::RequestSnapshot).await;
+        let snap = east.recv_snapshot().await;
+        if snap.seq > start_snap.seq
+            && snap
+                .player_view
+                .as_ref()
+                .is_some_and(|v| !v.legal_actions.is_empty())
+        {
+            turn2_ready = true;
+            break;
+        }
+    }
+    assert!(turn2_ready, "expected East to reach Turn 2");
+    let _ = east.drain_all();
+
+    // Part B: Wait past SLOW_THINK_NUDGE_DELAY on Turn 2 so SlowThinkNudge #2 is in-flight (gated).
+    let calls_before_nudge2 = llm.captured().len();
+    tokio::time::advance(SLOW_THINK_NUDGE_DELAY + Duration::from_millis(100)).await;
+    yield_tasks().await;
+    assert_eq!(
+        llm.captured().len(),
+        calls_before_nudge2 + 1,
+        "Turn 2 SlowThinkNudge should be in-flight"
+    );
+
+    // Human enables AI assist (enabled: true) BEFORE LLM returns (and before AI finishes thinking)!
+    east.send(
+        &runtime,
+        &ClientMessage::ToggleAiAssist {
+            seat: Seat::East,
+            enabled: true,
+        },
+    )
+    .await;
+    let _ = east.drain_all();
+
+    // Immediately release Turn 2 SlowThinkNudge gate while AI assist is active (even before AI discards) -> MUST DROP!
+    gate_after_assist.notify_waiters();
+    yield_tasks().await;
+    let after_b = east.drain_all();
+    assert!(
+        !after_b.iter().any(|m| matches!(
+            m,
+            ServerMessage::TableBanter { text, .. } if text.contains("托管接管后这句催牌")
+        )),
+        "SlowThinkNudge must drop when human enables AI assist: {after_b:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn humanized_final_tile_draw_game_skips_stale_ai_discard_checkin_and_wakes_settlement_cleanly(
+) {
+    // Construct a deterministic 136-tile wall guaranteed to reach DrawGame on South (AI)'s 69th draw:
+    // - All 4 seats start with 1m 5m 9m 1s 5s 9s 1p 5p 9p E S W N (52 tiles; all 4 copies used).
+    // - Dead wall (14) + East draws hold ALL 3m/7m/3s/7s/3p/7p so AIs can NEVER form sequences.
+    // - Each AI draws at most 2 copies of at most 3 tile kinds (never 3 copies, never 7 pairs) -> ZERO wins!
+    let base_13 = tiles("1m 5m 9m 1s 5s 9s 1p 5p 9p E S W N");
+    let mut east_14 = base_13.clone();
+    east_14.push(tile("C"));
+
+    let tail = tiles("3m 3m 3m 3m 7m 7m 7m 7m 3s 3s 3s 3s 7s 7s");
+    let east_draws = tiles("7s 7s 3p 3p 3p 3p 7p 7p 7p 7p 2m 4m 6m 8m 2s 4s 6s");
+    let south_draws = tiles("2m 4m 6m 8m 2s 4s 6s 8s 2p 4p 6p 8p C F B 8s 2p 4p");
+    let west_draws = tiles("2m 4m 6m 8m 2s 4s 6s 8s 2p 4p 6p 8p C F B 6p 8p");
+    let north_draws = tiles("2m 4m 6m 8m 2s 4s 6s 8s 2p 4p 6p 8p C F B F B");
+
+    let mut draws = Vec::with_capacity(69);
+    for r in 0..17 {
+        draws.push(south_draws[r]);
+        draws.push(west_draws[r]);
+        draws.push(north_draws[r]);
+        draws.push(east_draws[r]);
+    }
+    draws.push(south_draws[17]);
+
+    let wall = build_preset_wall(&east_14, &base_13, &base_13, &base_13, &draws, &tail)
+        .expect("deterministic draw-game 136 wall");
+    let factory: WallProviderFactory = Arc::new(move || {
+        BoxedWallProvider(Box::new(PresetWallProvider::single(
+            Seat::East,
+            wall.clone(),
+        )))
+    });
+
+    // Respond silently to all routine check-ins, and speak on HandSettled (小局结算复盘)!
+    let llm = ScriptedLlmClient::with_banter_fn(|req| {
+        if req.user_prompt.contains("小局结算复盘") {
+            Ok(BanterOutput::spoken(
+                PersonaMood::Deadpan,
+                "牌墙摸穿了，荒庄白忙活！",
+            ))
+        } else {
+            Ok(BanterOutput::silent(PersonaMood::Deadpan))
+        }
+    });
+
+    let options = TableOptions::with_wall_factory(307, factory)
+        .with_pacing(PacingMode::Humanized)
+        .with_ai_budget(DecisionBudget::Deterministic { max_samples: 4 })
+        .with_llm_client(llm.clone());
+    let runtime = TableRuntime::with_options(8789, None, options);
+    let mut east = VirtualClient::connect(&runtime, "e1", "小王").await;
+    let _ = start_solo_east_table(
+        &runtime,
+        &mut east,
+        MatchMode::FreeTable,
+        DEFAULT_MIDHAND_PERSONAS,
+        false,
+    )
+    .await;
+    east.send(
+        &runtime,
+        &ClientMessage::SetPace {
+            pace: TablePace::Fast,
+        },
+    )
+    .await;
+    let _ = east.drain_all();
+
+    // Play the hand in PacingMode::Humanized: East always discards its drawn tile until wall_remaining == 1,
+    // then step in 50ms increments (< 120ms Fast discard_release_delay) to observe the exact split
+    // between final AI TileDiscarded and deferred HandSettled(DrawGame).
+    let mut action_idx = 0usize;
+    let mut saw_draw_game = false;
+    let mut saw_settlement_banter = false;
+    let mut final_discard_seat = None;
+    let mut calls_before_final_discard = 0usize;
+    let mut calls_right_after_final_discard = None;
+
+    for _ in 0..400 {
+        east.send(&runtime, &ClientMessage::RequestSnapshot).await;
+        let snap = east.recv_snapshot().await;
+        let Some(view) = snap.player_view.as_ref() else {
+            break;
+        };
+        if let Some(discard) = view
+            .legal_actions
+            .iter()
+            .find(|a| {
+                matches!(
+                    a,
+                    PlayerAction::Discard {
+                        from_drawn: true,
+                        ..
+                    }
+                )
+            })
+            .or_else(|| {
+                view.legal_actions
+                    .iter()
+                    .find(|a| matches!(a, PlayerAction::Discard { .. }))
+            })
+            .copied()
+        {
+            action_idx += 1;
+            east.send(
+                &runtime,
+                &ClientMessage::SubmitAction {
+                    expected_seq: snap.seq,
+                    client_action_id: format!("dg-{action_idx}"),
+                    action: discard,
+                },
+            )
+            .await;
+        } else if view.legal_actions.contains(&PlayerAction::Pass) {
+            action_idx += 1;
+            east.send(
+                &runtime,
+                &ClientMessage::SubmitAction {
+                    expected_seq: snap.seq,
+                    client_action_id: format!("dg-pass-{action_idx}"),
+                    action: PlayerAction::Pass,
+                },
+            )
+            .await;
+        }
+
+        if view.wall_remaining == 0 && final_discard_seat.is_none() {
+            calls_before_final_discard = llm.captured().len();
+        }
+
+        let step = if view.wall_remaining <= 1 {
+            Duration::from_millis(50)
+        } else {
+            Duration::from_millis(600)
+        };
+        tokio::time::advance(step).await;
+        yield_tasks().await;
+        std::thread::sleep(Duration::from_millis(2));
+        yield_tasks().await;
+
+        for msg in east.drain_all() {
+            match msg {
+                ServerMessage::EventBatch { events, .. } => {
+                    for ev in events {
+                        match ev.kind {
+                            PlayerEventKind::TileDiscarded { seat, .. }
+                                if seat != Seat::East && view.wall_remaining == 0 =>
+                            {
+                                final_discard_seat = Some(seat);
+                                calls_right_after_final_discard = Some(llm.captured().len());
+                            }
+                            PlayerEventKind::HandSettled {
+                                settlement:
+                                    HandSettlement {
+                                        outcome: HandOutcome::DrawGame,
+                                        ..
+                                    },
+                            } => {
+                                saw_draw_game = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                ServerMessage::TableBanter { text, .. } if text.contains("荒庄白忙活") => {
+                    saw_settlement_banter = true;
+                }
+                _ => {}
+            }
+        }
+
+        if saw_draw_game {
+            yield_tasks().await;
+            for msg in east.drain_all() {
+                if let ServerMessage::TableBanter { text, .. } = msg {
+                    if text.contains("荒庄白忙活") {
+                        saw_settlement_banter = true;
+                    }
+                }
+            }
+            break;
+        }
+    }
+
+    assert!(saw_draw_game, "expected hand to settle as DrawGame");
+    assert!(
+        saw_settlement_banter,
+        "HandSettled(DrawGame) must wake an idle AI cleanly without being blocked"
+    );
+    let final_discard_seat =
+        final_discard_seat.expect("expected final AI TileDiscarded at wall_remaining == 0");
+    assert_eq!(
+        calls_right_after_final_discard,
+        Some(calls_before_final_discard),
+        "final-tile DrawGame discard by {final_discard_seat:?} must NOT schedule a stale AiDiscard self-check-in"
+    );
+    let captured = llm.captured();
+    let last_req = captured.last().expect("at least one LLM call");
+    assert!(
+        last_req.user_prompt.contains("小局结算复盘") && last_req.user_prompt.contains("荒庄"),
+        "final LLM call must be HandSettled(DrawGame) recap, not a stale AiDiscard check-in:\n{}",
+        last_req.user_prompt
+    );
+    // Verify the final-discarding AI NEVER got a stale AiDiscard check-in on that final wall_remaining == 0 discard.
+    assert!(
+        !captured.iter().any(|req| {
+            req.seat == Some(final_discard_seat)
+                && req.user_prompt.contains("自家出牌巡检")
+                && req.user_prompt.contains("牌墙进度：剩余 0 张")
+        }),
+        "no AiDiscard self-check-in may fire for {final_discard_seat:?} on the final wall_remaining == 0 DrawGame discard"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn delayed_followup_reselects_currently_idle_ai_and_sees_quick_emote_arriving_during_1s_delay(
+) {
+    // East holds 4x 发财 so East can declare ConcealedKong(F) at t=0 (waking 1 opener AI),
+    // while keeping East's turn open to act & send QuickEmote DURING the 1s follow-up delay!
+    let east_14 = tiles("F F F F 1p 4p 7m 8m 9m 2s 5s 8s 3p 6p");
+    let south_13 = tiles("123m 456m 789p 23s 55p");
+    let west_13 = tiles("2m 5m 8m 3s 6s 9s 2p 5p 8p E S W B");
+    let north_13 = tiles("3m 6m 9m 4s 7s 1p 3p 6p 9p E S N B");
+    let draws = tiles("8p N B 2m");
+    let tail_draws = tiles("9s");
+    let wall = build_preset_wall(
+        &east_14,
+        &south_13,
+        &west_13,
+        &north_13,
+        &draws,
+        &tail_draws,
+    )
+    .expect("deferred followup wall");
+    let factory: WallProviderFactory = Arc::new(move || {
+        BoxedWallProvider(Box::new(PresetWallProvider::single(
+            Seat::East,
+            wall.clone(),
+        )))
+    });
+
+    // Gate for occupying one of the remaining AIs during the 1s delay via QuickEmote reply!
+    let busy_gate = Arc::new(Notify::new());
+    let llm = ScriptedLlmClient::from_replies(vec![
+        // 1. ConcealedKong(F) opener at t=0 -> speaks immediately, scheduling 1s delayed follow-up.
+        PlannedReply::Immediate(Ok(BanterOutput::spoken(
+            PersonaMood::Nervous,
+            "开局暗杠这么猛！",
+        ))),
+        // 2. QuickEmote::GoingBig arriving at t=+300ms (DURING the 1s delay!) -> GATED so that AI is BUSY at t=1s!
+        PlannedReply::Gated(
+            Arc::clone(&busy_gate),
+            Ok(BanterOutput::silent(PersonaMood::Deadpan)),
+        ),
+        // 3. Delayed follow-up firing at t=+1050ms -> MUST pick a DIFFERENT currently-idle AI and see QuickEmote in Block 4!
+        PlannedReply::Immediate(Ok(BanterOutput::spoken(
+            PersonaMood::Mocking,
+            "我还闲着呢，顺嘴接一句！",
+        ))),
+        // Round-2 follow-up stays silent.
+        PlannedReply::Immediate(Ok(BanterOutput::silent(PersonaMood::Deadpan))),
+    ]);
+
+    let options = TableOptions::with_wall_factory(409, factory)
+        .with_pacing(PacingMode::Immediate)
+        .with_llm_client(llm.clone());
+    let runtime = TableRuntime::with_options(8789, None, options);
+    let mut east = VirtualClient::connect(&runtime, "e1", "小王").await;
+    let start_snap = start_solo_east_table(
+        &runtime,
+        &mut east,
+        MatchMode::FreeTable,
+        DEFAULT_MIDHAND_PERSONAS,
+        false,
+    )
+    .await;
+
+    // 1. At t=0: East declares ConcealedKong(F) -> Opener AI speaks immediately.
+    east.send(
+        &runtime,
+        &ClientMessage::SubmitAction {
+            expected_seq: start_snap.seq,
+            client_action_id: "ckong-opener".to_string(),
+            action: PlayerAction::ConcealedKong { tile: tile("F") },
+        },
+    )
+    .await;
+    yield_tasks().await;
+    let opener_seat = east
+        .drain_all()
+        .into_iter()
+        .find_map(|m| match m {
+            ServerMessage::TableBanter { seat, .. } => Some(seat),
+            _ => None,
+        })
+        .expect("expected ConcealedKong opener banter");
+    assert_eq!(llm.captured().len(), 1);
+
+    // 2. At t=+300ms (DURING the 1s follow-up delay!): East sends QuickEmote::GoingBig.
+    //    This BOTH appends GoingBig into TableTranscript AND occupies 1 AI seat (gated busy) across t=1s!
+    tokio::time::advance(Duration::from_millis(300)).await;
+    east.send(
+        &runtime,
+        &ClientMessage::SendQuickEmote {
+            emote: QuickEmote::GoingBig,
+        },
+    )
+    .await;
+    yield_tasks().await;
+    let _ = east.drain_all();
+    assert_eq!(llm.captured().len(), 2);
+    let busy_seat = llm.captured()[1]
+        .seat
+        .expect("BanterGenerationRequest carries speaker seat");
+    assert_ne!(
+        busy_seat, opener_seat,
+        "test setup expects QuickEmote during 1s delay to occupy a non-opener follow-up candidate"
+    );
+
+    // 3. Advance past the 1s follow-up delay (total t = 1100ms) while `busy_seat` is STILL gated in-flight!
+    tokio::time::advance(BANTER_CHAIN_REPLY_DELAY - Duration::from_millis(200)).await;
+    yield_tasks().await;
+    let followup_msgs = east.drain_all();
+    let followup_seat = followup_msgs
+        .iter()
+        .find_map(|m| match m {
+            ServerMessage::TableBanter {
+                seat,
+                reply_to_seat: Some(reply_to),
+                text,
+                ..
+            } if *reply_to == opener_seat && text.contains("顺嘴接一句") => Some(*seat),
+            _ => None,
+        })
+        .expect("deferred follow-up must select an idle AI instead of aborting when another candidate is busy");
+
+    assert_ne!(followup_seat, opener_seat);
+    assert_ne!(
+        followup_seat, busy_seat,
+        "follow-up must skip the AI that became busy during the 1s delay"
+    );
+
+    // Verify the follow-up AI's freshly built prompt contains the QuickEmote that arrived DURING the 1s delay!
+    let captured = llm.captured();
+    assert_eq!(captured.len(), 3);
+    assert_eq!(captured[2].seat, Some(followup_seat));
+    assert!(
+        captured[2].user_prompt.contains("【4. 跨小局牌桌对话流")
+            && captured[2]
+                .user_prompt
+                .contains(QuickEmote::GoingBig.label()),
+        "follow-up prompt built AFTER 1s delay must contain QuickEmote arriving during delay:\n{}",
+        captured[2].user_prompt
+    );
+
+    busy_gate.notify_waiters();
+    yield_tasks().await;
 }

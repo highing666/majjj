@@ -104,11 +104,13 @@ impl TableSession {
         info.kind == SeatKind::Ai || (info.kind == SeatKind::Human && info.ai_assisted)
     }
 
-    /// Increments and returns the monotonic generation for `seat`, invalidating any in-flight AI work.
+    /// Increments and returns the monotonic generation for `seat`, invalidating any in-flight AI work
+    /// and any armed or in-flight slow-think nudge targeting `seat`.
     pub(crate) fn bump_seat_generation(&mut self, seat: Seat) -> u64 {
         let idx = seat.index();
         self.seat_generation[idx] += 1;
         self.banter.clear_in_flight_seat(seat);
+        self.banter.clear_nudge_for_seat(seat);
         self.tts.clear_pending_slot_for_seat(seat);
         self.seat_generation[idx]
     }
@@ -173,6 +175,7 @@ impl TableSession {
         }
 
         if enabled {
+            let _ = self.bump_seat_generation(seat);
             let difficulty = self.config.ai_difficulty;
             let slot = &mut self.seats[seat.index()];
             slot.info.ai_assisted = true;

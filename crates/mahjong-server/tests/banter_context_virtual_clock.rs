@@ -5,79 +5,23 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::{
-    no_reaction_wall, pump_ai_turn, tile, tiles, yield_tasks, PlannedReply, ScriptedLlmClient,
-    TempDirGuard, VirtualClient,
+    no_reaction_wall, pump_ai_turn, start_solo_east_table, tile, tiles, yield_tasks, PlannedReply,
+    ScriptedLlmClient, TempDirGuard, VirtualClient,
 };
-use mahjong_ai::AiDifficulty;
 use mahjong_core::{build_preset_wall, MatchMode, PlayerAction, PresetWallProvider, Seat};
 use mahjong_server::banter::{build_system_prompt, BANTER_CHAIN_REPLY_DELAY};
 use mahjong_server::llm::BanterOutput;
 use mahjong_server::pacing::PacingMode;
 use mahjong_server::persona::{PersonaId, PersonaMood};
 use mahjong_server::persona_memory::{PersonaMemoryNoteTrigger, PersonaMemoryStore};
-use mahjong_server::protocol::{
-    ClientMessage, QuickEmote, SeatingRule, ServerMessage, TablePace, TablePhase, TableSnapshot,
-};
+use mahjong_server::protocol::{ClientMessage, QuickEmote, ServerMessage, TablePhase};
 use mahjong_server::session::{BoxedWallProvider, TableOptions, TableRuntime, WallProviderFactory};
 
-async fn start_solo_east_table(
-    runtime: &TableRuntime,
-    east: &mut VirtualClient,
-    mode: MatchMode,
-) -> TableSnapshot {
-    east.send(
-        runtime,
-        &ClientMessage::JoinSeat {
-            seat: Some(Seat::East),
-        },
-    )
-    .await;
-    let _ = east.recv_snapshot().await;
-    east.send(
-        runtime,
-        &ClientMessage::SetSeatPersona {
-            seat: Seat::South,
-            persona_id: Some(PersonaId::QuickHothead),
-        },
-    )
-    .await;
-    east.send(
-        runtime,
-        &ClientMessage::SetSeatPersona {
-            seat: Seat::West,
-            persona_id: Some(PersonaId::TeaSarcasm),
-        },
-    )
-    .await;
-    east.send(
-        runtime,
-        &ClientMessage::SetSeatPersona {
-            seat: Seat::North,
-            persona_id: Some(PersonaId::TiltedMaster),
-        },
-    )
-    .await;
-    east.send(
-        runtime,
-        &ClientMessage::UpdateLobbyConfig {
-            mode,
-            seating: SeatingRule::KeepLobbySeats,
-            ai_difficulty: AiDifficulty::Strong,
-            pace: TablePace::Standard,
-        },
-    )
-    .await;
-    east.send(
-        runtime,
-        &ClientMessage::SetSlowThinkNudge { enabled: false },
-    )
-    .await;
-    east.send(runtime, &ClientMessage::StartMatch).await;
-    let snap = east.recv_snapshot().await;
-    assert_eq!(snap.phase, TablePhase::InMatch);
-    let _ = east.drain_all();
-    snap
-}
+const DEFAULT_CONTEXT_PERSONAS: [PersonaId; 3] = [
+    PersonaId::QuickHothead,
+    PersonaId::TeaSarcasm,
+    PersonaId::TiltedMaster,
+];
 
 #[tokio::test(start_paused = true)]
 async fn six_block_context_persists_across_hands_with_chronicle_river_trajectory_transcript_memory_and_time(
@@ -160,7 +104,14 @@ async fn six_block_context_persists_across_hands_with_chronicle_river_trajectory
         .with_llm_client(llm.clone());
     let runtime = TableRuntime::with_options(8789, None, options);
     let mut east = VirtualClient::connect(&runtime, "e1", "小王").await;
-    let start_snap = start_solo_east_table(&runtime, &mut east, MatchMode::FreeTable).await;
+    let start_snap = start_solo_east_table(
+        &runtime,
+        &mut east,
+        MatchMode::FreeTable,
+        DEFAULT_CONTEXT_PERSONAS,
+        false,
+    )
+    .await;
 
     // 1. Hand 1 QuickEmote -> recorded into cross-hand TableTranscript.
     east.send(
@@ -435,7 +386,14 @@ async fn privacy_redline_never_leaks_opponent_concealed_hand_or_concealed_kong_a
         .with_llm_client(llm.clone());
     let runtime = TableRuntime::with_options(8789, None, options);
     let mut east = VirtualClient::connect(&runtime, "e1", "小王").await;
-    let start_snap = start_solo_east_table(&runtime, &mut east, MatchMode::FreeTable).await;
+    let start_snap = start_solo_east_table(
+        &runtime,
+        &mut east,
+        MatchMode::FreeTable,
+        DEFAULT_CONTEXT_PERSONAS,
+        false,
+    )
+    .await;
 
     // 1. East declares ConcealedKong(F).
     east.send(
@@ -494,8 +452,7 @@ async fn privacy_redline_never_leaks_opponent_concealed_hand_or_concealed_kong_a
             req.user_prompt
         );
         assert!(
-            req.user_prompt.contains("暗杠一手（牌面保密未知）")
-                || req.user_prompt.contains("暗杠了一手（牌面保密未知）"),
+            req.user_prompt.contains("暗杠一手（牌面保密未知）"),
             "prompt #{idx} missing masked ConcealedKong notice:\n{}",
             req.user_prompt
         );
@@ -549,7 +506,14 @@ async fn chronicle_and_table_transcript_reset_cleanly_on_disband_and_new_match()
         .with_llm_client(llm.clone());
     let runtime = TableRuntime::with_options(8789, None, options);
     let mut east = VirtualClient::connect(&runtime, "e1", "小王").await;
-    let m1_snap = start_solo_east_table(&runtime, &mut east, MatchMode::FreeTable).await;
+    let m1_snap = start_solo_east_table(
+        &runtime,
+        &mut east,
+        MatchMode::FreeTable,
+        DEFAULT_CONTEXT_PERSONAS,
+        false,
+    )
+    .await;
 
     // Match 1: East instant Tsumo -> settlement banter enters Match 1 transcript & chronicle.
     east.send(
@@ -630,4 +594,193 @@ fn all_five_humanized_personas_have_distinct_rich_bios_and_new_prompt_contract()
         );
     }
     assert_eq!(prompts.len(), 5);
+}
+
+#[tokio::test(start_paused = true)]
+async fn off_turn_wakeups_preserve_hand_progression_and_never_inflate_stalled_streak() {
+    // 3 humans (East, West, North) + 1 AI (South = 大川) so every off-turn QuickEmote deterministically wakes South!
+    // South starts 1-shanten: 123m 456m 78p 23s 5p 8p 9s (needs 9p or 5p; on Turn 1 draws 5p -> enters tenpai!).
+    // On Turn 2 South draws junk E -> discards E (1 stalled step: 本手原地踏步, stalled_streak == 1).
+    let east_14 = tiles("1p 4p 7m 8m 9m 6s 7s 8s 2p 3p 6p C C C");
+    let south_13 = tiles("123m 456m 789p 23s 5p 9s");
+    let west_13 = tiles("2m 5m 8m 5s 8s 3p 6p 9p E S W F F");
+    let north_13 = tiles("3m 6m 9m 4s 7s 1p 4p 7p E S W N B");
+    // Draw order: South R1 draws 5p (enters tenpai! discards 9s), West draws N, North draws B, East draws 2m;
+    // South R2 draws E (no improvement -> discards E, stalled_streak == 1), West draws N, North draws B, East draws 3m.
+    let draws = tiles("5p N B 2m E N B 3m");
+    let wall = build_preset_wall(&east_14, &south_13, &west_13, &north_13, &draws, &[])
+        .expect("off-turn progression wall");
+    let factory: WallProviderFactory = Arc::new(move || {
+        BoxedWallProvider(Box::new(PresetWallProvider::single(
+            Seat::East,
+            wall.clone(),
+        )))
+    });
+
+    let llm = ScriptedLlmClient::from_replies(vec![
+        // 1. South R1 discard self-check-in (EnteredTenpai)
+        PlannedReply::Immediate(Ok(BanterOutput::silent(PersonaMood::Smug))),
+        // 2. Off-turn QuickEmote #1 while South is freshly EnteredTenpai
+        PlannedReply::Immediate(Ok(BanterOutput::silent(PersonaMood::Smug))),
+        // 3. South R2 discard self-check-in (Stalled, stalled_streak = 1)
+        PlannedReply::Immediate(Ok(BanterOutput::silent(PersonaMood::Deadpan))),
+        // 4. Off-turn QuickEmote #2 while South has stalled_streak = 1
+        PlannedReply::Immediate(Ok(BanterOutput::silent(PersonaMood::Deadpan))),
+    ]);
+
+    let options = TableOptions::with_wall_factory(131, factory)
+        .with_pacing(PacingMode::Immediate)
+        .with_llm_client(llm.clone());
+    let runtime = TableRuntime::with_options(8789, None, options);
+    let mut east = VirtualClient::connect(&runtime, "e1", "小王").await;
+    let mut west = VirtualClient::connect(&runtime, "w1", "阿西").await;
+    let mut north = VirtualClient::connect(&runtime, "n1", "阿北").await;
+    for (client, seat) in [
+        (&mut east, Seat::East),
+        (&mut west, Seat::West),
+        (&mut north, Seat::North),
+    ] {
+        client
+            .send(&runtime, &ClientMessage::JoinSeat { seat: Some(seat) })
+            .await;
+        let _ = client.recv_snapshot().await;
+    }
+    east.send(
+        &runtime,
+        &ClientMessage::SetSeatPersona {
+            seat: Seat::South,
+            persona_id: Some(PersonaId::QuickHothead),
+        },
+    )
+    .await;
+    east.send(
+        &runtime,
+        &ClientMessage::SetSlowThinkNudge { enabled: false },
+    )
+    .await;
+    east.send(&runtime, &ClientMessage::StartMatch).await;
+    let mut cur_seq = east.recv_snapshot().await.seq;
+    let _ = west.recv_snapshot().await;
+    let _ = north.recv_snapshot().await;
+    let _ = east.drain_all();
+
+    // Round 1: East discards 1p -> South draws 5p and discards 9s, entering tenpai!
+    east.send(
+        &runtime,
+        &ClientMessage::SubmitAction {
+            expected_seq: cur_seq,
+            client_action_id: "r1-east".to_string(),
+            action: PlayerAction::Discard {
+                tile: tile("1p"),
+                from_drawn: false,
+            },
+        },
+    )
+    .await;
+    pump_ai_turn().await;
+    for msg in east.drain_all() {
+        if let ServerMessage::EventBatch { to_seq, .. } = msg {
+            cur_seq = to_seq;
+        }
+    }
+
+    // Off-turn QuickEmote immediately after South entered tenpai!
+    east.send(
+        &runtime,
+        &ClientMessage::SendQuickEmote {
+            emote: QuickEmote::GoingBig,
+        },
+    )
+    .await;
+    yield_tasks().await;
+    let _ = east.drain_all();
+
+    let after_r1 = llm.captured();
+    assert_eq!(after_r1.len(), 2, "expected R1 check-in + off-turn emote");
+    assert!(
+        after_r1[0].user_prompt.contains("本手进展：刚刚听牌"),
+        "South R1 check-in should report EnteredTenpai:\n{}",
+        after_r1[0].user_prompt
+    );
+    assert!(
+        after_r1[1].user_prompt.contains("本手进展：刚刚听牌"),
+        "off-turn QuickEmote MUST preserve South's EnteredTenpai progression without re-comparing against itself:\n{}",
+        after_r1[1].user_prompt
+    );
+    assert!(
+        !after_r1[1].user_prompt.contains("原地踏步")
+            && !after_r1[1].user_prompt.contains("无效进张卡手"),
+        "off-turn QuickEmote must NOT corrupt progression to Stalled:\n{}",
+        after_r1[1].user_prompt
+    );
+
+    // Finish Round 1 (West & North discard) and play Round 2 so South takes a stalled step (stalled_streak == 1).
+    for (client, cid, d_tile) in [
+        (&west, "r1-west", tile("N")),
+        (&north, "r1-north", tile("B")),
+    ] {
+        client
+            .send(
+                &runtime,
+                &ClientMessage::SubmitAction {
+                    expected_seq: cur_seq,
+                    client_action_id: cid.to_string(),
+                    action: PlayerAction::Discard {
+                        tile: d_tile,
+                        from_drawn: true,
+                    },
+                },
+            )
+            .await;
+        pump_ai_turn().await;
+        for msg in east.drain_all() {
+            if let ServerMessage::EventBatch { to_seq, .. } = msg {
+                cur_seq = to_seq;
+            }
+        }
+    }
+    east.send(
+        &runtime,
+        &ClientMessage::SubmitAction {
+            expected_seq: cur_seq,
+            client_action_id: "r2-east".to_string(),
+            action: PlayerAction::Discard {
+                tile: tile("2m"),
+                from_drawn: true,
+            },
+        },
+    )
+    .await;
+    pump_ai_turn().await;
+    let _ = east.drain_all();
+
+    // Advance past quick-emote cooldown and send a second off-turn QuickEmote!
+    tokio::time::advance(Duration::from_secs(5)).await;
+    east.send(
+        &runtime,
+        &ClientMessage::SendQuickEmote {
+            emote: QuickEmote::IsThatIt,
+        },
+    )
+    .await;
+    yield_tasks().await;
+    let _ = east.drain_all();
+
+    let after_r2 = llm.captured();
+    assert_eq!(
+        after_r2.len(),
+        4,
+        "expected R2 check-in + 2nd off-turn emote"
+    );
+    assert!(
+        after_r2[2].user_prompt.contains("本手进展：本手原地踏步"),
+        "South R2 check-in should report single-step stall:\n{}",
+        after_r2[2].user_prompt
+    );
+    assert!(
+        after_r2[3].user_prompt.contains("本手进展：本手原地踏步")
+            && !after_r2[3].user_prompt.contains("已连续2手"),
+        "off-turn QuickEmote must NOT inflate stalled_streak from 1 to 2:\n{}",
+        after_r2[3].user_prompt
+    );
 }

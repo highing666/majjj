@@ -9,7 +9,8 @@ use rand_core::SeedableRng;
 use tokio::sync::Mutex;
 
 use crate::banter::{
-    BanterChainContext, BanterGuard, PendingBanterJob, SlowThinkTicket, ASYNC_BANTER_TIMEOUT,
+    BanterChainContext, BanterGuard, DelayedBanterFollowup, PendingBanterJob, SlowThinkTicket,
+    ASYNC_BANTER_TIMEOUT,
 };
 use crate::banter_audio::PendingTtsJob;
 use crate::llm::{LlmClient, LlmError};
@@ -173,25 +174,33 @@ fn spawn_tts_synthesis_task(
     });
 }
 
+fn spawn_delayed_followup_task(
+    runtime: Arc<Mutex<TableSession>>,
+    llm: Arc<dyn LlmClient>,
+    tts_client: Option<Arc<dyn TtsClient>>,
+    followup: DelayedBanterFollowup,
+) {
+    tokio::spawn(async move {
+        if !followup.delay.is_zero() {
+            tokio::time::sleep(followup.delay).await;
+        }
+        let next_job = {
+            let mut session = runtime.lock().await;
+            session.begin_delayed_followup(followup)
+        };
+        if let Some(job) = next_job {
+            spawn_async_banter_task(runtime, llm, tts_client, job);
+        }
+    });
+}
+
 fn spawn_async_banter_task(
     runtime: Arc<Mutex<TableSession>>,
     llm: Arc<dyn LlmClient>,
     tts_client: Option<Arc<dyn TtsClient>>,
-    mut job: PendingBanterJob,
+    job: PendingBanterJob,
 ) {
     tokio::spawn(async move {
-        if let Some(delay) = job.dispatch_delay {
-            if !delay.is_zero() {
-                tokio::time::sleep(delay).await;
-            }
-            let can_dispatch = {
-                let mut session = runtime.lock().await;
-                session.try_begin_delayed_banter(&mut job.guard)
-            };
-            if !can_dispatch {
-                return;
-            }
-        }
         let (guard, chain, result) =
             run_banter_job_with_timeout(&llm, job, ASYNC_BANTER_TIMEOUT).await;
         let commit = {
@@ -201,8 +210,8 @@ fn spawn_async_banter_task(
         if let (Some(tts_job), Some(tts)) = (commit.tts_job, tts_client.clone()) {
             spawn_tts_synthesis_task(Arc::clone(&runtime), tts, tts_job);
         }
-        if let Some(next_job) = commit.followup {
-            spawn_async_banter_task(runtime, llm, tts_client, next_job);
+        if let Some(followup) = commit.followup {
+            spawn_delayed_followup_task(runtime, llm, tts_client, followup);
         }
     });
 }
@@ -316,18 +325,7 @@ pub(crate) fn spawn_scheduled_work(
                 session.fire_slow_think_nudge(ticket)
             };
             if let Some(job) = job {
-                let (guard, chain, result) =
-                    run_banter_job_with_timeout(&llm, job, ASYNC_BANTER_TIMEOUT).await;
-                let commit = {
-                    let mut session = runtime.lock().await;
-                    session.commit_banter_result(guard, chain, result)
-                };
-                if let (Some(tts_job), Some(tts)) = (commit.tts_job, tts_client.clone()) {
-                    spawn_tts_synthesis_task(Arc::clone(&runtime), tts, tts_job);
-                }
-                if let Some(next_job) = commit.followup {
-                    spawn_async_banter_task(runtime, llm, tts_client, next_job);
-                }
+                spawn_async_banter_task(runtime, llm, tts_client, job);
             }
         });
     }

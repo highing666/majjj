@@ -202,7 +202,7 @@ export const VOICE_SLOT_SPEECH_TEXT: Record<VoiceSlotId, string> = {
   emote_hurry_up: "搞快点",
   emote_spare_me: "别点我，求放过",
   emote_nice_play: "666，漂亮",
-  emote_dealer_rigged: "什么破手气",
+  emote_dealer_rigged: "发牌员演我",
   emote_going_big: "这把我要胡大的",
 };
 
