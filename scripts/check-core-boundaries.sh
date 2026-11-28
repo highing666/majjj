@@ -28,6 +28,11 @@ if grep -rnE 'async |\.await\b|std::(fs|net)|std::thread::sleep' crates/mahjong-
   exit 1
 fi
 
+if ! grep -qE '^[[:space:]]*tracing-subscriber\b' crates/mahjong-server/Cargo.toml && grep -rnE '\btracing::' crates/mahjong-server/src/; then
+  echo "ERROR: tracing:: calls in crates/mahjong-server/src/ are silent no-ops without tracing-subscriber in Cargo.toml (use env-gated eprintln! or wire a subscriber)" >&2
+  exit 1
+fi
+
 host_triple="$(rustc -vV | sed -n 's/^host: //p')"
 if [ -z "$host_triple" ]; then
   echo "ERROR: failed to determine rustc host triple" >&2

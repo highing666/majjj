@@ -154,8 +154,9 @@ export const ALL_VOICE_SLOTS = [
 export type VoiceSlotId = (typeof ALL_VOICE_SLOTS)[number];
 
 /**
- * Authoritative spoken Chinese text for every canonical `VoiceSlotId`
- * (single-sourced for offline VoicePack generation & verification).
+ * Authoritative spoken Chinese text baked into `web/public/assets/vo/<pack>/sprite.m4a`
+ * for every canonical `VoiceSlotId` (single-sourced for offline VoicePack generation & verification).
+ * Distinct from UI display copy in `QUICK_EMOTE_CATALOG` — only change these strings when re-recording all 7 packs.
  */
 export const VOICE_SLOT_SPEECH_TEXT: Record<VoiceSlotId, string> = {
   m1: "一万",
