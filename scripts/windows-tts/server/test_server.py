@@ -94,11 +94,11 @@ class PersonaRegistryContractTests(unittest.TestCase):
         self.assertEqual(self.registry.persona_count, 5)
 
         expected_speakers = {
-            "QuickHothead": ("急眼快攻哥", "Eric"),
-            "TeaSarcasm": ("阴阳茶艺师", "Serena"),
-            "StubbornBlamer": ("嘴硬死磕王", "Dylan"),
-            "ChaosInstigator": ("拱火乐子人", "Vivian"),
-            "TiltedMaster": ("红温老雀神", "Uncle_Fu"),
+            "QuickHothead": ("大川", "Eric"),
+            "TeaSarcasm": ("小晚", "Serena"),
+            "StubbornBlamer": ("大鹏", "Dylan"),
+            "ChaosInstigator": ("小桃", "Vivian"),
+            "TiltedMaster": ("老陈", "Uncle_Fu"),
         }
         for persona_id, (display_name, speaker) in expected_speakers.items():
             for mood in CANONICAL_MOODS:
@@ -112,6 +112,24 @@ class PersonaRegistryContractTests(unittest.TestCase):
                 self.assertEqual(
                     plan.reference_key, f"{plan.voice_pack_id}_{mood.lower()}"
                 )
+
+    def test_registry_resolves_humanized_display_names_and_legacy_chinese_aliases(
+        self,
+    ) -> None:
+        alias_cases = [
+            ("QuickHothead", "大川", "急眼快攻哥", "Eric", "quick_hothead"),
+            ("TeaSarcasm", "小晚", "阴阳茶艺师", "Serena", "tea_sarcasm"),
+            ("StubbornBlamer", "大鹏", "嘴硬死磕王", "Dylan", "stubborn_blamer"),
+            ("ChaosInstigator", "小桃", "拱火乐子人", "Vivian", "chaos_instigator"),
+            ("TiltedMaster", "老陈", "红温老雀神", "Uncle_Fu", "tilted_master"),
+        ]
+        for persona_id, new_name, legacy_name, speaker, voice_pack_id in alias_cases:
+            for token in (new_name, legacy_name):
+                plan = self.registry.resolve(persona_id=token, mood="Deadpan")
+                self.assertEqual(plan.persona_id, persona_id)
+                self.assertEqual(plan.display_name, new_name)
+                self.assertEqual(plan.speaker, speaker)
+                self.assertEqual(plan.voice_pack_id, voice_pack_id)
 
     def test_registry_accepts_snake_case_and_speaker_aliases_and_instruct_override(
         self,
@@ -342,7 +360,7 @@ class PluggableBackendContractTests(unittest.TestCase):
 
             # TeaSarcasm only has generate_voice_packs.py's *_ref.wav / *_ref.txt
             (voices_dir / "tea_sarcasm_ref.wav").write_bytes(b"RIFFtearef")
-            (voices_dir / "tea_sarcasm_ref.txt").write_text("阴阳茶艺师离线参考台词\n", encoding="utf-8")
+            (voices_dir / "tea_sarcasm_ref.txt").write_text("小晚离线参考台词\n", encoding="utf-8")
 
             # 1. CosyVoice3: prefers _neutral.wav, falls back to _ref.wav
             cosy_extracted: dict[str, str] = {}
@@ -404,7 +422,7 @@ class PluggableBackendContractTests(unittest.TestCase):
                 [
                     {"ref_audio": "quick_hothead_tilted.wav", "ref_text": "急眼红温参考台词"},
                     {"ref_audio": "quick_hothead_neutral.wav", "ref_text": "急眼中性参考台词"},
-                    {"ref_audio": "tea_sarcasm_ref.wav", "ref_text": "阴阳茶艺师离线参考台词"},
+                    {"ref_audio": "tea_sarcasm_ref.wav", "ref_text": "小晚离线参考台词"},
                 ],
             )
 
@@ -595,7 +613,7 @@ class TtsServiceContractTests(unittest.IsolatedAsyncioTestCase):
                     request_id="expired-pre",
                     persona_id="StubbornBlamer",
                     mood="Deadpan",
-                    text="发牌员演我。",
+                    text="什么破手气。",
                     deadline_ms=0,
                 )
             )

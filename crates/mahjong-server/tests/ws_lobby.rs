@@ -712,7 +712,7 @@ async fn lobby_persona_selection_enforces_uniqueness_broadcasts_and_binds_at_mat
     let south = &match_snap.seats[Seat::South.index()];
     assert_eq!(south.kind, SeatKind::Ai);
     assert_eq!(south.persona_id, Some(PersonaId::TeaSarcasm));
-    assert_eq!(south.nickname, "阴阳茶艺师");
+    assert_eq!(south.nickname, "小晚");
     assert_eq!(south.ai_style, Some(AiStyle::DefensiveBigHand));
     assert_eq!(south.mood, Some(PersonaMood::Mocking));
 

@@ -240,7 +240,7 @@ fn frozen_server_protocol_types_roundtrip_serde_json_without_loss() {
         SeatInfo {
             seat: Seat::South,
             kind: SeatKind::Ai,
-            nickname: "急眼快攻哥".to_string(),
+            nickname: "大川".to_string(),
             connected: true,
             ai_assisted: false,
             ai_difficulty: Some(AiDifficulty::Strong),

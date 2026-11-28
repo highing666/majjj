@@ -4,7 +4,7 @@
   "personas": {
     "QuickHothead": {
       "voice_pack_id": "quick_hothead",
-      "display_name": "急眼快攻哥",
+      "display_name": "大川",
       "speaker": "Eric",
       "language": "Chinese",
       "dialect_note": "活泼微哑川渝男声，语速偏快、急性子催牌感强",
@@ -12,7 +12,7 @@
     },
     "TeaSarcasm": {
       "voice_pack_id": "tea_sarcasm",
-      "display_name": "阴阳茶艺师",
+      "display_name": "小晚",
       "speaker": "Serena",
       "language": "Chinese",
       "dialect_note": "温婉年轻女声，客气语调配刻薄台词形成反差茶艺感",
@@ -20,7 +20,7 @@
     },
     "StubbornBlamer": {
       "voice_pack_id": "stubborn_blamer",
-      "display_name": "嘴硬死磕王",
+      "display_name": "大鹏",
       "speaker": "Dylan",
       "language": "Chinese",
       "dialect_note": "清亮京片子青年男声，贫嘴不服输、死磕甩锅感鲜明",
@@ -28,7 +28,7 @@
     },
     "ChaosInstigator": {
       "voice_pack_id": "chaos_instigator",
-      "display_name": "拱火乐子人",
+      "display_name": "小桃",
       "speaker": "Vivian",
       "language": "Chinese",
       "dialect_note": "明亮带锋芒年轻女声，跳脱轻快、煽风点火补刀感强",
@@ -36,7 +36,7 @@
     },
     "TiltedMaster": {
       "voice_pack_id": "tilted_master",
-      "display_name": "红温老雀神",
+      "display_name": "老陈",
       "speaker": "Uncle_Fu",
       "language": "Chinese",
       "dialect_note": "沉稳低沉老成男声，平时端架子指导牌技、破防反差大",

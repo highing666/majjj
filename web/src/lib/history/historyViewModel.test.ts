@@ -471,7 +471,7 @@ describe("historyViewModel", () => {
     expect(cards).toHaveLength(2);
     expect(cards[0]).toMatchObject({
       personaId: "TeaSarcasm",
-      personaName: "阴阳茶艺师",
+      personaName: "小晚",
       styleLabel: "防守做大牌",
       totalNotes: 2,
     });

@@ -1157,7 +1157,7 @@ describe("session reducer — TableBanter and LlmStatusNotice", () => {
     seats[1] = {
       ...seats[1],
       kind: "Ai",
-      nickname: "急眼快攻哥",
+      nickname: "大川",
       connected: true,
       ai_difficulty: "Strong",
       ai_style: "AggressiveFast",

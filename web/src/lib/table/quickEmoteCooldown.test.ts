@@ -18,7 +18,7 @@ describe("quickEmoteCooldown & catalog", () => {
       "搞快点",
       "别点我 / 求放过",
       "666 / 漂亮",
-      "发牌员演我",
+      "什么破手气",
       "这把我要胡大的",
     ]);
     expect(getQuickEmoteMeta("GoingBig").label).toBe("这把我要胡大的");

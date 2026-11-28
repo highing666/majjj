@@ -3,6 +3,7 @@ import {
   aiStyleLabel,
   getPersonaMeta,
   getPersonaMoodMeta,
+  getQuickEmoteMeta,
   PERSONA_IDS,
   PERSONA_LIST,
   PERSONA_MOODS,
@@ -15,31 +16,40 @@ describe("protocol/personas metadata single source of truth", () => {
     expect(PERSONA_LIST).toHaveLength(5);
 
     expect(getPersonaMeta("QuickHothead")).toMatchObject({
-      name: "急眼快攻哥",
+      name: "大川",
       defaultStyle: "AggressiveFast",
       styleLabel: "快攻",
     });
     expect(getPersonaMeta("TeaSarcasm")).toMatchObject({
-      name: "阴阳茶艺师",
+      name: "小晚",
       defaultStyle: "DefensiveBigHand",
       styleLabel: "防守做大牌",
     });
     expect(getPersonaMeta("StubbornBlamer")).toMatchObject({
-      name: "嘴硬死磕王",
+      name: "大鹏",
       defaultStyle: "AggressiveFast",
       styleLabel: "快攻",
     });
     expect(getPersonaMeta("ChaosInstigator")).toMatchObject({
-      name: "拱火乐子人",
+      name: "小桃",
       defaultStyle: "Balanced",
       styleLabel: "均衡",
     });
     expect(getPersonaMeta("TiltedMaster")).toMatchObject({
-      name: "红温老雀神",
+      name: "老陈",
       defaultStyle: "DefensiveBigHand",
       styleLabel: "防守做大牌",
     });
     expect(aiStyleLabel("Balanced")).toBe("均衡");
+    for (const meta of PERSONA_LIST) {
+      expect(meta.tagline.length).toBeGreaterThan(0);
+      expect(meta.tagline).not.toContain("发牌员");
+    }
+    expect(getQuickEmoteMeta("DealerRigged")).toMatchObject({
+      id: "DealerRigged",
+      label: "什么破手气",
+      shortLabel: "破手气",
+    });
   });
 
   it("defines all 6 canonical PersonaMood labels and stable frame keys", () => {
