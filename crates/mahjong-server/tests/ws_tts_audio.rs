@@ -227,10 +227,19 @@ async fn startup_with_unreachable_tts_still_boots_plays_and_notifies_clients() {
     let snap = recv_snapshot(&mut east).await;
     assert_eq!(snap.phase, TablePhase::InMatch);
 
+    send_msg(
+        &mut east,
+        &ClientMessage::SendQuickEmote {
+            emote: QuickEmote::IsThatIt,
+        },
+    )
+    .await;
     let banter_id = loop {
         match recv_msg(&mut east).await {
             ServerMessage::TableBanter { banter_id, .. } => break banter_id,
-            ServerMessage::LobbyUpdated { .. } | ServerMessage::ServerPing { .. } => continue,
+            ServerMessage::QuickEmoteBroadcast { .. }
+            | ServerMessage::LobbyUpdated { .. }
+            | ServerMessage::ServerPing { .. } => continue,
             other => panic!("expected TableBanter during TTS outage, got {other:?}"),
         }
     };
@@ -298,6 +307,15 @@ async fn single_synthesis_shared_by_multiple_ws_clients_over_http_and_404_on_unk
     let _ = recv_snapshot(&mut west).await;
     let _ = recv_snapshot(&mut north).await;
 
+    // Trigger b-1 via East's QuickEmote (only South is AI).
+    send_msg(
+        &mut east,
+        &ClientMessage::SendQuickEmote {
+            emote: QuickEmote::NicePlay,
+        },
+    )
+    .await;
+
     // Both clients receive TableBanter and TableBanterAudioReady for b-1.
     let mut east_ready = None;
     let mut west_ready = None;
@@ -309,7 +327,8 @@ async fn single_synthesis_shared_by_multiple_ws_clients_over_http_and_404_on_unk
                 duration_ms,
                 ..
             } => east_ready = Some((banter_id, audio_url, duration_ms)),
-            ServerMessage::TableBanter { .. }
+            ServerMessage::QuickEmoteBroadcast { .. }
+            | ServerMessage::TableBanter { .. }
             | ServerMessage::LobbyUpdated { .. }
             | ServerMessage::ServerPing { .. } => {}
             other => panic!("unexpected east msg: {other:?}"),
@@ -323,7 +342,8 @@ async fn single_synthesis_shared_by_multiple_ws_clients_over_http_and_404_on_unk
                 duration_ms,
                 ..
             } => west_ready = Some((banter_id, audio_url, duration_ms)),
-            ServerMessage::TableBanter { .. }
+            ServerMessage::QuickEmoteBroadcast { .. }
+            | ServerMessage::TableBanter { .. }
             | ServerMessage::LobbyUpdated { .. }
             | ServerMessage::ServerPing { .. } => {}
             other => panic!("unexpected west msg: {other:?}"),
@@ -368,9 +388,9 @@ async fn single_synthesis_shared_by_multiple_ws_clients_over_http_and_404_on_unk
     let (bad_status, _, _) = http_get(server.addr(), "/api/banter-audio/..%2Fsecret").await;
     assert_eq!(bad_status, StatusCode::NOT_FOUND);
 
-    // Trigger a second banter via quick emote -> cache capacity 1 evicts b-1 -> GET /api/banter-audio/b-1 returns 404!
+    // Trigger a second banter via West's quick emote -> cache capacity 1 evicts b-1 -> GET /api/banter-audio/b-1 returns 404!
     send_msg(
-        &mut east,
+        &mut west,
         &ClientMessage::SendQuickEmote {
             emote: QuickEmote::IsThatIt,
         },
@@ -552,7 +572,14 @@ async fn http_tts_client_decouples_request_timeout_from_deadline_and_ws_408_emit
     send_msg(&mut east, &ClientMessage::StartMatch).await;
     let _ = recv_snapshot(&mut east).await;
 
-    // Opening banter b-1 hits HTTP 408 -> client receives TableBanterAudioFallback("b-1"), NOT TtsStatusNotice.
+    // Trigger b-1 via East's quick emote -> hits HTTP 408 -> TableBanterAudioFallback("b-1"), NOT TtsStatusNotice.
+    send_msg(
+        &mut east,
+        &ClientMessage::SendQuickEmote {
+            emote: QuickEmote::NicePlay,
+        },
+    )
+    .await;
     loop {
         match recv_msg(&mut east).await {
             ServerMessage::TableBanterAudioFallback { banter_id, .. } if banter_id == "b-1" => {
@@ -561,16 +588,17 @@ async fn http_tts_client_decouples_request_timeout_from_deadline_and_ws_408_emit
             ServerMessage::TtsStatusNotice { .. } => {
                 panic!("HTTP 408 must NOT emit TtsStatusNotice");
             }
-            ServerMessage::TableBanter { .. }
+            ServerMessage::QuickEmoteBroadcast { .. }
+            | ServerMessage::TableBanter { .. }
             | ServerMessage::LobbyUpdated { .. }
             | ServerMessage::ServerPing { .. } => {}
             other => panic!("unexpected msg waiting for 408 fallback: {other:?}"),
         }
     }
 
-    // Immediate next quick emote succeeds without cooldown -> TableBanterAudioReady!
+    // Immediate next quick emote (from West) succeeds without cooldown -> TableBanterAudioReady!
     send_msg(
-        &mut east,
+        &mut west,
         &ClientMessage::SendQuickEmote {
             emote: QuickEmote::IsThatIt,
         },

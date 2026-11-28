@@ -18,6 +18,9 @@ use tokio::sync::Notify;
 
 fn emote_nudge_responder(request: &BanterGenerationRequest) -> Result<BanterOutput, LlmError> {
     let user_prompt = &request.user_prompt;
+    if user_prompt.contains("牌友接茬判断") {
+        return Ok(BanterOutput::silent(PersonaMood::Deadpan));
+    }
     let (mood, text) = if user_prompt.contains("慢思考催牌调侃") {
         (
             PersonaMood::Mocking,
@@ -33,7 +36,7 @@ fn emote_nudge_responder(request: &BanterGenerationRequest) -> Result<BanterOutp
             format!("还「{matched_label}」呢？有本事下巡别点炮！"),
         )
     } else {
-        (PersonaMood::Plotting, "开局手气稳得一批！".to_string())
+        return Ok(BanterOutput::silent(PersonaMood::Deadpan));
     };
     Ok(BanterOutput {
         speak: true,
@@ -138,6 +141,9 @@ async fn virtual_clock_quick_emote_cooldown_and_all_six_emote_ai_replies() {
     for (idx, emote) in QuickEmote::ALL.into_iter().enumerate() {
         if idx > 0 {
             tokio::time::advance(QUICK_EMOTE_COOLDOWN).await;
+            yield_tasks().await;
+            let _ = east.drain_all();
+            let _ = south.drain_all();
         }
         east.send(&runtime, &ClientMessage::SendQuickEmote { emote })
             .await;
@@ -161,7 +167,7 @@ async fn virtual_clock_quick_emote_cooldown_and_all_six_emote_ai_replies() {
             );
         }
 
-        // 2 AI seats (West & North) -> 1..=2 AI TableBanter replies referencing the emote and targeting East.
+        // Key table moment wakes 1 most relevant idle AI seat immediately (referencing the emote and targeting East).
         let replies: Vec<_> = east_msgs
             .iter()
             .filter_map(|m| match m {
@@ -174,9 +180,10 @@ async fn virtual_clock_quick_emote_cooldown_and_all_six_emote_ai_replies() {
                 _ => None,
             })
             .collect();
-        assert!(
-            (1..=2).contains(&replies.len()),
-            "expected 1..=2 AI replies for {emote:?}, got {replies:?}"
+        assert_eq!(
+            replies.len(),
+            1,
+            "expected exactly 1 immediate idle AI reply for {emote:?}, got {replies:?}"
         );
         for (ai_seat, text, reply_to) in &replies {
             assert!(matches!(ai_seat, Seat::West | Seat::North));

@@ -10,7 +10,6 @@ use tokio::sync::Mutex;
 
 use crate::banter::{
     BanterChainContext, BanterGuard, PendingBanterJob, SlowThinkTicket, ASYNC_BANTER_TIMEOUT,
-    HIGHLIGHT_SYNC_CAP,
 };
 use crate::banter_audio::PendingTtsJob;
 use crate::llm::{LlmClient, LlmError};
@@ -67,7 +66,6 @@ pub(crate) struct PendingAiJob {
 pub(crate) struct ScheduledWork {
     pub ai_jobs: Vec<PendingAiJob>,
     pub pending_release: Option<ReleaseTicket>,
-    pub sync_banter: Vec<PendingBanterJob>,
     pub async_banter: Vec<PendingBanterJob>,
     pub slow_think_nudge: Option<SlowThinkTicket>,
     pub memory_notes: Vec<MemoryNoteJob>,
@@ -77,7 +75,6 @@ impl ScheduledWork {
     pub(crate) fn is_empty(&self) -> bool {
         self.ai_jobs.is_empty()
             && self.pending_release.is_none()
-            && self.sync_banter.is_empty()
             && self.async_banter.is_empty()
             && self.slow_think_nudge.is_none()
             && self.memory_notes.is_empty()
@@ -176,12 +173,11 @@ fn spawn_tts_synthesis_task(
     });
 }
 
-fn spawn_banter_task_with_done(
+fn spawn_async_banter_task(
     runtime: Arc<Mutex<TableSession>>,
     llm: Arc<dyn LlmClient>,
     tts_client: Option<Arc<dyn TtsClient>>,
-    job: PendingBanterJob,
-    done_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    mut job: PendingBanterJob,
 ) {
     tokio::spawn(async move {
         if let Some(delay) = job.dispatch_delay {
@@ -190,12 +186,9 @@ fn spawn_banter_task_with_done(
             }
             let can_dispatch = {
                 let mut session = runtime.lock().await;
-                session.can_dispatch_delayed_banter(&job.guard)
+                session.try_begin_delayed_banter(&mut job.guard)
             };
             if !can_dispatch {
-                if let Some(tx) = done_tx {
-                    let _ = tx.send(());
-                }
                 return;
             }
         }
@@ -205,9 +198,6 @@ fn spawn_banter_task_with_done(
             let mut session = runtime.lock().await;
             session.commit_banter_result(guard, chain, result)
         };
-        if let Some(tx) = done_tx {
-            let _ = tx.send(());
-        }
         if let (Some(tts_job), Some(tts)) = (commit.tts_job, tts_client.clone()) {
             spawn_tts_synthesis_task(Arc::clone(&runtime), tts, tts_job);
         }
@@ -215,15 +205,6 @@ fn spawn_banter_task_with_done(
             spawn_async_banter_task(runtime, llm, tts_client, next_job);
         }
     });
-}
-
-fn spawn_async_banter_task(
-    runtime: Arc<Mutex<TableSession>>,
-    llm: Arc<dyn LlmClient>,
-    tts_client: Option<Arc<dyn TtsClient>>,
-    job: PendingBanterJob,
-) {
-    spawn_banter_task_with_done(runtime, llm, tts_client, job, None);
 }
 
 fn spawn_gameplay_work(
@@ -316,7 +297,6 @@ pub(crate) fn spawn_scheduled_work(
     let ScheduledWork {
         ai_jobs,
         pending_release,
-        sync_banter,
         async_banter,
         slow_think_nudge,
         memory_notes,
@@ -388,58 +368,6 @@ pub(crate) fn spawn_scheduled_work(
                     result,
                 );
             });
-        }
-    }
-
-    if !sync_banter.is_empty() {
-        if let Some(llm) = llm_client.clone() {
-            let max_cap = sync_banter
-                .iter()
-                .map(|j| j.sync_cap.unwrap_or(HIGHLIGHT_SYNC_CAP))
-                .max()
-                .unwrap_or(HIGHLIGHT_SYNC_CAP);
-            let mut done_rxs = Vec::with_capacity(sync_banter.len());
-            for job in sync_banter {
-                let (done_tx, done_rx) = tokio::sync::oneshot::channel();
-                done_rxs.push(done_rx);
-                spawn_banter_task_with_done(
-                    Arc::clone(&runtime),
-                    Arc::clone(&llm),
-                    tts_client.clone(),
-                    job,
-                    Some(done_tx),
-                );
-            }
-            let mut ai_jobs = ai_jobs;
-            tokio::spawn(async move {
-                // Bound gameplay wait by `HIGHLIGHT_SYNC_CAP` (~1.5s) while allowing slower
-                // LLM requests to finish asynchronously up to `ASYNC_BANTER_TIMEOUT` (6s)
-                // without dropping lines or flashing false outage banners.
-                let _ = tokio::time::timeout(max_cap, async move {
-                    for rx in done_rxs {
-                        let _ = rx.await;
-                    }
-                })
-                .await;
-
-                if pending_release.is_some() || !ai_jobs.is_empty() {
-                    // Refresh started_at after sync_banter finishes so waiting on highlight
-                    // text generation never consumes the AI's own humanized thinking window (ADR-0014).
-                    let resumed_at = tokio::time::Instant::now();
-                    for job in &mut ai_jobs {
-                        job.started_at = resumed_at;
-                    }
-                    spawn_gameplay_work(
-                        runtime,
-                        ai_pool,
-                        Some(llm),
-                        tts_client,
-                        pending_release,
-                        ai_jobs,
-                    );
-                }
-            });
-            return;
         }
     }
 

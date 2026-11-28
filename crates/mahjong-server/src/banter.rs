@@ -1,13 +1,13 @@
-//! Cohesive banter director (`牌桌台词`) covering highlight events, precomputed hand-facts
-//! psychological banter, mid-hand inflection sampling, per-seat cooldowns, and capped AI reply chains.
+//! Cohesive autonomous banter director (`牌桌台词`) covering natural wake-up boundaries,
+//! single-in-flight-per-seat deduplication, serial capped AI follow-up chains, and tiered staleness guards.
 
 use std::fmt::Write as _;
 use std::time::Duration;
 
-use mahjong_ai::{analyze_hand_facts, HandDirection, HandFacts, HandProgression};
+use mahjong_ai::{analyze_hand_facts, HandFacts, HandProgression};
 use mahjong_core::{
-    HandOutcome, HandSettlement, KongKind, MeldView, PlayerAction, PlayerEventKind, PlayerView,
-    RecordedEvent, RevealedHand, RevealedMeld, Seat, Suit, Tile, WinKind, Wind,
+    HandOutcome, HandSettlement, KongKind, MeldView, PlayerEventKind, PlayerView, RecordedEvent,
+    RevealedHand, RevealedMeld, Seat, Suit, Tile, WinKind,
 };
 
 use crate::llm::BanterGenerationRequest;
@@ -16,21 +16,18 @@ use crate::persona_memory::{MemoryNoteJob, PersonaMemoryStore};
 use crate::protocol::{QuickEmote, SeatInfo, SeatKind, ServerMessage};
 use crate::session::ActiveMatch;
 
-/// Hard synchronization cap for major highlight events (`MeldDeclared`, `HandSettled`)
-/// so banter lands tightly with comic impact frames without ever stalling gameplay.
-pub const HIGHLIGHT_SYNC_CAP: Duration = Duration::from_millis(1500);
-
 /// Hard timeout for non-blocking background banter (aligned with `llm::DEFAULT_REQUEST_TIMEOUT`).
 pub const ASYNC_BANTER_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Per-seat cooldown (`3.5s`, within the spec's `3–4s` window) preventing mid-hand and chain spam.
-pub const SEAT_BANTER_COOLDOWN: Duration = Duration::from_millis(3500);
+/// Natural comedic beat (`~1s`) before a serial autonomous AI follow-up check-in dispatches.
+pub const BANTER_CHAIN_REPLY_DELAY: Duration = Duration::from_secs(1);
 
-/// Natural comedic beat before an AI follow-up reply enters the table banter chain.
-pub const BANTER_CHAIN_REPLY_DELAY: Duration = Duration::from_millis(650);
-
-/// Strict hard upper bound on AI-to-AI follow-up replies per highlight chain (never loops).
+/// Strict hard upper bound on serial AI-to-AI follow-up rounds per interaction (opener + at most 2 follow-ups).
 pub const MAX_BANTER_CHAIN_REPLIES: u8 = 2;
+
+/// Relaxed sequence-drift ceiling for strong-recency reactions within the same hand
+/// (human meld/kong reaction, quick emote reply, slow-think nudge, or mid-hand follow-up banter).
+pub const STRONG_RECENCY_MAX_SEQ_DRIFT: u64 = 10;
 
 /// Minimum per-seat cooldown between consecutive human `QuickEmote` triggers.
 pub const QUICK_EMOTE_COOLDOWN: Duration = Duration::from_secs(4);
@@ -38,18 +35,11 @@ pub const QUICK_EMOTE_COOLDOWN: Duration = Duration::from_secs(4);
 /// Waiting threshold before a single playful AI slow-think nudge fires (`15–20s` per Spec #63).
 pub const SLOW_THINK_NUDGE_DELAY: Duration = Duration::from_secs(16);
 
-/// Minimum consecutive stalled turns before triggering a mid-hand frustration inflection.
-const STALLED_STREAK_TRIGGER: u8 = 3;
-
-/// Wall-remaining threshold entering endgame tension inflection sampling.
-const ENDGAME_WALL_THRESHOLD: u8 = 16;
-
-/// Minimum declared melds by an opponent to trigger meld-pressure inflection sampling.
-const HEAVY_OPPONENT_MELD_THRESHOLD: usize = 2;
-
 /// Monotonic validity guard attached to every in-flight LLM banter task.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BanterGuard {
+    /// Monotonic job identifier matching `BanterSessionState::in_flight_seats[seat]` (`0` until claimed).
+    pub job_id: u64,
     /// Active server match identifier.
     pub match_id: u64,
     /// Speaking AI seat.
@@ -58,16 +48,20 @@ pub(crate) struct BanterGuard {
     pub seat_generation: u64,
     /// Assigned persona identity at dispatch time.
     pub persona_id: PersonaId,
-    /// Authoritative event sequence number that triggered this line.
+    /// Authoritative event sequence number that triggered this wake-up.
     pub event_seq: u64,
     /// Monotonic hand counter within the match (invalidated when next hand starts).
     pub hand_generation: u64,
-    /// Maximum allowed sequence advance before a mid-hand line is treated as stale (`None` for settlement).
+    /// Maximum allowed sequence advance before a strong-recency line is treated as stale
+    /// (`None` for self-check-in / casual chatter and `HandSettled` recaps within the same hand).
     pub max_seq_drift: Option<u64>,
     /// Whether this banter may still commit after `TablePhase::Finished` (for final-hand settlement).
     pub allow_finished_phase: bool,
     /// Optional target seat this banter line is replying to or nudging.
     pub reply_to_seat: Option<Seat>,
+    /// Optional target seat generation guard (invalidates in-flight nudges if target's seat generation bumps,
+    /// e.g. toggling `AI 托管` off or offline takeover).
+    pub target_seat_generation: Option<(Seat, u64)>,
     /// If `true`, drop the line if `slow_think_nudge_enabled` was toggled off while in-flight.
     pub require_nudge_enabled: bool,
 }
@@ -93,11 +87,13 @@ pub(crate) struct NudgeTurnKey {
     pub seat: Seat,
 }
 
-/// Cohesive banter, quick-emote, slow-think nudge, and LLM outage state owned by `TableSession`.
+/// Cohesive banter, single-in-flight tracking, quick-emote, slow-think nudge, and LLM outage state
+/// owned by `TableSession`.
 pub(crate) struct BanterSessionState {
-    pub pending_sync: Vec<PendingBanterJob>,
     pub pending_async: Vec<PendingBanterJob>,
     pub pending_memory_notes: Vec<MemoryNoteJob>,
+    in_flight_seats: [Option<u64>; 4],
+    next_job_id: u64,
     pub llm_available: bool,
     pub last_llm_error: Option<String>,
     pub slow_think_nudge_enabled: bool,
@@ -110,9 +106,10 @@ pub(crate) struct BanterSessionState {
 impl BanterSessionState {
     pub(crate) fn new(slow_think_nudge_enabled: bool) -> Self {
         Self {
-            pending_sync: Vec::new(),
             pending_async: Vec::new(),
             pending_memory_notes: Vec::new(),
+            in_flight_seats: [None; 4],
+            next_job_id: 1,
             llm_available: true,
             last_llm_error: None,
             slow_think_nudge_enabled,
@@ -124,11 +121,53 @@ impl BanterSessionState {
     }
 
     pub(crate) fn reset_for_match_transition(&mut self) {
-        self.pending_sync.clear();
         self.pending_async.clear();
+        self.in_flight_seats = [None; 4];
         self.quick_emote_last_sent = [None; 4];
         self.active_slow_think_nudge = None;
         self.last_nudged_turn = None;
+    }
+
+    pub(crate) fn in_flight_flags(&self) -> [bool; 4] {
+        self.in_flight_seats.map(|slot| slot.is_some())
+    }
+
+    /// Claims the single in-flight banter slot for `seat`, returning a monotonic `job_id`,
+    /// or `None` if `seat` already has an active in-flight task.
+    pub(crate) fn try_claim_seat(&mut self, seat: Seat) -> Option<u64> {
+        let slot = &mut self.in_flight_seats[seat.index()];
+        if slot.is_some() {
+            return None;
+        }
+        let job_id = self.next_job_id;
+        self.next_job_id += 1;
+        *slot = Some(job_id);
+        Some(job_id)
+    }
+
+    /// Claims `job.guard.seat` and queues `job` for async execution; silently skips if already busy.
+    pub(crate) fn enqueue_banter_job(&mut self, mut job: PendingBanterJob) -> bool {
+        let Some(job_id) = self.try_claim_seat(job.guard.seat) else {
+            return false;
+        };
+        job.guard.job_id = job_id;
+        self.pending_async.push(job);
+        true
+    }
+
+    /// Releases `seat`'s in-flight slot only if it still matches `job_id` (stale jobs never clear newer slots).
+    pub(crate) fn release_seat(&mut self, seat: Seat, job_id: u64) {
+        if job_id != 0 && self.in_flight_seats[seat.index()] == Some(job_id) {
+            self.in_flight_seats[seat.index()] = None;
+        }
+    }
+
+    pub(crate) fn clear_in_flight_seat(&mut self, seat: Seat) {
+        self.in_flight_seats[seat.index()] = None;
+    }
+
+    pub(crate) fn clear_all_in_flight(&mut self) {
+        self.in_flight_seats = [None; 4];
     }
 
     pub(crate) fn set_slow_think_nudge_enabled(&mut self, enabled: bool) {
@@ -249,23 +288,16 @@ impl BanterSessionState {
         self.last_nudged_turn = Some(turn);
     }
 
-    pub(crate) fn take_pending(
-        &mut self,
-    ) -> (
-        Vec<PendingBanterJob>,
-        Vec<PendingBanterJob>,
-        Vec<MemoryNoteJob>,
-    ) {
+    pub(crate) fn take_pending(&mut self) -> (Vec<PendingBanterJob>, Vec<MemoryNoteJob>) {
         (
-            std::mem::take(&mut self.pending_sync),
             std::mem::take(&mut self.pending_async),
             std::mem::take(&mut self.pending_memory_notes),
         )
     }
 }
 
-/// Structured, speaker-neutral highlight trigger stored in a reply chain so every follow-up AI
-/// formats relative seat labels (`自家`/`上家`/`下家`/`对门`) strictly from its own seat perspective.
+/// Structured, speaker-neutral interaction trigger stored in a serial follow-up chain so every
+/// follow-up AI formats relative seat labels (`自家`/`上家`/`下家`/`对门`) strictly from its own seat perspective.
 #[derive(Debug, Clone)]
 pub(crate) enum BanterChainTrigger {
     HandSettled(Box<HandSettlement>),
@@ -275,21 +307,43 @@ pub(crate) enum BanterChainTrigger {
         meld: MeldView,
         wall_remaining: u8,
     },
+    AiDiscard {
+        actor: Seat,
+        tile: Tile,
+        wall_remaining: u8,
+    },
+    QuickEmote {
+        sender: Seat,
+        emote: QuickEmote,
+    },
+    SlowThinkNudge {
+        target_seat: Seat,
+    },
 }
 
-/// Active AI-to-AI follow-up chain context attached to a highlight banter job.
+/// One committed utterance within an active serial interaction chain.
+#[derive(Debug, Clone)]
+pub(crate) struct ChainUtterance {
+    pub seat: Seat,
+    pub mood: PersonaMood,
+    pub text: String,
+}
+
+/// Active serial AI-to-AI follow-up chain context attached to an autonomous banter job.
 #[derive(Debug, Clone)]
 pub(crate) struct BanterChainContext {
     /// Structured trigger formatted relative to each follow-up speaker (never leaks hidden tiles).
     pub trigger: BanterChainTrigger,
     /// True only when all four hands are publicly revealed (`HandSettled`).
     pub hands_revealed: bool,
-    /// Number of follow-up replies already emitted in this chain (`0` for the opening highlight line).
+    /// Number of follow-up replies already emitted in this chain (`0` for the opening line).
     pub replies_emitted: u8,
     /// Maximum follow-up replies permitted for this chain (`1..=MAX_BANTER_CHAIN_REPLIES`).
     pub max_replies: u8,
     /// Seats that have already spoken in this chain.
     pub spoken_seats: Vec<Seat>,
+    /// Chronological utterances committed earlier in this chain (carried into follow-up prompts).
+    pub history: Vec<ChainUtterance>,
 }
 
 /// Previous line emitted in an AI banter chain, passed to `plan_chain_followup`.
@@ -299,57 +353,23 @@ pub(crate) struct ChainPrevLine<'a> {
     pub text: &'a str,
 }
 
-/// Scheduled LLM banter job ready for asynchronous or bounded-sync execution.
+/// Scheduled non-blocking LLM banter job ready for asynchronous execution.
 #[derive(Debug, Clone)]
 pub(crate) struct PendingBanterJob {
     pub guard: BanterGuard,
     pub request: BanterGenerationRequest,
-    pub sync_cap: Option<Duration>,
     pub dispatch_delay: Option<Duration>,
     pub chain: Option<BanterChainContext>,
 }
 
-/// Mid-hand inflection reason driving draw/discard sampling banter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum MidHandInflection {
-    /// Seat just transitioned into tenpai (`shanten == 0`).
-    EnteredTenpai,
-    /// Seat is advancing (`shanten <= 1`) toward a notable high-fan pattern.
-    BigHandBuilding { direction: HandDirection },
-    /// Seat suffered multiple consecutive turns without shanten/ukeire progress.
-    ConsecutiveStalledDraws { streak: u8 },
-    /// An opponent has accumulated multiple declared melds, raising table tension.
-    OpponentHeavyMelds {
-        target_seat: Seat,
-        meld_count: usize,
-    },
-    /// Wall remaining has dropped into endgame territory.
-    EndgameLowWall { wall_remaining: u8 },
-}
-
-impl MidHandInflection {
-    const fn priority(self) -> u8 {
-        match self {
-            Self::EnteredTenpai => 5,
-            Self::BigHandBuilding { .. } => 4,
-            Self::ConsecutiveStalledDraws { .. } => 3,
-            Self::OpponentHeavyMelds { .. } => 2,
-            Self::EndgameLowWall { .. } => 1,
-        }
-    }
-}
-
-/// Snapshot of table identity needed to plan banter without holding `TableSession` mutably.
+/// Snapshot of table identity needed to plan autonomous banter without holding `TableSession` mutably.
 pub(crate) struct BanterPlanContext<'a> {
     pub match_id: u64,
     pub hand_generation: u64,
     pub game: &'a ActiveMatch,
     pub seats: &'a [SeatInfo; 4],
     pub seat_generation: &'a [u64; 4],
-    pub sync_cap: Duration,
-    pub cooldown: Duration,
-    pub now: tokio::time::Instant,
-    pub seat_last_banter_at: &'a [Option<tokio::time::Instant>; 4],
+    pub in_flight_seats: [bool; 4],
     pub persona_memory: &'a PersonaMemoryStore,
 }
 
@@ -406,15 +426,6 @@ fn format_tiles_zh(tiles: &[Tile]) -> String {
         .map(|&t| format_tile_zh(t))
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-fn format_wind_zh(wind: Wind) -> &'static str {
-    match wind {
-        Wind::East => "东风",
-        Wind::South => "南风",
-        Wind::West => "西风",
-        Wind::North => "北风",
-    }
 }
 
 fn format_mood_zh(mood: PersonaMood) -> &'static str {
@@ -643,11 +654,14 @@ pub fn build_system_prompt(persona: PersonaId) -> String {
     )
 }
 
-fn ai_persona_seats(seats: &[SeatInfo; 4]) -> Vec<(Seat, PersonaId)> {
+fn idle_ai_persona_seats(
+    seats: &[SeatInfo; 4],
+    in_flight_seats: &[bool; 4],
+) -> Vec<(Seat, PersonaId)> {
     seats
         .iter()
         .filter_map(|info| {
-            (info.kind == SeatKind::Ai)
+            (info.kind == SeatKind::Ai && !in_flight_seats[info.seat.index()])
                 .then_some(info.persona_id)
                 .flatten()
                 .map(|pid| (info.seat, pid))
@@ -672,18 +686,15 @@ fn find_ai_persona(seats: &[SeatInfo; 4], seat: Seat) -> Option<(Seat, PersonaId
     }
 }
 
-/// Returns true when `seat` has satisfied `cooldown` since its last banter dispatch/commit.
-#[must_use]
-pub(crate) fn is_seat_off_cooldown(
-    seat_last_banter_at: &[Option<tokio::time::Instant>; 4],
+fn find_idle_ai_persona(
+    seats: &[SeatInfo; 4],
+    in_flight_seats: &[bool; 4],
     seat: Seat,
-    now: tokio::time::Instant,
-    cooldown: Duration,
-) -> bool {
-    match seat_last_banter_at[seat.index()] {
-        None => true,
-        Some(last) => now.saturating_duration_since(last) >= cooldown,
+) -> Option<(Seat, PersonaId)> {
+    if in_flight_seats[seat.index()] {
+        return None;
     }
+    find_ai_persona(seats, seat)
 }
 
 /// Initializes per-seat [`HandFacts`] snapshots for all AI seats at the start of a hand.
@@ -700,41 +711,6 @@ pub(crate) fn initialize_seat_hand_facts(
             None
         }
     })
-}
-
-fn build_hand_started_prompt(
-    seats: &[SeatInfo; 4],
-    speaker: Seat,
-    view: &PlayerView,
-    facts: &HandFacts,
-) -> String {
-    let dealer_label = seat_label(seats, speaker, view.turn.dealer);
-    let scores = format_scores_line(
-        seats,
-        speaker,
-        &[
-            view.seats[0].score,
-            view.seats[1].score,
-            view.seats[2].score,
-            view.seats[3].score,
-        ],
-    );
-    let streak = if view.turn.dealer_streak > 0 {
-        format!("（连庄 {}）", view.turn.dealer_streak)
-    } else {
-        String::new()
-    };
-    format!(
-        "【开局高光】{wind}第 {hand} 小局{streak}开打，庄家：{dealer_label}。\n\
-当前积分：{scores}。\n\
-你的自家手牌：{own_hand}（严禁臆测他家暗牌）。\n\
-预计算手牌事实：{facts_zh}。\n\
-请结合真实开局牌况与场面，用你的人设放一句开局毒舌台词（可吐槽起手牌、立Flag或故意装惨诈唬）。",
-        wind = format_wind_zh(view.turn.wind_round),
-        hand = view.turn.hand_number,
-        own_hand = format_own_hand(view),
-        facts_zh = format_hand_facts_zh(facts),
-    )
 }
 
 fn format_public_meld_summary(
@@ -783,6 +759,28 @@ fn format_public_meld_summary(
     }
 }
 
+fn build_ai_discard_checkin_prompt(
+    seats: &[SeatInfo; 4],
+    speaker: Seat,
+    discarded_tile: Tile,
+    view: &PlayerView,
+    facts: &HandFacts,
+) -> String {
+    format!(
+        "【自家出牌巡检】你刚刚舍出 {}。\n\
+公开牌桌态势：{}。\n\
+你的自家手牌：{}（严禁臆测他家暗牌）。\n\
+预计算手牌事实：{}。\n\
+请结合自家真实牌况与场上气氛，自主决定此刻是否开口（speak: true/false）以及当前牌友情绪（mood）：\
+若本巡平淡无波澜可优先沉默（speak: false，情绪有变化时仅更新 mood）；\
+若有牌运起伏、听牌/做大牌心理战或想顺势吐槽，则用你的人设来一句自然口语短句。",
+        format_tile_zh(discarded_tile),
+        format_public_table_pressure(seats, speaker, view),
+        format_own_hand(view),
+        format_hand_facts_zh(facts),
+    )
+}
+
 fn build_meld_declared_prompt(
     seats: &[SeatInfo; 4],
     speaker: Seat,
@@ -793,85 +791,11 @@ fn build_meld_declared_prompt(
 ) -> String {
     let action_desc = format_public_meld_summary(seats, speaker, actor, meld, true);
     format!(
-        "【鸣牌高光】{action_desc}，牌墙剩余 {} 张。\n\
+        "【鸣牌动态】{action_desc}，牌墙剩余 {} 张。\n\
 你的自家手牌：{}（严禁臆测他家暗牌）。\n\
 预计算手牌事实：{}。\n\
-请立刻围绕这次鸣牌与自家真实牌况，用你的人设吐槽、嘴硬或放狠话。",
+请自主决定是否就这次鸣牌开口（speak: true/false）以及当前牌友情绪（mood）：想接话就用你的人设自然吐槽、调侃或施压，没必要说话就保持沉默。",
         view.wall_remaining,
-        format_own_hand(view),
-        format_hand_facts_zh(facts),
-    )
-}
-
-fn build_added_kong_attempted_prompt(
-    seats: &[SeatInfo; 4],
-    speaker: Seat,
-    actor: Seat,
-    tile: Tile,
-    view: &PlayerView,
-    facts: &HandFacts,
-) -> String {
-    let actor_label = seat_label(seats, speaker, actor);
-    let can_rob = view
-        .legal_actions
-        .iter()
-        .any(|a| matches!(a, PlayerAction::RobKongHu { .. }));
-    let stance = if can_rob {
-        "你手上正好能抢杠胡！"
-    } else if speaker == actor {
-        "你正冒着被抢杠胡的风险补杠！"
-    } else {
-        "全桌盯着看这手补杠会不会撞上抢杠胡。"
-    };
-    format!(
-        "【补杠惊险时刻】{actor_label} 试图补杠 {}。{stance}\n\
-你的自家手牌：{}（严禁臆测他家暗牌）。\n\
-预计算手牌事实：{}。\n\
-请用你的人设来一句紧张或拱火的牌桌台词。",
-        format_tile_zh(tile),
-        format_own_hand(view),
-        format_hand_facts_zh(facts),
-    )
-}
-
-fn build_mid_hand_inflection_prompt(
-    seats: &[SeatInfo; 4],
-    speaker: Seat,
-    inflection: MidHandInflection,
-    trigger_desc: &str,
-    view: &PlayerView,
-    facts: &HandFacts,
-) -> String {
-    let inflection_note = match inflection {
-        MidHandInflection::EnteredTenpai => {
-            "局中拐点：你刚刚进入听牌状态！可以暗爽装淡定、反向哭惨诈唬，或给牌桌施压（绝不要主动把精确听口全盘托出给对手白看，除非你故意放狠话）。".to_string()
-        }
-        MidHandInflection::BigHandBuilding { direction } => format!(
-            "局中拐点：你的手牌正在逼近「{}」大番形态，可以憋大招暗算、装无辜烟雾弹或调侃牌桌。",
-            direction.label_zh()
-        ),
-        MidHandInflection::ConsecutiveStalledDraws { streak } => format!(
-            "局中拐点：你已经连续 {streak} 手摸不到有效进张、原地卡手，可以吐槽自家破手气、甩锅上家或强行嘴硬挽尊。"
-        ),
-        MidHandInflection::OpponentHeavyMelds {
-            target_seat,
-            meld_count,
-        } => format!(
-            "局中拐点：{} 已经连续鸣牌 {meld_count} 次气势汹汹，可以嘲讽对方急着做小牌或提醒全桌当心别点炮。",
-            seat_label(seats, speaker, target_seat)
-        ),
-        MidHandInflection::EndgameLowWall { wall_remaining } => format!(
-            "局中拐点：牌墙仅剩 {wall_remaining} 张进入残局白热化，可以紧张催命、怕点炮装怂或恐吓全桌。"
-        ),
-    };
-    format!(
-        "【局中心理战拐点】{trigger_desc}。\n\
-{inflection_note}\n\
-公开牌桌态势：{}。\n\
-你的自家手牌：{}（严禁臆测他家暗牌）。\n\
-预计算手牌事实：{}。\n\
-请结合自家真实牌况与人设发表一句心理战吐槽（严禁捏造未出现的牌名或胡算向听/番型）。",
-        format_public_table_pressure(seats, speaker, view),
         format_own_hand(view),
         format_hand_facts_zh(facts),
     )
@@ -901,24 +825,45 @@ fn format_chain_trigger_summary(
             "{}（牌墙余{wall_remaining}张）",
             format_public_meld_summary(seats, speaker, *actor, meld, false),
         ),
+        BanterChainTrigger::AiDiscard {
+            actor,
+            tile,
+            wall_remaining,
+        } => format!(
+            "{} 舍出 {}（牌墙余{wall_remaining}张）",
+            seat_label(seats, speaker, *actor),
+            format_tile_zh(*tile),
+        ),
+        BanterChainTrigger::QuickEmote { sender, emote } => format!(
+            "{} 发送快捷互动：「{}」",
+            seat_label(seats, speaker, *sender),
+            emote.label(),
+        ),
+        BanterChainTrigger::SlowThinkNudge { target_seat } => format!(
+            "{} 这一手思考了较久",
+            seat_label(seats, speaker, *target_seat),
+        ),
     }
 }
 
 fn build_chain_reply_prompt(
     seats: &[SeatInfo; 4],
     speaker: Seat,
-    prev: &ChainPrevLine<'_>,
+    history: &[ChainUtterance],
     chain: &BanterChainContext,
     own: Option<OwnHandContext<'_>>,
 ) -> String {
-    let prev_label = seat_label(seats, speaker, prev.guard.seat);
     let summary = format_chain_trigger_summary(seats, speaker, &chain.trigger);
-    let mut prompt = format!(
-        "【牌友互怼补刀】高光场面：{summary}\n\
-刚才 {prev_label}（情绪：{mood}）刚放话：「{prev_text}」。\n",
-        mood = format_mood_zh(prev.mood),
-        prev_text = prev.text,
-    );
+    let mut prompt = format!("【牌友接茬判断】当前场面：{summary}\n近期同段对话：\n");
+    for utt in history {
+        let label = seat_label(seats, speaker, utt.seat);
+        let _ = writeln!(
+            prompt,
+            "- {label}（情绪：{mood}）：「{text}」",
+            mood = format_mood_zh(utt.mood),
+            text = utt.text,
+        );
+    }
     if !chain.hands_revealed {
         if let Some(own_ctx) = own {
             let _ = writeln!(
@@ -934,7 +879,7 @@ fn build_chain_reply_prompt(
         }
     }
     prompt.push_str(
-        "请顺着上一句接茬回喷、拆台或落井下石补刀，保持 10 到 26 字单句口语且严禁捏造未给出的牌名。",
+        "请自主决定要不要顺着刚才的话接茬回喷、拆台或补刀（speak: true/false）；没梗可接就安静返回 speak: false，若开口严禁捏造未给出的牌名。",
     );
     prompt
 }
@@ -1056,49 +1001,9 @@ fn build_hand_settled_prompt(
 本小局得分变化：{deltas}（你本小局净变化：{speaker_delta:+}分）。\n\
 四家摊开手牌（已全部公开，可据此精准复盘互喷）：\n\
 {revealed}\n\
-请按你的毒舌人设点评本小局胜负、番型或真实摊牌内容。",
+请自主决定是否点评本小局胜负、番型或真实摊牌内容（speak: true/false）以及当前牌友情绪（mood）。",
         kongs = format_kong_transfers(seats, speaker, settlement),
     )
-}
-
-/// Plans an asynchronous opening banter job right when a match starts (`HandStarted`).
-pub(crate) fn plan_initial_hand_banter(
-    ctx: &BanterPlanContext<'_>,
-    seat_hand_facts: &[Option<HandFacts>; 4],
-) -> Option<PendingBanterJob> {
-    let ai_seats = ai_persona_seats(ctx.seats);
-    let seq = ctx.game.seq();
-    let (seat, persona_id) =
-        pick_deterministic_ai(&ai_seats, ctx.match_id.wrapping_mul(31).wrapping_add(seq))?;
-    let view = ctx.game.project_view(seat);
-    let facts = seat_hand_facts[seat.index()]
-        .clone()
-        .unwrap_or_else(|| analyze_hand_facts(&view, None));
-    let user_prompt = append_memory_context(
-        build_hand_started_prompt(ctx.seats, seat, &view, &facts),
-        ctx.persona_memory,
-        persona_id,
-        ctx.seats,
-    );
-    let request = BanterGenerationRequest::new(build_system_prompt(persona_id), user_prompt);
-    Some(PendingBanterJob {
-        guard: BanterGuard {
-            match_id: ctx.match_id,
-            seat,
-            seat_generation: ctx.seat_generation[seat.index()],
-            persona_id,
-            event_seq: seq,
-            hand_generation: ctx.hand_generation,
-            max_seq_drift: Some(6),
-            allow_finished_phase: false,
-            reply_to_seat: None,
-            require_nudge_enabled: false,
-        },
-        request,
-        sync_cap: None,
-        dispatch_delay: None,
-        chain: None,
-    })
 }
 
 fn build_quick_emote_reply_prompt(
@@ -1126,7 +1031,7 @@ fn build_quick_emote_reply_prompt(
 当前牌墙剩余 {wall} 张，积分：{scores}。\n\
 你的自家手牌：{own_hand}（严禁臆测他家暗牌）。\n\
 预计算手牌事实：{facts_zh}。\n\
-请立刻顺着 {sender_label} 这句「{emote_text}」用你的人设接话回喷或调侃。",
+请自主决定是否顺着 {sender_label} 这句「{emote_text}」接话回喷或调侃（speak: true/false）以及当前牌友情绪（mood）。",
         wall = view.wall_remaining,
         own_hand = format_own_hand(view),
         facts_zh = format_hand_facts_zh(facts),
@@ -1145,74 +1050,72 @@ fn build_slow_think_nudge_prompt(
         "【慢思考催牌调侃】{target_label} 这一手已经想了快二十秒还没操作，牌墙剩余 {wall} 张。\n\
 你的自家手牌：{own_hand}（严禁臆测他家暗牌）。\n\
 预计算手牌事实：{facts_zh}。\n\
-请用你的人设来一句俏皮温和的催牌调侃（带点损友玩笑催一催，别太凶也别催命）。",
+请自主决定是否来一句俏皮温和的催牌调侃（speak: true/false，带点损友玩笑催一催，别太凶也别催命）。",
         wall = view.wall_remaining,
         own_hand = format_own_hand(view),
         facts_zh = format_hand_facts_zh(facts),
     )
 }
 
-/// Plans 1–2 immediate asynchronous AI banter replies reacting to a human `QuickEmote`.
-pub(crate) fn plan_quick_emote_replies(
+/// Plans 1 asynchronous autonomous banter check-in for an idle AI reacting to a human `QuickEmote`.
+pub(crate) fn plan_quick_emote_reply(
     ctx: &BanterPlanContext<'_>,
     sender: Seat,
     emote: QuickEmote,
-) -> Vec<PendingBanterJob> {
-    let ai_seats = ai_persona_seats(ctx.seats);
-    if ai_seats.is_empty() {
-        return Vec::new();
-    }
-    let reply_count = ai_seats.len().min(2);
+) -> Option<PendingBanterJob> {
+    let idle_ai = idle_ai_persona_seats(ctx.seats, &ctx.in_flight_seats);
     let seq = ctx.game.seq();
-    let start_idx = (ctx
+    let seed = ctx
         .match_id
         .wrapping_mul(17)
         .wrapping_add(seq)
-        .wrapping_add(emote.index() as u64) as usize)
-        % ai_seats.len();
-
-    let mut jobs = Vec::with_capacity(reply_count);
-    for offset in 0..reply_count {
-        let (speaker, persona_id) = ai_seats[(start_idx + offset) % ai_seats.len()];
-        let view = ctx.game.project_view(speaker);
-        let facts = analyze_hand_facts(&view, None);
-        let user_prompt = append_memory_context(
-            build_quick_emote_reply_prompt(ctx.seats, speaker, sender, emote, &view, &facts),
-            ctx.persona_memory,
+        .wrapping_add(emote.index() as u64);
+    let (speaker, persona_id) = pick_deterministic_ai(&idle_ai, seed)?;
+    let view = ctx.game.project_view(speaker);
+    let facts = analyze_hand_facts(&view, None);
+    let user_prompt = append_memory_context(
+        build_quick_emote_reply_prompt(ctx.seats, speaker, sender, emote, &view, &facts),
+        ctx.persona_memory,
+        persona_id,
+        ctx.seats,
+    );
+    let request = BanterGenerationRequest::new(build_system_prompt(persona_id), user_prompt);
+    Some(PendingBanterJob {
+        guard: BanterGuard {
+            job_id: 0,
+            match_id: ctx.match_id,
+            seat: speaker,
+            seat_generation: ctx.seat_generation[speaker.index()],
             persona_id,
-            ctx.seats,
-        );
-        let request = BanterGenerationRequest::new(build_system_prompt(persona_id), user_prompt);
-        jobs.push(PendingBanterJob {
-            guard: BanterGuard {
-                match_id: ctx.match_id,
-                seat: speaker,
-                seat_generation: ctx.seat_generation[speaker.index()],
-                persona_id,
-                event_seq: seq,
-                hand_generation: ctx.hand_generation,
-                max_seq_drift: Some(8),
-                allow_finished_phase: false,
-                reply_to_seat: Some(sender),
-                require_nudge_enabled: false,
-            },
-            request,
-            sync_cap: None,
-            dispatch_delay: None,
-            chain: None,
-        });
-    }
-    jobs
+            event_seq: seq,
+            hand_generation: ctx.hand_generation,
+            max_seq_drift: Some(STRONG_RECENCY_MAX_SEQ_DRIFT),
+            allow_finished_phase: false,
+            reply_to_seat: Some(sender),
+            target_seat_generation: None,
+            require_nudge_enabled: false,
+        },
+        request,
+        dispatch_delay: None,
+        chain: Some(BanterChainContext {
+            trigger: BanterChainTrigger::QuickEmote { sender, emote },
+            hands_revealed: false,
+            replies_emitted: 0,
+            max_replies: MAX_BANTER_CHAIN_REPLIES,
+            spoken_seats: vec![speaker],
+            history: Vec::new(),
+        }),
+    })
 }
 
-/// Plans one playful asynchronous AI nudge banter line when a human thinks past the threshold.
+/// Plans 1 playful asynchronous autonomous nudge check-in for an idle AI when a human thinks past threshold.
 pub(crate) fn plan_slow_think_nudge(
     ctx: &BanterPlanContext<'_>,
     target_seat: Seat,
     random_pick: u64,
 ) -> Option<PendingBanterJob> {
-    let ai_seats = ai_persona_seats(ctx.seats);
-    let (speaker, persona_id) = pick_deterministic_ai(&ai_seats, random_pick)?;
+    let idle_ai = idle_ai_persona_seats(ctx.seats, &ctx.in_flight_seats);
+    let (speaker, persona_id) = pick_deterministic_ai(&idle_ai, random_pick)?;
     let seq = ctx.game.seq();
     let view = ctx.game.project_view(speaker);
     let facts = analyze_hand_facts(&view, None);
@@ -1225,135 +1128,110 @@ pub(crate) fn plan_slow_think_nudge(
     let request = BanterGenerationRequest::new(build_system_prompt(persona_id), user_prompt);
     Some(PendingBanterJob {
         guard: BanterGuard {
+            job_id: 0,
             match_id: ctx.match_id,
             seat: speaker,
             seat_generation: ctx.seat_generation[speaker.index()],
             persona_id,
             event_seq: seq,
             hand_generation: ctx.hand_generation,
-            max_seq_drift: Some(0),
+            max_seq_drift: Some(STRONG_RECENCY_MAX_SEQ_DRIFT),
             allow_finished_phase: false,
             reply_to_seat: Some(target_seat),
+            target_seat_generation: Some((target_seat, ctx.seat_generation[target_seat.index()])),
             require_nudge_enabled: true,
         },
         request,
-        sync_cap: None,
         dispatch_delay: None,
-        chain: None,
+        chain: Some(BanterChainContext {
+            trigger: BanterChainTrigger::SlowThinkNudge { target_seat },
+            hands_revealed: false,
+            replies_emitted: 0,
+            max_replies: MAX_BANTER_CHAIN_REPLIES,
+            spoken_seats: vec![speaker],
+            history: Vec::new(),
+        }),
     })
 }
 
-/// Plans banter jobs for an emitted event batch (highlights + mid-hand inflection sampling),
-/// updating `seat_hand_facts` along the way and returning `(sync_jobs, async_jobs)`.
+/// Plans at most 1 non-blocking autonomous banter check-in for an emitted event batch,
+/// updating `seat_hand_facts` cleanly along the way:
+/// - `HandStarted`: resets `seat_hand_facts` (no forced opening banter).
+/// - `HandSettled`: wakes 1 most relevant idle AI (`max_seq_drift: None`, `allow_finished_phase: true`).
+/// - Human `MeldDeclared` (`Pon`/`ExposedKong`/`AddedKong`/`ConcealedKong`): wakes 1 most relevant idle AI
+///   (`max_seq_drift: Some(STRONG_RECENCY_MAX_SEQ_DRIFT)`).
+/// - AI `MeldDeclared`: updates `seat_hand_facts[actor]` without waking banter (the AI checks in after its own discard).
+/// - AI `TileDiscarded`: updates `seat_hand_facts[actor]` and wakes that AI if idle (`max_seq_drift: None`).
+/// - `TileDrawn`, human `TileDiscarded`, etc.: never wake banter.
 pub(crate) fn plan_banter_for_events(
     ctx: &BanterPlanContext<'_>,
     emitted: &[RecordedEvent],
     seat_hand_facts: &mut [Option<HandFacts>; 4],
-) -> (Vec<PendingBanterJob>, Vec<PendingBanterJob>) {
-    let ai_seats = ai_persona_seats(ctx.seats);
-    if ai_seats.is_empty() || emitted.is_empty() {
-        return (Vec::new(), Vec::new());
+) -> Option<PendingBanterJob> {
+    if emitted.is_empty() {
+        return None;
     }
 
-    let mut sync_jobs = Vec::new();
-    let mut async_jobs = Vec::new();
-
-    // 1. HandSettled (including RobKongHu / Tsumo / Ron / DrawGame) — bounded short sync + 2-round chain.
-    let mut saw_settlement = false;
-    for event in emitted {
-        let projected = ctx.game.project_event(event, Seat::East);
-        if let PlayerEventKind::HandSettled { settlement } = projected.kind {
-            saw_settlement = true;
-            if let Some((seat, persona_id)) =
-                pick_settlement_speaker(ctx.seats, &ai_seats, &settlement, event.seq())
-            {
-                let user_prompt = append_memory_context(
-                    build_hand_settled_prompt(ctx.seats, seat, &settlement),
-                    ctx.persona_memory,
-                    persona_id,
-                    ctx.seats,
-                );
-                let request =
-                    BanterGenerationRequest::new(build_system_prompt(persona_id), user_prompt);
-                sync_jobs.push(PendingBanterJob {
-                    guard: BanterGuard {
-                        match_id: ctx.match_id,
-                        seat,
-                        seat_generation: ctx.seat_generation[seat.index()],
-                        persona_id,
-                        event_seq: event.seq(),
-                        hand_generation: ctx.hand_generation,
-                        max_seq_drift: None,
-                        allow_finished_phase: true,
-                        reply_to_seat: None,
-                        require_nudge_enabled: false,
-                    },
-                    request,
-                    sync_cap: Some(ctx.sync_cap),
-                    dispatch_delay: None,
-                    chain: Some(BanterChainContext {
-                        trigger: BanterChainTrigger::HandSettled(Box::new(settlement)),
-                        hands_revealed: true,
-                        replies_emitted: 0,
-                        max_replies: MAX_BANTER_CHAIN_REPLIES,
-                        spoken_seats: vec![seat],
-                    }),
-                });
-            }
-        }
-    }
-
-    // 2. HandStarted (e.g. next hand started after confirm) — reset per-seat HandFacts + opening banter.
+    // 1. HandStarted: reset per-seat HandFacts without forcing opening banter.
     for event in emitted {
         let projected = ctx.game.project_event(event, Seat::East);
         if matches!(projected.kind, PlayerEventKind::HandStarted { .. }) {
             *seat_hand_facts = initialize_seat_hand_facts(ctx.game, ctx.seats);
-            if let Some((seat, persona_id)) = pick_deterministic_ai(
-                &ai_seats,
-                ctx.match_id
-                    .wrapping_mul(31)
-                    .wrapping_add(ctx.hand_generation)
-                    .wrapping_add(event.seq()),
-            ) {
-                let view = ctx.game.project_view(seat);
-                let facts = seat_hand_facts[seat.index()]
-                    .clone()
-                    .unwrap_or_else(|| analyze_hand_facts(&view, None));
-                let user_prompt = append_memory_context(
-                    build_hand_started_prompt(ctx.seats, seat, &view, &facts),
-                    ctx.persona_memory,
-                    persona_id,
-                    ctx.seats,
-                );
-                let request =
-                    BanterGenerationRequest::new(build_system_prompt(persona_id), user_prompt);
-                async_jobs.push(PendingBanterJob {
-                    guard: BanterGuard {
-                        match_id: ctx.match_id,
-                        seat,
-                        seat_generation: ctx.seat_generation[seat.index()],
-                        persona_id,
-                        event_seq: event.seq(),
-                        hand_generation: ctx.hand_generation,
-                        max_seq_drift: Some(6),
-                        allow_finished_phase: false,
-                        reply_to_seat: None,
-                        require_nudge_enabled: false,
-                    },
-                    request,
-                    sync_cap: None,
-                    dispatch_delay: None,
-                    chain: None,
-                });
-            }
+            return None;
         }
     }
 
-    if saw_settlement || !async_jobs.is_empty() {
-        return (sync_jobs, async_jobs);
+    let idle_ai = idle_ai_persona_seats(ctx.seats, &ctx.in_flight_seats);
+
+    // 2. HandSettled (Tsumo / Ron / RobKongHu / DrawGame): non-blocking async wake-up of 1 idle AI.
+    for event in emitted {
+        let projected = ctx.game.project_event(event, Seat::East);
+        if let PlayerEventKind::HandSettled { settlement } = projected.kind {
+            let (seat, persona_id) = pick_settlement_speaker(
+                ctx.seats,
+                &ctx.in_flight_seats,
+                &idle_ai,
+                &settlement,
+                event.seq(),
+            )?;
+            let user_prompt = append_memory_context(
+                build_hand_settled_prompt(ctx.seats, seat, &settlement),
+                ctx.persona_memory,
+                persona_id,
+                ctx.seats,
+            );
+            let request =
+                BanterGenerationRequest::new(build_system_prompt(persona_id), user_prompt);
+            return Some(PendingBanterJob {
+                guard: BanterGuard {
+                    job_id: 0,
+                    match_id: ctx.match_id,
+                    seat,
+                    seat_generation: ctx.seat_generation[seat.index()],
+                    persona_id,
+                    event_seq: event.seq(),
+                    hand_generation: ctx.hand_generation,
+                    max_seq_drift: None,
+                    allow_finished_phase: true,
+                    reply_to_seat: None,
+                    target_seat_generation: None,
+                    require_nudge_enabled: false,
+                },
+                request,
+                dispatch_delay: None,
+                chain: Some(BanterChainContext {
+                    trigger: BanterChainTrigger::HandSettled(Box::new(settlement)),
+                    hands_revealed: true,
+                    replies_emitted: 0,
+                    max_replies: MAX_BANTER_CHAIN_REPLIES,
+                    spoken_seats: vec![seat],
+                    history: Vec::new(),
+                }),
+            });
+        }
     }
 
-    // 3. MeldDeclared (`Pon` / `ExposedKong` / `AddedKong` / `ConcealedKong`) — bounded short sync + 1–2 round chain.
+    // 3. MeldDeclared: update AI's own facts silently; wake 1 relevant idle AI ONLY for human melds/kongs.
     for event in emitted {
         let projected = ctx.game.project_event(event, Seat::East);
         if let PlayerEventKind::MeldDeclared {
@@ -1365,406 +1243,133 @@ pub(crate) fn plan_banter_for_events(
                 let updated =
                     analyze_hand_facts(&actor_view, seat_hand_facts[actor.index()].as_ref());
                 seat_hand_facts[actor.index()] = Some(updated);
+                continue;
             }
-            if let Some((speaker, persona_id)) =
-                pick_meld_speaker(ctx.seats, &ai_seats, actor, &meld, event.seq())
-            {
-                // Project strictly for the speaking seat so opponent ConcealedKong tiles stay hidden.
-                let speaker_event = ctx.game.project_event(event, speaker);
-                let speaker_meld = match speaker_event.kind {
-                    PlayerEventKind::MeldDeclared { meld, .. } => meld,
-                    _ => meld,
-                };
-                let view = ctx.game.project_view(speaker);
-                let facts = if speaker == actor {
-                    seat_hand_facts[speaker.index()]
-                        .clone()
-                        .unwrap_or_else(|| analyze_hand_facts(&view, None))
-                } else {
-                    analyze_hand_facts(&view, seat_hand_facts[speaker.index()].as_ref())
-                };
-                let user_prompt = append_memory_context(
-                    build_meld_declared_prompt(
-                        ctx.seats,
-                        speaker,
+            if ctx.seats[actor.index()].kind != SeatKind::Human {
+                continue;
+            }
+            let (speaker, persona_id) = pick_human_meld_speaker(
+                ctx.seats,
+                &ctx.in_flight_seats,
+                &idle_ai,
+                &meld,
+                event.seq(),
+            )?;
+            // Project strictly for the speaking seat so opponent ConcealedKong tiles stay hidden.
+            let speaker_event = ctx.game.project_event(event, speaker);
+            let speaker_meld = match speaker_event.kind {
+                PlayerEventKind::MeldDeclared { meld, .. } => meld,
+                _ => meld,
+            };
+            let view = ctx.game.project_view(speaker);
+            let facts = analyze_hand_facts(&view, seat_hand_facts[speaker.index()].as_ref());
+            let user_prompt = append_memory_context(
+                build_meld_declared_prompt(ctx.seats, speaker, actor, &speaker_meld, &view, &facts),
+                ctx.persona_memory,
+                persona_id,
+                ctx.seats,
+            );
+            let request =
+                BanterGenerationRequest::new(build_system_prompt(persona_id), user_prompt);
+            // Privacy-sanitized meld for follow-up AI speakers (never exposes ConcealedKong tile!).
+            let public_meld = match speaker_meld {
+                MeldView::ConcealedKong { seq, .. } => MeldView::ConcealedKong { tile: None, seq },
+                other => other,
+            };
+            return Some(PendingBanterJob {
+                guard: BanterGuard {
+                    job_id: 0,
+                    match_id: ctx.match_id,
+                    seat: speaker,
+                    seat_generation: ctx.seat_generation[speaker.index()],
+                    persona_id,
+                    event_seq: event.seq(),
+                    hand_generation: ctx.hand_generation,
+                    max_seq_drift: Some(STRONG_RECENCY_MAX_SEQ_DRIFT),
+                    allow_finished_phase: false,
+                    reply_to_seat: None,
+                    target_seat_generation: None,
+                    require_nudge_enabled: false,
+                },
+                request,
+                dispatch_delay: None,
+                chain: Some(BanterChainContext {
+                    trigger: BanterChainTrigger::MeldDeclared {
                         actor,
-                        &speaker_meld,
-                        &view,
-                        &facts,
-                    ),
-                    ctx.persona_memory,
-                    persona_id,
-                    ctx.seats,
-                );
-                let request =
-                    BanterGenerationRequest::new(build_system_prompt(persona_id), user_prompt);
-                // Privacy-sanitized meld for follow-up AI speakers (never exposes ConcealedKong tile!).
-                let public_meld = match speaker_meld {
-                    MeldView::ConcealedKong { seq, .. } => {
-                        MeldView::ConcealedKong { tile: None, seq }
-                    }
-                    other => other,
-                };
-                let max_replies = match public_meld {
-                    MeldView::ExposedKong { .. }
-                    | MeldView::AddedKong { .. }
-                    | MeldView::ConcealedKong { .. } => MAX_BANTER_CHAIN_REPLIES,
-                    MeldView::Pon { .. } | MeldView::Chi { .. } => 1,
-                };
-                sync_jobs.push(PendingBanterJob {
-                    guard: BanterGuard {
-                        match_id: ctx.match_id,
-                        seat: speaker,
-                        seat_generation: ctx.seat_generation[speaker.index()],
-                        persona_id,
-                        event_seq: event.seq(),
-                        hand_generation: ctx.hand_generation,
-                        max_seq_drift: Some(8),
-                        allow_finished_phase: false,
-                        reply_to_seat: None,
-                        require_nudge_enabled: false,
+                        meld: public_meld,
+                        wall_remaining: view.wall_remaining,
                     },
-                    request,
-                    sync_cap: Some(ctx.sync_cap),
-                    dispatch_delay: None,
-                    chain: Some(BanterChainContext {
-                        trigger: BanterChainTrigger::MeldDeclared {
-                            actor,
-                            meld: public_meld,
-                            wall_remaining: view.wall_remaining,
-                        },
-                        hands_revealed: false,
-                        replies_emitted: 0,
-                        max_replies,
-                        spoken_seats: vec![speaker],
-                    }),
-                });
-                return (sync_jobs, async_jobs);
-            }
-        }
-    }
-
-    // 4. AddedKongAttempted (potential RobKongHu window) — non-blocking async banter.
-    for event in emitted {
-        let projected = ctx.game.project_event(event, Seat::East);
-        if let PlayerEventKind::AddedKongAttempted { seat: actor, tile } = projected.kind {
-            if let Some((speaker, persona_id)) =
-                pick_added_kong_speaker(ctx.game, ctx.seats, &ai_seats, actor, event.seq())
-            {
-                let view = ctx.game.project_view(speaker);
-                let facts = analyze_hand_facts(&view, seat_hand_facts[speaker.index()].as_ref());
-                let user_prompt = append_memory_context(
-                    build_added_kong_attempted_prompt(
-                        ctx.seats, speaker, actor, tile, &view, &facts,
-                    ),
-                    ctx.persona_memory,
-                    persona_id,
-                    ctx.seats,
-                );
-                let request =
-                    BanterGenerationRequest::new(build_system_prompt(persona_id), user_prompt);
-                async_jobs.push(PendingBanterJob {
-                    guard: BanterGuard {
-                        match_id: ctx.match_id,
-                        seat: speaker,
-                        seat_generation: ctx.seat_generation[speaker.index()],
-                        persona_id,
-                        event_seq: event.seq(),
-                        hand_generation: ctx.hand_generation,
-                        max_seq_drift: Some(4),
-                        allow_finished_phase: false,
-                        reply_to_seat: None,
-                        require_nudge_enabled: false,
-                    },
-                    request,
-                    sync_cap: None,
-                    dispatch_delay: None,
-                    chain: None,
-                });
-                return (sync_jobs, async_jobs);
-            }
-        }
-    }
-
-    // 5. Mid-hand draw/discard inflection sampling (non-blocking, strictly per-seat cooldown gated).
-    if let Some(job) = plan_mid_hand_inflection_banter(ctx, emitted, &ai_seats, seat_hand_facts) {
-        async_jobs.push(job);
-    }
-
-    (sync_jobs, async_jobs)
-}
-
-struct InflectionCandidate {
-    seat: Seat,
-    persona_id: PersonaId,
-    inflection: MidHandInflection,
-    event_seq: u64,
-    trigger_desc: String,
-    view: PlayerView,
-    facts: HandFacts,
-}
-
-fn plan_mid_hand_inflection_banter(
-    ctx: &BanterPlanContext<'_>,
-    emitted: &[RecordedEvent],
-    ai_seats: &[(Seat, PersonaId)],
-    seat_hand_facts: &mut [Option<HandFacts>; 4],
-) -> Option<PendingBanterJob> {
-    let mut best: Option<InflectionCandidate> = None;
-
-    for event in emitted {
-        let projected = ctx.game.project_event(event, Seat::East);
-        match projected.kind {
-            PlayerEventKind::TileDiscarded { seat, tile, .. } => {
-                if let Some((speaker, persona_id)) = find_ai_persona(ctx.seats, seat) {
-                    let view = ctx.game.project_view(speaker);
-                    let facts =
-                        analyze_hand_facts(&view, seat_hand_facts[speaker.index()].as_ref());
-                    // Commit one clean post-discard turn snapshot per seat.
-                    seat_hand_facts[speaker.index()] = Some(facts.clone());
-
-                    if is_seat_off_cooldown(ctx.seat_last_banter_at, speaker, ctx.now, ctx.cooldown)
-                    {
-                        if let Some(inflection) =
-                            detect_seat_inflection(ctx, speaker, &view, &facts, event.seq())
-                        {
-                            let cand = InflectionCandidate {
-                                seat: speaker,
-                                persona_id,
-                                inflection,
-                                event_seq: event.seq(),
-                                trigger_desc: format!("你刚刚舍出 {}", format_tile_zh(tile)),
-                                view,
-                                facts,
-                            };
-                            if best.as_ref().is_none_or(|b| {
-                                cand.inflection.priority() > b.inflection.priority()
-                            }) {
-                                best = Some(cand);
-                            }
-                        }
-                    }
-                } else {
-                    // Human discarded — check if any off-cooldown AI notices heavy opponent melds or endgame.
-                    consider_table_inflection_from_event(
-                        ctx,
-                        ai_seats,
-                        seat_hand_facts,
-                        event.seq(),
-                        seat,
-                        tile,
-                        &mut best,
-                    );
-                }
-            }
-            PlayerEventKind::TileDrawn { seat, .. } => {
-                if let Some((speaker, persona_id)) = find_ai_persona(ctx.seats, seat) {
-                    let view = ctx.game.project_view(speaker);
-                    // Preview against last completed turn snapshot without double-incrementing streak.
-                    let facts =
-                        analyze_hand_facts(&view, seat_hand_facts[speaker.index()].as_ref());
-                    if is_seat_off_cooldown(ctx.seat_last_banter_at, speaker, ctx.now, ctx.cooldown)
-                    {
-                        if let Some(inflection) =
-                            detect_seat_inflection(ctx, speaker, &view, &facts, event.seq())
-                        {
-                            let drawn_desc = view.hand.drawn_tile.map_or_else(
-                                || "你刚刚摸了一张牌".to_string(),
-                                |t| format!("你刚刚摸到 {}", format_tile_zh(t)),
-                            );
-                            let cand = InflectionCandidate {
-                                seat: speaker,
-                                persona_id,
-                                inflection,
-                                event_seq: event.seq(),
-                                trigger_desc: drawn_desc,
-                                view,
-                                facts,
-                            };
-                            if best.as_ref().is_none_or(|b| {
-                                cand.inflection.priority() > b.inflection.priority()
-                            }) {
-                                best = Some(cand);
-                            }
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    let chosen = best?;
-    let user_prompt = append_memory_context(
-        build_mid_hand_inflection_prompt(
-            ctx.seats,
-            chosen.seat,
-            chosen.inflection,
-            &chosen.trigger_desc,
-            &chosen.view,
-            &chosen.facts,
-        ),
-        ctx.persona_memory,
-        chosen.persona_id,
-        ctx.seats,
-    );
-    let request = BanterGenerationRequest::new(build_system_prompt(chosen.persona_id), user_prompt);
-    Some(PendingBanterJob {
-        guard: BanterGuard {
-            match_id: ctx.match_id,
-            seat: chosen.seat,
-            seat_generation: ctx.seat_generation[chosen.seat.index()],
-            persona_id: chosen.persona_id,
-            event_seq: chosen.event_seq,
-            hand_generation: ctx.hand_generation,
-            max_seq_drift: Some(4),
-            allow_finished_phase: false,
-            reply_to_seat: None,
-            require_nudge_enabled: false,
-        },
-        request,
-        sync_cap: None,
-        dispatch_delay: None,
-        chain: None,
-    })
-}
-
-fn consider_table_inflection_from_event(
-    ctx: &BanterPlanContext<'_>,
-    ai_seats: &[(Seat, PersonaId)],
-    seat_hand_facts: &[Option<HandFacts>; 4],
-    event_seq: u64,
-    discarder: Seat,
-    discarded_tile: Tile,
-    best: &mut Option<InflectionCandidate>,
-) {
-    let eligible: Vec<(Seat, PersonaId)> = ai_seats
-        .iter()
-        .copied()
-        .filter(|&(seat, _)| {
-            is_seat_off_cooldown(ctx.seat_last_banter_at, seat, ctx.now, ctx.cooldown)
-        })
-        .collect();
-    let Some((speaker, persona_id)) = pick_deterministic_ai(
-        &eligible,
-        ctx.match_id
-            .wrapping_mul(17)
-            .wrapping_add(ctx.hand_generation)
-            .wrapping_add(event_seq),
-    ) else {
-        return;
-    };
-    let view = ctx.game.project_view(speaker);
-    let Some(inflection) = detect_table_only_inflection(ctx, speaker, &view, event_seq) else {
-        return;
-    };
-    if best
-        .as_ref()
-        .is_some_and(|b| b.inflection.priority() >= inflection.priority())
-    {
-        return;
-    }
-    let facts = seat_hand_facts[speaker.index()]
-        .clone()
-        .unwrap_or_else(|| analyze_hand_facts(&view, None));
-    let trigger_desc = format!(
-        "{}刚刚舍出 {}",
-        seat_label(ctx.seats, speaker, discarder),
-        format_tile_zh(discarded_tile)
-    );
-    *best = Some(InflectionCandidate {
-        seat: speaker,
-        persona_id,
-        inflection,
-        event_seq,
-        trigger_desc,
-        view,
-        facts,
-    });
-}
-
-fn sampling_hash(match_id: u64, hand_generation: u64, event_seq: u64, seat: Seat) -> u64 {
-    let mut z = match_id
-        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
-        .wrapping_add(hand_generation.wrapping_mul(0xBF58_476D_1CE4_E5B9))
-        .wrapping_add(event_seq.wrapping_mul(0x94D0_49BB_1331_11EB))
-        .wrapping_add(seat.index() as u64);
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^ (z >> 31)
-}
-
-fn detect_seat_inflection(
-    ctx: &BanterPlanContext<'_>,
-    speaker: Seat,
-    view: &PlayerView,
-    facts: &HandFacts,
-    event_seq: u64,
-) -> Option<MidHandInflection> {
-    if facts.progression == HandProgression::EnteredTenpai {
-        return Some(MidHandInflection::EnteredTenpai);
-    }
-
-    if facts.shanten <= 1 && facts.progression == HandProgression::Improved {
-        if let Some(&dir) = facts.potential_directions.iter().find(|d| {
-            matches!(
-                d,
-                HandDirection::ThirteenOrphans
-                    | HandDirection::AllHonors
-                    | HandDirection::FullFlush
-                    | HandDirection::LuxurySevenPairs
-            )
-        }) {
-            return Some(MidHandInflection::BigHandBuilding { direction: dir });
-        }
-    }
-
-    if facts.stalled_streak >= STALLED_STREAK_TRIGGER {
-        return Some(MidHandInflection::ConsecutiveStalledDraws {
-            streak: facts.stalled_streak,
-        });
-    }
-
-    detect_table_only_inflection(ctx, speaker, view, event_seq)
-}
-
-fn detect_table_only_inflection(
-    ctx: &BanterPlanContext<'_>,
-    speaker: Seat,
-    view: &PlayerView,
-    event_seq: u64,
-) -> Option<MidHandInflection> {
-    let roll = sampling_hash(ctx.match_id, ctx.hand_generation, event_seq, speaker) % 100;
-
-    if let Some((target_seat, meld_count)) = Seat::ALL
-        .into_iter()
-        .filter(|&s| s != speaker)
-        .map(|s| (s, view.seats[s.index()].melds.len()))
-        .filter(|&(_, count)| count >= HEAVY_OPPONENT_MELD_THRESHOLD)
-        .max_by_key(|&(_, count)| count)
-    {
-        // Deterministic ~50% sampling (always fires on >= 3 melds).
-        if meld_count >= 3 || roll < 50 {
-            return Some(MidHandInflection::OpponentHeavyMelds {
-                target_seat,
-                meld_count,
+                    hands_revealed: false,
+                    replies_emitted: 0,
+                    max_replies: MAX_BANTER_CHAIN_REPLIES,
+                    spoken_seats: vec![speaker],
+                    history: Vec::new(),
+                }),
             });
         }
     }
 
-    if view.wall_remaining <= ENDGAME_WALL_THRESHOLD
-        && (view.wall_remaining == ENDGAME_WALL_THRESHOLD || view.wall_remaining <= 8 || roll < 45)
-    {
-        return Some(MidHandInflection::EndgameLowWall {
-            wall_remaining: view.wall_remaining,
-        });
+    // 4. Routine self-check-in: 1 async check-in after an AI completes its own discard (never on draw).
+    for event in emitted {
+        let projected = ctx.game.project_event(event, Seat::East);
+        if let PlayerEventKind::TileDiscarded { seat, tile, .. } = projected.kind {
+            if let Some((speaker, persona_id)) = find_ai_persona(ctx.seats, seat) {
+                let view = ctx.game.project_view(speaker);
+                let facts = analyze_hand_facts(&view, seat_hand_facts[speaker.index()].as_ref());
+                // Always commit one clean post-discard turn snapshot per AI seat.
+                seat_hand_facts[speaker.index()] = Some(facts.clone());
+
+                if ctx.in_flight_seats[speaker.index()] {
+                    return None;
+                }
+                let user_prompt = append_memory_context(
+                    build_ai_discard_checkin_prompt(ctx.seats, speaker, tile, &view, &facts),
+                    ctx.persona_memory,
+                    persona_id,
+                    ctx.seats,
+                );
+                let request =
+                    BanterGenerationRequest::new(build_system_prompt(persona_id), user_prompt);
+                return Some(PendingBanterJob {
+                    guard: BanterGuard {
+                        job_id: 0,
+                        match_id: ctx.match_id,
+                        seat: speaker,
+                        seat_generation: ctx.seat_generation[speaker.index()],
+                        persona_id,
+                        event_seq: event.seq(),
+                        hand_generation: ctx.hand_generation,
+                        max_seq_drift: None,
+                        allow_finished_phase: false,
+                        reply_to_seat: None,
+                        target_seat_generation: None,
+                        require_nudge_enabled: false,
+                    },
+                    request,
+                    dispatch_delay: None,
+                    chain: Some(BanterChainContext {
+                        trigger: BanterChainTrigger::AiDiscard {
+                            actor: speaker,
+                            tile,
+                            wall_remaining: view.wall_remaining,
+                        },
+                        hands_revealed: false,
+                        replies_emitted: 0,
+                        max_replies: MAX_BANTER_CHAIN_REPLIES,
+                        spoken_seats: vec![speaker],
+                        history: Vec::new(),
+                    }),
+                });
+            }
+        }
     }
 
     None
 }
 
-/// Plans the next AI-to-AI follow-up reply in a highlight banter chain, strictly capped at `1..=2`
-/// follow-up replies and respecting per-seat cooldowns and privacy boundaries.
+/// Plans the next serial autonomous AI-to-AI follow-up check-in after a committed `TableBanter`,
+/// strictly capped at `MAX_BANTER_CHAIN_REPLIES` (2) follow-up rounds, selecting only from idle AI seats
+/// that have not yet spoken in this interaction chain.
 pub(crate) fn plan_chain_followup(
     ctx: &BanterPlanContext<'_>,
     prev: &ChainPrevLine<'_>,
@@ -1777,20 +1382,17 @@ pub(crate) fn plan_chain_followup(
         return None;
     }
 
-    let eligible: Vec<(Seat, PersonaId)> = ai_persona_seats(ctx.seats)
+    let eligible: Vec<(Seat, PersonaId)> = idle_ai_persona_seats(ctx.seats, &ctx.in_flight_seats)
         .into_iter()
-        .filter(|&(seat, _)| {
-            seat != prev.guard.seat
-                && !chain.spoken_seats.contains(&seat)
-                && is_seat_off_cooldown(ctx.seat_last_banter_at, seat, ctx.now, ctx.cooldown)
-        })
+        .filter(|&(seat, _)| seat != prev.guard.seat && !chain.spoken_seats.contains(&seat))
         .collect();
 
+    let current_seq = ctx.game.seq();
     let (next_seat, next_persona) = pick_deterministic_ai(
         &eligible,
         ctx.match_id
             .wrapping_mul(37)
-            .wrapping_add(prev.guard.event_seq)
+            .wrapping_add(current_seq)
             .wrapping_add(u64::from(chain.replies_emitted)),
     )?;
 
@@ -1806,8 +1408,15 @@ pub(crate) fn plan_chain_followup(
         _ => None,
     };
 
+    let mut next_history = chain.history.clone();
+    next_history.push(ChainUtterance {
+        seat: prev.guard.seat,
+        mood: prev.mood,
+        text: prev.text.to_string(),
+    });
+
     let prompt = append_memory_context(
-        build_chain_reply_prompt(ctx.seats, next_seat, prev, &chain, own_ctx),
+        build_chain_reply_prompt(ctx.seats, next_seat, &next_history, &chain, own_ctx),
         ctx.persona_memory,
         next_persona,
         ctx.seats,
@@ -1818,19 +1427,24 @@ pub(crate) fn plan_chain_followup(
 
     Some(PendingBanterJob {
         guard: BanterGuard {
+            job_id: 0,
             match_id: prev.guard.match_id,
             seat: next_seat,
             seat_generation: ctx.seat_generation[next_seat.index()],
             persona_id: next_persona,
-            event_seq: prev.guard.event_seq,
+            event_seq: current_seq,
             hand_generation: prev.guard.hand_generation,
-            max_seq_drift: if chain.hands_revealed { None } else { Some(6) },
+            max_seq_drift: if chain.hands_revealed {
+                None
+            } else {
+                Some(STRONG_RECENCY_MAX_SEQ_DRIFT)
+            },
             allow_finished_phase: chain.hands_revealed,
             reply_to_seat: Some(prev.guard.seat),
-            require_nudge_enabled: false,
+            target_seat_generation: prev.guard.target_seat_generation,
+            require_nudge_enabled: prev.guard.require_nudge_enabled,
         },
         request: BanterGenerationRequest::new(build_system_prompt(next_persona), prompt),
-        sync_cap: None,
         dispatch_delay: Some(reply_delay),
         chain: Some(BanterChainContext {
             trigger: chain.trigger,
@@ -1838,22 +1452,19 @@ pub(crate) fn plan_chain_followup(
             replies_emitted: chain.replies_emitted + 1,
             max_replies: hard_cap,
             spoken_seats: next_spoken,
+            history: next_history,
         }),
     })
 }
 
-fn pick_meld_speaker(
+fn pick_human_meld_speaker(
     seats: &[SeatInfo; 4],
-    ai_seats: &[(Seat, PersonaId)],
-    actor: Seat,
+    in_flight_seats: &[bool; 4],
+    idle_ai: &[(Seat, PersonaId)],
     meld: &MeldView,
     event_seq: u64,
 ) -> Option<(Seat, PersonaId)> {
-    // Prefer the melding AI itself so it gloats/roasts on its own Pon/Kong.
-    if let Some(found) = find_ai_persona(seats, actor) {
-        return Some(found);
-    }
-    // If a human melded off an AI's discard, let that AI victim react.
+    // Prefer the idle AI victim whose discard was claimed by the human's Pon/ExposedKong/Chi.
     let from_seat = match meld {
         MeldView::Pon { from_seat, .. }
         | MeldView::ExposedKong { from_seat, .. }
@@ -1861,40 +1472,17 @@ fn pick_meld_speaker(
         MeldView::AddedKong { .. } | MeldView::ConcealedKong { .. } => None,
     };
     if let Some(victim) = from_seat {
-        if let Some(found) = find_ai_persona(seats, victim) {
+        if let Some(found) = find_idle_ai_persona(seats, in_flight_seats, victim) {
             return Some(found);
         }
     }
-    pick_deterministic_ai(ai_seats, event_seq)
-}
-
-fn pick_added_kong_speaker(
-    game: &ActiveMatch,
-    seats: &[SeatInfo; 4],
-    ai_seats: &[(Seat, PersonaId)],
-    actor: Seat,
-    event_seq: u64,
-) -> Option<(Seat, PersonaId)> {
-    // Prefer an AI seat that can RobKongHu right now.
-    for &(seat, pid) in ai_seats {
-        if game
-            .project_view(seat)
-            .legal_actions
-            .iter()
-            .any(|a| matches!(a, PlayerAction::RobKongHu { .. }))
-        {
-            return Some((seat, pid));
-        }
-    }
-    if let Some(found) = find_ai_persona(seats, actor) {
-        return Some(found);
-    }
-    pick_deterministic_ai(ai_seats, event_seq)
+    pick_deterministic_ai(idle_ai, event_seq)
 }
 
 fn pick_settlement_speaker(
     seats: &[SeatInfo; 4],
-    ai_seats: &[(Seat, PersonaId)],
+    in_flight_seats: &[bool; 4],
+    idle_ai: &[(Seat, PersonaId)],
     settlement: &HandSettlement,
     event_seq: u64,
 ) -> Option<(Seat, PersonaId)> {
@@ -1902,22 +1490,24 @@ fn pick_settlement_speaker(
         winners, discarder, ..
     } = &settlement.outcome
     {
-        // 1. Prioritize an AI winner (especially RobKongHu / highest fan).
+        // 1. Prioritize an idle AI winner (especially RobKongHu / highest fan).
         if let Some(best_ai_winner) = winners
             .iter()
-            .filter_map(|w| find_ai_persona(seats, w.seat).map(|pair| (pair, w.total_fan)))
+            .filter_map(|w| {
+                find_idle_ai_persona(seats, in_flight_seats, w.seat).map(|pair| (pair, w.total_fan))
+            })
             .max_by_key(|&(_, fan)| fan)
         {
             return Some(best_ai_winner.0);
         }
-        // 2. Next prioritize an AI that dealt in (or got robbed of a kong).
+        // 2. Next prioritize an idle AI that dealt in (or got robbed of a kong).
         if let Some(disc) = discarder {
-            if let Some(found) = find_ai_persona(seats, *disc) {
+            if let Some(found) = find_idle_ai_persona(seats, in_flight_seats, *disc) {
                 return Some(found);
             }
         }
     }
-    pick_deterministic_ai(ai_seats, event_seq)
+    pick_deterministic_ai(idle_ai, event_seq)
 }
 
 #[cfg(test)]
@@ -1930,10 +1520,10 @@ mod tests {
     };
 
     use super::{
-        build_chain_reply_prompt, build_hand_settled_prompt, build_hand_started_prompt,
-        build_meld_declared_prompt, build_mid_hand_inflection_prompt, build_system_prompt,
-        format_hand_facts_zh, format_tile_zh, seat_label, BanterChainContext, BanterChainTrigger,
-        BanterGuard, ChainPrevLine, MidHandInflection, OwnHandContext,
+        build_ai_discard_checkin_prompt, build_chain_reply_prompt, build_hand_settled_prompt,
+        build_meld_declared_prompt, build_system_prompt, format_hand_facts_zh, format_tile_zh,
+        seat_label, BanterChainContext, BanterChainTrigger, BanterSessionState, ChainUtterance,
+        OwnHandContext,
     };
     use crate::persona::{PersonaId, PersonaMood};
     use crate::protocol::{SeatInfo, SeatKind};
@@ -2068,21 +1658,17 @@ mod tests {
         assert!(facts_str.contains("一条(余4张/1番)"));
         assert!(facts_str.contains("四条(余4张/1番)"));
 
-        let start_prompt = build_hand_started_prompt(&seats, Seat::South, &view, &facts);
-        assert!(start_prompt.contains("预计算手牌事实"));
-        assert!(start_prompt.contains("一条(余4张/1番)"));
-        assert!(start_prompt.contains("严禁臆测他家暗牌"));
-
-        let inflection_prompt = build_mid_hand_inflection_prompt(
+        let checkin_prompt = build_ai_discard_checkin_prompt(
             &seats,
             Seat::South,
-            MidHandInflection::EnteredTenpai,
-            "你刚刚舍出 东风",
+            Tile::new(27).unwrap(),
             &view,
             &facts,
         );
-        assert!(inflection_prompt.contains("刚刚进入听牌状态"));
-        assert!(inflection_prompt.contains("预计算手牌事实"));
+        assert!(checkin_prompt.contains("自家出牌巡检"));
+        assert!(checkin_prompt.contains("预计算手牌事实"));
+        assert!(checkin_prompt.contains("一条(余4张/1番)"));
+        assert!(checkin_prompt.contains("严禁臆测他家暗牌"));
 
         // Opponent ConcealedKong with tile: None must not expose any tile name.
         let hidden_kong = MeldView::ConcealedKong {
@@ -2114,29 +1700,19 @@ mod tests {
             },
             hands_revealed: false,
             replies_emitted: 0,
-            max_replies: 1,
+            max_replies: 2,
             spoken_seats: vec![Seat::South],
+            history: Vec::new(),
         };
-        let prev = ChainPrevLine {
-            guard: BanterGuard {
-                match_id: 1,
-                seat: Seat::South,
-                seat_generation: 1,
-                persona_id: PersonaId::QuickHothead,
-                event_seq: 8,
-                hand_generation: 1,
-                max_seq_drift: Some(8),
-                allow_finished_phase: false,
-                reply_to_seat: None,
-                require_nudge_enabled: false,
-            },
+        let history = vec![ChainUtterance {
+            seat: Seat::South,
             mood: PersonaMood::Smug,
-            text: "这碰下来稳赢了！",
-        };
+            text: "这碰下来稳赢了！".to_string(),
+        }];
         let reply_prompt = build_chain_reply_prompt(
             &seats,
             Seat::West,
-            &prev,
+            &history,
             &chain,
             Some(OwnHandContext {
                 view: &view,
@@ -2196,24 +1772,14 @@ mod tests {
             replies_emitted: 0,
             max_replies: 2,
             spoken_seats: vec![Seat::South],
+            history: Vec::new(),
         };
-        let prev = ChainPrevLine {
-            guard: BanterGuard {
-                match_id: 1,
-                seat: Seat::South,
-                seat_generation: 1,
-                persona_id: PersonaId::QuickHothead,
-                event_seq: 12,
-                hand_generation: 1,
-                max_seq_drift: None,
-                allow_finished_phase: true,
-                reply_to_seat: None,
-                require_nudge_enabled: false,
-            },
+        let history = vec![ChainUtterance {
+            seat: Seat::South,
             mood: PersonaMood::Smug,
-            text: "点炮舒服不？",
-        };
-        let west_reply = build_chain_reply_prompt(&seats, Seat::West, &prev, &chain, None);
+            text: "点炮舒服不？".to_string(),
+        }];
+        let west_reply = build_chain_reply_prompt(&seats, Seat::West, &history, &chain, None);
         assert!(west_reply.contains("小晚（自家）"));
         assert!(west_reply.contains("大川（上家）"));
         assert!(west_reply.contains("小王（对门）"));
@@ -2292,27 +1858,26 @@ mod tests {
     }
 
     #[test]
-    fn human_discard_table_inflection_formats_discarder_relative_to_ai_speaker() {
-        let seats = sample_seats();
-        let discarder = Seat::East; // 小王 (Human)
-        let speaker = Seat::South; // 大川 (AI)
-        let trigger_desc = format!(
-            "{}刚刚舍出 {}",
-            seat_label(&seats, speaker, discarder),
-            format_tile_zh(Tile::new(0).unwrap())
+    fn single_in_flight_slot_prevents_overlap_and_ignores_stale_job_release() {
+        let mut state = BanterSessionState::new(true);
+        let id1 = state
+            .try_claim_seat(Seat::South)
+            .expect("first claim succeeds");
+        assert!(state.in_flight_flags()[Seat::South.index()]);
+        assert_eq!(state.try_claim_seat(Seat::South), None);
+
+        // Clearing seat (e.g. next hand) lets a new job claim the slot; stale id1 release must not clear id2.
+        state.clear_all_in_flight();
+        let id2 = state
+            .try_claim_seat(Seat::South)
+            .expect("new claim after hand transition succeeds");
+        assert_ne!(id1, id2);
+        state.release_seat(Seat::South, id1);
+        assert!(
+            state.in_flight_flags()[Seat::South.index()],
+            "stale release must never clear newer in-flight slot"
         );
-        let view = dummy_view(speaker, vec![Tile::new(0).unwrap(); 13], None);
-        let facts = analyze_hand_facts(&view, None);
-        let prompt = build_mid_hand_inflection_prompt(
-            &seats,
-            speaker,
-            MidHandInflection::EndgameLowWall { wall_remaining: 8 },
-            &trigger_desc,
-            &view,
-            &facts,
-        );
-        assert!(prompt.contains("小王（上家）刚刚舍出 一万"));
-        assert!(!prompt.contains("小王（自家）"));
-        assert!(!prompt.contains("（自己）"));
+        state.release_seat(Seat::South, id2);
+        assert!(!state.in_flight_flags()[Seat::South.index()]);
     }
 }

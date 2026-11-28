@@ -108,6 +108,7 @@ impl TableSession {
     pub(crate) fn bump_seat_generation(&mut self, seat: Seat) -> u64 {
         let idx = seat.index();
         self.seat_generation[idx] += 1;
+        self.banter.clear_in_flight_seat(seat);
         self.tts.clear_pending_slot_for_seat(seat);
         self.seat_generation[idx]
     }
