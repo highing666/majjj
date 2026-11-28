@@ -27,6 +27,8 @@ param(
     [double]$VramFraction = 0.30,
     [ValidateRange(16, 120)]
     [int]$MaxNewTokens = 120,
+    [ValidateRange(1, 120)]
+    [int]$StreamChunkSize = 6,
     [switch]$Uninstall
 )
 
@@ -76,7 +78,8 @@ $ArgParts = @(
     '-BindHost', $BindHost,
     '-Port', [string]$Port,
     '-VramFraction', $VramFractionInvariant,
-    '-MaxNewTokens', [string]$MaxNewTokens
+    '-MaxNewTokens', [string]$MaxNewTokens,
+    '-StreamChunkSize', [string]$StreamChunkSize
 )
 if (-not [string]::IsNullOrWhiteSpace($ModelPath)) {
     $ArgParts += @('-ModelPath', "`"$ModelPath`"")

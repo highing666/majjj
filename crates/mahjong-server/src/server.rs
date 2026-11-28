@@ -5,10 +5,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::body::Bytes;
+use axum::body::{Body, Bytes};
 use axum::extract::ws::{Message as WsMessage, WebSocket};
 use axum::extract::{ConnectInfo, FromRef, Path, Request, State, WebSocketUpgrade};
-use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, RETRY_AFTER, SET_COOKIE};
+use axum::http::header::{HeaderName, CACHE_CONTROL, CONTENT_TYPE, RETRY_AFTER, SET_COOKIE};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -21,7 +21,7 @@ use tokio::task::JoinHandle;
 use tokio::time::{Instant, MissedTickBehavior};
 
 use crate::ai_pool::default_ai_threads;
-use crate::banter_audio::is_valid_banter_id;
+use crate::banter_audio::{is_valid_banter_id, BanterAudioSource};
 use crate::history_dto::ClearHistoryRequest;
 use crate::lan::{read_local_hostname, PublicIpv6UrlInfo};
 use crate::lifecycle::{spawn_idle_shutdown_monitor, IdleTimeouts, WsConnectionTracker};
@@ -865,13 +865,43 @@ async fn banter_audio_handler(
     if !is_valid_banter_id(&banter_id) {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let Some(wav_bytes) = state.session.get_banter_audio(&banter_id) else {
+    let Some(source) = state.session.open_banter_audio(&banter_id) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let mut response = (StatusCode::OK, wav_bytes).into_response();
-    response
-        .headers_mut()
-        .insert(CONTENT_TYPE, HeaderValue::from_static("audio/wav"));
+    let (sample_rate, channels, body) = match source {
+        BanterAudioSource::Active {
+            sample_rate,
+            channels,
+            stream,
+        } => (
+            sample_rate,
+            channels,
+            Body::from_stream(stream.into_chunk_stream()),
+        ),
+        BanterAudioSource::Cached {
+            sample_rate,
+            channels,
+            pcm_bytes,
+        } => (sample_rate, channels, Body::from(pcm_bytes)),
+    };
+
+    let mut response = Response::new(body);
+    *response.status_mut() = StatusCode::OK;
+    let headers = response.headers_mut();
+    headers.insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("application/octet-stream"),
+    );
+    headers.insert(
+        HeaderName::from_static("x-audio-format"),
+        HeaderValue::from_static("pcm_s16le"),
+    );
+    if let Ok(sr) = HeaderValue::from_str(&sample_rate.to_string()) {
+        headers.insert(HeaderName::from_static("x-audio-sample-rate"), sr);
+    }
+    if let Ok(ch) = HeaderValue::from_str(&channels.to_string()) {
+        headers.insert(HeaderName::from_static("x-audio-channels"), ch);
+    }
     response
 }
 

@@ -29,6 +29,8 @@ param(
     [double]$VramFraction = 0.30,
     [ValidateRange(16, 120)]
     [int]$MaxNewTokens = 120,
+    [ValidateRange(1, 120)]
+    [int]$StreamChunkSize = 6,
     [ValidateRange(10, 600)]
     [int]$HealthTimeoutSec = 180,
     [switch]$Restart,
@@ -71,6 +73,15 @@ if (-not (Test-Path -LiteralPath $LogsDir)) {
 # 显存护栏 #3：Windows 11 WDDM 专用 CUDA 分配器回收参数（禁止使用 expandable_segments）
 $CudaAllocConf = 'max_split_size_mb:128,garbage_collection_threshold:0.8'
 $env:PYTORCH_CUDA_ALLOC_CONF = $CudaAllocConf
+
+if (-not $PSBoundParameters.ContainsKey('StreamChunkSize') -and -not [string]::IsNullOrWhiteSpace($env:MAJJJ_TTS_STREAM_CHUNK_SIZE)) {
+    $ParsedChunkSize = 0
+    if (-not [int]::TryParse($env:MAJJJ_TTS_STREAM_CHUNK_SIZE.Trim(), [ref]$ParsedChunkSize) -or $ParsedChunkSize -lt 1 -or $ParsedChunkSize -gt 120) {
+        throw "环境变量 MAJJJ_TTS_STREAM_CHUNK_SIZE='$($env:MAJJJ_TTS_STREAM_CHUNK_SIZE)' 非法，需为 1..120 之间的正整数。"
+    }
+    $StreamChunkSize = $ParsedChunkSize
+}
+$env:MAJJJ_TTS_STREAM_CHUNK_SIZE = [string]$StreamChunkSize
 
 $HealthUrl = "http://127.0.0.1:$Port/health"
 
@@ -119,7 +130,7 @@ if ($Restart) {
 $VramFractionInvariant = $VramFraction.ToString('0.00', [System.Globalization.CultureInfo]::InvariantCulture)
 
 if ($Foreground) {
-    Write-Host "[start-tts] 前台模式启动 TTS 服务（Bind=${BindHost}:${Port}, Backend=$Backend, VramFraction=$VramFractionInvariant, MaxNewTokens=$MaxNewTokens）"
+    Write-Host "[start-tts] 前台模式启动 TTS 服务（Bind=${BindHost}:${Port}, Backend=$Backend, VramFraction=$VramFractionInvariant, MaxNewTokens=$MaxNewTokens, StreamChunkSize=$StreamChunkSize）"
     Write-Host "[start-tts] 模型：$ModelPath"
     $PSNativeCommandArgumentPassing = 'Standard'
     $ServerArgs = @(
@@ -132,6 +143,7 @@ if ($Foreground) {
         '--personas-path', $PersonasPath,
         '--vram-fraction', $VramFractionInvariant,
         '--max-new-tokens', [string]$MaxNewTokens,
+        '--stream-chunk-size', [string]$StreamChunkSize,
         '--cuda-alloc-conf', $CudaAllocConf,
         '--log-file', $LogFile
     )
@@ -157,11 +169,12 @@ $CommandLine = @(
     '--personas-path', "`"$PersonasPath`"",
     '--vram-fraction', $VramFractionInvariant,
     '--max-new-tokens', [string]$MaxNewTokens,
+    '--stream-chunk-size', [string]$StreamChunkSize,
     '--cuda-alloc-conf', "`"$CudaAllocConf`"",
     '--log-file', "`"$LogFile`""
 ) -join ' '
 
-Write-Host "[start-tts] 后台常驻启动 TTS 服务（Bind=${BindHost}:${Port}, Backend=$Backend, VramFraction=$VramFractionInvariant, MaxNewTokens=$MaxNewTokens）..."
+Write-Host "[start-tts] 后台常驻启动 TTS 服务（Bind=${BindHost}:${Port}, Backend=$Backend, VramFraction=$VramFractionInvariant, MaxNewTokens=$MaxNewTokens, StreamChunkSize=$StreamChunkSize）..."
 $CreateResult = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
     CommandLine      = $CommandLine
     CurrentDirectory = $RootDir

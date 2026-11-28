@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib.util
 import io
 import json
@@ -37,12 +38,14 @@ from personas import (  # noqa: E402
 from vram_guard import (  # noqa: E402
     DEFAULT_CUDA_ALLOC_CONF,
     DEFAULT_MAX_NEW_TOKENS,
+    DEFAULT_STREAM_CHUNK_SIZE,
     DEFAULT_VRAM_FRACTION,
     VramGuardrailError,
     apply_vram_fraction_guard,
     clamp_max_new_tokens,
     collect_vram_stats,
     validate_cuda_alloc_conf,
+    validate_stream_chunk_size,
 )
 from backends import (  # noqa: E402
     BACKEND_COSYVOICE3,
@@ -219,6 +222,17 @@ class VramGuardrailContractTests(unittest.TestCase):
         self.assertEqual(clamp_max_new_tokens(80), 80)
         with self.assertRaises(ValueError):
             clamp_max_new_tokens(0)
+
+    def test_stream_chunk_size_defaults_to_6_and_validates_positive_range(self) -> None:
+        self.assertEqual(DEFAULT_STREAM_CHUNK_SIZE, 6)
+        self.assertEqual(validate_stream_chunk_size(6), 6)
+        self.assertEqual(validate_stream_chunk_size(4), 4)
+        self.assertEqual(validate_stream_chunk_size("8"), 8)
+        self.assertEqual(validate_stream_chunk_size(120), 120)
+        for bad_value in (0, -1, -10, 121, "0", "-4", "abc", "", True, False, 4.5):
+            with self.subTest(bad_value=bad_value):
+                with self.assertRaises(ValueError):
+                    validate_stream_chunk_size(bad_value)
 
 
 class PluggableBackendContractTests(unittest.TestCase):
@@ -429,6 +443,242 @@ class PluggableBackendContractTests(unittest.TestCase):
     def test_create_backend_rejects_unknown_backend_name(self) -> None:
         with self.assertRaises(ValueError):
             create_backend("nonexistent-engine", model_path="x", registry=self.registry)
+
+    def test_qwen3_custom_voice_backend_native_streaming_cancellation_and_fallback(self) -> None:
+        fake_torch = _FakeTorch(_FakeCuda(available=True))
+        stream_calls: list[dict[str, object]] = []
+        produced_steps: list[int] = []
+        gen_closed = False
+
+        class StreamingQwenModel:
+            def generate_custom_voice(self, **kwargs):
+                raise AssertionError("Non-streaming generate_custom_voice should not be called")
+
+            def generate_custom_voice_streaming(self, **kwargs):
+                nonlocal gen_closed
+                stream_calls.append(kwargs)
+
+                def _gen():
+                    nonlocal gen_closed
+                    try:
+                        produced_steps.append(1)
+                        yield ([0.0, 0.25, -0.25, 0.0], 24000, {"chunk": 1})
+                        # Empty chunk must be ignored cleanly
+                        produced_steps.append(2)
+                        yield ([], 24000, {"chunk": 2})
+                        produced_steps.append(3)
+                        yield ([0.5, -0.5], 24000, {"chunk": 3})
+                        produced_steps.append(4)
+                        yield ([0.1, -0.1], 24000, {"chunk": 4})
+                    finally:
+                        gen_closed = True
+
+                return _gen()
+
+        backend = create_backend(
+            BACKEND_QWEN3_CUSTOM_VOICE,
+            model_path="Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+            registry=self.registry,
+            torch_module=fake_torch,
+            model_loader=lambda model_path, **kwargs: StreamingQwenModel(),
+        )
+        backend.load()
+        plan = self.registry.resolve(persona_id="QuickHothead", mood="Tilted")
+
+        chunks = list(backend.synthesize_stream(plan, "啧，你这也能碰？", max_new_tokens=200, chunk_size=4))
+        self.assertEqual(len(chunks), 3)
+        self.assertEqual([len(c) for c in chunks], [8, 4, 4])
+        self.assertEqual(stream_calls[0]["speaker"], "Eric")
+        self.assertEqual(stream_calls[0]["instruct"], plan.instruct)
+        self.assertEqual(stream_calls[0]["chunk_size"], 4)
+        self.assertEqual(stream_calls[0]["max_new_tokens"], 120)
+
+        # Cancellation at chunk boundary must stop before generating step 2 and close generator
+        produced_steps.clear()
+        gen_closed = False
+        cancel_event = threading.Event()
+        collected: list[bytes] = []
+        for chunk in backend.synthesize_stream(plan, "早停测试", chunk_size=6, cancel_event=cancel_event):
+            collected.append(chunk)
+            cancel_event.set()
+        self.assertEqual(len(collected), 1)
+        self.assertEqual(produced_steps, [1])
+        self.assertTrue(gen_closed)
+
+        # Smooth fallback when underlying library has no generate_custom_voice_streaming
+        fallback_calls = 0
+
+        class LegacyQwenModel:
+            def generate_custom_voice(self, **kwargs):
+                nonlocal fallback_calls
+                fallback_calls += 1
+                return ([[0.0, 0.2, -0.2, 0.0, 0.1, -0.1]], 24000)
+
+        legacy_backend = create_backend(
+            BACKEND_QWEN3_CUSTOM_VOICE,
+            model_path="Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+            registry=self.registry,
+            torch_module=fake_torch,
+            model_loader=lambda model_path, **kwargs: LegacyQwenModel(),
+        )
+        legacy_backend.load()
+        fallback_chunks = list(
+            legacy_backend.synthesize_stream(plan, "回退切片", chunk_size=4, chunk_bytes=4)
+        )
+        self.assertEqual(fallback_calls, 1)
+        self.assertEqual(len(fallback_chunks), 3)
+        self.assertTrue(all(len(c) == 4 for c in fallback_chunks))
+
+    def test_cosyvoice3_backend_native_streaming_and_fallback(self) -> None:
+        fake_torch = _FakeTorch(_FakeCuda(available=True))
+        instruct2_calls: list[tuple[str, str, str, bool]] = []
+        produced: list[int] = []
+        gen_closed = False
+
+        class StreamingCosyModel:
+            sample_rate = 24000
+
+            def inference_instruct2(self, text: str, instruct: str, ref_path: str, stream: bool = False):
+                nonlocal gen_closed
+                instruct2_calls.append((text, instruct, ref_path, stream))
+
+                def _gen():
+                    nonlocal gen_closed
+                    try:
+                        produced.append(1)
+                        yield {"tts_speech": [0.1, -0.1, 0.2, -0.2]}
+                        produced.append(2)
+                        yield {"tts_speech": [0.3, -0.3]}
+                    finally:
+                        gen_closed = True
+
+                return _gen()
+
+        backend = create_backend(
+            BACKEND_COSYVOICE3,
+            model_path="FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
+            registry=self.registry,
+            voices_dir=SERVER_DIR,
+            torch_module=fake_torch,
+            model_loader=lambda model_path, **kwargs: StreamingCosyModel(),
+        )
+        backend.load()
+        plan = self.registry.resolve(persona_id="TeaSarcasm", mood="Mocking")
+
+        chunks = list(backend.synthesize_stream(plan, "您这手牌可真稳呢。", chunk_size=6))
+        self.assertEqual(len(chunks), 2)
+        self.assertEqual([len(c) for c in chunks], [8, 4])
+        self.assertTrue(instruct2_calls[0][3])  # stream=True
+
+        produced.clear()
+        gen_closed = False
+        cancel_event = threading.Event()
+        got = []
+        for chunk in backend.synthesize_stream(plan, "早停", cancel_event=cancel_event):
+            got.append(chunk)
+            cancel_event.set()
+        self.assertEqual(len(got), 1)
+        self.assertEqual(produced, [1])
+        self.assertTrue(gen_closed)
+
+        # Fallback when only non-streaming synthesize_with_cached_features exists
+        class NonStreamingCachedCosy:
+            sample_rate = 24000
+
+            def extract_speaker_features(self, ref_audio_path: str):
+                return {"emb": ref_audio_path}
+
+            def synthesize_with_cached_features(self, *, text: str, instruct_prompt: str, spk_features: dict):
+                return ([0.1, -0.1, 0.2, -0.2], 24000)
+
+        fallback_backend = create_backend(
+            BACKEND_COSYVOICE3,
+            model_path="FunAudioLLM/Fun-CosyVoice3-0.5B-2512",
+            registry=self.registry,
+            voices_dir=SERVER_DIR,
+            torch_module=fake_torch,
+            model_loader=lambda model_path, **kwargs: NonStreamingCachedCosy(),
+        )
+        fallback_backend.load()
+        fallback_chunks = list(fallback_backend.synthesize_stream(plan, "回退切片", chunk_bytes=4))
+        self.assertEqual([len(c) for c in fallback_chunks], [4, 4])
+
+    def test_qwen3_base_clone_backend_native_streaming_cancellation_and_fallback(self) -> None:
+        fake_torch = _FakeTorch(_FakeCuda(available=True))
+        stream_calls: list[dict[str, object]] = []
+        produced: list[int] = []
+        gen_closed = False
+
+        class StreamingBaseModel:
+            def create_voice_clone_prompt(self, *, ref_audio: str, ref_text: str, x_vector_only_mode: bool):
+                return {"ref_audio": ref_audio}
+
+            def generate_voice_clone(self, **kwargs):
+                raise AssertionError("Non-streaming generate_voice_clone should not be called")
+
+            def generate_voice_clone_streaming(self, **kwargs):
+                nonlocal gen_closed
+                stream_calls.append(kwargs)
+
+                def _gen():
+                    nonlocal gen_closed
+                    try:
+                        produced.append(1)
+                        yield ([0.0, 0.1, -0.1, 0.0], 24000, {"chunk": 1})
+                        produced.append(2)
+                        yield ([0.2, -0.2], 24000, {"chunk": 2})
+                    finally:
+                        gen_closed = True
+
+                return _gen()
+
+        backend = create_backend(
+            BACKEND_QWEN3_BASE_CLONE,
+            model_path="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+            registry=self.registry,
+            voices_dir=SERVER_DIR,
+            torch_module=fake_torch,
+            model_loader=lambda model_path, **kwargs: StreamingBaseModel(),
+        )
+        backend.load()
+        plan = self.registry.resolve(persona_id="TiltedMaster", mood="Tilted")
+
+        chunks = list(backend.synthesize_stream(plan, "又被抢杠胡？！", max_new_tokens=180, chunk_size=4))
+        self.assertEqual([len(c) for c in chunks], [8, 4])
+        self.assertEqual(stream_calls[0]["chunk_size"], 4)
+        self.assertEqual(stream_calls[0]["max_new_tokens"], 120)
+        self.assertIn("tilted_master_tilted.wav", stream_calls[0]["voice_clone_prompt"]["ref_audio"])
+
+        produced.clear()
+        gen_closed = False
+        cancel_event = threading.Event()
+        got = []
+        for chunk in backend.synthesize_stream(plan, "早停", cancel_event=cancel_event):
+            got.append(chunk)
+            cancel_event.set()
+        self.assertEqual(len(got), 1)
+        self.assertEqual(produced, [1])
+        self.assertTrue(gen_closed)
+
+        # Fallback when generate_voice_clone_streaming is missing
+        class LegacyBaseModel:
+            def create_voice_clone_prompt(self, *, ref_audio: str, ref_text: str, x_vector_only_mode: bool):
+                return {"ref_audio": ref_audio}
+
+            def generate_voice_clone(self, **kwargs):
+                return ([[0.0, 0.1, -0.1, 0.0]], 24000)
+
+        legacy_backend = create_backend(
+            BACKEND_QWEN3_BASE_CLONE,
+            model_path="Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+            registry=self.registry,
+            voices_dir=SERVER_DIR,
+            torch_module=fake_torch,
+            model_loader=lambda model_path, **kwargs: LegacyBaseModel(),
+        )
+        legacy_backend.load()
+        fallback_chunks = list(legacy_backend.synthesize_stream(plan, "回退切片", chunk_bytes=4))
+        self.assertEqual([len(c) for c in fallback_chunks], [4, 4])
 
 
 class _DeterministicFakeClock:
@@ -664,13 +914,14 @@ class TtsServiceContractTests(unittest.IsolatedAsyncioTestCase):
         service = TtsService(backend=backend, registry=self.registry, clock_ms=clock)
         service.startup()
 
-        # v1.5 stream=True returns raw 24 kHz pcm_s16le chunks
+        # v1.5 stream=True returns true async iterator of raw 24 kHz pcm_s16le chunks
         stream_res = await service.synthesize_stream(
             SynthesizeRequest(
                 request_id="stream-1",
                 persona_id="ChaosInstigator",
                 mood="Smug",
                 text="哈哈，点炮了吧！",
+                format="pcm",
                 stream=True,
                 deadline_ms=2500,
             )
@@ -679,7 +930,30 @@ class TtsServiceContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stream_res.headers["X-Audio-Sample-Rate"], "24000")
         self.assertEqual(stream_res.headers["X-Audio-Channels"], "1")
         self.assertEqual(stream_res.headers["X-Audio-Format"], "pcm_s16le")
-        self.assertEqual(len(b"".join(stream_res.chunks)), 4800)
+        self.assertEqual(stream_res.headers["X-TTS-Request-Id"], "stream-1")
+        self.assertEqual(stream_res.headers["X-TTS-Queue-Wait-Ms"], "0")
+        self.assertEqual(stream_res.headers["X-TTS-Backend"], "fake-tts")
+        self.assertEqual(stream_res.headers["X-TTS-Model"], "Qwen3-TTS-12Hz-0.6B-CustomVoice")
+        collected_chunks = [chunk async for chunk in stream_res.chunks]
+        self.assertTrue(all(len(c) > 0 and len(c) % 2 == 0 for c in collected_chunks))
+        self.assertEqual(len(b"".join(collected_chunks)), 4800)
+        self.assertEqual(service.queue_depth, 0)
+
+        # Backwards compat: stream=False with format='pcm' still works
+        pcm_res = await service.synthesize(
+            SynthesizeRequest(
+                request_id="nonstream-pcm",
+                persona_id="ChaosInstigator",
+                mood="Smug",
+                text="非流式原始PCM",
+                format="pcm",
+                stream=False,
+                deadline_ms=2500,
+            )
+        )
+        self.assertEqual(pcm_res.content_type, "application/octet-stream")
+        self.assertEqual(pcm_res.headers["X-Audio-Format"], "pcm_s16le")
+        self.assertEqual(len(pcm_res.body), 4800)
 
         # OpenAI-compatible speech helper routes through the same serial backend
         openai_res = await service.synthesize_openai_speech(
@@ -704,6 +978,306 @@ class TtsServiceContractTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(err_ctx.exception.status_code, 400)
 
+    async def test_stream_yields_first_chunk_incrementally_before_full_generation_completes(
+        self,
+    ) -> None:
+        clock = _DeterministicFakeClock(2000.0)
+        allow_chunk2 = threading.Event()
+        chunk2_reached = threading.Event()
+        observed_chunk_sizes: list[int] = []
+
+        class GatedStreamBackend(_FakeSynthBackend):
+            def synthesize_stream(
+                self,
+                plan,
+                text: str,
+                *,
+                max_new_tokens: int = 120,
+                chunk_size: int = 6,
+                cancel_event: threading.Event | None = None,
+                chunk_bytes: int = 9600,
+            ):
+                observed_chunk_sizes.append(chunk_size)
+                with self._lock:
+                    self.in_flight += 1
+                    self.max_in_flight = max(self.max_in_flight, self.in_flight)
+                try:
+                    # Emit odd-length raw bytes (3 + 5) to verify even-byte alignment across chunks
+                    yield b"\x01\x02\x03"
+                    chunk2_reached.set()
+                    allow_chunk2.wait(timeout=2.0)
+                    if cancel_event is not None and cancel_event.is_set():
+                        return
+                    yield b"\x04\x05\x06\x07\x08"
+                finally:
+                    with self._lock:
+                        self.in_flight -= 1
+
+        backend = GatedStreamBackend(self.registry, clock=clock)
+        service = TtsService(
+            backend=backend,
+            registry=self.registry,
+            stream_chunk_size=4,
+            clock_ms=clock,
+        )
+        service.startup()
+
+        stream_res = await service.synthesize_stream(
+            SynthesizeRequest(
+                request_id="inc-1",
+                persona_id="QuickHothead",
+                mood="Smug",
+                text="增量吐流测试",
+                format="pcm",
+                stream=True,
+                deadline_ms=2500,
+            )
+        )
+
+        # First chunk MUST arrive while backend is still blocked waiting for allow_chunk2!
+        first_chunk = await asyncio.wait_for(stream_res.chunks.__anext__(), timeout=1.5)
+        self.assertEqual(first_chunk, b"\x01\x02")
+        self.assertEqual(len(first_chunk) % 2, 0)
+        self.assertFalse(allow_chunk2.is_set())
+        self.assertEqual(service.queue_depth, 1)
+        self.assertEqual(observed_chunk_sizes, [4])
+
+        # Unblock chunk 2 and verify remainder byte coalescing + clean finish
+        allow_chunk2.set()
+        rest = [chunk async for chunk in stream_res.chunks]
+        self.assertEqual(rest, [b"\x03\x04\x05\x06\x07\x08"])
+        self.assertEqual(service.queue_depth, 0)
+        self.assertEqual(backend.max_in_flight, 1)
+
+    async def test_stream_cancellation_stops_backend_early_and_releases_semaphore(self) -> None:
+        clock = _DeterministicFakeClock(3000.0)
+        chunk1_emitted = threading.Event()
+        allow_chunk2_check = threading.Event()
+        produced_chunks: list[int] = []
+        backend_exited = threading.Event()
+
+        class CancellableStreamBackend(_FakeSynthBackend):
+            def synthesize_stream(
+                self,
+                plan,
+                text: str,
+                *,
+                max_new_tokens: int = 120,
+                chunk_size: int = 6,
+                cancel_event: threading.Event | None = None,
+                chunk_bytes: int = 9600,
+            ):
+                with self._lock:
+                    self.in_flight += 1
+                    self.max_in_flight = max(self.max_in_flight, self.in_flight)
+                try:
+                    for idx in range(1, 6):
+                        if cancel_event is not None and cancel_event.is_set():
+                            break
+                        produced_chunks.append(idx)
+                        yield b"\x10\x20\x30\x40"
+                        if idx == 1:
+                            chunk1_emitted.set()
+                            # Wait briefly for cancellation or test gate before next chunk
+                            if cancel_event is not None:
+                                cancel_event.wait(timeout=2.0)
+                            else:
+                                allow_chunk2_check.wait(timeout=2.0)
+                finally:
+                    with self._lock:
+                        self.in_flight -= 1
+                    backend_exited.set()
+
+        backend = CancellableStreamBackend(self.registry, clock=clock, synth_cost_ms=50.0)
+        service = TtsService(backend=backend, registry=self.registry, clock_ms=clock)
+        service.startup()
+
+        stream_res = await service.synthesize_stream(
+            SynthesizeRequest(
+                request_id="cancel-1",
+                persona_id="TeaSarcasm",
+                mood="Mocking",
+                text="客户端中途断连早停测试",
+                format="pcm",
+                stream=True,
+                deadline_ms=2500,
+            )
+        )
+
+        # Queue a second request while stream #1 holds the GPU semaphore
+        first_chunk = await asyncio.wait_for(stream_res.chunks.__anext__(), timeout=1.5)
+        self.assertEqual(first_chunk, b"\x10\x20\x30\x40")
+        self.assertTrue(chunk1_emitted.is_set())
+
+        req2_task = asyncio.create_task(
+            service.synthesize(
+                SynthesizeRequest(
+                    request_id="after-cancel-2",
+                    persona_id="QuickHothead",
+                    mood="Smug",
+                    text="紧接着下一句",
+                    deadline_ms=2500,
+                )
+            )
+        )
+        await asyncio.sleep(0.02)
+        self.assertEqual(service.queue_depth, 2)
+
+        # Simulate client disconnect by closing the async stream iterator
+        await asyncio.wait_for(stream_res.chunks.aclose(), timeout=1.5)
+        self.assertTrue(backend_exited.is_set())
+        self.assertEqual(produced_chunks, [1])
+
+        # Second request must now acquire the released GPU lock cleanly with strict serial execution
+        res2 = await asyncio.wait_for(req2_task, timeout=1.5)
+        self.assertEqual(res2.headers["X-TTS-Request-Id"], "after-cancel-2")
+        self.assertEqual(backend.max_in_flight, 1)
+        self.assertEqual(service.queue_depth, 0)
+
+    async def test_stream_task_cancel_also_triggers_early_stop_and_releases_semaphore(self) -> None:
+        clock = _DeterministicFakeClock(4000.0)
+        produced_chunks: list[int] = []
+        got_first = asyncio.Event()
+
+        class WaitCancelBackend(_FakeSynthBackend):
+            def synthesize_stream(
+                self,
+                plan,
+                text: str,
+                *,
+                max_new_tokens: int = 120,
+                chunk_size: int = 6,
+                cancel_event: threading.Event | None = None,
+                chunk_bytes: int = 9600,
+            ):
+                with self._lock:
+                    self.in_flight += 1
+                    self.max_in_flight = max(self.max_in_flight, self.in_flight)
+                try:
+                    for idx in range(1, 5):
+                        if cancel_event is not None and cancel_event.is_set():
+                            break
+                        produced_chunks.append(idx)
+                        yield b"\xaa\xbb"
+                        if cancel_event is not None:
+                            cancel_event.wait(timeout=2.0)
+                finally:
+                    with self._lock:
+                        self.in_flight -= 1
+
+        backend = WaitCancelBackend(self.registry, clock=clock, synth_cost_ms=20.0)
+        service = TtsService(backend=backend, registry=self.registry, clock_ms=clock)
+        service.startup()
+
+        stream_res = await service.synthesize_stream(
+            SynthesizeRequest(
+                request_id="task-cancel-1",
+                persona_id="QuickHothead",
+                mood="Tilted",
+                text="协程取消早停测试",
+                format="pcm",
+                stream=True,
+                deadline_ms=2500,
+            )
+        )
+
+        async def _consume() -> None:
+            async for _chunk in stream_res.chunks:
+                got_first.set()
+
+        consumer_task = asyncio.create_task(_consume())
+        await asyncio.wait_for(got_first.wait(), timeout=1.5)
+        # Consumer is now suspended inside __anext__() waiting for chunk 2 -> cancel task!
+        consumer_task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await consumer_task
+
+        # A follow-up request must acquire Semaphore(1) cleanly once worker exits on cancel_event
+        follow_up = await asyncio.wait_for(
+            service.synthesize(
+                SynthesizeRequest(
+                    request_id="after-task-cancel",
+                    persona_id="StubbornBlamer",
+                    mood="Deadpan",
+                    text="继续下一句",
+                    deadline_ms=2500,
+                )
+            ),
+            timeout=1.5,
+        )
+        self.assertEqual(follow_up.headers["X-TTS-Request-Id"], "after-task-cancel")
+        self.assertEqual(produced_chunks, [1])
+        self.assertEqual(backend.max_in_flight, 1)
+        self.assertEqual(service.queue_depth, 0)
+
+    async def test_stream_deadline_exceeded_returns_408_pre_enqueue_and_after_queue_wait(
+        self,
+    ) -> None:
+        clock = _DeterministicFakeClock(6000.0)
+        entered_first = threading.Event()
+        gate_on_first = threading.Event()
+        backend = _FakeSynthBackend(
+            self.registry,
+            clock=clock,
+            synth_cost_ms=800.0,
+            gate_on_first=gate_on_first,
+            entered_first=entered_first,
+        )
+        service = TtsService(backend=backend, registry=self.registry, clock_ms=clock)
+        service.startup()
+
+        with self.assertRaises(DeadlineExceededError) as pre_ctx:
+            await service.synthesize_stream(
+                SynthesizeRequest(
+                    request_id="stream-pre-expired",
+                    persona_id="QuickHothead",
+                    mood="Smug",
+                    text="入队前超时",
+                    format="pcm",
+                    stream=True,
+                    deadline_ms=0,
+                )
+            )
+        self.assertEqual(pre_ctx.exception.status_code, 408)
+        self.assertEqual(len(backend.calls), 0)
+
+        req1 = asyncio.create_task(
+            service.synthesize(
+                SynthesizeRequest(
+                    request_id="blocking-1",
+                    persona_id="TiltedMaster",
+                    mood="Tilted",
+                    text="占用GPU的请求",
+                    deadline_ms=2500,
+                )
+            )
+        )
+        await asyncio.to_thread(entered_first.wait, 2.0)
+
+        req2 = asyncio.create_task(
+            service.synthesize_stream(
+                SynthesizeRequest(
+                    request_id="stream-queued-expired",
+                    persona_id="ChaosInstigator",
+                    mood="Plotting",
+                    text="排队超时的流式请求",
+                    format="pcm",
+                    stream=True,
+                    deadline_ms=500,
+                )
+            )
+        )
+        await asyncio.sleep(0.02)
+        gate_on_first.set()
+
+        await req1
+        with self.assertRaises(DeadlineExceededError) as queued_ctx:
+            await req2
+        self.assertEqual(queued_ctx.exception.status_code, 408)
+        self.assertEqual(queued_ctx.exception.headers["X-TTS-Dropped-Reason"], "deadline_exceeded")
+        self.assertEqual(len(backend.calls), 1)
+        self.assertEqual(service.queue_depth, 0)
+
 
 class FastApiAppWiringTests(unittest.TestCase):
     def test_app_and_main_compile_cleanly_and_declare_expected_routes(self) -> None:
@@ -724,6 +1298,47 @@ class FastApiAppWiringTests(unittest.TestCase):
                 "from __future__ import annotations",
                 "app.py must not enable postponed annotations while body models are local to create_app()",
             )
+
+    def test_cli_and_build_default_service_configure_stream_chunk_size(self) -> None:
+        spec = importlib.util.spec_from_file_location("tts_server_main", SERVER_DIR / "__main__.py")
+        assert spec is not None and spec.loader is not None
+        server_main = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(server_main)
+        from app import build_default_service  # noqa: E402
+
+        saved_env = {
+            key: os.environ.get(key)
+            for key in ("MAJJJ_TTS_STREAM_CHUNK_SIZE", "MAJJJ_TTS_BACKEND", "PYTORCH_CUDA_ALLOC_CONF")
+        }
+        try:
+            os.environ.pop("MAJJJ_TTS_STREAM_CHUNK_SIZE", None)
+            args_default = server_main.parse_args([])
+            self.assertEqual(args_default.stream_chunk_size, 6)
+
+            args_cli = server_main.parse_args(["--stream-chunk-size", "4"])
+            self.assertEqual(args_cli.stream_chunk_size, 4)
+
+            os.environ["MAJJJ_TTS_STREAM_CHUNK_SIZE"] = "8"
+            args_env = server_main.parse_args([])
+            self.assertEqual(args_env.stream_chunk_size, 8)
+
+            service = build_default_service()
+            self.assertEqual(service.stream_chunk_size, 8)
+            self.assertEqual(service.health()["stream_chunk_size"], 8)
+
+            os.environ["MAJJJ_TTS_STREAM_CHUNK_SIZE"] = "0"
+            with self.assertRaises(ValueError):
+                build_default_service()
+
+            with contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    server_main.parse_args(["--stream-chunk-size", "0"])
+        finally:
+            for key, value in saved_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
     def test_fastapi_testclient_roundtrip_when_fastapi_installed(self) -> None:
         if importlib.util.find_spec("fastapi") is None or importlib.util.find_spec("httpx") is None:
@@ -783,6 +1398,43 @@ class FastApiAppWiringTests(unittest.TestCase):
                 },
             )
             self.assertEqual(expired_resp.status_code, 408)
+
+            stream_resp = client.post(
+                "/v1/tts/synthesize",
+                json={
+                    "request_id": "fastapi-stream-1",
+                    "persona_id": "QuickHothead",
+                    "mood": "Smug",
+                    "text": "流式响应契约测试",
+                    "format": "pcm",
+                    "stream": True,
+                    "deadline_ms": 2500,
+                },
+            )
+            self.assertEqual(stream_resp.status_code, 200)
+            self.assertEqual(stream_resp.headers["content-type"], "application/octet-stream")
+            self.assertEqual(stream_resp.headers["x-audio-format"], "pcm_s16le")
+            self.assertEqual(stream_resp.headers["x-audio-sample-rate"], "24000")
+            self.assertEqual(stream_resp.headers["x-audio-channels"], "1")
+            self.assertEqual(stream_resp.headers["x-tts-request-id"], "fastapi-stream-1")
+            self.assertIn("x-tts-queue-wait-ms", stream_resp.headers)
+            self.assertEqual(stream_resp.headers["x-tts-backend"], "fake-tts")
+            self.assertEqual(stream_resp.headers["x-tts-model"], "Qwen3-TTS-12Hz-0.6B-CustomVoice")
+            self.assertEqual(len(stream_resp.content), 4800)
+
+            stream_expired_resp = client.post(
+                "/v1/tts/synthesize",
+                json={
+                    "request_id": "fastapi-stream-expired",
+                    "persona_id": "QuickHothead",
+                    "mood": "Smug",
+                    "text": "流式超时丢弃",
+                    "format": "pcm",
+                    "stream": True,
+                    "deadline_ms": 0,
+                },
+            )
+            self.assertEqual(stream_expired_resp.status_code, 408)
 
 
 if __name__ == "__main__":

@@ -1,26 +1,10 @@
 <script lang="ts">
   import type { ActiveBanterVoiceState } from "../audio/audioTypes";
   import PersonaAvatar from "../personas/PersonaAvatar.svelte";
-  import type {
-    ActiveBanterBubble,
-    ActiveBanterMap,
-  } from "../presentation/presentationQueue";
+  import type { ActiveBanterMap } from "../presentation/presentationQueue";
   import type { Seat } from "../protocol/generated/Seat";
   import type { SeatInfo } from "../protocol/generated/SeatInfo";
-  import {
-    getPersonaMeta,
-    getPersonaMoodMeta,
-    getQuickEmoteMeta,
-  } from "../protocol/personas";
-  import {
-    ALL_SEATS,
-    formatRelativeSeatDisplay,
-    seatIndex,
-  } from "../protocol/seats";
-  import {
-    isBubbleActivelySpeaking,
-    shouldShowBubbleText,
-  } from "./banterVisibility";
+  import { buildPostHandBanterStripItems } from "./banterVisibility";
 
   interface Props {
     seats: [SeatInfo, SeatInfo, SeatInfo, SeatInfo];
@@ -40,69 +24,15 @@
     reducedEffects = false,
   }: Props = $props();
 
-  interface StripItem {
-    bubble: ActiveBanterBubble;
-    speakerName: string;
-    replyTargetName: string | null;
-    accentHex: string;
-    moodShortLabel: string;
-    moodBadgeBg: string;
-    moodBadgeFg: string;
-    speaking: boolean;
-    hideText: boolean;
-  }
-
-  const items = $derived.by<StripItem[]>(() => {
-    const active: ActiveBanterBubble[] = [];
-    for (const seat of ALL_SEATS) {
-      const bubble = activeBubbles[seat];
-      if (bubble !== null) {
-        active.push(bubble);
-      }
-    }
-    active.sort((a, b) => a.bubbleId - b.bubbleId);
-
-    return active.map((bubble) => {
-      const seatInfo = seats[seatIndex(bubble.seat)];
-      const replyTargetName =
-        bubble.replyToSeat !== null
-          ? formatRelativeSeatDisplay(bubble.replyToSeat, yourSeat, seats)
-          : null;
-      const speaking = isBubbleActivelySpeaking(bubble, activeBanterVoice);
-      const hideText = !shouldShowBubbleText(bubble, hideAiBanterText);
-      if (
-        bubble.kind === "banter" &&
-        bubble.personaId !== null &&
-        bubble.mood !== null
-      ) {
-        const personaMeta = getPersonaMeta(bubble.personaId);
-        const moodMeta = getPersonaMoodMeta(bubble.mood);
-        return {
-          bubble,
-          speakerName: seatInfo.nickname.trim() || personaMeta.name,
-          replyTargetName,
-          accentHex: personaMeta.accentHex,
-          moodShortLabel: moodMeta.shortLabel,
-          moodBadgeBg: moodMeta.badgeBg,
-          moodBadgeFg: moodMeta.badgeFg,
-          speaking,
-          hideText,
-        };
-      }
-      const emoteMeta = bubble.emote ? getQuickEmoteMeta(bubble.emote) : null;
-      return {
-        bubble,
-        speakerName: seatInfo.nickname.trim() || "玩家",
-        replyTargetName,
-        accentHex: emoteMeta?.accentHex ?? "#F5BE58",
-        moodShortLabel: "快捷互动",
-        moodBadgeBg: emoteMeta?.accentHex ?? "#F5BE58",
-        moodBadgeFg: "#181A20",
-        speaking: false,
-        hideText: false,
-      };
-    });
-  });
+  const items = $derived(
+    buildPostHandBanterStripItems({
+      seats,
+      yourSeat,
+      activeBubbles,
+      activeBanterVoice,
+      hideAiBanterText,
+    }),
+  );
 </script>
 
 {#if items.length > 0}

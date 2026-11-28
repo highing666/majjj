@@ -424,16 +424,16 @@ pub enum ServerMessage {
         persona_id: PersonaId,
         mood: PersonaMood,
     },
-    /// Lightweight notification that synthesized `BanterVoice` WAV audio is ready for same-origin fetch.
+    /// Lightweight notification that streaming `BanterVoice` Raw PCM16 audio is ready for same-origin fetch.
     TableBanterAudioReady {
         banter_id: String,
         seat: Seat,
         audio_url: String,
-        duration_ms: u32,
+        sample_rate: u32,
     },
     /// Silent per-line fallback signal emitted when synthesis for a specific `banter_id`
-    /// is skipped or times out while the LAN TTS service remains available, allowing clients
-    /// with `hide_banter_bubble_with_voice` enabled to reveal that single line's text bubble.
+    /// is skipped or times out before the first audio chunk while the LAN TTS service remains
+    /// available, allowing voice-first clients to reveal that single line's text bubble.
     TableBanterAudioFallback { banter_id: String, seat: Seat },
     /// Broadcast human quick-emote comic bubble (`快捷互动`) to all connected clients.
     QuickEmoteBroadcast {

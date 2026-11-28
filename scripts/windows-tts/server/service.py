@@ -4,18 +4,26 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+import threading
 import time
-from typing import Callable, Dict, List, Optional, Tuple, TypeVar
+from typing import AsyncIterator, Callable, Dict, Optional, Tuple, TypeVar
 
 from audio import DEFAULT_CHANNELS, compute_duration_ms, encode_wav_pcm16
 from backends import TtsBackend
 from personas import PersonaRegistry, PersonaValidationError, SynthesisVoicePlan
-from vram_guard import DEFAULT_MAX_NEW_TOKENS, clamp_max_new_tokens
+from vram_guard import (
+    DEFAULT_MAX_NEW_TOKENS,
+    DEFAULT_STREAM_CHUNK_SIZE,
+    clamp_max_new_tokens,
+    validate_stream_chunk_size,
+)
 
 DEFAULT_DEADLINE_MS = 2500
 SUPPORTED_FORMATS = ("wav", "pcm")
 
 _T = TypeVar("_T")
+_STREAM_END = object()
+_STREAM_ERROR = object()
 
 
 class TtsServiceError(Exception):
@@ -103,11 +111,59 @@ class SynthesizeResponse:
     headers: Dict[str, str] = field(default_factory=dict)
 
 
+class _TtsStreamIterator(AsyncIterator[bytes]):
+    """Async iterator bridging a background GPU synthesis worker via asyncio.Queue."""
+
+    def __init__(
+        self,
+        *,
+        queue: asyncio.Queue[object],
+        cancel_event: threading.Event,
+        done_event: asyncio.Event,
+    ) -> None:
+        self._queue = queue
+        self._cancel_event = cancel_event
+        self._done_event = done_event
+        self._closed = False
+
+    def __aiter__(self) -> _TtsStreamIterator:
+        return self
+
+    async def __anext__(self) -> bytes:
+        if self._closed:
+            raise StopAsyncIteration
+        try:
+            item = await self._queue.get()
+        except BaseException:
+            self._cancel_event.set()
+            self._closed = True
+            raise
+
+        if item is _STREAM_END:
+            self._closed = True
+            raise StopAsyncIteration
+
+        if isinstance(item, tuple) and len(item) == 2 and item[0] is _STREAM_ERROR:
+            self._closed = True
+            exc = item[1]
+            if isinstance(exc, BaseException):
+                raise exc
+            raise RuntimeError(str(exc))
+
+        return item  # type: ignore[return-value]
+
+    async def aclose(self) -> None:
+        self._closed = True
+        self._cancel_event.set()
+        await self._done_event.wait()
+
+
 @dataclass(frozen=True)
 class SynthesizeStreamResponse:
-    chunks: List[bytes]
+    chunks: _TtsStreamIterator
     content_type: str
     headers: Dict[str, str] = field(default_factory=dict)
+    cancel: Callable[[], None] = field(default=lambda: None)
 
 
 def _default_clock_ms() -> float:
@@ -123,11 +179,13 @@ class TtsService:
         backend: TtsBackend,
         registry: PersonaRegistry,
         max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
+        stream_chunk_size: int = DEFAULT_STREAM_CHUNK_SIZE,
         clock_ms: Callable[[], float] = _default_clock_ms,
     ) -> None:
         self.backend = backend
         self.registry = registry
         self.max_new_tokens = clamp_max_new_tokens(max_new_tokens)
+        self.stream_chunk_size = validate_stream_chunk_size(stream_chunk_size)
         self._clock_ms = clock_ms
         self._gpu_semaphore = asyncio.Semaphore(1)
         self._queue_depth = 0
@@ -153,6 +211,7 @@ class TtsService:
             "vram_limit_fraction": vram.vram_limit_fraction,
             "personas_cached": self.backend.personas_cached,
             "max_new_tokens": self.max_new_tokens,
+            "stream_chunk_size": self.stream_chunk_size,
             "sample_rate": self.backend.sample_rate,
         }
 
@@ -286,37 +345,140 @@ class TtsService:
             headers=headers,
         )
 
+    def _build_stream_headers(
+        self,
+        *,
+        request_id: str,
+        queue_wait_ms: int,
+        sample_rate: int,
+    ) -> Dict[str, str]:
+        return {
+            "X-TTS-Request-Id": request_id,
+            "X-TTS-Queue-Wait-Ms": str(queue_wait_ms),
+            "X-TTS-Backend": self.backend.backend_name,
+            "X-TTS-Model": self.backend.model_id,
+            "X-Audio-Format": "pcm_s16le",
+            "X-Audio-Sample-Rate": str(sample_rate),
+            "X-Audio-Channels": str(DEFAULT_CHANNELS),
+        }
+
     async def synthesize_stream(self, req: SynthesizeRequest) -> SynthesizeStreamResponse:
-        """v1.5 streaming extension: yields raw 24 kHz 16-bit mono PCM chunks."""
-        chunks, _, queue_wait_ms, synth_ms = await self._run_serialized_gpu_job(
-            req,
-            lambda plan, text: list(
-                self.backend.synthesize_stream(
+        """True incremental async streaming: yields 24 kHz 16-bit mono Raw PCM chunks."""
+        plan, text, _fmt = self._validate_request(req)
+        enqueued_at = self._clock_ms()
+
+        self._queue_depth += 1
+        acquired = False
+        try:
+            await self._gpu_semaphore.acquire()
+            acquired = True
+            acquired_at = self._clock_ms()
+            queue_wait_ms = max(0, int(round(acquired_at - enqueued_at)))
+
+            # Guardrail #5b: discard requests whose queue wait already exceeded deadline_ms
+            # BEFORE invoking GPU synthesis.
+            if queue_wait_ms >= req.deadline_ms:
+                raise DeadlineExceededError(
+                    request_id=req.request_id,
+                    deadline_ms=req.deadline_ms,
+                    queue_wait_ms=queue_wait_ms,
+                )
+        except BaseException:
+            if acquired:
+                self._gpu_semaphore.release()
+            self._queue_depth -= 1
+            raise
+
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue[object] = asyncio.Queue()
+        cancel_event = threading.Event()
+        done_event = asyncio.Event()
+        released = False
+
+        def _finish_stream(error: Optional[BaseException]) -> None:
+            nonlocal released
+            if not released:
+                released = True
+                self._gpu_semaphore.release()
+                self._queue_depth -= 1
+            if error is not None:
+                queue.put_nowait((_STREAM_ERROR, error))
+            else:
+                queue.put_nowait(_STREAM_END)
+            done_event.set()
+
+        def _safe_schedule(fn: Callable[..., object], *args: object) -> None:
+            try:
+                loop.call_soon_threadsafe(fn, *args)
+            except RuntimeError:
+                pass
+
+        def _worker() -> None:
+            worker_error: Optional[BaseException] = None
+            pending_odd_byte = b""
+            stream_iter = None
+            try:
+                stream_iter = self.backend.synthesize_stream(
                     plan,
                     text,
                     max_new_tokens=self.max_new_tokens,
+                    chunk_size=self.stream_chunk_size,
+                    cancel_event=cancel_event,
                 )
-            ),
-        )
+                for chunk in stream_iter:
+                    if cancel_event.is_set():
+                        break
+                    raw_chunk = bytes(chunk)
+                    if not raw_chunk:
+                        continue
+                    if pending_odd_byte:
+                        raw_chunk = pending_odd_byte + raw_chunk
+                        pending_odd_byte = b""
+                    if len(raw_chunk) % 2 != 0:
+                        pending_odd_byte = raw_chunk[-1:]
+                        raw_chunk = raw_chunk[:-1]
+                    if raw_chunk:
+                        _safe_schedule(queue.put_nowait, raw_chunk)
+                    if cancel_event.is_set():
+                        break
+            except Exception as exc:
+                if not cancel_event.is_set():
+                    worker_error = exc
+            finally:
+                close_fn = getattr(stream_iter, "close", None)
+                if callable(close_fn):
+                    try:
+                        close_fn()
+                    except Exception:
+                        pass
+                _safe_schedule(_finish_stream, worker_error)
 
-        total_bytes = sum(len(chunk) for chunk in chunks)
-        duration_ms = compute_duration_ms(
-            total_bytes,
-            sample_rate=self.backend.sample_rate,
-            channels=DEFAULT_CHANNELS,
+        worker_thread = threading.Thread(
+            target=_worker,
+            name=f"tts-stream-{req.request_id}",
+            daemon=True,
         )
-        headers = self._build_audio_headers(
+        try:
+            worker_thread.start()
+        except BaseException:
+            _finish_stream(None)
+            raise
+
+        headers = self._build_stream_headers(
             request_id=req.request_id,
-            duration_ms=duration_ms,
-            synth_ms=synth_ms,
             queue_wait_ms=queue_wait_ms,
             sample_rate=self.backend.sample_rate,
-            audio_format="pcm_s16le",
+        )
+        iterator = _TtsStreamIterator(
+            queue=queue,
+            cancel_event=cancel_event,
+            done_event=done_event,
         )
         return SynthesizeStreamResponse(
-            chunks=chunks,
+            chunks=iterator,
             content_type="application/octet-stream",
             headers=headers,
+            cancel=cancel_event.set,
         )
 
     async def synthesize_openai_speech(

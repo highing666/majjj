@@ -2,6 +2,7 @@
 
 use std::sync::{Arc, Weak};
 
+use futures_util::StreamExt;
 use mahjong_ai::DecisionContext;
 use mahjong_core::{PlayerView, Seat};
 use rand_chacha::ChaCha8Rng;
@@ -12,13 +13,13 @@ use crate::banter::{
     BanterChainContext, BanterGuard, DelayedBanterFollowup, PendingBanterJob, SlowThinkTicket,
     ASYNC_BANTER_TIMEOUT,
 };
-use crate::banter_audio::PendingTtsJob;
+use crate::banter_audio::{BeginTtsStreamOutcome, PcmEvenAligner, PendingTtsJob};
 use crate::llm::{LlmClient, LlmError};
 use crate::pacing::{overlapped_wait, AiTurnTrigger, ReleaseTicket};
 use crate::persona_memory::MemoryNoteJob;
 use crate::server::ServerError;
 use crate::session::TableSession;
-use crate::tts::TtsClient;
+use crate::tts::{TtsClient, TtsError};
 
 /// Computes the default worker count for the dedicated Rayon AI thinking pool:
 /// `(available_parallelism / 2).clamp(1, 4)` (or `1` if parallelism cannot be queried).
@@ -148,25 +149,119 @@ fn spawn_tts_synthesis_task(
     tokio::spawn(async move {
         let mut current = job;
         loop {
-            // Decouple upstream queue-admission `deadline_ms` from the in-flight HTTP call
-            // (which uses `HttpTtsClient`'s own 8s ceiling) so slow-but-healthy GPU synthesis
-            // finishes cleanly without aborting active GPU work; `commit_tts_result` enforces
-            // the `deadline_ms` delivery freshness budget and promotes any queued job once
-            // the GPU is actually free.
-            let res = tts.synthesize(current.request).await;
-            let outcome = {
+            let mut aligner = PcmEvenAligner::default();
+            let stream_start = match tts.synthesize_stream(current.request).await {
+                Ok(mut audio_stream) => {
+                    let mut first_result: Result<hyper::body::Bytes, TtsError> =
+                        Err(TtsError::InvalidResponse {
+                            reason: "流式语音响应未返回任何有效 PCM 分片".to_string(),
+                        });
+                    while let Some(item) = audio_stream.chunks.next().await {
+                        match item {
+                            Ok(raw_chunk) => {
+                                if let Some(even_chunk) = aligner.push(raw_chunk) {
+                                    first_result = Ok(even_chunk);
+                                    break;
+                                }
+                            }
+                            Err(err) => {
+                                first_result = Err(err);
+                                break;
+                            }
+                        }
+                    }
+                    first_result.map(|first_chunk| (audio_stream, first_chunk))
+                }
+                Err(err) => Err(err),
+            };
+
+            let (mut audio_stream, first_chunk) = match stream_start {
+                Ok(pair) => pair,
+                Err(err) => {
+                    let outcome = {
+                        let mut session = runtime.lock().await;
+                        session.commit_tts_pre_first_chunk_error(current.guard, err)
+                    };
+                    if let Some(probe_at) = outcome.schedule_probe_at {
+                        spawn_tts_health_probe(
+                            Arc::downgrade(&runtime),
+                            Arc::clone(&tts),
+                            Some(probe_at),
+                        );
+                    }
+                    match outcome.next_job {
+                        Some(next) => {
+                            current = next;
+                            continue;
+                        }
+                        None => break,
+                    }
+                }
+            };
+
+            let begin_outcome = {
                 let mut session = runtime.lock().await;
-                session.commit_tts_result(
+                session.begin_tts_audio_stream(
                     current.guard,
                     current.dispatched_at,
                     current.deadline_ms,
-                    res,
+                    audio_stream.sample_rate,
+                    audio_stream.channels,
+                    first_chunk,
                 )
             };
-            if let Some(probe_at) = outcome.schedule_probe_at {
-                spawn_tts_health_probe(Arc::downgrade(&runtime), Arc::clone(&tts), Some(probe_at));
+
+            let (banter_id, cache) = match begin_outcome {
+                BeginTtsStreamOutcome::Streaming { banter_id, cache } => (banter_id, cache),
+                BeginTtsStreamOutcome::Aborted { next_job } => {
+                    drop(audio_stream);
+                    match next_job {
+                        Some(next) => {
+                            current = next;
+                            continue;
+                        }
+                        None => break,
+                    }
+                }
+            };
+
+            while let Some(item) = audio_stream.chunks.next().await {
+                match item {
+                    Ok(raw_chunk) => {
+                        if let Some(even_chunk) = aligner.push(raw_chunk) {
+                            let appended = cache
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .append_stream_chunk(
+                                    &banter_id,
+                                    even_chunk,
+                                    tokio::time::Instant::now(),
+                                );
+                            if !appended {
+                                eprintln!(
+                                    "warning: TTS stream for {banter_id} hit cache byte budget; closing stream"
+                                );
+                                break;
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("warning: TTS mid-stream error for {banter_id}: {err}");
+                        break;
+                    }
+                }
             }
-            match outcome.next_job {
+
+            cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .finish_stream(&banter_id, true, tokio::time::Instant::now());
+
+            let next_job = {
+                let mut session = runtime.lock().await;
+                session.finish_tts_audio_stream()
+            };
+            match next_job {
                 Some(next) => current = next,
                 None => break,
             }

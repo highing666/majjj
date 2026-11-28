@@ -238,7 +238,7 @@
           <div>
             <strong>台词语音</strong>
             <span class="row-hint">
-              关闭后立即停播并跳过牌友角色实时台词语音
+              关闭后立即停播并跳过牌友角色实时台词语音，自动改用文字气泡兜底
             </span>
           </div>
           <input
@@ -248,25 +248,6 @@
               onUpdatePreferences({
                 banter_voice_enabled: (e.currentTarget as HTMLInputElement)
                   .checked,
-              })}
-          />
-        </label>
-
-        <label class="toggle-row">
-          <div>
-            <strong>有声时隐藏台词气泡</strong>
-            <span class="row-hint">
-              正常有声时隐藏常规牌桌台词文字气泡，仅保留头像表情与说话脉冲；静音、音频未解锁或语音服务降级时自动回显
-            </span>
-          </div>
-          <input
-            type="checkbox"
-            checked={preferences.hide_banter_bubble_with_voice}
-            onchange={(e) =>
-              onUpdatePreferences({
-                hide_banter_bubble_with_voice: (
-                  e.currentTarget as HTMLInputElement
-                ).checked,
               })}
           />
         </label>

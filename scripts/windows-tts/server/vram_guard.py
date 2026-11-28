@@ -16,6 +16,10 @@ DEFAULT_CUDA_ALLOC_CONF = "max_split_size_mb:128,garbage_collection_threshold:0.
 # Guardrail #4: 12.5 Hz codec => 120 frames ~= 9.6 seconds hard cap for 10-26 char banter lines.
 DEFAULT_MAX_NEW_TOKENS = 120
 
+# Streaming codec chunk size: 6 frames ~= 500 ms @ 12 Hz codec (tunable via MAJJJ_TTS_STREAM_CHUNK_SIZE).
+DEFAULT_STREAM_CHUNK_SIZE = 6
+MAX_STREAM_CHUNK_SIZE = DEFAULT_MAX_NEW_TOKENS
+
 
 class VramGuardrailError(ValueError):
     """Raised when a VRAM safety guardrail configuration is violated."""
@@ -88,6 +92,36 @@ def clamp_max_new_tokens(requested: int, *, hard_cap: int = DEFAULT_MAX_NEW_TOKE
     if hard_cap <= 0:
         raise ValueError("hard_cap must be positive")
     return min(int(requested), int(hard_cap))
+
+
+def validate_stream_chunk_size(
+    raw_value: Any,
+    *,
+    max_chunk_size: int = MAX_STREAM_CHUNK_SIZE,
+) -> int:
+    """Validate MAJJJ_TTS_STREAM_CHUNK_SIZE as a positive integer within [1, max_chunk_size]."""
+    if isinstance(raw_value, bool):
+        raise ValueError("stream_chunk_size must be a positive integer, not bool")
+    if isinstance(raw_value, int):
+        parsed = raw_value
+    elif isinstance(raw_value, str):
+        stripped = raw_value.strip()
+        if not stripped:
+            raise ValueError("stream_chunk_size must not be empty")
+        try:
+            parsed = int(stripped)
+        except ValueError as exc:
+            raise ValueError(f"stream_chunk_size must be an integer, got '{raw_value}'") from exc
+    else:
+        raise ValueError(
+            f"stream_chunk_size must be a positive integer, got {type(raw_value).__name__}"
+        )
+
+    if parsed <= 0 or parsed > max_chunk_size:
+        raise ValueError(
+            f"stream_chunk_size={parsed} must be within [1, {max_chunk_size}]"
+        )
+    return parsed
 
 
 def collect_vram_stats(

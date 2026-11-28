@@ -12,17 +12,20 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 import pathlib
+import threading
 from typing import Any, Callable, Dict, Iterator, Optional, Sequence, Tuple
 
 from audio import DEFAULT_SAMPLE_RATE, coerce_audio_to_pcm16_bytes
 from personas import CANONICAL_MOODS, PersonaRegistry, SynthesisVoicePlan
 from vram_guard import (
     DEFAULT_MAX_NEW_TOKENS,
+    DEFAULT_STREAM_CHUNK_SIZE,
     DEFAULT_VRAM_FRACTION,
     VramStats,
     apply_vram_fraction_guard,
     clamp_max_new_tokens,
     collect_vram_stats,
+    validate_stream_chunk_size,
 )
 
 BACKEND_QWEN3_CUSTOM_VOICE = "qwen3-custom-voice"
@@ -106,14 +109,71 @@ class TtsBackend(ABC):
         text: str,
         *,
         max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
+        chunk_size: int = DEFAULT_STREAM_CHUNK_SIZE,
+        cancel_event: Optional[threading.Event] = None,
         chunk_bytes: int = 9600,  # 200 ms @ 24 kHz 16-bit mono
     ) -> Iterator[bytes]:
-        """Yield raw 16-bit LE PCM chunks (v1.5 streaming extension hook)."""
+        """Yield raw 16-bit LE PCM chunks; fallback slices full synthesis output."""
+        _ = validate_stream_chunk_size(chunk_size)
+        if cancel_event is not None and cancel_event.is_set():
+            return
         audio = self.synthesize(plan, text, max_new_tokens=max_new_tokens)
         data = audio.pcm16_bytes
         step = max(2, chunk_bytes - (chunk_bytes % 2))
         for offset in range(0, len(data), step):
-            yield data[offset : offset + step]
+            if cancel_event is not None and cancel_event.is_set():
+                return
+            chunk = data[offset : offset + step]
+            if chunk:
+                yield chunk
+
+
+def _extract_qwen3_stream_waveform(item: Any) -> Any:
+    """Unwrap faster-qwen3-tts 3-tuple (audio, sr, timing), 2-tuple (audio, sr), or raw waveform."""
+    if (
+        isinstance(item, tuple)
+        and len(item) in (2, 3)
+        and isinstance(item[1], int)
+        and not isinstance(item[1], bool)
+    ):
+        waveform = item[0]
+    else:
+        waveform = item
+    if isinstance(waveform, (list, tuple)) and waveform and isinstance(waveform[0], (list, tuple)):
+        return waveform[0]
+    return waveform
+
+
+def _extract_cosyvoice_stream_waveform(item: Any) -> Any:
+    """Unwrap CosyVoice3 dict {'tts_speech': ...} or tuple/raw waveform chunk."""
+    if isinstance(item, dict) and "tts_speech" in item:
+        return item["tts_speech"]
+    return _extract_qwen3_stream_waveform(item)
+
+
+def _iter_streaming_pcm16_chunks(
+    stream_iter: Any,
+    *,
+    extract_waveform: Callable[[Any], Any],
+    cancel_event: Optional[threading.Event],
+) -> Iterator[bytes]:
+    """Iterate a model streaming generator into non-empty PCM16 chunks with boundary cancellation."""
+    try:
+        for item in stream_iter:
+            if cancel_event is not None and cancel_event.is_set():
+                break
+            waveform = extract_waveform(item)
+            if waveform is None:
+                continue
+            pcm16 = coerce_audio_to_pcm16_bytes(waveform)
+            if pcm16:
+                yield pcm16
+            if cancel_event is not None and cancel_event.is_set():
+                break
+    finally:
+        close_fn = getattr(stream_iter, "close", None)
+        if callable(close_fn):
+            close_fn()
 
 
 def _default_load_qwen3_model(model_path: str, **kwargs: Any) -> Any:
@@ -207,6 +267,49 @@ class Qwen3CustomVoiceBackend(TtsBackend):
         pcm16 = coerce_audio_to_pcm16_bytes(waveform)
         return SynthesisRawAudio(pcm16_bytes=pcm16, sample_rate=int(sr or self.sample_rate))
 
+    def synthesize_stream(
+        self,
+        plan: SynthesisVoicePlan,
+        text: str,
+        *,
+        max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
+        chunk_size: int = DEFAULT_STREAM_CHUNK_SIZE,
+        cancel_event: Optional[threading.Event] = None,
+        chunk_bytes: int = 9600,
+    ) -> Iterator[bytes]:
+        if not self._ready or self._model is None:
+            raise RuntimeError("Qwen3CustomVoiceBackend is not loaded")
+        validated_chunk_size = validate_stream_chunk_size(chunk_size)
+        capped_tokens = clamp_max_new_tokens(max_new_tokens, hard_cap=self.max_new_tokens)
+        if cancel_event is not None and cancel_event.is_set():
+            return
+
+        stream_fn = getattr(self._model, "generate_custom_voice_streaming", None)
+        if callable(stream_fn):
+            stream_iter = stream_fn(
+                text=text,
+                language=plan.language,
+                speaker=plan.speaker,
+                instruct=plan.instruct,
+                chunk_size=validated_chunk_size,
+                max_new_tokens=capped_tokens,
+            )
+            yield from _iter_streaming_pcm16_chunks(
+                stream_iter,
+                extract_waveform=_extract_qwen3_stream_waveform,
+                cancel_event=cancel_event,
+            )
+            return
+
+        yield from super().synthesize_stream(
+            plan,
+            text,
+            max_new_tokens=capped_tokens,
+            chunk_size=validated_chunk_size,
+            cancel_event=cancel_event,
+            chunk_bytes=chunk_bytes,
+        )
+
 
 class CosyVoice3Backend(TtsBackend):
     """Runner-up backend: Fun-CosyVoice3-0.5B-2512 (FP16 + cached 5-persona embeddings)."""
@@ -235,6 +338,7 @@ class CosyVoice3Backend(TtsBackend):
         self._model_loader = model_loader
         self._model: Any = None
         self._speaker_cache: Dict[str, Any] = {}
+        self._ref_audio_paths: Dict[str, str] = {}
 
     @property
     def personas_cached(self) -> int:
@@ -263,8 +367,10 @@ class CosyVoice3Backend(TtsBackend):
         # Pre-extract 5 persona embeddings in memory so inference_instruct2 never hits
         # upstream zero_shot_spk_id prompt_text overwrite issues.
         self._speaker_cache.clear()
+        self._ref_audio_paths.clear()
         for profile in self.registry.list_personas():
             ref_path, ref_text = self._resolve_ref_clip(profile.voice_pack_id)
+            self._ref_audio_paths[profile.persona_id] = ref_path
             if hasattr(self._model, "extract_speaker_features"):
                 self._speaker_cache[profile.persona_id] = self._model.extract_speaker_features(
                     ref_path
@@ -310,6 +416,67 @@ class CosyVoice3Backend(TtsBackend):
         return SynthesisRawAudio(
             pcm16_bytes=b"".join(chunks),
             sample_rate=int(getattr(self._model, "sample_rate", self.sample_rate)),
+        )
+
+    def synthesize_stream(
+        self,
+        plan: SynthesisVoicePlan,
+        text: str,
+        *,
+        max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
+        chunk_size: int = DEFAULT_STREAM_CHUNK_SIZE,
+        cancel_event: Optional[threading.Event] = None,
+        chunk_bytes: int = 9600,
+    ) -> Iterator[bytes]:
+        if not self._ready or self._model is None:
+            raise RuntimeError("CosyVoice3Backend is not loaded")
+        validated_chunk_size = validate_stream_chunk_size(chunk_size)
+        capped_tokens = clamp_max_new_tokens(max_new_tokens, hard_cap=self.max_new_tokens)
+        if cancel_event is not None and cancel_event.is_set():
+            return
+
+        spk_features = self._speaker_cache[plan.persona_id]
+        cached_stream_fn = getattr(self._model, "synthesize_stream_with_cached_features", None)
+        if callable(cached_stream_fn):
+            stream_iter = cached_stream_fn(
+                text=text,
+                instruct_prompt=plan.cosyvoice_instruct,
+                spk_features=spk_features,
+            )
+            yield from _iter_streaming_pcm16_chunks(
+                stream_iter,
+                extract_waveform=_extract_cosyvoice_stream_waveform,
+                cancel_event=cancel_event,
+            )
+            return
+
+        instruct2_fn = getattr(self._model, "inference_instruct2", None)
+        ref_audio_path = (
+            spk_features["ref_audio_path"]
+            if isinstance(spk_features, dict) and "ref_audio_path" in spk_features
+            else self._ref_audio_paths.get(plan.persona_id)
+        )
+        if callable(instruct2_fn) and ref_audio_path:
+            stream_iter = instruct2_fn(
+                text,
+                plan.cosyvoice_instruct,
+                ref_audio_path,
+                stream=True,
+            )
+            yield from _iter_streaming_pcm16_chunks(
+                stream_iter,
+                extract_waveform=_extract_cosyvoice_stream_waveform,
+                cancel_event=cancel_event,
+            )
+            return
+
+        yield from super().synthesize_stream(
+            plan,
+            text,
+            max_new_tokens=capped_tokens,
+            chunk_size=validated_chunk_size,
+            cancel_event=cancel_event,
+            chunk_bytes=chunk_bytes,
         )
 
 
@@ -395,6 +562,49 @@ class Qwen3BaseCloneBackend(TtsBackend):
         waveform = wavs[0] if isinstance(wavs, (list, tuple)) and wavs else wavs
         pcm16 = coerce_audio_to_pcm16_bytes(waveform)
         return SynthesisRawAudio(pcm16_bytes=pcm16, sample_rate=int(sr or self.sample_rate))
+
+    def synthesize_stream(
+        self,
+        plan: SynthesisVoicePlan,
+        text: str,
+        *,
+        max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS,
+        chunk_size: int = DEFAULT_STREAM_CHUNK_SIZE,
+        cancel_event: Optional[threading.Event] = None,
+        chunk_bytes: int = 9600,
+    ) -> Iterator[bytes]:
+        if not self._ready or self._model is None:
+            raise RuntimeError("Qwen3BaseCloneBackend is not loaded")
+        validated_chunk_size = validate_stream_chunk_size(chunk_size)
+        capped_tokens = clamp_max_new_tokens(max_new_tokens, hard_cap=self.max_new_tokens)
+        if cancel_event is not None and cancel_event.is_set():
+            return
+
+        stream_fn = getattr(self._model, "generate_voice_clone_streaming", None)
+        if callable(stream_fn):
+            cached_prompt = self._prompt_matrix[plan.reference_key]
+            stream_iter = stream_fn(
+                text=text,
+                language=plan.language,
+                voice_clone_prompt=cached_prompt,
+                chunk_size=validated_chunk_size,
+                max_new_tokens=capped_tokens,
+            )
+            yield from _iter_streaming_pcm16_chunks(
+                stream_iter,
+                extract_waveform=_extract_qwen3_stream_waveform,
+                cancel_event=cancel_event,
+            )
+            return
+
+        yield from super().synthesize_stream(
+            plan,
+            text,
+            max_new_tokens=capped_tokens,
+            chunk_size=validated_chunk_size,
+            cancel_event=cancel_event,
+            chunk_bytes=chunk_bytes,
+        )
 
 
 def create_backend(

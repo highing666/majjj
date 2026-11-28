@@ -248,7 +248,25 @@ async fn remote_gate_cookie_auth_api_isolation_and_revocation_semantics() {
         audio_headers
             .get(CONTENT_TYPE)
             .and_then(|v| v.to_str().ok()),
-        Some("audio/wav")
+        Some("application/octet-stream")
+    );
+    assert_eq!(
+        audio_headers
+            .get("x-audio-format")
+            .and_then(|v| v.to_str().ok()),
+        Some("pcm_s16le")
+    );
+    assert_eq!(
+        audio_headers
+            .get("x-audio-sample-rate")
+            .and_then(|v| v.to_str().ok()),
+        Some("24000")
+    );
+    assert_eq!(
+        audio_headers
+            .get("x-audio-channels")
+            .and_then(|v| v.to_str().ok()),
+        Some("1")
     );
     assert!(audio_body.starts_with(b"RIFF"));
 

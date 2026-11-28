@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { defaultDevicePreferences } from "../preferences/devicePreferences";
-import type { ActiveBanterBubble } from "../presentation/presentationQueue";
+import type {
+  ActiveBanterBubble,
+  ActiveBanterMap,
+} from "../presentation/presentationQueue";
+import type { SeatInfo } from "../protocol/generated/SeatInfo";
 import {
+  buildPostHandBanterStripItems,
   isBubbleActivelySpeaking,
   isSeatActivelySpeaking,
   resolveHumanVoicePackSyncTarget,
@@ -45,18 +50,64 @@ function makeQuickEmoteBubble(
   };
 }
 
-describe("banterVisibility", () => {
-  it("hides AI banter text ONLY when hide_banter_bubble_with_voice is on, audible, banter voice enabled, AudioContext running, and TTS available", () => {
-    const basePrefs = {
-      ...defaultDevicePreferences(false),
-      hide_banter_bubble_with_voice: true,
-      muted: false,
-      master_volume: 0.85,
-      voice_volume: 1,
-      banter_voice_enabled: true,
-    };
+function makeSeats(): [SeatInfo, SeatInfo, SeatInfo, SeatInfo] {
+  return [
+    {
+      seat: "East",
+      kind: "Human",
+      nickname: "小明",
+      ai_difficulty: null,
+      ai_style: null,
+      persona_id: null,
+      mood: null,
+      connected: true,
+      ai_assisted: false,
+      voice_pack_id: "human_male",
+    },
+    {
+      seat: "South",
+      kind: "Ai",
+      nickname: "大川",
+      ai_difficulty: "Strong",
+      ai_style: "AggressiveFast",
+      persona_id: "QuickHothead",
+      mood: "Tilted",
+      connected: true,
+      ai_assisted: false,
+      voice_pack_id: "quick_hothead",
+    },
+    {
+      seat: "West",
+      kind: "Ai",
+      nickname: "小晚",
+      ai_difficulty: "Strong",
+      ai_style: "Balanced",
+      persona_id: "TeaSarcasm",
+      mood: "Mocking",
+      connected: true,
+      ai_assisted: false,
+      voice_pack_id: "tea_sarcasm",
+    },
+    {
+      seat: "North",
+      kind: "Ai",
+      nickname: "老周",
+      ai_difficulty: "Strong",
+      ai_style: "DefensiveBigHand",
+      persona_id: "StubbornBlamer",
+      mood: "Deadpan",
+      connected: true,
+      ai_assisted: false,
+      voice_pack_id: "stubborn_blamer",
+    },
+  ];
+}
 
-    // All 5 conditions satisfied -> hide regular AI banter text bubbles
+describe("banterVisibility", () => {
+  it("hides AI banter text by default whenever audible, banter voice enabled, AudioContext running, and TTS available, and restores immediately on any fallback condition", () => {
+    const basePrefs = defaultDevicePreferences(false);
+
+    // Default audible state -> hide regular AI banter text bubbles (voice-first)
     expect(
       shouldHideBanterBubbles({
         preferences: basePrefs,
@@ -72,16 +123,7 @@ describe("banterVisibility", () => {
       }),
     ).toBe(true);
 
-    // 1. Toggle off -> show bubbles
-    expect(
-      shouldHideBanterBubbles({
-        preferences: { ...basePrefs, hide_banter_bubble_with_voice: false },
-        audioState: "running",
-        ttsStatusNotice: null,
-      }),
-    ).toBe(false);
-
-    // 2. Device muted or master_volume === 0 or voice_volume === 0 -> auto-fallback to visible bubbles
+    // 1. Device muted or master_volume <= 0 or voice_volume <= 0 -> auto-fallback to visible bubbles
     expect(
       shouldHideBanterBubbles({
         preferences: { ...basePrefs, muted: true },
@@ -104,7 +146,7 @@ describe("banterVisibility", () => {
       }),
     ).toBe(false);
 
-    // 3. banter_voice_enabled === false -> auto-fallback to visible bubbles
+    // 2. banter_voice_enabled === false -> auto-fallback to visible bubbles
     expect(
       shouldHideBanterBubbles({
         preferences: { ...basePrefs, banter_voice_enabled: false },
@@ -113,7 +155,7 @@ describe("banterVisibility", () => {
       }),
     ).toBe(false);
 
-    // 4. Safari AudioContext not running (uninitialized / suspended / interrupted / closed) -> auto-fallback
+    // 3. Safari AudioContext not running (uninitialized / suspended / interrupted / closed) -> auto-fallback
     for (const audioState of [
       "uninitialized",
       "suspended",
@@ -130,7 +172,7 @@ describe("banterVisibility", () => {
       ).toBe(false);
     }
 
-    // 5. TTS service degraded -> auto-fallback to visible bubbles
+    // 4. TTS service degraded or --no-tts -> auto-fallback to visible bubbles
     expect(
       shouldHideBanterBubbles({
         preferences: basePrefs,
@@ -141,6 +183,15 @@ describe("banterVisibility", () => {
         },
       }),
     ).toBe(false);
+
+    // 5. Returning to normal audible state immediately restores hidden mode
+    expect(
+      shouldHideBanterBubbles({
+        preferences: { ...basePrefs, muted: false, banter_voice_enabled: true },
+        audioState: "running",
+        ttsStatusNotice: { available: true, message: "语音服务已恢复" },
+      }),
+    ).toBe(true);
   });
 
   it("suppresses only AI banter text bubbles when hidden while keeping human quick_emote and audioFallback bubbles visible", () => {
@@ -154,6 +205,84 @@ describe("banterVisibility", () => {
     expect(shouldShowBubbleText(fallbackAiBubble, true)).toBe(true);
     expect(shouldShowBubbleText(emoteBubble, false)).toBe(true);
     expect(shouldShowBubbleText(emoteBubble, true)).toBe(true);
+  });
+
+  it("renders settlement/summary PostHandBanterStrip cards compactly when audible and expands text on fallback, audioFallback, or human quick_emote", () => {
+    const seats = makeSeats();
+    const aiRegular = makeAiBubble({
+      bubbleId: 1,
+      seat: "South",
+      banterId: "b-settle-1",
+      mood: "Tilted",
+      text: "这手点炮点得我心疼！",
+    });
+    const aiFallback = makeAiBubble({
+      bubbleId: 2,
+      seat: "West",
+      banterId: "b-settle-2",
+      personaId: "TeaSarcasm",
+      mood: "Mocking",
+      text: "哟，这都能胡？",
+      audioFallback: true,
+      replyToSeat: "South",
+    });
+    const humanEmote = makeQuickEmoteBubble({
+      bubbleId: 3,
+      seat: "East",
+      text: "就这？",
+    });
+
+    const activeBubbles: ActiveBanterMap = {
+      East: humanEmote,
+      South: aiRegular,
+      West: aiFallback,
+      North: null,
+    };
+
+    // Audible (hideAiBanterText=true): regular AI is compact with speaking pulse;
+    // per-line audioFallback and human quick_emote expand text.
+    const audibleItems = buildPostHandBanterStripItems({
+      seats,
+      yourSeat: "East",
+      activeBubbles,
+      activeBanterVoice: { seat: "South", banterId: "b-settle-1" },
+      hideAiBanterText: true,
+    });
+    expect(audibleItems).toHaveLength(3);
+    expect(audibleItems[0]).toMatchObject({
+      speakerName: "大川",
+      speaking: true,
+      hideText: true,
+      replyTargetName: null,
+    });
+    expect(audibleItems[1]).toMatchObject({
+      speakerName: "小晚",
+      speaking: false,
+      hideText: false,
+      replyTargetName: "下家 · 大川",
+    });
+    expect(audibleItems[2]).toMatchObject({
+      speakerName: "小明",
+      speaking: false,
+      hideText: false,
+      moodShortLabel: "快捷互动",
+    });
+
+    // Silent/fallback (hideAiBanterText=false): regular AI card automatically expands text
+    const fallbackItems = buildPostHandBanterStripItems({
+      seats,
+      yourSeat: "East",
+      activeBubbles,
+      activeBanterVoice: null,
+      hideAiBanterText: false,
+    });
+    expect(fallbackItems[0]).toMatchObject({
+      speakerName: "大川",
+      speaking: false,
+      hideText: false,
+    });
+    expect(fallbackItems[1]?.hideText).toBe(false);
+    expect(fallbackItems[2]?.hideText).toBe(false);
   });
 
   it("matches active speaking state strictly by seat and banterId for bubbles and by seat for avatar pockets", () => {

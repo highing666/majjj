@@ -13,7 +13,6 @@ export interface DevicePreferences {
   muted: boolean;
   tile_call_voice_enabled: boolean;
   banter_voice_enabled: boolean;
-  hide_banter_bubble_with_voice: boolean;
   human_voice_pack_id: HumanVoicePackId | null;
   ios_audio_session: IosAudioSessionMode;
   confirm_discard: boolean;
@@ -45,7 +44,6 @@ const BASE_DEFAULTS: Omit<DevicePreferences, "confirm_discard"> = {
   muted: false,
   tile_call_voice_enabled: true,
   banter_voice_enabled: true,
-  hide_banter_bubble_with_voice: false,
   human_voice_pack_id: null,
   ios_audio_session: "playback",
   reduced_effects: false,
@@ -127,8 +125,8 @@ export function defaultDevicePreferences(
 }
 
 /**
- * Sanitizes and clamps an arbitrary input into the exact 11 `DevicePreferences` fields,
- * dropping unknown properties (such as table-level `pace`).
+ * Sanitizes and clamps an arbitrary input into the exact 10 `DevicePreferences` fields,
+ * dropping unknown or retired legacy properties (such as table-level `pace`).
  */
 export function normalizeDevicePreferences(
   raw: unknown,
@@ -150,10 +148,6 @@ export function normalizeDevicePreferences(
     banter_voice_enabled: normalizeBoolean(
       record.banter_voice_enabled,
       defaults.banter_voice_enabled,
-    ),
-    hide_banter_bubble_with_voice: normalizeBoolean(
-      record.hide_banter_bubble_with_voice,
-      defaults.hide_banter_bubble_with_voice,
     ),
     human_voice_pack_id: normalizeHumanVoicePackId(
       record.human_voice_pack_id,

@@ -173,7 +173,7 @@ export interface BanterVoiceRequest {
   readonly banterId: string;
   readonly seat: Seat;
   readonly audioUrl: string;
-  readonly durationMs: number;
+  readonly sampleRate: number;
   readonly priority: BanterVoicePriority;
   readonly relativeRole: RelativeRole | null;
 }
@@ -217,6 +217,24 @@ export interface AudioStatus {
   readonly hasAudioSessionApi: boolean;
 }
 
+export interface FetchHeadersLike {
+  get(name: string): string | null;
+}
+
+export interface FetchResponseLike {
+  readonly ok: boolean;
+  readonly status: number;
+  readonly headers?: FetchHeadersLike;
+  readonly body?: ReadableStream<Uint8Array> | null;
+  json(): Promise<unknown>;
+  arrayBuffer(): Promise<ArrayBuffer>;
+}
+
+export interface FetchInitLike {
+  readonly signal?: AbortSignal;
+}
+
 export type FetchLike = (
   input: string,
-) => Promise<{ ok: boolean; status: number; json(): Promise<unknown>; arrayBuffer(): Promise<ArrayBuffer> }>;
+  init?: FetchInitLike,
+) => Promise<FetchResponseLike>;

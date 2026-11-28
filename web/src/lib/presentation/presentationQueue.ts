@@ -756,7 +756,7 @@ export function createPresentationQueue(
   function handleTableBanterAudioReady(
     message: Extract<ServerMessage, { TableBanterAudioReady: unknown }>,
   ): void {
-    const { banter_id, seat, audio_url, duration_ms } =
+    const { banter_id, seat, audio_url, sample_rate } =
       message.TableBanterAudioReady;
     if (pendingHiddenBanterBySeat[seat]?.banterId === banter_id) {
       delete pendingHiddenBanterBySeat[seat];
@@ -785,7 +785,7 @@ export function createPresentationQueue(
         banterId: banter_id,
         seat,
         audioUrl: trimmedUrl,
-        durationMs: duration_ms,
+        sampleRate: sample_rate,
         priority,
         relativeRole,
       },
@@ -917,11 +917,56 @@ export function createPresentationQueue(
     },
 
     setHideAiBanterText(hidden: boolean): void {
+      if (disposed) {
+        return;
+      }
+      const wasHidden = hideAiBanterText;
       hideAiBanterText = hidden;
-      if (!hidden) {
-        for (const seat of ALL_SEATS) {
-          delete pendingHiddenBanterBySeat[seat];
+      if (hidden) {
+        return;
+      }
+      let changed = false;
+      const snap = sessionState.snapshot;
+      for (const seat of ALL_SEATS) {
+        const pendingHidden = pendingHiddenBanterBySeat[seat];
+        delete pendingHiddenBanterBySeat[seat];
+        if (!wasHidden) {
+          continue;
         }
+        const current = activeBubbles[seat];
+        if (
+          current !== null &&
+          current.kind === "banter" &&
+          deferredDismissBubbleIds[seat] === current.bubbleId
+        ) {
+          delete deferredDismissBubbleIds[seat];
+          scheduleSeatBubbleDismissTimer(
+            seat,
+            current.bubbleId,
+            effectiveBanterDurationMs(),
+          );
+          continue;
+        }
+        if (current === null && pendingHidden !== undefined) {
+          const seatInfo = snap?.seats.find((entry) => entry.seat === seat);
+          if (seatInfo && seatInfo.kind !== "Ai") {
+            continue;
+          }
+          delete deferredDismissBubbleIds[seat];
+          activeBubbles = {
+            ...activeBubbles,
+            [seat]: pendingHidden,
+          };
+          scheduleSeatBubbleDismissTimer(
+            seat,
+            pendingHidden.bubbleId,
+            effectiveBanterDurationMs(),
+          );
+          changed = true;
+        }
+      }
+      if (changed) {
+        emitState();
       }
     },
 

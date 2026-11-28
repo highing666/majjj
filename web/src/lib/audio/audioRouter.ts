@@ -679,7 +679,7 @@ export function createAudioEventRouter(
           banterId: request.banterId,
           seat: request.seat,
           audioUrl: request.audioUrl,
-          durationMs: request.durationMs,
+          sampleRate: request.sampleRate,
           priority: request.priority,
           pan: resolvePan(request.relativeRole),
         },

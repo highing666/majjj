@@ -1365,7 +1365,7 @@ describe("session reducer — TableBanter and LlmStatusNotice", () => {
         banter_id: "b-1",
         seat: "South",
         audio_url: "/api/banter-audio/b-1",
-        duration_ms: 1450,
+        sample_rate: 24000,
       },
     });
     expect(afterAudioReady.state).toEqual(degraded.state);

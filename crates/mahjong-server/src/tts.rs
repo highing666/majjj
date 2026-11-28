@@ -5,6 +5,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
 
+use futures_util::stream::{self, Stream};
+use hyper::body::Bytes;
 use hyper::{HeaderMap, Method, StatusCode};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -17,6 +19,12 @@ use crate::persona::{PersonaId, PersonaMood};
 /// Default LAN Windows emotional TTS endpoint (see Spec #81 / ADR-0011).
 pub const DEFAULT_TTS_BASE_URL: &str = "http://192.168.5.50:8081";
 
+/// Default Raw PCM16 sample rate in Hz for streaming `BanterVoice` (Spec #112 / ADR-0016).
+pub const DEFAULT_TTS_SAMPLE_RATE: u32 = 24_000;
+
+/// Default channel count for streaming `BanterVoice` Raw PCM16 (mono).
+pub const DEFAULT_TTS_CHANNELS: u8 = 1;
+
 /// Synthesis deadline for in-hand `BanterVoice` lines (`5,000 ms` per ADR-0014).
 pub const TTS_IN_HAND_DEADLINE_MS: u32 = 5_000;
 
@@ -28,6 +36,7 @@ pub const TTS_COOLDOWN_DURATION: Duration = Duration::from_secs(15);
 
 const DEFAULT_HEALTH_TIMEOUT: Duration = Duration::from_secs(3);
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
+const ERROR_BODY_COLLECT_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Boxed `Send` future returned by [`TtsClient`] methods.
 pub type TtsFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -72,6 +81,83 @@ impl TtsSynthesisRequest {
             format: "wav".to_string(),
             stream: false,
             deadline_ms,
+        }
+    }
+
+    /// Builds a streaming 24 kHz mono Raw PCM16 synthesis request (`stream: true, format: "pcm"`).
+    #[must_use]
+    pub fn new_stream(
+        request_id: impl Into<String>,
+        persona_id: PersonaId,
+        mood: PersonaMood,
+        text: impl Into<String>,
+        deadline_ms: u32,
+    ) -> Self {
+        Self {
+            request_id: request_id.into(),
+            persona_id,
+            mood,
+            text: text.into(),
+            instruct_override: None,
+            format: "pcm".to_string(),
+            stream: true,
+            deadline_ms,
+        }
+    }
+}
+
+/// Boxed `Send` asynchronous stream of Raw PCM16 audio chunks yielded by [`TtsClient::synthesize_stream`].
+pub type TtsChunkStream = Pin<Box<dyn Stream<Item = Result<Bytes, TtsError>> + Send>>;
+
+/// Incremental Raw PCM16 audio stream returned by [`TtsClient::synthesize_stream`].
+pub struct TtsAudioStream {
+    /// Sample rate in Hz parsed from `X-Audio-Sample-Rate` (default `24000`).
+    pub sample_rate: u32,
+    /// Channel count parsed from `X-Audio-Channels` (default `1`).
+    pub channels: u8,
+    /// Incremental Raw PCM16 LE byte chunks.
+    pub chunks: TtsChunkStream,
+}
+
+impl std::fmt::Debug for TtsAudioStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TtsAudioStream")
+            .field("sample_rate", &self.sample_rate)
+            .field("channels", &self.channels)
+            .finish_non_exhaustive()
+    }
+}
+
+impl TtsAudioStream {
+    /// Constructs a [`TtsAudioStream`] from a static list of chunk results (useful for deterministic tests).
+    #[must_use]
+    pub fn from_chunks(
+        sample_rate: u32,
+        channels: u8,
+        chunks: Vec<Result<Bytes, TtsError>>,
+    ) -> Self {
+        Self {
+            sample_rate,
+            channels,
+            chunks: Box::pin(stream::iter(chunks)),
+        }
+    }
+
+    /// Constructs a [`TtsAudioStream`] backed by a Tokio mpsc receiver (useful for gated streaming tests).
+    #[must_use]
+    pub fn from_channel(
+        sample_rate: u32,
+        channels: u8,
+        rx: tokio::sync::mpsc::Receiver<Result<Bytes, TtsError>>,
+    ) -> Self {
+        let chunks = stream::unfold(rx, |mut rx| async move {
+            let item = rx.recv().await?;
+            Some((item, rx))
+        });
+        Self {
+            sample_rate,
+            channels,
+            chunks: Box::pin(chunks),
         }
     }
 }
@@ -150,6 +236,13 @@ pub trait TtsClient: Send + Sync + std::fmt::Debug {
         &self,
         request: TtsSynthesisRequest,
     ) -> TtsFuture<'_, Result<TtsAudioOutput, TtsError>>;
+
+    /// Synthesizes one `BanterVoice` Raw PCM16 stream via `POST /v1/tts/synthesize`
+    /// (`stream: true, format: "pcm"`), returning immediately once HTTP `200` headers arrive.
+    fn synthesize_stream(
+        &self,
+        request: TtsSynthesisRequest,
+    ) -> TtsFuture<'_, Result<TtsAudioStream, TtsError>>;
 }
 
 impl From<LanHttpError> for TtsError {
@@ -349,6 +442,52 @@ fn extract_duration_ms(headers: &HeaderMap, wav_bytes: &[u8]) -> Result<u32, Tts
     Ok(header_duration.unwrap_or_else(|| parsed_wav.unwrap_or(0)))
 }
 
+fn parse_stream_audio_headers(headers: &HeaderMap) -> Result<(u32, u8), TtsError> {
+    if let Some(format_val) = headers.get("x-audio-format") {
+        let format_str = format_val
+            .to_str()
+            .map_err(|_| TtsError::InvalidResponse {
+                reason: "X-Audio-Format 响应头非有效 ASCII".to_string(),
+            })?
+            .trim();
+        if !format_str.eq_ignore_ascii_case("pcm_s16le") {
+            return Err(TtsError::InvalidResponse {
+                reason: format!("不支持的流式音频格式：{format_str}"),
+            });
+        }
+    }
+
+    let sample_rate = match headers.get("x-audio-sample-rate") {
+        Some(val) => {
+            let parsed = val
+                .to_str()
+                .ok()
+                .and_then(|s| s.trim().parse::<u32>().ok())
+                .filter(|&sr| (8_000..=192_000).contains(&sr));
+            parsed.ok_or_else(|| TtsError::InvalidResponse {
+                reason: "X-Audio-Sample-Rate 响应头无效".to_string(),
+            })?
+        }
+        None => DEFAULT_TTS_SAMPLE_RATE,
+    };
+
+    let channels = match headers.get("x-audio-channels") {
+        Some(val) => {
+            let parsed = val
+                .to_str()
+                .ok()
+                .and_then(|s| s.trim().parse::<u8>().ok())
+                .filter(|&ch| ch == DEFAULT_TTS_CHANNELS);
+            parsed.ok_or_else(|| TtsError::InvalidResponse {
+                reason: "X-Audio-Channels 仅支持单声道 (1)".to_string(),
+            })?
+        }
+        None => DEFAULT_TTS_CHANNELS,
+    };
+
+    Ok((sample_rate, channels))
+}
+
 impl TtsClient for HttpTtsClient {
     fn endpoint(&self) -> &str {
         &self.endpoint.raw_normalized
@@ -413,6 +552,47 @@ impl TtsClient for HttpTtsClient {
             })
         })
     }
+
+    fn synthesize_stream(
+        &self,
+        request: TtsSynthesisRequest,
+    ) -> TtsFuture<'_, Result<TtsAudioStream, TtsError>> {
+        Box::pin(async move {
+            let payload =
+                serde_json::to_vec(&request).map_err(|err| TtsError::InvalidResponse {
+                    reason: format!("序列化流式语音合成请求失败：{err}"),
+                })?;
+            let http_stream = self
+                .endpoint
+                .send_http_stream(
+                    Method::POST,
+                    "/v1/tts/synthesize",
+                    Some(payload),
+                    self.request_timeout,
+                )
+                .await?;
+            if !http_stream.status.is_success() {
+                let status = http_stream.status;
+                let err_body = http_stream
+                    .collect_body(ERROR_BODY_COLLECT_TIMEOUT)
+                    .await
+                    .unwrap_or_default();
+                return Err(self
+                    .ensure_http_success(status, &err_body)
+                    .expect_err("non-2xx status must map to TtsError"));
+            }
+            let (sample_rate, channels) = parse_stream_audio_headers(&http_stream.headers)?;
+            let chunks = stream::unfold(http_stream, |mut stream| async move {
+                let item = stream.next_chunk().await?;
+                Some((item.map_err(TtsError::from), stream))
+            });
+            Ok(TtsAudioStream {
+                sample_rate,
+                channels,
+                chunks: Box::pin(chunks),
+            })
+        })
+    }
 }
 
 #[cfg(test)]
@@ -421,8 +601,9 @@ mod tests {
     use hyper::HeaderMap;
 
     use super::{
-        extract_duration_ms, parse_wav_duration_ms, resolve_tts_base_url, HttpTtsClient, TtsError,
-        TtsSynthesisRequest, DEFAULT_TTS_BASE_URL, TTS_IN_HAND_DEADLINE_MS,
+        extract_duration_ms, parse_stream_audio_headers, parse_wav_duration_ms,
+        resolve_tts_base_url, HttpTtsClient, TtsError, TtsSynthesisRequest, DEFAULT_TTS_BASE_URL,
+        DEFAULT_TTS_CHANNELS, DEFAULT_TTS_SAMPLE_RATE, TTS_IN_HAND_DEADLINE_MS,
     };
     use crate::persona::{PersonaId, PersonaMood};
 
@@ -523,5 +704,61 @@ mod tests {
         assert_eq!(value["format"], "wav");
         assert_eq!(value["stream"], false);
         assert_eq!(value["deadline_ms"], 5000);
+    }
+
+    #[test]
+    fn synthesize_stream_request_serializes_pcm_streaming_contract() {
+        let req = TtsSynthesisRequest::new_stream(
+            "b-8",
+            PersonaId::QuickHothead,
+            PersonaMood::Smug,
+            "慢工出细活。",
+            TTS_IN_HAND_DEADLINE_MS,
+        );
+        let value = serde_json::to_value(&req).expect("serialize stream request");
+        assert_eq!(value["request_id"], "b-8");
+        assert_eq!(value["persona_id"], "QuickHothead");
+        assert_eq!(value["mood"], "Smug");
+        assert_eq!(value["text"], "慢工出细活。");
+        assert!(value["instruct_override"].is_null());
+        assert_eq!(value["format"], "pcm");
+        assert_eq!(value["stream"], true);
+        assert_eq!(value["deadline_ms"], 5000);
+    }
+
+    #[test]
+    fn parse_stream_audio_headers_parses_defaults_and_rejects_invalid_values() {
+        // Absent headers fall back to 24kHz mono PCM16.
+        assert_eq!(
+            parse_stream_audio_headers(&HeaderMap::new()).unwrap(),
+            (DEFAULT_TTS_SAMPLE_RATE, DEFAULT_TTS_CHANNELS)
+        );
+
+        let mut valid = HeaderMap::new();
+        valid.insert("x-audio-format", HeaderValue::from_static("pcm_s16le"));
+        valid.insert("x-audio-sample-rate", HeaderValue::from_static("16000"));
+        valid.insert("x-audio-channels", HeaderValue::from_static("1"));
+        assert_eq!(parse_stream_audio_headers(&valid).unwrap(), (16_000, 1));
+
+        let mut bad_format = HeaderMap::new();
+        bad_format.insert("x-audio-format", HeaderValue::from_static("opus"));
+        assert!(matches!(
+            parse_stream_audio_headers(&bad_format),
+            Err(TtsError::InvalidResponse { .. })
+        ));
+
+        let mut bad_channels = HeaderMap::new();
+        bad_channels.insert("x-audio-channels", HeaderValue::from_static("2"));
+        assert!(matches!(
+            parse_stream_audio_headers(&bad_channels),
+            Err(TtsError::InvalidResponse { .. })
+        ));
+
+        let mut bad_rate = HeaderMap::new();
+        bad_rate.insert("x-audio-sample-rate", HeaderValue::from_static("0"));
+        assert!(matches!(
+            parse_stream_audio_headers(&bad_rate),
+            Err(TtsError::InvalidResponse { .. })
+        ));
     }
 }

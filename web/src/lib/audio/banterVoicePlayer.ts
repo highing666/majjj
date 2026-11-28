@@ -4,9 +4,11 @@ import type {
   AudioBufferLike,
   AudioBufferSourceNodeLike,
   AudioContextLike,
+  AudioNodeLike,
   BanterVoicePriority,
   BanterVoiceStateListener,
   FetchLike,
+  FetchResponseLike,
   GainNodeLike,
 } from "./audioTypes";
 import {
@@ -17,12 +19,19 @@ import {
 import { rampSfxGain, VO_DUCK_FACTOR } from "./voManager";
 
 export const BANTER_VOICE_MAX_QUEUE_LENGTH = 2;
+export const DEFAULT_BANTER_SAMPLE_RATE = 24000;
+export const BANTER_STREAM_SAFETY_LEAD_SEC = 0.02;
+export const BANTER_STREAM_CONTINUATION_LEAD_SEC = 0.005;
+export const BANTER_EDGE_FADE_SEC = 0.003;
+
+const MIN_VALID_SAMPLE_RATE = 8000;
+const MAX_VALID_SAMPLE_RATE = 192000;
 
 export interface BanterVoicePlaybackItem {
   readonly banterId: string;
   readonly seat: Seat;
   readonly audioUrl: string;
-  readonly durationMs: number;
+  readonly sampleRate?: number;
   readonly priority: BanterVoicePriority;
   readonly pan: number;
 }
@@ -61,8 +70,15 @@ interface ActiveBanterSlot {
   readonly ctx: AudioContextLike;
   readonly voGain: GainNodeLike;
   readonly sfxGain: GainNodeLike;
+  readonly abortController: AbortController;
   phase: "loading" | "playing";
-  source: AudioBufferSourceNodeLike | null;
+  slotGain: GainNodeLike | null;
+  panTarget: AudioNodeLike | null;
+  readonly sources: Set<AudioBufferSourceNodeLike>;
+  streamEnded: boolean;
+  nextStartTime: number;
+  firstFadeInEnd: number;
+  reader: ReadableStreamDefaultReader<Uint8Array> | null;
 }
 
 function isAllowedAudioUrl(audioUrl: string): boolean {
@@ -82,11 +98,60 @@ function setsEqual(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
   return true;
 }
 
+function resolveSampleRate(
+  response: FetchResponseLike,
+  fallbackSampleRate?: number,
+): number {
+  const headerVal =
+    response.headers?.get("X-Audio-Sample-Rate") ??
+    response.headers?.get("x-audio-sample-rate");
+  if (headerVal) {
+    const parsed = Number.parseInt(headerVal.trim(), 10);
+    if (
+      Number.isFinite(parsed) &&
+      parsed >= MIN_VALID_SAMPLE_RATE &&
+      parsed <= MAX_VALID_SAMPLE_RATE
+    ) {
+      return parsed;
+    }
+  }
+  if (
+    typeof fallbackSampleRate === "number" &&
+    Number.isFinite(fallbackSampleRate) &&
+    fallbackSampleRate >= MIN_VALID_SAMPLE_RATE &&
+    fallbackSampleRate <= MAX_VALID_SAMPLE_RATE
+  ) {
+    return Math.round(fallbackSampleRate);
+  }
+  return DEFAULT_BANTER_SAMPLE_RATE;
+}
+
+function pcm16LeToAudioBuffer(
+  ctx: AudioContextLike,
+  evenBytes: Uint8Array,
+  sampleRate: number,
+): AudioBufferLike {
+  const sampleCount = evenBytes.byteLength >> 1;
+  const buffer = ctx.createBuffer(1, sampleCount, sampleRate);
+  const channel = buffer.getChannelData(0);
+  const view = new DataView(
+    evenBytes.buffer,
+    evenBytes.byteOffset,
+    evenBytes.byteLength,
+  );
+  for (let i = 0; i < sampleCount; i += 1) {
+    channel[i] = view.getInt16(i * 2, true) / 32768;
+  }
+  return buffer;
+}
+
 /**
- * Manages asynchronous same-origin WAV fetching, Web Audio decoding, bounded
- * cross-seat queuing (max 2 pending items with priority-aware eviction),
- * same-seat preemption, relative stereo panning, shared `sfxGain` ducking,
- * and active `(seat, banterId)` + pending queue notifications for realtime `BanterVoice`.
+ * Manages incremental same-origin Raw PCM16 `ReadableStream` playback via Web Audio
+ * `AudioBufferSourceNode` sample-accurate scheduling (zero HTTPS / `AudioWorklet`
+ * dependency), odd-byte chunk alignment, ~3ms edge fades, bounded cross-seat queuing
+ * (max 2 pending items with priority-aware eviction), same-seat preemption with
+ * `AbortController`, relative stereo panning, shared 30ms `sfxGain` ducking, and
+ * active `(seat, banterId)` + pending queue notifications for realtime `BanterVoice`.
  */
 export function createBanterVoicePlayer(
   options: BanterVoicePlayerOptions = {},
@@ -189,13 +254,155 @@ export function createBanterVoicePlayer(
     pendingQueue.push(entry);
   }
 
-  function handleSlotFailed(token: number): void {
-    if (disposed || active?.token !== token) {
+  function disconnectSlotGraph(slot: ActiveBanterSlot): void {
+    slot.slotGain?.disconnect?.();
+    if (slot.panTarget !== null && slot.panTarget !== slot.voGain) {
+      slot.panTarget.disconnect?.();
+    }
+    slot.slotGain = null;
+    slot.panTarget = null;
+  }
+
+  function stopSlotResources(slot: ActiveBanterSlot): void {
+    slot.abortController.abort();
+    if (slot.reader !== null) {
+      const reader = slot.reader;
+      slot.reader = null;
+      void reader.cancel().catch(() => {});
+    }
+    for (const source of slot.sources) {
+      stopSourceQuietly(source);
+    }
+    slot.sources.clear();
+    disconnectSlotGraph(slot);
+  }
+
+  function scheduleTailFadeOut(slot: ActiveBanterSlot): void {
+    if (slot.slotGain === null) {
+      return;
+    }
+    const endTime = slot.nextStartTime;
+    const now = slot.ctx.currentTime;
+    if (endTime <= now) {
+      return;
+    }
+    const fadeStart = Math.max(
+      now,
+      slot.firstFadeInEnd,
+      endTime - BANTER_EDGE_FADE_SEC,
+    );
+    if (fadeStart < endTime) {
+      slot.slotGain.gain.setValueAtTime(1, fadeStart);
+      slot.slotGain.gain.linearRampToValueAtTime(0, endTime);
+    }
+  }
+
+  function completeActiveSlot(slot: ActiveBanterSlot): void {
+    if (active?.token !== slot.token) {
       return;
     }
     active = null;
+    disconnectSlotGraph(slot);
+    if (!disposed && !isExternalVoiceActive()) {
+      rampSfxGain(slot.ctx, slot.sfxGain, currentBaseSfxVolume);
+    }
     drainNext();
     notifyPlaybackState();
+  }
+
+  function finishActiveStreamTail(slot: ActiveBanterSlot): void {
+    if (disposed || active?.token !== slot.token) {
+      return;
+    }
+    slot.streamEnded = true;
+    scheduleTailFadeOut(slot);
+    if (slot.sources.size === 0) {
+      completeActiveSlot(slot);
+    }
+  }
+
+  function handlePreFirstChunkFailure(token: number): void {
+    if (disposed || active?.token !== token) {
+      return;
+    }
+    const failed = active;
+    active = null;
+    stopSlotResources(failed);
+    drainNext();
+    notifyPlaybackState();
+  }
+
+  function schedulePcmChunk(
+    slot: ActiveBanterSlot,
+    evenBytes: Uint8Array,
+    sampleRate: number,
+  ): boolean {
+    const buffer = pcm16LeToAudioBuffer(slot.ctx, evenBytes, sampleRate);
+    const isFirstChunk = slot.phase === "loading";
+
+    let startAt: number;
+    if (isFirstChunk) {
+      const panTarget = connectWithRelativePan(
+        slot.ctx,
+        slot.voGain,
+        slot.item.pan,
+      );
+      const slotGain = slot.ctx.createGain();
+      slotGain.connect(panTarget);
+
+      startAt = slot.ctx.currentTime + BANTER_STREAM_SAFETY_LEAD_SEC;
+      const fadeInDur = Math.min(BANTER_EDGE_FADE_SEC, buffer.duration * 0.5);
+      slotGain.gain.setValueAtTime(0, startAt);
+      slotGain.gain.linearRampToValueAtTime(1, startAt + fadeInDur);
+
+      slot.panTarget = panTarget;
+      slot.slotGain = slotGain;
+      slot.firstFadeInEnd = startAt + fadeInDur;
+    } else {
+      startAt = Math.max(
+        slot.nextStartTime,
+        slot.ctx.currentTime + BANTER_STREAM_CONTINUATION_LEAD_SEC,
+      );
+    }
+
+    const source = slot.ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(slot.slotGain!);
+    slot.sources.add(source);
+
+    source.onended = () => {
+      slot.sources.delete(source);
+      if (active?.token !== slot.token) {
+        return;
+      }
+      if (slot.streamEnded && slot.sources.size === 0) {
+        completeActiveSlot(slot);
+      }
+    };
+
+    try {
+      source.start(startAt);
+    } catch {
+      slot.sources.delete(source);
+      if (isFirstChunk) {
+        handlePreFirstChunkFailure(slot.token);
+      } else {
+        finishActiveStreamTail(slot);
+      }
+      return false;
+    }
+
+    slot.nextStartTime = startAt + buffer.duration;
+
+    if (isFirstChunk) {
+      slot.phase = "playing";
+      if (!isExternalVoiceActive()) {
+        rampSfxGain(slot.ctx, slot.sfxGain, currentBaseSfxVolume * VO_DUCK_FACTOR);
+      }
+      notifyPlaybackState();
+    }
+
+    return true;
   }
 
   function startSlot(
@@ -221,80 +428,128 @@ export function createBanterVoicePlayer(
       ctx,
       voGain,
       sfxGain,
+      abortController: new AbortController(),
       phase: "loading",
-      source: null,
+      slotGain: null,
+      panTarget: null,
+      sources: new Set(),
+      streamEnded: false,
+      nextStartTime: 0,
+      firstFadeInEnd: 0,
+      reader: null,
     };
     active = slot;
     notifyPlaybackState();
 
+    const isStillCurrent = (): boolean =>
+      !disposed && gen === flushGeneration && active?.token === token;
+
     void (async () => {
-      let buffer: AudioBufferLike;
+      let response: FetchResponseLike;
       try {
-        const response = await fetchFn(item.audioUrl);
-        if (disposed || gen !== flushGeneration || active?.token !== token) {
-          return;
-        }
-        if (!response.ok) {
-          handleSlotFailed(token);
-          return;
-        }
-        const bytes = await response.arrayBuffer();
-        if (disposed || gen !== flushGeneration || active?.token !== token) {
-          return;
-        }
-        buffer = await ctx.decodeAudioData(bytes);
-        if (disposed || gen !== flushGeneration || active?.token !== token) {
-          return;
-        }
+        response = await fetchFn(item.audioUrl, {
+          signal: slot.abortController.signal,
+        });
       } catch {
-        handleSlotFailed(token);
+        if (isStillCurrent()) {
+          handlePreFirstChunkFailure(token);
+        }
         return;
       }
 
-      if (ctx.state !== "running") {
-        handleSlotFailed(token);
+      if (!isStillCurrent()) {
+        return;
+      }
+      if (!response.ok || !response.body) {
+        handlePreFirstChunkFailure(token);
         return;
       }
 
-      const target = connectWithRelativePan(ctx, voGain, item.pan);
+      const sampleRate = resolveSampleRate(response, item.sampleRate);
+      const reader = response.body.getReader();
+      slot.reader = reader;
 
-      const source = ctx.createBufferSource();
-      source.buffer = buffer;
-      source.connect(target);
-
-      const wasExternalDucking = isExternalVoiceActive();
-      slot.phase = "playing";
-      slot.source = source;
-
-      if (!wasExternalDucking) {
-        rampSfxGain(ctx, sfxGain, currentBaseSfxVolume * VO_DUCK_FACTOR);
-      }
-
-      source.onended = () => {
-        if (active?.token !== token) {
-          return;
+      let pendingByte: number | null = null;
+      const consumeEvenBytes = (chunk: Uint8Array): Uint8Array | null => {
+        if (chunk.byteLength === 0) {
+          return null;
         }
-        active = null;
-        if (!disposed && !isExternalVoiceActive()) {
-          rampSfxGain(ctx, sfxGain, currentBaseSfxVolume);
+        let combined: Uint8Array;
+        if (pendingByte !== null) {
+          combined = new Uint8Array(chunk.byteLength + 1);
+          combined[0] = pendingByte;
+          combined.set(chunk, 1);
+          pendingByte = null;
+        } else {
+          combined = chunk;
         }
-        drainNext();
-        notifyPlaybackState();
+        if (combined.byteLength < 2) {
+          pendingByte = combined[0]!;
+          return null;
+        }
+        if ((combined.byteLength & 1) === 1) {
+          pendingByte = combined[combined.byteLength - 1]!;
+          return combined.subarray(0, combined.byteLength - 1);
+        }
+        return combined;
       };
 
       try {
-        source.start(ctx.currentTime);
-      } catch {
-        active = null;
-        if (!wasExternalDucking && !isExternalVoiceActive()) {
-          rampSfxGain(ctx, sfxGain, currentBaseSfxVolume);
+        while (true) {
+          const { done, value } = await reader.read();
+          if (!isStillCurrent()) {
+            void reader.cancel().catch(() => {});
+            return;
+          }
+          if (done) {
+            break;
+          }
+          if (!value || value.byteLength === 0) {
+            continue;
+          }
+          const evenBytes = consumeEvenBytes(value);
+          if (!evenBytes || evenBytes.byteLength === 0) {
+            continue;
+          }
+          if (ctx.state !== "running") {
+            void reader.cancel().catch(() => {});
+            slot.reader = null;
+            if (slot.phase === "loading") {
+              handlePreFirstChunkFailure(token);
+            } else {
+              finishActiveStreamTail(slot);
+            }
+            return;
+          }
+          if (!schedulePcmChunk(slot, evenBytes, sampleRate)) {
+            void reader.cancel().catch(() => {});
+            slot.reader = null;
+            return;
+          }
         }
-        drainNext();
-        notifyPlaybackState();
+      } catch {
+        slot.reader = null;
+        if (!isStillCurrent()) {
+          return;
+        }
+        if (slot.phase === "loading") {
+          handlePreFirstChunkFailure(token);
+        } else {
+          finishActiveStreamTail(slot);
+        }
         return;
       }
 
-      notifyPlaybackState();
+      slot.reader = null;
+      if (!isStillCurrent()) {
+        return;
+      }
+      if (slot.phase === "loading") {
+        // Stream closed with 0 playable PCM samples.
+        handlePreFirstChunkFailure(token);
+        return;
+      }
+      finishActiveStreamTail(slot);
     })();
   }
 
@@ -317,10 +572,14 @@ export function createBanterVoicePlayer(
 
     if (prev !== null) {
       const wasPlaying = prev.phase === "playing";
-      if (prev.source !== null) {
-        stopSourceQuietly(prev.source);
-      }
-      if (wasPlaying && !disposed && lastCtx && lastSfxGain && !isExternalVoiceActive()) {
+      stopSlotResources(prev);
+      if (
+        wasPlaying &&
+        !disposed &&
+        lastCtx &&
+        lastSfxGain &&
+        !isExternalVoiceActive()
+      ) {
         rampSfxGain(lastCtx, lastSfxGain, currentBaseSfxVolume);
       }
     }
@@ -370,14 +629,12 @@ export function createBanterVoicePlayer(
         return;
       }
 
-      // Same-seat preemption: stop currently active line for that seat immediately.
+      // Same-seat preemption: abort fetch & stop all scheduled sources immediately.
       if (active.item.seat === item.seat) {
         const prev = active;
         active = null;
         const wasPlaying = prev.phase === "playing";
-        if (prev.source !== null) {
-          stopSourceQuietly(prev.source);
-        }
+        stopSlotResources(prev);
         if (wasPlaying && !isExternalVoiceActive()) {
           rampSfxGain(prev.ctx, prev.sfxGain, currentBaseSfxVolume);
         }
