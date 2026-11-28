@@ -1994,7 +1994,7 @@ async fn async_banter_never_blocks_post_pon_ai_turn_pacing() {
         &ClientMessage::UpdateLobbyConfig {
             mode: MatchMode::FreeTable,
             seating: SeatingRule::KeepLobbySeats,
-            ai_difficulty: AiDifficulty::Strong,
+            ai_difficulty: AiDifficulty::Intermediate,
             pace: TablePace::Fast,
         },
     )
@@ -2026,9 +2026,10 @@ async fn async_banter_never_blocks_post_pon_ai_turn_pacing() {
     )
     .await;
     let _ = east.recv_event_batch().await; // TileDiscarded(5m)
-                                           // Let Rayon finish South's Pon decision on the worker thread so its ~500ms pacing timer
-                                           // is registered before Tokio auto-advances past the 20s background LLM timeout!
-    for _ in 0..10 {
+
+    // Let Rayon finish South's fast L2 Pon decision on the worker thread so its ~500ms pacing timer
+    // is registered before Tokio auto-advances past the 20s background LLM timeout!
+    for _ in 0..40 {
         std::thread::sleep(Duration::from_millis(5));
         tokio::task::yield_now().await;
     }
@@ -2044,7 +2045,7 @@ async fn async_banter_never_blocks_post_pon_ai_turn_pacing() {
     let pon_landed_at = tokio::time::Instant::now();
 
     // Let Rayon finish South's post-Pon discard decision so its Fast [900..1800]ms timer is armed.
-    for _ in 0..10 {
+    for _ in 0..40 {
         std::thread::sleep(Duration::from_millis(5));
         tokio::task::yield_now().await;
     }
