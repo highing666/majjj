@@ -19,9 +19,18 @@ if str(SERVER_DIR) not in sys.path:
 from vram_guard import (  # noqa: E402
     DEFAULT_CUDA_ALLOC_CONF,
     DEFAULT_MAX_NEW_TOKENS,
+    DEFAULT_STREAM_CHUNK_SIZE,
     DEFAULT_VRAM_FRACTION,
     configure_cuda_alloc_env,
+    validate_stream_chunk_size,
 )
+
+
+def _parse_stream_chunk_size(raw: str) -> int:
+    try:
+        return validate_stream_chunk_size(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -48,6 +57,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=DEFAULT_MAX_NEW_TOKENS,
         help="Hard cap on generated codec frames per utterance (default: 120)",
+    )
+    parser.add_argument(
+        "--stream-chunk-size",
+        type=_parse_stream_chunk_size,
+        default=os.environ.get("MAJJJ_TTS_STREAM_CHUNK_SIZE", str(DEFAULT_STREAM_CHUNK_SIZE)),
+        help="Streaming codec chunk size in frames (default: 6, ~500 ms @ 12 Hz)",
     )
     parser.add_argument(
         "--cuda-alloc-conf",
@@ -89,15 +104,18 @@ def main(argv: list[str] | None = None) -> int:
         os.environ["MAJJJ_TTS_PERSONAS_PATH"] = args.personas_path
     os.environ["MAJJJ_TTS_VRAM_FRACTION"] = str(args.vram_fraction)
     os.environ["MAJJJ_TTS_MAX_NEW_TOKENS"] = str(args.max_new_tokens)
+    validated_chunk_size = validate_stream_chunk_size(args.stream_chunk_size)
+    os.environ["MAJJJ_TTS_STREAM_CHUNK_SIZE"] = str(validated_chunk_size)
 
     _configure_logging(args.log_file)
     logging.getLogger("majjj.tts").info(
-        "Starting Majjj TTS server (backend=%s, bind=%s:%d, vram_fraction=%.2f, max_new_tokens=%d, PYTORCH_CUDA_ALLOC_CONF=%s)",
+        "Starting Majjj TTS server (backend=%s, bind=%s:%d, vram_fraction=%.2f, max_new_tokens=%d, stream_chunk_size=%d, PYTORCH_CUDA_ALLOC_CONF=%s)",
         args.backend,
         args.host,
         args.port,
         args.vram_fraction,
         args.max_new_tokens,
+        validated_chunk_size,
         validated_alloc,
     )
 

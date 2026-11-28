@@ -25,6 +25,7 @@ param(
     [ValidateRange(5, 300)]
     [int]$TimeoutSec = 60,
     [switch]$SkipWarmup,
+    [switch]$SkipMatrix,
     [switch]$SkipStress,
     [ValidateRange(5, 100)]
     [int]$StressCount = 30
@@ -118,6 +119,107 @@ function Invoke-SynthesizeOnce {
     }
 }
 
+function Invoke-SynthesizeStreamOnce {
+    param(
+        [string]$RequestId,
+        [string]$PersonaId,
+        [string]$Mood,
+        [string]$Text,
+        [int]$DeadlineMs = 5000
+    )
+    $Payload = @{
+        request_id  = $RequestId
+        persona_id  = $PersonaId
+        mood        = $Mood
+        text        = $Text
+        format      = 'pcm'
+        stream      = $true
+        deadline_ms = $DeadlineMs
+    } | ConvertTo-Json -Compress
+
+    $Client = [System.Net.Http.HttpClient]::new()
+    $Client.Timeout = [TimeSpan]::FromSeconds($TimeoutSec)
+    try {
+        $ReqMsg = [System.Net.Http.HttpRequestMessage]::new(
+            [System.Net.Http.HttpMethod]::Post,
+            "$NormalizedBaseUrl/v1/tts/synthesize"
+        )
+        $ReqMsg.Content = [System.Net.Http.StringContent]::new($Payload, [System.Text.Encoding]::UTF8, 'application/json')
+
+        $Sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $Resp = $Client.SendAsync($ReqMsg, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+        $HeadersMs = [Math]::Round($Sw.Elapsed.TotalMilliseconds, 1)
+
+        $HeaderMap = [hashtable]::new([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($H in $Resp.Headers) {
+            $HeaderMap[$H.Key] = ($H.Value -join ',')
+        }
+        foreach ($H in $Resp.Content.Headers) {
+            $HeaderMap[$H.Key] = ($H.Value -join ',')
+        }
+
+        $StatusCode = [int]$Resp.StatusCode
+        if ($StatusCode -ne 200) {
+            $BodyBytes = $Resp.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult()
+            $Sw.Stop()
+            return [pscustomobject]@{
+                StatusCode = $StatusCode
+                Headers    = $HeaderMap
+                HeadersMs  = $HeadersMs
+                TtfaMs     = $null
+                TotalMs    = [Math]::Round($Sw.Elapsed.TotalMilliseconds, 1)
+                ChunkCount = 0
+                TotalBytes = $BodyBytes.Length
+                MaxGapMs   = 0.0
+            }
+        }
+
+        $NetStream = $Resp.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+        $Buf = [byte[]]::new(16384)
+        $ChunkCount = 0
+        $TotalBytes = 0
+        $TtfaMs = $null
+        $PrevChunkMs = $null
+        $MaxGapMs = 0.0
+        try {
+            while ($true) {
+                $ReadLen = $NetStream.Read($Buf, 0, $Buf.Length)
+                if ($ReadLen -le 0) {
+                    break
+                }
+                $NowMs = $Sw.Elapsed.TotalMilliseconds
+                if ($null -eq $TtfaMs) {
+                    $TtfaMs = [Math]::Round($NowMs, 1)
+                } elseif ($null -ne $PrevChunkMs) {
+                    $Gap = $NowMs - $PrevChunkMs
+                    if ($Gap -gt $MaxGapMs) {
+                        $MaxGapMs = $Gap
+                    }
+                }
+                $PrevChunkMs = $NowMs
+                $ChunkCount += 1
+                $TotalBytes += $ReadLen
+            }
+        } finally {
+            $NetStream.Dispose()
+        }
+        $Sw.Stop()
+
+        return [pscustomobject]@{
+            StatusCode = $StatusCode
+            Headers    = $HeaderMap
+            HeadersMs  = $HeadersMs
+            TtfaMs     = $TtfaMs
+            TotalMs    = [Math]::Round($Sw.Elapsed.TotalMilliseconds, 1)
+            ChunkCount = $ChunkCount
+            TotalBytes = $TotalBytes
+            MaxGapMs   = [Math]::Round($MaxGapMs, 1)
+        }
+    } finally {
+        $Client.Dispose()
+    }
+}
+
 function Measure-NvidiaVram {
     $NvidiaSmi = Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue
     if ($null -eq $NvidiaSmi) {
@@ -168,29 +270,83 @@ if (-not $SkipWarmup) {
 }
 
 # 3. 5 角色 x 6 情绪矩阵采样（保存 WAV 供人工盲听）
-Write-Host ''
-Write-Host '[smoke-tts] === 5 位牌友角色 x 6 档牌友情绪 盲听采样与契约验收 ==='
-$MatrixLatencies = [System.Collections.Generic.List[double]]::new()
-foreach ($Persona in $Personas) {
-    foreach ($Line in $MoodLines) {
-        $ReqId = "matrix-$($Persona.Id)-$($Line.Mood)"
-        $Res = Invoke-SynthesizeOnce -RequestId $ReqId -PersonaId $Persona.Id -Mood $Line.Mood -Text $Line.Text -DeadlineMs 5000
-        if ($Res.StatusCode -ne 200) {
-            throw "[$ReqId] 合成失败：HTTP $($Res.StatusCode)"
-        }
-        Assert-ValidWav24kMono -Bytes $Res.Bytes -Label $ReqId
-        foreach ($HeaderName in @('X-TTS-Duration-Ms', 'X-TTS-Synth-Ms', 'X-TTS-Queue-Wait-Ms')) {
-            if (-not $Res.Headers.ContainsKey($HeaderName)) {
-                throw "[$ReqId] 缺少诊断响应头：$HeaderName"
+if (-not $SkipMatrix) {
+    Write-Host ''
+    Write-Host '[smoke-tts] === 5 位牌友角色 x 6 档牌友情绪 盲听采样与契约验收 ==='
+    $MatrixLatencies = [System.Collections.Generic.List[double]]::new()
+    foreach ($Persona in $Personas) {
+        foreach ($Line in $MoodLines) {
+            $ReqId = "matrix-$($Persona.Id)-$($Line.Mood)"
+            $Res = Invoke-SynthesizeOnce -RequestId $ReqId -PersonaId $Persona.Id -Mood $Line.Mood -Text $Line.Text -DeadlineMs 5000
+            if ($Res.StatusCode -ne 200) {
+                throw "[$ReqId] 合成失败：HTTP $($Res.StatusCode)"
             }
+            Assert-ValidWav24kMono -Bytes $Res.Bytes -Label $ReqId
+            foreach ($HeaderName in @('X-TTS-Duration-Ms', 'X-TTS-Synth-Ms', 'X-TTS-Queue-Wait-Ms')) {
+                if (-not $Res.Headers.ContainsKey($HeaderName)) {
+                    throw "[$ReqId] 缺少诊断响应头：$HeaderName"
+                }
+            }
+            $OutFile = Join-Path $OutputDir "$($Persona.Id)_$($Line.Mood).wav"
+            [System.IO.File]::WriteAllBytes($OutFile, $Res.Bytes)
+            $MatrixLatencies.Add($Res.WallMs)
+            Write-Host ("[smoke-tts] [PASS] {0} ({1}) | [{2}] Wall={3}ms Synth={4}ms Dur={5}ms -> {6}" -f `
+                $Persona.Name, $Persona.Speaker, $Line.Mood, $Res.WallMs, $Res.Headers['X-TTS-Synth-Ms'], $Res.Headers['X-TTS-Duration-Ms'], $OutFile)
         }
-        $OutFile = Join-Path $OutputDir "$($Persona.Id)_$($Line.Mood).wav"
-        [System.IO.File]::WriteAllBytes($OutFile, $Res.Bytes)
-        $MatrixLatencies.Add($Res.WallMs)
-        Write-Host ("[smoke-tts] [PASS] {0} ({1}) | [{2}] Wall={3}ms Synth={4}ms Dur={5}ms -> {6}" -f `
-            $Persona.Name, $Persona.Speaker, $Line.Mood, $Res.WallMs, $Res.Headers['X-TTS-Synth-Ms'], $Res.Headers['X-TTS-Duration-Ms'], $OutFile)
     }
 }
+
+# 3b. 流式 Raw PCM16 真增量吐流（TTFA、多块分片间隔与响应头契约）验证
+Write-Host ''
+Write-Host '[smoke-tts] === 流式 Raw PCM16 真增量吐流与 TTFA 验收 ==='
+$StreamProbes = @(
+    @{ Id = 'stream-probe-1'; Persona = 'QuickHothead'; Mood = 'Tilted';  Text = '啧，刚补杠就被抢杠胡？！今天这破手气真绝了！' },
+    @{ Id = 'stream-probe-2'; Persona = 'TeaSarcasm';   Mood = 'Mocking'; Text = '哎哟，您这手牌打得可真稳呢，生怕别人碰着呀？' },
+    @{ Id = 'stream-probe-3'; Persona = 'TiltedMaster'; Mood = 'Deadpan'; Text = '行行行，算你手气好，下小局咱牌河里接着算账。' }
+)
+$StreamTtfas = [System.Collections.Generic.List[double]]::new()
+foreach ($Probe in $StreamProbes) {
+    $StreamRes = Invoke-SynthesizeStreamOnce -RequestId $Probe.Id -PersonaId $Probe.Persona -Mood $Probe.Mood -Text $Probe.Text -DeadlineMs 5000
+    if ($StreamRes.StatusCode -ne 200) {
+        throw "[$($Probe.Id)] 流式合成失败：HTTP $($StreamRes.StatusCode)"
+    }
+    if ($StreamRes.Headers['Content-Type'] -notlike 'application/octet-stream*') {
+        throw "[$($Probe.Id)] 流式 Content-Type 不符：$($StreamRes.Headers['Content-Type'])"
+    }
+    if ($StreamRes.Headers['X-Audio-Format'] -ne 'pcm_s16le') {
+        throw "[$($Probe.Id)] 缺少或非法的 X-Audio-Format：$($StreamRes.Headers['X-Audio-Format'])"
+    }
+    if ($StreamRes.Headers['X-Audio-Sample-Rate'] -ne '24000') {
+        throw "[$($Probe.Id)] 缺少或非法的 X-Audio-Sample-Rate：$($StreamRes.Headers['X-Audio-Sample-Rate'])"
+    }
+    if ($StreamRes.Headers['X-Audio-Channels'] -ne '1') {
+        throw "[$($Probe.Id)] 缺少或非法的 X-Audio-Channels：$($StreamRes.Headers['X-Audio-Channels'])"
+    }
+    foreach ($HeaderName in @('X-TTS-Request-Id', 'X-TTS-Queue-Wait-Ms', 'X-TTS-Backend', 'X-TTS-Model')) {
+        if (-not $StreamRes.Headers.ContainsKey($HeaderName)) {
+            throw "[$($Probe.Id)] 流式响应缺少头：$HeaderName"
+        }
+    }
+    if ($StreamRes.TotalBytes -le 0 -or ($StreamRes.TotalBytes % 2) -ne 0) {
+        throw "[$($Probe.Id)] 流式 PCM16 字节数异常：$($StreamRes.TotalBytes)"
+    }
+    if ($StreamRes.ChunkCount -lt 2) {
+        throw "[$($Probe.Id)] 预期收到多块增量分片（>=2），实际 ChunkCount=$($StreamRes.ChunkCount)"
+    }
+    $AudioDurMs = [Math]::Round(($StreamRes.TotalBytes / 2.0) * 1000.0 / 24000.0, 0)
+    $StreamTtfas.Add($StreamRes.TtfaMs)
+    Write-Host ("[smoke-tts] [PASS] {0} | TTFA={1}ms Total={2}ms Chunks={3} MaxGap={4}ms Bytes={5} AudioDur={6}ms" -f `
+        $Probe.Id, $StreamRes.TtfaMs, $StreamRes.TotalMs, $StreamRes.ChunkCount, $StreamRes.MaxGapMs, $StreamRes.TotalBytes, $AudioDurMs)
+}
+$AvgTtfaMs = [Math]::Round(($StreamTtfas | Measure-Object -Average).Average, 1)
+Write-Host "[smoke-tts] [PASS] 流式 PCM16 验收通过：平均 TTFA=${AvgTtfaMs}ms"
+
+$StreamExpired = Invoke-SynthesizeStreamOnce -RequestId 'stream-deadline-drop-test' -PersonaId 'StubbornBlamer' -Mood 'Deadpan' -Text '流式入队前超时丢弃。' -DeadlineMs 0
+if ($StreamExpired.StatusCode -ne 408) {
+    throw "流式 deadline_ms=0 预期返回 HTTP 408，实际为 HTTP $($StreamExpired.StatusCode)"
+}
+Write-Host '[smoke-tts] [PASS] 流式 deadline_ms=0 返回 HTTP 408（入队前直接丢弃）'
+Measure-NvidiaVram | Out-Null
 
 # 4. deadline_ms 过期入队前丢弃验证
 Write-Host ''

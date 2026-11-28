@@ -161,10 +161,11 @@ pwsh -File E:\majjj-tts\start-tts-server.ps1 -RootDir E:\majjj-tts -Backend qwen
 
 ### 5.1 端点摘要
 
-- **`GET /health`**：返回 `status`、`ready`、`backend`、`model`、`queue_depth`、`vram_allocated_mib`、`vram_reserved_mib`、`vram_limit_fraction`、`personas_cached`、`max_new_tokens`、`sample_rate`。
+- **`GET /health`**：返回 `status`、`ready`、`backend`、`model`、`queue_depth`、`vram_allocated_mib`、`vram_reserved_mib`、`vram_limit_fraction`、`personas_cached`、`max_new_tokens`、`stream_chunk_size`、`sample_rate`。
 - **`POST /v1/tts/synthesize`**：
-  - 请求体：`request_id`、`persona_id`（支持 `QuickHothead` 等规范枚举或 `quick_hothead` 别名）、`mood`（6 档规范枚举）、`text`、可选 `instruct_override`、`format`（默认 `wav`）、`stream`（v1 默认 `false`；设为 `true` 预留 24 kHz `pcm_s16le` 原始流式分块扩展口）、`deadline_ms`（默认 `2500`）。
-  - 响应体：24 kHz 16-bit 单声道 `audio/wav`，附带 `X-TTS-Request-Id`、`X-TTS-Duration-Ms`、`X-TTS-Synth-Ms`、`X-TTS-Queue-Wait-Ms`、`X-TTS-Backend`、`X-TTS-Model`；超期返回 `408` 与 `X-TTS-Dropped-Reason: deadline_exceeded`。
+  - 请求体：`request_id`、`persona_id`（支持 `QuickHothead` 等规范枚举或 `quick_hothead` 别名）、`mood`（6 档规范枚举）、`text`、可选 `instruct_override`、`format`（`wav` 或 `pcm`，默认 `wav`）、`stream`（默认 `false`；设为 `true` 启用基于异步队列的真流式增量吐流）、`deadline_ms`（默认 `2500`）。
+  - 非流式响应体（`stream: false`）：24 kHz 16-bit 单声道 `audio/wav`（或 `format: "pcm"` 时为 `application/octet-stream`），附带 `X-TTS-Request-Id`、`X-TTS-Duration-Ms`、`X-TTS-Synth-Ms`、`X-TTS-Queue-Wait-Ms`、`X-TTS-Backend`、`X-TTS-Model`；超期返回 `408` 与 `X-TTS-Dropped-Reason: deadline_exceeded`。
+  - 流式响应体（`stream: true, format: "pcm"`）：增量输出偶数字节对齐的 24 kHz 16-bit 单声道 `pcm_s16le` 原始音频分片（`Content-Type: application/octet-stream`），附带 `X-Audio-Format: pcm_s16le`、`X-Audio-Sample-Rate: 24000`、`X-Audio-Channels: 1`、`X-TTS-Request-Id`、`X-TTS-Queue-Wait-Ms`、`X-TTS-Backend`、`X-TTS-Model`；分片帧数可通过环境变量 `MAJJJ_TTS_STREAM_CHUNK_SIZE` 或启动参数 `-StreamChunkSize` / `--stream-chunk-size` 调节（正整数，默认 `6` 帧 ≈ `500 ms`），客户端中途断连时在下一个分片边界立即早停并释放 GPU 串行锁。
 - **`POST /v1/audio/speech`**：轻量 OpenAI TTS 兼容探活端点。
 
 ### 5.2 5 位`牌友角色`音色映射

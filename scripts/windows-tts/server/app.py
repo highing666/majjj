@@ -19,8 +19,10 @@ from service import (
 )
 from vram_guard import (
     DEFAULT_MAX_NEW_TOKENS,
+    DEFAULT_STREAM_CHUNK_SIZE,
     DEFAULT_VRAM_FRACTION,
     configure_cuda_alloc_env,
+    validate_stream_chunk_size,
 )
 
 
@@ -39,6 +41,9 @@ def build_default_service() -> TtsService:
     voices_dir = os.environ.get("MAJJJ_TTS_VOICES_DIR") or str(server_dir.parent / "voices")
     vram_fraction = float(os.environ.get("MAJJJ_TTS_VRAM_FRACTION", str(DEFAULT_VRAM_FRACTION)))
     max_new_tokens = int(os.environ.get("MAJJJ_TTS_MAX_NEW_TOKENS", str(DEFAULT_MAX_NEW_TOKENS)))
+    stream_chunk_size = validate_stream_chunk_size(
+        os.environ.get("MAJJJ_TTS_STREAM_CHUNK_SIZE", str(DEFAULT_STREAM_CHUNK_SIZE))
+    )
 
     backend = create_backend(
         backend_name,
@@ -52,6 +57,7 @@ def build_default_service() -> TtsService:
         backend=backend,
         registry=registry,
         max_new_tokens=max_new_tokens,
+        stream_chunk_size=stream_chunk_size,
     )
 
 
@@ -117,8 +123,17 @@ def create_app(service: Optional[TtsService] = None):
         try:
             if req.stream:
                 stream_res = await active_service.synthesize_stream(req)
+
+                async def _iter_stream_chunks():
+                    try:
+                        async for chunk in stream_res.chunks:
+                            yield chunk
+                    finally:
+                        stream_res.cancel()
+                        await stream_res.chunks.aclose()
+
                 return StreamingResponse(
-                    iter(stream_res.chunks),
+                    _iter_stream_chunks(),
                     media_type=stream_res.content_type,
                     headers=stream_res.headers,
                 )

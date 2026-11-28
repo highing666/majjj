@@ -265,6 +265,7 @@ test('start-tts-server.ps1 enforces detached Win32_Process launch, port 8081, ba
     '$Port',
     '$VramFraction',
     '$MaxNewTokens',
+    '$StreamChunkSize',
     '$Restart',
     '$Foreground',
   ]) {
@@ -274,6 +275,15 @@ test('start-tts-server.ps1 enforces detached Win32_Process launch, port 8081, ba
   assert.match(content, /\$Port\s*=\s*8081\b/, 'default Port must be 8081');
   assert.match(content, /\$VramFraction\s*=\s*0\.30\b/, 'default VramFraction must be 0.30');
   assert.match(content, /\$MaxNewTokens\s*=\s*120\b/, 'default MaxNewTokens must be 120');
+  assert.match(content, /\$StreamChunkSize\s*=\s*6\b/, 'default StreamChunkSize must be 6');
+  assert.ok(
+    content.includes('MAJJJ_TTS_STREAM_CHUNK_SIZE'),
+    'start-tts-server.ps1 must support MAJJJ_TTS_STREAM_CHUNK_SIZE',
+  );
+  assert.ok(
+    content.includes('--stream-chunk-size'),
+    'start-tts-server.ps1 must pass --stream-chunk-size to server CLI',
+  );
   assert.ok(
     content.includes('max_split_size_mb:128,garbage_collection_threshold:0.8'),
     'must configure Windows-safe PYTORCH_CUDA_ALLOC_CONF',
@@ -329,9 +339,22 @@ test('setup-firewall.ps1 enforces idempotent LAN-only inbound rule on TCP port 8
 test('install-autostart.ps1 provides idempotent SYSTEM AtStartup scheduled task install and uninstall', () => {
   const content = readScript('install-autostart.ps1');
 
-  for (const param of ['$TaskName', '$RootDir', '$Backend', '$ModelPath', '$Port', '$Uninstall']) {
+  for (const param of [
+    '$TaskName',
+    '$RootDir',
+    '$Backend',
+    '$ModelPath',
+    '$Port',
+    '$StreamChunkSize',
+    '$Uninstall',
+  ]) {
     assert.ok(content.includes(param), `install-autostart.ps1 missing parameter ${param}`);
   }
+  assert.match(content, /\$StreamChunkSize\s*=\s*6\b/, 'install-autostart.ps1 default StreamChunkSize must be 6');
+  assert.ok(
+    content.includes('-StreamChunkSize'),
+    'install-autostart.ps1 must forward -StreamChunkSize to start-tts-server.ps1',
+  );
 
   assert.ok(content.includes('MajjjTtsServer'), 'default TaskName must be MajjjTtsServer');
   assert.ok(content.includes('Register-ScheduledTask'), 'must register scheduled task');
@@ -353,6 +376,10 @@ test('smoke-test.ps1 exercises /health, 5 personas x 6 moods WAV synthesis, dead
   assert.ok(content.includes('/v1/audio/speech'), 'must support probing /v1/audio/speech');
   assert.ok(content.includes('RIFF'), 'must validate WAV RIFF header');
   assert.ok(content.includes('X-TTS-Duration-Ms'), 'must inspect diagnostic headers');
+  assert.ok(content.includes('ResponseHeadersRead'), 'must stream incrementally with ResponseHeadersRead to measure TTFA');
+  assert.ok(content.includes('pcm_s16le'), 'must validate streaming X-Audio-Format: pcm_s16le header');
+  assert.ok(content.includes('X-Audio-Sample-Rate'), 'must validate streaming X-Audio-Sample-Rate header');
+  assert.ok(content.includes('X-Audio-Channels'), 'must validate streaming X-Audio-Channels header');
   assert.ok(content.includes('deadline_ms'), 'must exercise deadline_ms expiry guardrail');
   assert.ok(content.includes('nvidia-smi'), 'must check GPU VRAM budget via nvidia-smi when available');
   assert.ok(content.includes('10800'), 'must check 10,800 MiB total VRAM co-residency threshold');
@@ -405,6 +432,8 @@ test('docs/windows-tts-deployment.md documents all scripts, 5 VRAM guardrails, p
     'set_per_process_memory_fraction(0.30',
     'max_split_size_mb:128,garbage_collection_threshold:0.8',
     'max_new_tokens',
+    'MAJJJ_TTS_STREAM_CHUNK_SIZE',
+    'pcm_s16le',
     'deadline_ms',
     'Qwen3-TTS-12Hz-0.6B-CustomVoice',
     'Fun-CosyVoice3-0.5B-2512',
