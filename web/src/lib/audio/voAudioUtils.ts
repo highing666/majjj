@@ -2,6 +2,7 @@ import type {
   AudioBufferSourceNodeLike,
   AudioContextLike,
   AudioNodeLike,
+  FetchInitLike,
   FetchLike,
 } from "./audioTypes";
 
@@ -9,7 +10,7 @@ export function defaultFetch(): FetchLike | null {
   if (typeof globalThis.fetch !== "function") {
     return null;
   }
-  return (input: string) => globalThis.fetch(input);
+  return (input: string, init?: FetchInitLike) => globalThis.fetch(input, init);
 }
 
 export function stopSourceQuietly(source: AudioBufferSourceNodeLike): void {

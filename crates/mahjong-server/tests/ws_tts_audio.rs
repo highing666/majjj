@@ -1,12 +1,15 @@
 mod common;
 
+use std::collections::VecDeque;
+use std::convert::Infallible;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use axum::body::{Body, Bytes};
 use axum::extract::State;
-use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
+use axum::http::header::{HeaderName, CACHE_CONTROL, CONTENT_TYPE, COOKIE, HOST, SET_COOKIE};
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -15,21 +18,27 @@ use common::{
     connect_and_hello, http_get, make_pcm16_mono_wav, no_reaction_wall, recv_msg, recv_snapshot,
     send_msg, stub_llm_client, TempDirGuard,
 };
+use futures_util::stream;
+use http_body_util::{BodyExt, Full};
+use hyper_util::rt::TokioIo;
 use mahjong_core::{PresetWallProvider, Seat};
 use mahjong_server::banter_audio::BanterAudioCache;
 use mahjong_server::protocol::{ClientMessage, QuickEmote, ServerMessage, TablePhase};
 use mahjong_server::session::{BoxedWallProvider, TableOptions, WallProviderFactory};
+use mahjong_server::tts::DEFAULT_TTS_SAMPLE_RATE;
 use mahjong_server::{PacingMode, ServerConfig};
-use tokio::net::TcpListener;
-use tokio::sync::watch;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{mpsc, watch};
 
 #[derive(Clone)]
 struct FakeTtsState {
     healthy: Arc<Mutex<bool>>,
     wav_bytes: Arc<Mutex<Vec<u8>>>,
+    pcm_bytes: Arc<Mutex<Vec<u8>>>,
     duration_ms: Arc<Mutex<u32>>,
     synth_delay: Arc<Mutex<Duration>>,
     return_408_once: Arc<Mutex<bool>>,
+    gated_streams: Arc<Mutex<VecDeque<mpsc::Receiver<Bytes>>>>,
     health_requests: Arc<Mutex<usize>>,
     synth_requests: Arc<Mutex<Vec<serde_json::Value>>>,
 }
@@ -42,12 +51,19 @@ struct FakeTtsServer {
 
 impl FakeTtsServer {
     async fn start(wav_bytes: Vec<u8>, duration_ms: u32) -> Self {
+        let pcm_bytes = if wav_bytes.len() > 44 && &wav_bytes[0..4] == b"RIFF" {
+            wav_bytes[44..].to_vec()
+        } else {
+            wav_bytes.clone()
+        };
         let state = FakeTtsState {
             healthy: Arc::new(Mutex::new(true)),
             wav_bytes: Arc::new(Mutex::new(wav_bytes)),
+            pcm_bytes: Arc::new(Mutex::new(pcm_bytes)),
             duration_ms: Arc::new(Mutex::new(duration_ms)),
             synth_delay: Arc::new(Mutex::new(Duration::ZERO)),
             return_408_once: Arc::new(Mutex::new(false)),
+            gated_streams: Arc::new(Mutex::new(VecDeque::new())),
             health_requests: Arc::new(Mutex::new(0)),
             synth_requests: Arc::new(Mutex::new(Vec::new())),
         };
@@ -75,6 +91,14 @@ impl FakeTtsServer {
             state,
             shutdown_tx,
         }
+    }
+
+    fn push_gated_stream(&self, rx: mpsc::Receiver<Bytes>) {
+        self.state
+            .gated_streams
+            .lock()
+            .expect("lock gated streams")
+            .push_back(rx);
     }
 
     fn base_url(&self) -> String {
@@ -128,6 +152,8 @@ async fn fake_tts_synthesize(
     State(state): State<FakeTtsState>,
     Json(body): Json<serde_json::Value>,
 ) -> Response {
+    let is_stream = body["stream"].as_bool().unwrap_or(false);
+    let format = body["format"].as_str().unwrap_or("wav").to_string();
     state
         .synth_requests
         .lock()
@@ -156,6 +182,53 @@ async fn fake_tts_synthesize(
         )
             .into_response();
     }
+
+    if is_stream && format == "pcm" {
+        let gated_rx = state
+            .gated_streams
+            .lock()
+            .expect("lock gated streams")
+            .pop_front();
+        let body = if let Some(rx) = gated_rx {
+            let chunk_stream = stream::unfold(rx, |mut rx| async move {
+                let bytes = rx.recv().await?;
+                Some((Ok::<Bytes, Infallible>(bytes), rx))
+            });
+            Body::from_stream(chunk_stream)
+        } else {
+            let pcm = state.pcm_bytes.lock().expect("lock pcm").clone();
+            let mid = (pcm.len() / 2) & !1;
+            let chunks = if mid > 0 && mid < pcm.len() {
+                vec![
+                    Ok::<Bytes, Infallible>(Bytes::copy_from_slice(&pcm[..mid])),
+                    Ok::<Bytes, Infallible>(Bytes::copy_from_slice(&pcm[mid..])),
+                ]
+            } else {
+                vec![Ok::<Bytes, Infallible>(Bytes::from(pcm))]
+            };
+            Body::from_stream(stream::iter(chunks))
+        };
+        let mut resp = Response::new(body);
+        *resp.status_mut() = StatusCode::OK;
+        resp.headers_mut().insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static("application/octet-stream"),
+        );
+        resp.headers_mut().insert(
+            HeaderName::from_static("x-audio-format"),
+            HeaderValue::from_static("pcm_s16le"),
+        );
+        resp.headers_mut().insert(
+            HeaderName::from_static("x-audio-sample-rate"),
+            HeaderValue::from_static("24000"),
+        );
+        resp.headers_mut().insert(
+            HeaderName::from_static("x-audio-channels"),
+            HeaderValue::from_static("1"),
+        );
+        return resp;
+    }
+
     let wav = state.wav_bytes.lock().expect("lock wav").clone();
     let dur = *state.duration_ms.lock().expect("lock dur");
     let mut resp = (StatusCode::OK, wav).into_response();
@@ -252,6 +325,7 @@ async fn startup_with_unreachable_tts_still_boots_plays_and_notifies_clients() {
 #[tokio::test]
 async fn single_synthesis_shared_by_multiple_ws_clients_over_http_and_404_on_unknown_or_evicted() {
     let expected_wav = make_pcm16_mono_wav(12_000, 0x5A);
+    let expected_pcm = expected_wav[44..].to_vec();
     let fake_tts = FakeTtsServer::start(expected_wav.clone(), 1350).await;
 
     // 1-entry cache so a second banter evicts the first to verify HTTP 404 on evicted IDs.
@@ -324,9 +398,9 @@ async fn single_synthesis_shared_by_multiple_ws_clients_over_http_and_404_on_unk
             ServerMessage::TableBanterAudioReady {
                 banter_id,
                 audio_url,
-                duration_ms,
+                sample_rate,
                 ..
-            } => east_ready = Some((banter_id, audio_url, duration_ms)),
+            } => east_ready = Some((banter_id, audio_url, sample_rate)),
             ServerMessage::QuickEmoteBroadcast { .. }
             | ServerMessage::TableBanter { .. }
             | ServerMessage::LobbyUpdated { .. }
@@ -339,9 +413,9 @@ async fn single_synthesis_shared_by_multiple_ws_clients_over_http_and_404_on_unk
             ServerMessage::TableBanterAudioReady {
                 banter_id,
                 audio_url,
-                duration_ms,
+                sample_rate,
                 ..
-            } => west_ready = Some((banter_id, audio_url, duration_ms)),
+            } => west_ready = Some((banter_id, audio_url, sample_rate)),
             ServerMessage::QuickEmoteBroadcast { .. }
             | ServerMessage::TableBanter { .. }
             | ServerMessage::LobbyUpdated { .. }
@@ -350,36 +424,52 @@ async fn single_synthesis_shared_by_multiple_ws_clients_over_http_and_404_on_unk
         }
     }
 
-    let (banter_id, audio_url, duration_ms) = east_ready.unwrap();
+    let (banter_id, audio_url, sample_rate) = east_ready.unwrap();
     assert_eq!(
         west_ready.unwrap(),
-        (banter_id.clone(), audio_url.clone(), duration_ms)
+        (banter_id.clone(), audio_url.clone(), sample_rate)
     );
     assert_eq!(banter_id, "b-1");
     assert_eq!(audio_url, "/api/banter-audio/b-1");
-    assert_eq!(duration_ms, 1350);
+    assert_eq!(sample_rate, DEFAULT_TTS_SAMPLE_RATE);
 
-    // Upstream FakeTtsServer synthesized ONCE for both connected clients and received exact contract!
+    // Upstream FakeTtsServer synthesized ONCE for both connected clients and received streaming PCM contract!
     let synth_reqs = fake_tts.recorded_synth_requests();
     assert_eq!(synth_reqs.len(), 1);
     assert_eq!(synth_reqs[0]["request_id"], "b-1");
-    assert_eq!(synth_reqs[0]["format"], "wav");
-    assert_eq!(synth_reqs[0]["stream"], false);
+    assert_eq!(synth_reqs[0]["format"], "pcm");
+    assert_eq!(synth_reqs[0]["stream"], true);
     assert_eq!(synth_reqs[0]["deadline_ms"], 5000);
 
-    // Both clients fetch GET /api/banter-audio/b-1 and receive exact WAV bytes + headers.
+    // Both clients fetch GET /api/banter-audio/b-1 and receive exact PCM16 bytes + streaming headers.
     for _ in 0..2 {
         let (status, headers, body) = http_get(server.addr(), &audio_url).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(
             headers.get(CONTENT_TYPE).and_then(|v| v.to_str().ok()),
-            Some("audio/wav")
+            Some("application/octet-stream")
         );
         assert_eq!(
             headers.get(CACHE_CONTROL).and_then(|v| v.to_str().ok()),
             Some("no-store")
         );
-        assert_eq!(body, expected_wav);
+        assert_eq!(
+            headers.get("x-audio-format").and_then(|v| v.to_str().ok()),
+            Some("pcm_s16le")
+        );
+        assert_eq!(
+            headers
+                .get("x-audio-sample-rate")
+                .and_then(|v| v.to_str().ok()),
+            Some("24000")
+        );
+        assert_eq!(
+            headers
+                .get("x-audio-channels")
+                .and_then(|v| v.to_str().ok()),
+            Some("1")
+        );
+        assert_eq!(body, expected_pcm);
     }
 
     // Unknown and invalid/traversal IDs return 404.
@@ -414,7 +504,7 @@ async fn single_synthesis_shared_by_multiple_ws_clients_over_http_and_404_on_unk
     assert_eq!(evicted_status, StatusCode::NOT_FOUND);
     let (fresh_status, _, fresh_body) = http_get(server.addr(), &b2_url).await;
     assert_eq!(fresh_status, StatusCode::OK);
-    assert_eq!(fresh_body, expected_wav);
+    assert_eq!(fresh_body, expected_pcm);
 
     let _ = east.close(None).await;
     let _ = west.close(None).await;
@@ -617,6 +707,290 @@ async fn http_tts_client_decouples_request_timeout_from_deadline_and_ws_408_emit
             other => panic!("unexpected msg waiting for post-408 audio ready: {other:?}"),
         }
     }
+
+    let _ = east.close(None).await;
+    let _ = west.close(None).await;
+    let _ = north.close(None).await;
+    server.shutdown().await;
+    fake_tts.shutdown();
+}
+
+async fn open_http_stream(
+    addr: SocketAddr,
+    uri_path: &str,
+    extra_headers: &[(&str, &str)],
+) -> (StatusCode, hyper::HeaderMap, hyper::body::Incoming) {
+    let stream = TcpStream::connect(addr).await.expect("connect server");
+    let io = TokioIo::new(stream);
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
+        .await
+        .expect("http1 handshake");
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+    let mut builder = hyper::Request::builder().method("GET").uri(uri_path);
+    let mut has_host = false;
+    for &(name, val) in extra_headers {
+        if name.eq_ignore_ascii_case("host") {
+            has_host = true;
+        }
+        builder = builder.header(name, val);
+    }
+    if !has_host {
+        builder = builder.header(HOST, addr.to_string());
+    }
+    let req = builder
+        .body(Full::new(Bytes::new()))
+        .expect("build stream request");
+    let res = sender.send_request(req).await.expect("send stream request");
+    (res.status(), res.headers().clone(), res.into_body())
+}
+
+async fn read_next_data_chunk(body: &mut hyper::body::Incoming) -> Option<Bytes> {
+    loop {
+        match body.frame().await {
+            Some(Ok(frame)) => {
+                if let Ok(data) = frame.into_data() {
+                    if !data.is_empty() {
+                        return Some(data);
+                    }
+                }
+            }
+            Some(Err(err)) => panic!("unexpected stream frame error: {err}"),
+            None => return None,
+        }
+    }
+}
+
+async fn read_exact_stream_bytes(body: &mut hyper::body::Incoming, expected_len: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(expected_len);
+    while out.len() < expected_len {
+        let chunk = tokio::time::timeout(Duration::from_secs(3), read_next_data_chunk(body))
+            .await
+            .expect("timed out waiting for live streamed PCM chunk")
+            .expect("stream ended before expected byte count");
+        out.extend_from_slice(&chunk);
+    }
+    out
+}
+
+async fn drain_stream_to_eof(body: &mut hyper::body::Incoming) -> Vec<u8> {
+    let mut out = Vec::new();
+    while let Some(chunk) = tokio::time::timeout(Duration::from_secs(3), read_next_data_chunk(body))
+        .await
+        .expect("timed out waiting for stream EOF")
+    {
+        out.extend_from_slice(&chunk);
+    }
+    out
+}
+
+async fn post_remote_auth_cookie(addr: SocketAddr, public_host: &str, passcode: &str) -> String {
+    let stream = TcpStream::connect(addr).await.expect("connect remote auth");
+    let io = TokioIo::new(stream);
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
+        .await
+        .expect("remote auth handshake");
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+    let payload = serde_json::json!({ "code": passcode }).to_string();
+    let req = hyper::Request::builder()
+        .method("POST")
+        .uri("/api/remote-auth")
+        .header(HOST, public_host)
+        .header(CONTENT_TYPE, "application/json")
+        .body(Full::new(Bytes::from(payload)))
+        .expect("build remote auth request");
+    let res = sender.send_request(req).await.expect("send remote auth");
+    assert_eq!(res.status(), StatusCode::OK);
+    let set_cookie = res
+        .headers()
+        .get(SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .expect("Set-Cookie header on remote auth");
+    set_cookie
+        .split(';')
+        .next()
+        .expect("cookie pair")
+        .trim()
+        .to_string()
+}
+
+#[tokio::test]
+async fn streaming_fanout_delivers_live_chunked_pcm_to_early_and_late_clients_with_remote_cookie_auth(
+) {
+    let fake_tts = FakeTtsServer::start(make_pcm16_mono_wav(120, 0x10), 100).await;
+    let (chunk_tx, chunk_rx) = mpsc::channel::<Bytes>(8);
+    fake_tts.push_gated_stream(chunk_rx);
+
+    let server = ServerConfig::default()
+        .with_bind(IpAddr::V4(Ipv4Addr::LOCALHOST))
+        .with_port(0)
+        .with_allow_remote(true)
+        .with_llm_client(stub_llm_client())
+        .with_tts_url(Some(fake_tts.base_url()))
+        .spawn_with_options(
+            TableOptions::with_wall_factory(24, no_reaction_factory())
+                .with_pacing(PacingMode::Immediate),
+        )
+        .await
+        .expect("spawn server with remote access and streaming fake TTS");
+
+    let mut east = connect_and_hello(server.addr(), "c-east", "小王").await;
+    let mut west = connect_and_hello(server.addr(), "c-west", "小李").await;
+    let mut north = connect_and_hello(server.addr(), "c-north", "小张").await;
+    for (client_ws, seat) in [
+        (&mut east, Seat::East),
+        (&mut west, Seat::West),
+        (&mut north, Seat::North),
+    ] {
+        send_msg(client_ws, &ClientMessage::JoinSeat { seat: Some(seat) }).await;
+        let _ = recv_snapshot(client_ws).await;
+    }
+    send_msg(&mut east, &ClientMessage::StartMatch).await;
+    let _ = recv_snapshot(&mut east).await;
+
+    // Trigger b-1 -> upstream HTTP request starts and blocks waiting on chunk_tx.
+    send_msg(
+        &mut east,
+        &ClientMessage::SendQuickEmote {
+            emote: QuickEmote::NicePlay,
+        },
+    )
+    .await;
+
+    // Send ONLY chunk 1 -> server must immediately broadcast TableBanterAudioReady while stream is still live!
+    let chunk1 = vec![0x11_u8; 640];
+    let chunk2 = vec![0x22_u8; 640];
+    let chunk3 = vec![0x33_u8; 640];
+    chunk_tx
+        .send(Bytes::from(chunk1.clone()))
+        .await
+        .expect("send chunk 1");
+
+    let audio_url = loop {
+        match recv_msg(&mut east).await {
+            ServerMessage::TableBanterAudioReady {
+                banter_id,
+                audio_url,
+                sample_rate,
+                ..
+            } => {
+                assert_eq!(banter_id, "b-1");
+                assert_eq!(sample_rate, DEFAULT_TTS_SAMPLE_RATE);
+                break audio_url;
+            }
+            ServerMessage::QuickEmoteBroadcast { .. }
+            | ServerMessage::TableBanter { .. }
+            | ServerMessage::LobbyUpdated { .. }
+            | ServerMessage::ServerPing { .. } => {}
+            other => panic!("unexpected msg waiting for streaming audio ready: {other:?}"),
+        }
+    };
+
+    // 1. Early local client opens GET /api/banter-audio/b-1 and receives chunk 1 LIVE before chunk 2 is sent!
+    let (early_status, early_headers, mut early_body) =
+        open_http_stream(server.addr(), &audio_url, &[]).await;
+    assert_eq!(early_status, StatusCode::OK);
+    assert_eq!(
+        early_headers
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("application/octet-stream")
+    );
+    assert_eq!(
+        early_headers
+            .get(CACHE_CONTROL)
+            .and_then(|v| v.to_str().ok()),
+        Some("no-store")
+    );
+    assert_eq!(
+        early_headers
+            .get("x-audio-format")
+            .and_then(|v| v.to_str().ok()),
+        Some("pcm_s16le")
+    );
+    assert_eq!(
+        early_headers
+            .get("x-audio-sample-rate")
+            .and_then(|v| v.to_str().ok()),
+        Some("24000")
+    );
+    assert_eq!(
+        early_headers
+            .get("x-audio-channels")
+            .and_then(|v| v.to_str().ok()),
+        Some("1")
+    );
+
+    let early_part1 = read_exact_stream_bytes(&mut early_body, chunk1.len()).await;
+    assert_eq!(early_part1, chunk1);
+
+    // 2. Send chunk 2 while stream is still live -> early client gets chunk 2 live.
+    chunk_tx
+        .send(Bytes::from(chunk2.clone()))
+        .await
+        .expect("send chunk 2");
+    let early_part2 = read_exact_stream_bytes(&mut early_body, chunk2.len()).await;
+    assert_eq!(early_part2, chunk2);
+
+    // 3. Unauthenticated Remote client is rejected with 403 Forbidden.
+    let public_host = format!("majjj.example.com:{}", server.addr().port());
+    let (unauthed_status, _, _) =
+        open_http_stream(server.addr(), &audio_url, &[(HOST.as_str(), &public_host)]).await;
+    assert_eq!(unauthed_status, StatusCode::FORBIDDEN);
+
+    // 4. Authenticated Remote client joins LATE (after chunk 1 & 2) and catches up from byte 0!
+    let passcode = server
+        .remote_access()
+        .passcode()
+        .expect("remote passcode enabled");
+    let cookie = post_remote_auth_cookie(server.addr(), &public_host, &passcode).await;
+    let (remote_status, remote_headers, mut remote_body) = open_http_stream(
+        server.addr(),
+        &audio_url,
+        &[
+            (HOST.as_str(), &public_host),
+            (COOKIE.as_str(), cookie.as_str()),
+        ],
+    )
+    .await;
+    assert_eq!(remote_status, StatusCode::OK);
+    assert_eq!(
+        remote_headers
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("application/octet-stream")
+    );
+    let remote_catchup =
+        read_exact_stream_bytes(&mut remote_body, chunk1.len() + chunk2.len()).await;
+    let mut expected_12 = Vec::new();
+    expected_12.extend_from_slice(&chunk1);
+    expected_12.extend_from_slice(&chunk2);
+    assert_eq!(remote_catchup, expected_12);
+
+    // 5. Send final chunk 3 and close upstream -> both early LAN and late Remote clients get chunk 3 + EOF!
+    chunk_tx
+        .send(Bytes::from(chunk3.clone()))
+        .await
+        .expect("send chunk 3");
+    drop(chunk_tx);
+
+    let early_tail = drain_stream_to_eof(&mut early_body).await;
+    let remote_tail = drain_stream_to_eof(&mut remote_body).await;
+    assert_eq!(early_tail, chunk3);
+    assert_eq!(remote_tail, chunk3);
+
+    // Single upstream synthesis served both concurrent clients!
+    assert_eq!(fake_tts.recorded_synth_requests().len(), 1);
+
+    // 6. Post-completion client reads full concatenated PCM16 from bounded LRU cache.
+    let mut expected_all = expected_12;
+    expected_all.extend_from_slice(&chunk3);
+    let (cached_status, _, cached_body) = http_get(server.addr(), &audio_url).await;
+    assert_eq!(cached_status, StatusCode::OK);
+    assert_eq!(cached_body, expected_all);
 
     let _ = east.close(None).await;
     let _ = west.close(None).await;

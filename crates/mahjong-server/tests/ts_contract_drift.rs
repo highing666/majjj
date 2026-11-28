@@ -428,7 +428,7 @@ fn frozen_server_protocol_types_roundtrip_serde_json_without_loss() {
             banter_id: "b-1".to_string(),
             seat: Seat::South,
             audio_url: "/api/banter-audio/b-1".to_string(),
-            duration_ms: 1420,
+            sample_rate: 24_000,
         },
         ServerMessage::TableBanterAudioFallback {
             banter_id: "b-2".to_string(),

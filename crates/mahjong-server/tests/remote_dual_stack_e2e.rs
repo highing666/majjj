@@ -160,7 +160,25 @@ async fn real_dual_stack_remote_cookie_ws_audio_idle_keepalive_and_instant_disab
     assert_eq!(audio_st, StatusCode::OK);
     assert_eq!(
         audio_hdrs.get(CONTENT_TYPE).and_then(|v| v.to_str().ok()),
-        Some("audio/wav")
+        Some("application/octet-stream")
+    );
+    assert_eq!(
+        audio_hdrs
+            .get("x-audio-format")
+            .and_then(|v| v.to_str().ok()),
+        Some("pcm_s16le")
+    );
+    assert_eq!(
+        audio_hdrs
+            .get("x-audio-sample-rate")
+            .and_then(|v| v.to_str().ok()),
+        Some("24000")
+    );
+    assert_eq!(
+        audio_hdrs
+            .get("x-audio-channels")
+            .and_then(|v| v.to_str().ok()),
+        Some("1")
     );
     assert!(audio_bytes.starts_with(b"RIFF"));
 

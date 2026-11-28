@@ -994,12 +994,30 @@ describe("AudioEventRouter", () => {
           arrayBuffer: async () => new ArrayBuffer(0),
         };
       }
-      if (url.endsWith("/sprite.m4a") || url.startsWith("/api/banter-audio/")) {
+      if (url.endsWith("/sprite.m4a")) {
         return {
           ok: true,
           status: 200,
           json: async () => ({}),
           arrayBuffer: async () => new ArrayBuffer(48),
+        };
+      }
+      if (url.startsWith("/api/banter-audio/")) {
+        return {
+          ok: true,
+          status: 200,
+          headers: {
+            get: (name: string) =>
+              name.toLowerCase() === "x-audio-sample-rate" ? "24000" : null,
+          },
+          body: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new Uint8Array(4800));
+              controller.close();
+            },
+          }),
+          json: async () => ({}),
+          arrayBuffer: async () => new ArrayBuffer(0),
         };
       }
       return {
@@ -1049,7 +1067,7 @@ describe("AudioEventRouter", () => {
       banterId: "b-1",
       seat: "South",
       audioUrl: "/api/banter-audio/b-1",
-      durationMs: 1400,
+      sampleRate: 24000,
       priority: "normal",
       relativeRole: "下家",
     });
@@ -1132,6 +1150,16 @@ describe("AudioEventRouter", () => {
     const fetchFn: FetchLike = vi.fn(async () => ({
       ok: true,
       status: 200,
+      headers: {
+        get: (name: string) =>
+          name.toLowerCase() === "x-audio-sample-rate" ? "24000" : null,
+      },
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array(4800));
+          controller.close();
+        },
+      }),
       json: async () => ({}),
       arrayBuffer: async () => new ArrayBuffer(32),
     }));
@@ -1149,7 +1177,7 @@ describe("AudioEventRouter", () => {
       banterId: "b-settle-1",
       seat: "South",
       audioUrl: "/api/banter-audio/b-settle-1",
-      durationMs: 2000,
+      sampleRate: 24000,
       priority: "highlight",
       relativeRole: "下家",
     });
@@ -1157,7 +1185,7 @@ describe("AudioEventRouter", () => {
       banterId: "b-settle-2",
       seat: "North",
       audioUrl: "/api/banter-audio/b-settle-2",
-      durationMs: 2000,
+      sampleRate: 24000,
       priority: "highlight",
       relativeRole: "上家",
     });
@@ -1201,7 +1229,7 @@ describe("AudioEventRouter", () => {
       banterId: "b-lobby-1",
       seat: "West",
       audioUrl: "/api/banter-audio/b-lobby-1",
-      durationMs: 1200,
+      sampleRate: 24000,
       priority: "normal",
       relativeRole: "对门",
     });
@@ -1236,6 +1264,24 @@ describe("AudioEventRouter", () => {
             duration: ALL_VOICE_SLOTS.length * 0.75,
             sprites,
           }),
+          arrayBuffer: async () => new ArrayBuffer(0),
+        };
+      }
+      if (url.startsWith("/api/banter-audio/")) {
+        return {
+          ok: true,
+          status: 200,
+          headers: {
+            get: (name: string) =>
+              name.toLowerCase() === "x-audio-sample-rate" ? "24000" : null,
+          },
+          body: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new Uint8Array(4800));
+              controller.close();
+            },
+          }),
+          json: async () => ({}),
           arrayBuffer: async () => new ArrayBuffer(0),
         };
       }
@@ -1352,6 +1398,24 @@ describe("AudioEventRouter", () => {
           arrayBuffer: async () => new ArrayBuffer(0),
         };
       }
+      if (url.startsWith("/api/banter-audio/")) {
+        return {
+          ok: true,
+          status: 200,
+          headers: {
+            get: (name: string) =>
+              name.toLowerCase() === "x-audio-sample-rate" ? "24000" : null,
+          },
+          body: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new Uint8Array(4800));
+              controller.close();
+            },
+          }),
+          json: async () => ({}),
+          arrayBuffer: async () => new ArrayBuffer(0),
+        };
+      }
       return {
         ok: true,
         status: 200,
@@ -1452,7 +1516,7 @@ describe("AudioEventRouter", () => {
       banterId: "b-pref-1",
       seat: "South",
       audioUrl: "/api/banter-audio/b-pref-1",
-      durationMs: 1200,
+      sampleRate: 24000,
       priority: "normal",
       relativeRole: "下家",
     });
@@ -1479,7 +1543,7 @@ describe("AudioEventRouter", () => {
       banterId: "b-pref-disabled",
       seat: "West",
       audioUrl: "/api/banter-audio/b-pref-disabled",
-      durationMs: 1000,
+      sampleRate: 24000,
       priority: "highlight",
       relativeRole: "对门",
     });
@@ -1517,7 +1581,7 @@ describe("AudioEventRouter", () => {
       banterId: "b-pref-interrupted",
       seat: "West",
       audioUrl: "/api/banter-audio/b-pref-interrupted",
-      durationMs: 1000,
+      sampleRate: 24000,
       priority: "highlight",
       relativeRole: "对门",
     });

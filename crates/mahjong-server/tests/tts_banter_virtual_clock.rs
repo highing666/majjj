@@ -9,12 +9,14 @@ use common::{
     make_pcm16_mono_wav, no_reaction_wall, pump_ai_turn, tile, tiles, yield_tasks, PlannedReply,
     ScriptedLlmClient, VirtualClient,
 };
+use futures_util::StreamExt;
+use hyper::body::Bytes;
 use mahjong_ai::AiDifficulty;
 use mahjong_core::{
     build_preset_wall, MatchMode, PlayerAction, PlayerEventKind, PresetWallProvider, Seat,
 };
 use mahjong_server::banter::SLOW_THINK_NUDGE_DELAY;
-use mahjong_server::banter_audio::BanterAudioCache;
+use mahjong_server::banter_audio::{BanterAudioCache, BanterAudioSource};
 use mahjong_server::llm::BanterOutput;
 use mahjong_server::pacing::PacingMode;
 use mahjong_server::persona::{PersonaId, PersonaMood};
@@ -23,8 +25,9 @@ use mahjong_server::protocol::{
 };
 use mahjong_server::session::{BoxedWallProvider, TableOptions, TableRuntime, WallProviderFactory};
 use mahjong_server::tts::{
-    TtsAudioOutput, TtsClient, TtsError, TtsFuture, TtsHealthStatus, TtsSynthesisRequest,
-    TTS_COOLDOWN_DURATION, TTS_IN_HAND_DEADLINE_MS, TTS_SETTLEMENT_DEADLINE_MS,
+    TtsAudioOutput, TtsAudioStream, TtsClient, TtsError, TtsFuture, TtsHealthStatus,
+    TtsSynthesisRequest, DEFAULT_TTS_CHANNELS, DEFAULT_TTS_SAMPLE_RATE, TTS_COOLDOWN_DURATION,
+    TTS_IN_HAND_DEADLINE_MS, TTS_SETTLEMENT_DEADLINE_MS,
 };
 use tokio::sync::Notify;
 
@@ -37,6 +40,7 @@ enum PlannedTtsReply {
     Immediate(Result<TtsAudioOutput, TtsError>),
     Delayed(Duration, Result<TtsAudioOutput, TtsError>),
     Gated(Arc<Notify>, Result<TtsAudioOutput, TtsError>),
+    StreamChannel(u32, tokio::sync::mpsc::Receiver<Result<Bytes, TtsError>>),
 }
 
 struct ScriptedTtsClient {
@@ -143,6 +147,9 @@ impl TtsClient for ScriptedTtsClient {
                         gate.notified().await;
                         res
                     }
+                    PlannedTtsReply::StreamChannel(_, _) => Err(TtsError::InvalidResponse {
+                        reason: "StreamChannel reply is for synthesize_stream".to_string(),
+                    }),
                 };
             }
             if fail_if_down {
@@ -159,6 +166,66 @@ impl TtsClient for ScriptedTtsClient {
                 wav_bytes: make_sample_wav(0x2A, 960),
                 duration_ms: 950,
             })
+        })
+    }
+
+    fn synthesize_stream(
+        &self,
+        request: TtsSynthesisRequest,
+    ) -> TtsFuture<'_, Result<TtsAudioStream, TtsError>> {
+        self.captured
+            .lock()
+            .expect("lock captured tts")
+            .push(request.clone());
+        let scripted = self.replies.lock().expect("lock tts replies").pop_front();
+        let settlement_override = if request.deadline_ms == TTS_SETTLEMENT_DEADLINE_MS {
+            self.settlement_delay
+                .lock()
+                .expect("lock settlement delay")
+                .clone()
+        } else {
+            None
+        };
+        let fail_if_down = self.fail_on_unhealthy_synth.load(Ordering::SeqCst)
+            && !self.healthy.load(Ordering::SeqCst);
+        Box::pin(async move {
+            let output_to_stream = |output: TtsAudioOutput| {
+                TtsAudioStream::from_chunks(
+                    DEFAULT_TTS_SAMPLE_RATE,
+                    DEFAULT_TTS_CHANNELS,
+                    vec![Ok(Bytes::from(output.wav_bytes))],
+                )
+            };
+            if let Some(next) = scripted {
+                return match next {
+                    PlannedTtsReply::Immediate(res) => res.map(output_to_stream),
+                    PlannedTtsReply::Delayed(delay, res) => {
+                        tokio::time::sleep(delay).await;
+                        res.map(output_to_stream)
+                    }
+                    PlannedTtsReply::Gated(gate, res) => {
+                        gate.notified().await;
+                        res.map(output_to_stream)
+                    }
+                    PlannedTtsReply::StreamChannel(sample_rate, rx) => Ok(
+                        TtsAudioStream::from_channel(sample_rate, DEFAULT_TTS_CHANNELS, rx),
+                    ),
+                };
+            }
+            if fail_if_down {
+                return Err(TtsError::Transport {
+                    endpoint: "http://virtual-tts.local:8081".to_string(),
+                    reason: "service unavailable".to_string(),
+                });
+            }
+            if let Some((delay, output)) = settlement_override {
+                tokio::time::sleep(delay).await;
+                return Ok(output_to_stream(output));
+            }
+            Ok(output_to_stream(TtsAudioOutput {
+                wav_bytes: make_sample_wav(0x2A, 960),
+                duration_ms: 950,
+            }))
         })
     }
 }
@@ -310,8 +377,8 @@ async fn banter_broadcasts_immediately_without_waiting_on_tts_and_synthesizes_on
     assert!(
         open_msgs.iter().any(|m| matches!(
             m,
-            ServerMessage::TableBanterAudioReady { banter_id, audio_url, duration_ms, .. }
-                if banter_id == "b-1" && audio_url == "/api/banter-audio/b-1" && *duration_ms == 820
+            ServerMessage::TableBanterAudioReady { banter_id, audio_url, sample_rate, .. }
+                if banter_id == "b-1" && audio_url == "/api/banter-audio/b-1" && *sample_rate == DEFAULT_TTS_SAMPLE_RATE
         )),
         "b-1 TableBanterAudioReady missing: {open_msgs:?}"
     );
@@ -383,7 +450,7 @@ async fn banter_broadcasts_immediately_without_waiting_on_tts_and_synthesizes_on
                     banter_id,
                     seat: Seat::South,
                     audio_url,
-                    duration_ms: 1180,
+                    sample_rate: DEFAULT_TTS_SAMPLE_RATE,
                 } if banter_id == "b-2" && audio_url == "/api/banter-audio/b-2"
             )),
             "{label} missing TableBanterAudioReady for b-2: {msgs:?}"
@@ -397,8 +464,8 @@ async fn banter_broadcasts_immediately_without_waiting_on_tts_and_synthesizes_on
     assert_eq!(b2_reqs.len(), 1);
     assert_eq!(b2_reqs[0].persona_id, PersonaId::QuickHothead);
     assert_eq!(b2_reqs[0].mood, PersonaMood::Smug);
-    assert_eq!(b2_reqs[0].format, "wav");
-    assert!(!b2_reqs[0].stream);
+    assert_eq!(b2_reqs[0].format, "pcm");
+    assert!(b2_reqs[0].stream);
     assert_eq!(b2_reqs[0].deadline_ms, TTS_IN_HAND_DEADLINE_MS);
     assert_eq!(
         runtime.get_banter_audio("b-2").as_deref(),
@@ -503,7 +570,7 @@ async fn settlement_quick_emote_and_slow_think_nudge_use_expected_deadlines() {
     assert!(
         after_settle_tts.iter().any(|m| matches!(
             m,
-            ServerMessage::TableBanterAudioReady { banter_id, duration_ms: 2100, .. }
+            ServerMessage::TableBanterAudioReady { banter_id, sample_rate: DEFAULT_TTS_SAMPLE_RATE, .. }
                 if banter_id == &settle_banter_id
         )),
         "settlement audio taking 5500ms must succeed under 6500ms deadline: {after_settle_tts:?}"
@@ -1303,7 +1370,7 @@ async fn runtime_audio_cache_respects_lru_ttl_and_no_tts_emits_banter_id_only() 
     assert!(runtime.get_banter_audio("b-3").is_none());
 
     // 2. No TTS configured (`--no-tts` mode): Hello immediately sends TtsStatusNotice(available=false)
-    // so clients with `hide_banter_bubble_with_voice` auto-restore bubbles, while TableBanter still carries banter_id
+    // so voice-first clients auto-restore bubbles, while TableBanter still carries banter_id
     // and zero audio synthesis events occur.
     let wall2 = no_reaction_wall();
     let factory2: WallProviderFactory = Arc::new(move || {
@@ -1532,7 +1599,7 @@ async fn timeout_and_deadline_exceeded_emit_fallback_without_tripping_circuit_br
     assert!(
         m4.iter().any(|m| matches!(
             m,
-            ServerMessage::TableBanterAudioReady { banter_id, duration_ms: 910, .. }
+            ServerMessage::TableBanterAudioReady { banter_id, sample_rate: DEFAULT_TTS_SAMPLE_RATE, .. }
                 if banter_id == "b-4"
         )),
         "synthesis #4 must succeed without cooldown after timeouts: {m4:?}"
@@ -1705,7 +1772,7 @@ async fn single_in_flight_slot_supersedes_queued_line_and_emits_fallback() {
     assert!(
         after_release.iter().any(|m| matches!(
             m,
-            ServerMessage::TableBanterAudioReady { banter_id, duration_ms: 830, .. }
+            ServerMessage::TableBanterAudioReady { banter_id, sample_rate: DEFAULT_TTS_SAMPLE_RATE, .. }
                 if banter_id == "b-3"
         )),
         "latest queued b-3 must promote and finish after b-1: {after_release:?}"
@@ -1787,4 +1854,153 @@ async fn silent_mood_decision_emits_persona_mood_updated_without_triggering_tts_
         "speak: false must never invoke TtsClient::synthesize, got {:?}",
         tts.captured()
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn streaming_tts_broadcasts_ready_on_first_chunk_before_completion_and_fans_out_even_pcm() {
+    let (chunk_tx, chunk_rx) = tokio::sync::mpsc::channel(8);
+    let llm = ScriptedLlmClient::from_outputs(vec![BanterOutput {
+        speak: true,
+        mood: PersonaMood::Smug,
+        text: "首包一到立刻开播！".to_string(),
+    }]);
+    let tts = ScriptedTtsClient::new(true, vec![PlannedTtsReply::StreamChannel(24_000, chunk_rx)]);
+    let wall = no_reaction_wall();
+    let factory: WallProviderFactory = Arc::new(move || {
+        BoxedWallProvider(Box::new(PresetWallProvider::single(
+            Seat::East,
+            wall.clone(),
+        )))
+    });
+    let runtime = TableRuntime::with_options(
+        8789,
+        None,
+        TableOptions::with_wall_factory(601, factory)
+            .with_pacing(PacingMode::Immediate)
+            .with_llm_client(llm)
+            .with_tts_client(tts.clone()),
+    );
+    let mut east = VirtualClient::connect(&runtime, "e1", "小王").await;
+    let _ = start_solo_match(&runtime, &mut east).await;
+    yield_tasks().await;
+    let _ = east.drain_all();
+
+    east.send(
+        &runtime,
+        &ClientMessage::SendQuickEmote {
+            emote: QuickEmote::NicePlay,
+        },
+    )
+    .await;
+    yield_tasks().await;
+
+    // TableBanter arrives immediately, while TableBanterAudioReady waits for the first complete PCM sample.
+    let initial = east.drain_all();
+    let banter_seat = initial
+        .iter()
+        .find_map(|m| match m {
+            ServerMessage::TableBanter {
+                banter_id, seat, ..
+            } if banter_id == "b-1" => Some(*seat),
+            _ => None,
+        })
+        .expect("expected TableBanter b-1");
+    assert!(!initial
+        .iter()
+        .any(|m| matches!(m, ServerMessage::TableBanterAudioReady { .. })));
+
+    // Single odd byte cannot form a PCM16 sample yet -> still no TableBanterAudioReady.
+    chunk_tx
+        .send(Ok(Bytes::from_static(&[0x11])))
+        .await
+        .expect("send 1st odd byte");
+    yield_tasks().await;
+    assert!(!east
+        .drain_all()
+        .iter()
+        .any(|m| matches!(m, ServerMessage::TableBanterAudioReady { .. })));
+
+    // Next 4 bytes complete [0x11, 0x22, 0x33, 0x44] and carry 0x55 -> TableBanterAudioReady fires immediately!
+    chunk_tx
+        .send(Ok(Bytes::from_static(&[0x22, 0x33, 0x44, 0x55])))
+        .await
+        .expect("send 2nd chunk");
+    yield_tasks().await;
+    let ready_msgs = east.drain_all();
+    assert!(
+        ready_msgs.iter().any(|m| matches!(
+            m,
+            ServerMessage::TableBanterAudioReady {
+                banter_id,
+                seat,
+                audio_url,
+                sample_rate: 24_000,
+            } if banter_id == "b-1" && *seat == banter_seat && audio_url == "/api/banter-audio/b-1"
+        )),
+        "expected TableBanterAudioReady right after first complete PCM chunk: {ready_msgs:?}"
+    );
+
+    // Early reader subscribes while upstream is still open.
+    let BanterAudioSource::Active {
+        sample_rate,
+        channels,
+        stream: early_stream,
+    } = runtime.open_banter_audio("b-1").expect("open early stream")
+    else {
+        panic!("expected live Active stream before upstream EOF");
+    };
+    assert_eq!(sample_rate, 24_000);
+    assert_eq!(channels, 1);
+    let mut early_rx = Box::pin(early_stream.into_chunk_stream());
+    assert_eq!(
+        early_rx.next().await.unwrap().unwrap(),
+        Bytes::from_static(&[0x11, 0x22, 0x33, 0x44])
+    );
+
+    // Push remaining bytes [0x66, 0x77, 0x88] -> joins carry 0x55 to emit [0x55, 0x66, 0x77, 0x88].
+    chunk_tx
+        .send(Ok(Bytes::from_static(&[0x66, 0x77, 0x88])))
+        .await
+        .expect("send tail chunk");
+    yield_tasks().await;
+
+    // Late reader connects mid-stream and catches up from byte 0.
+    let BanterAudioSource::Active {
+        stream: late_stream,
+        ..
+    } = runtime.open_banter_audio("b-1").expect("open late stream")
+    else {
+        panic!("expected live Active stream for late reader");
+    };
+    let mut late_rx = Box::pin(late_stream.into_chunk_stream());
+
+    // Close upstream stream -> both readers drain to EOF and entry moves into LRU cache.
+    drop(chunk_tx);
+    yield_tasks().await;
+
+    let mut early_rest = Vec::new();
+    while let Some(Ok(chunk)) = early_rx.next().await {
+        early_rest.extend_from_slice(&chunk);
+    }
+    assert_eq!(early_rest, vec![0x55, 0x66, 0x77, 0x88]);
+
+    let mut late_all = Vec::new();
+    while let Some(Ok(chunk)) = late_rx.next().await {
+        late_all.extend_from_slice(&chunk);
+    }
+    assert_eq!(
+        late_all,
+        vec![0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]
+    );
+
+    let BanterAudioSource::Cached { pcm_bytes, .. } =
+        runtime.open_banter_audio("b-1").expect("cached after EOF")
+    else {
+        panic!("expected Cached entry after upstream EOF");
+    };
+    assert_eq!(
+        pcm_bytes.as_ref(),
+        &[0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]
+    );
+    assert_eq!(tts.captured().len(), 1);
 }

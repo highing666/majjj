@@ -756,7 +756,7 @@ export function createPresentationQueue(
   function handleTableBanterAudioReady(
     message: Extract<ServerMessage, { TableBanterAudioReady: unknown }>,
   ): void {
-    const { banter_id, seat, audio_url, duration_ms } =
+    const { banter_id, seat, audio_url, sample_rate } =
       message.TableBanterAudioReady;
     if (pendingHiddenBanterBySeat[seat]?.banterId === banter_id) {
       delete pendingHiddenBanterBySeat[seat];
@@ -785,7 +785,7 @@ export function createPresentationQueue(
         banterId: banter_id,
         seat,
         audioUrl: trimmedUrl,
-        durationMs: duration_ms,
+        sampleRate: sample_rate,
         priority,
         relativeRole,
       },

@@ -1153,7 +1153,7 @@ describe("PresentationQueue", () => {
             banterId: string;
             seat: string;
             audioUrl: string;
-            durationMs: number;
+            sampleRate: number;
             priority: "highlight" | "normal";
             relativeRole: string | null;
           };
@@ -1224,7 +1224,7 @@ describe("PresentationQueue", () => {
         banter_id: "b-10",
         seat: "South",
         audio_url: "/api/banter-audio/b-10",
-        duration_ms: 1400,
+        sample_rate: 24000,
       },
     });
     expect(banterVoiceEvents.at(-1)).toEqual({
@@ -1233,7 +1233,7 @@ describe("PresentationQueue", () => {
         banterId: "b-10",
         seat: "South",
         audioUrl: "/api/banter-audio/b-10",
-        durationMs: 1400,
+        sampleRate: 24000,
         priority: "normal",
         relativeRole: "下家",
       },
@@ -1279,7 +1279,7 @@ describe("PresentationQueue", () => {
         banter_id: "b-11",
         seat: "North",
         audio_url: "/api/banter-audio/b-11",
-        duration_ms: 1600,
+        sample_rate: 24000,
       },
     });
     expect(banterVoiceEvents.at(-1)).toEqual({
@@ -1288,7 +1288,7 @@ describe("PresentationQueue", () => {
         banterId: "b-11",
         seat: "North",
         audioUrl: "/api/banter-audio/b-11",
-        durationMs: 1600,
+        sampleRate: 24000,
         priority: "highlight",
         relativeRole: "上家",
       },
@@ -1340,7 +1340,7 @@ describe("PresentationQueue", () => {
         banter_id: "b-12",
         seat: "West",
         audio_url: "/api/banter-audio/b-12",
-        duration_ms: 1200,
+        sample_rate: 24000,
       },
     });
     expect(banterVoiceEvents.at(-1)).toEqual({
@@ -1349,7 +1349,7 @@ describe("PresentationQueue", () => {
         banterId: "b-12",
         seat: "West",
         audioUrl: "/api/banter-audio/b-12",
-        durationMs: 1200,
+        sampleRate: 24000,
         priority: "highlight",
         relativeRole: "对门",
       },
@@ -2044,7 +2044,7 @@ describe("PresentationQueue", () => {
         banter_id: "b-mid-voice",
         seat: "South",
         audio_url: "/api/banter-audio/b-mid-voice",
-        duration_ms: 7000,
+        sample_rate: 24000,
       },
     });
     queue.setActiveBanterVoice(
@@ -2091,7 +2091,7 @@ describe("PresentationQueue", () => {
         banter_id: "b-finished",
         seat: "South",
         audio_url: "/api/banter-audio/b-finished",
-        duration_ms: 1200,
+        sample_rate: 24000,
       },
     });
     const [doneTimerId] = [...scheduled.keys()];

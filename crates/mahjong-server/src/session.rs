@@ -27,7 +27,9 @@ use crate::banter::{
     BanterPlanContext, BanterSessionState, DelayedBanterFollowup, NudgeTurnKey, PendingBanterJob,
     SlowThinkTicket, BANTER_CHAIN_REPLY_DELAY, STRONG_RECENCY_MAX_SEQ_DRIFT,
 };
-use crate::banter_audio::{BanterAudioCache, PendingTtsJob, TtsGuard, TtsSessionState};
+use crate::banter_audio::{
+    BanterAudioCache, BanterAudioSource, PendingTtsJob, TtsGuard, TtsSessionState,
+};
 use crate::banter_context::{format_view_anchor, seat_display_name, MatchBanterContext};
 use crate::history_dto::{
     ClearHistoryResponse, HandRecord, HandSeatRecord, HistoryExportResponse, MatchRecord,
@@ -2228,7 +2230,7 @@ impl TableSession {
                             persona_id: guard.persona_id,
                             allow_finished_phase: guard.allow_finished_phase,
                         },
-                        request: TtsSynthesisRequest::new(
+                        request: TtsSynthesisRequest::new_stream(
                             banter_id,
                             guard.persona_id,
                             output.mood,
@@ -2626,7 +2628,16 @@ impl TableRuntime {
         })
     }
 
-    /// Looks up cached synthesized `BanterVoice` WAV bytes by `banter_id` (touching LRU recency).
+    /// Opens an active streaming fan-out source or cached `BanterVoice` PCM16 entry by `banter_id`.
+    #[must_use]
+    pub fn open_banter_audio(&self, banter_id: &str) -> Option<BanterAudioSource> {
+        self.banter_audio_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .open(banter_id, tokio::time::Instant::now())
+    }
+
+    /// Looks up cached or currently buffered `BanterVoice` PCM16 bytes by `banter_id` (touching LRU recency).
     #[must_use]
     pub fn get_banter_audio(&self, banter_id: &str) -> Option<Vec<u8>> {
         self.banter_audio_cache

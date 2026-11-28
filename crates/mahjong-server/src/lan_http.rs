@@ -44,6 +44,66 @@ pub(crate) enum LanHttpError {
     Timeout { endpoint: String, timeout_ms: u64 },
 }
 
+/// Active streaming HTTP/1.1 response whose underlying connection is aborted on drop.
+pub(crate) struct LanHttpStream {
+    pub(crate) status: StatusCode,
+    pub(crate) headers: HeaderMap,
+    body: hyper::body::Incoming,
+    conn_handle: tokio::task::JoinHandle<()>,
+    endpoint: String,
+}
+
+impl LanHttpStream {
+    pub(crate) async fn next_chunk(&mut self) -> Option<Result<Bytes, LanHttpError>> {
+        loop {
+            match self.body.frame().await {
+                Some(Ok(frame)) => {
+                    if let Ok(data) = frame.into_data() {
+                        if !data.is_empty() {
+                            return Some(Ok(data));
+                        }
+                    }
+                }
+                Some(Err(err)) => {
+                    return Some(Err(LanHttpError::Transport {
+                        endpoint: self.endpoint.clone(),
+                        reason: err.to_string(),
+                    }));
+                }
+                None => return None,
+            }
+        }
+    }
+
+    pub(crate) async fn collect_body(mut self, timeout: Duration) -> Result<Vec<u8>, LanHttpError> {
+        let endpoint = self.endpoint.clone();
+        let timeout_ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
+        let fut = async {
+            let mut out = Vec::new();
+            while let Some(chunk) = self.next_chunk().await {
+                let bytes = chunk?;
+                out.extend_from_slice(&bytes);
+                if out.len() >= 16 * 1024 {
+                    break;
+                }
+            }
+            Ok(out)
+        };
+        tokio::time::timeout(timeout, fut)
+            .await
+            .map_err(|_| LanHttpError::Timeout {
+                endpoint,
+                timeout_ms,
+            })?
+    }
+}
+
+impl Drop for LanHttpStream {
+    fn drop(&mut self) {
+        self.conn_handle.abort();
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ParsedEndpoint {
     pub(crate) raw_normalized: String,
@@ -178,57 +238,21 @@ impl ParsedEndpoint {
         let host_header = self.host_header.clone();
 
         let fut = async move {
-            let stream = TcpStream::connect((host.as_str(), port))
-                .await
-                .map_err(|err| LanHttpError::Transport {
-                    endpoint: endpoint_str.clone(),
-                    reason: err.to_string(),
-                })?;
-            let io = TokioIo::new(stream);
-            let (mut sender, conn) =
-                hyper::client::conn::http1::handshake(io)
-                    .await
-                    .map_err(|err| LanHttpError::Transport {
-                        endpoint: endpoint_str.clone(),
-                        reason: err.to_string(),
-                    })?;
-            tokio::spawn(async move {
-                let _ = conn.await;
-            });
-
-            let mut builder = Request::builder()
-                .method(method)
-                .uri(&path)
-                .header(HOST, host_header);
-            let payload = match body {
-                Some(bytes) => {
-                    builder = builder.header(CONTENT_TYPE, "application/json");
-                    Bytes::from(bytes)
-                }
-                None => Bytes::new(),
-            };
-            let req = builder
-                .body(Full::new(payload))
-                .map_err(|err| LanHttpError::Transport {
-                    endpoint: endpoint_str.clone(),
-                    reason: err.to_string(),
-                })?;
-
-            let res = sender
-                .send_request(req)
-                .await
-                .map_err(|err| LanHttpError::Transport {
-                    endpoint: endpoint_str.clone(),
-                    reason: err.to_string(),
-                })?;
-            let status = res.status();
-            let headers = res.headers().clone();
-            let collected = res
-                .into_body()
+            let (status, headers, incoming, _conn_handle) = send_request_headers(
+                host,
+                port,
+                host_header,
+                endpoint_str.clone(),
+                method,
+                path,
+                body,
+            )
+            .await?;
+            let collected = incoming
                 .collect()
                 .await
                 .map_err(|err| LanHttpError::Transport {
-                    endpoint: endpoint_str.clone(),
+                    endpoint: endpoint_str,
                     reason: err.to_string(),
                 })?
                 .to_bytes()
@@ -243,4 +267,111 @@ impl ParsedEndpoint {
                 timeout_ms,
             })?
     }
+
+    pub(crate) async fn send_http_stream(
+        &self,
+        method: Method,
+        suffix: &str,
+        body: Option<Vec<u8>>,
+        header_timeout: Duration,
+    ) -> Result<LanHttpStream, LanHttpError> {
+        let endpoint_str = self.raw_normalized.clone();
+        let timeout_ms = u64::try_from(header_timeout.as_millis()).unwrap_or(u64::MAX);
+        let path = self.path_for(suffix);
+        let host = self.host.clone();
+        let port = self.port;
+        let host_header = self.host_header.clone();
+
+        let fut = async move {
+            let (status, headers, incoming, conn_handle) = send_request_headers(
+                host,
+                port,
+                host_header,
+                endpoint_str.clone(),
+                method,
+                path,
+                body,
+            )
+            .await?;
+            Ok(LanHttpStream {
+                status,
+                headers,
+                body: incoming,
+                conn_handle,
+                endpoint: endpoint_str,
+            })
+        };
+
+        tokio::time::timeout(header_timeout, fut)
+            .await
+            .map_err(|_| LanHttpError::Timeout {
+                endpoint: self.raw_normalized.clone(),
+                timeout_ms,
+            })?
+    }
+}
+
+async fn send_request_headers(
+    host: String,
+    port: u16,
+    host_header: String,
+    endpoint_str: String,
+    method: Method,
+    path: String,
+    body: Option<Vec<u8>>,
+) -> Result<
+    (
+        StatusCode,
+        HeaderMap,
+        hyper::body::Incoming,
+        tokio::task::JoinHandle<()>,
+    ),
+    LanHttpError,
+> {
+    let stream = TcpStream::connect((host.as_str(), port))
+        .await
+        .map_err(|err| LanHttpError::Transport {
+            endpoint: endpoint_str.clone(),
+            reason: err.to_string(),
+        })?;
+    let io = TokioIo::new(stream);
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
+        .await
+        .map_err(|err| LanHttpError::Transport {
+            endpoint: endpoint_str.clone(),
+            reason: err.to_string(),
+        })?;
+    let conn_handle = tokio::spawn(async move {
+        let _ = conn.await;
+    });
+
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(&path)
+        .header(HOST, host_header);
+    let payload = match body {
+        Some(bytes) => {
+            builder = builder.header(CONTENT_TYPE, "application/json");
+            Bytes::from(bytes)
+        }
+        None => Bytes::new(),
+    };
+    let req = builder
+        .body(Full::new(payload))
+        .map_err(|err| LanHttpError::Transport {
+            endpoint: endpoint_str.clone(),
+            reason: err.to_string(),
+        })?;
+
+    let res = sender
+        .send_request(req)
+        .await
+        .map_err(|err| LanHttpError::Transport {
+            endpoint: endpoint_str,
+            reason: err.to_string(),
+        })?;
+    let status = res.status();
+    let headers = res.headers().clone();
+    let incoming = res.into_body();
+    Ok((status, headers, incoming, conn_handle))
 }
