@@ -35,7 +35,11 @@ fn emote_nudge_responder(request: &BanterGenerationRequest) -> Result<BanterOutp
     } else {
         (PersonaMood::Plotting, "开局手气稳得一批！".to_string())
     };
-    Ok(BanterOutput { mood, text })
+    Ok(BanterOutput {
+        speak: true,
+        mood,
+        text,
+    })
 }
 
 fn recording_emote_llm() -> Arc<ScriptedLlmClient> {

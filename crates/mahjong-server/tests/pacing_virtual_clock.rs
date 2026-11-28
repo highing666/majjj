@@ -1961,6 +1961,7 @@ async fn post_sync_banter_ai_turn_refreshes_started_at_and_never_instant_discard
     let llm = ScriptedLlmClient::from_replies(vec![
         // Opening banter (async)
         PlannedReply::Immediate(Ok(BanterOutput {
+            speak: true,
             mood: PersonaMood::Deadpan,
             text: "开局先看看手气怎么样。".to_string(),
         })),
@@ -1968,6 +1969,7 @@ async fn post_sync_banter_ai_turn_refreshes_started_at_and_never_instant_discard
         PlannedReply::Delayed(
             Duration::from_millis(1400),
             Ok(BanterOutput {
+                speak: true,
                 mood: PersonaMood::Smug,
                 text: "五万碰走，节奏归我了！".to_string(),
             }),

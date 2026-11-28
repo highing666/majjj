@@ -20,8 +20,8 @@ use crate::session::ActiveMatch;
 /// so banter lands tightly with comic impact frames without ever stalling gameplay.
 pub const HIGHLIGHT_SYNC_CAP: Duration = Duration::from_millis(1500);
 
-/// Hard timeout for non-blocking background banter (opening, inflections, chain replies).
-pub const ASYNC_BANTER_TIMEOUT: Duration = Duration::from_millis(6000);
+/// Hard timeout for non-blocking background banter (aligned with `llm::DEFAULT_REQUEST_TIMEOUT`).
+pub const ASYNC_BANTER_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Per-seat cooldown (`3.5s`, within the spec's `3–4s` window) preventing mid-hand and chain spam.
 pub const SEAT_BANTER_COOLDOWN: Duration = Duration::from_millis(3500);
@@ -629,7 +629,7 @@ pub fn build_system_prompt(persona: PersonaId) -> String {
         "{voice}\n\
 你在家庭熟人推倒胡麻将牌桌上发表实时牌桌台词，风格为野生损友互怼吐槽。\n\
 必须严格遵守：\n\
-1. 仅输出合法 JSON：{{\"mood\":\"...\",\"text\":\"...\"}}，严禁输出思考过程、<think> 标签、代码块或多余解释。\n\
+1. 仅输出合法 JSON：{{\"speak\":true/false,\"mood\":\"...\",\"text\":\"...\"}}，严禁在正文中输出 <think> 标签、代码块或多余解释（speak 为 false 时 text 留空字符串）。\n\
 2. mood 必须从以下 6 档心理锚点中选最贴合当下处境的一项：\n\
 - Smug：得意欠揍（胡牌、占便宜、秀操作、稳操胜券）\n\
 - Mocking：阴阳嘲讽（笑话别人点炮、嘲讽他家操作蠢、煽风点火）\n\

@@ -21,12 +21,15 @@ use crate::storage::normalize_single_line_text;
 pub const DEFAULT_LLM_BASE_URL: &str = "http://192.168.5.50:8080";
 
 const DEFAULT_HEALTH_TIMEOUT: Duration = Duration::from_secs(3);
-const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(6);
+/// Default HTTP request timeout for `/v1/chat/completions` with native thinking enabled (`20s`).
+pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const DEFAULT_TEMPERATURE: f32 = 0.9;
 const DEFAULT_TOP_P: f32 = 0.9;
 const DEFAULT_PRESENCE_PENALTY: f32 = 0.4;
 const DEFAULT_REPEAT_PENALTY: f32 = 1.1;
-const DEFAULT_MAX_TOKENS: u32 = 96;
+const DEFAULT_MAX_TOKENS: u32 = 512;
+/// Safety ceiling in Unicode scalar chars for extreme runaway `speak: true` banter text.
+pub const MAX_BANTER_TEXT_CHARS: usize = 40;
 
 /// Boxed `Send` future returned by [`LlmClient`] methods.
 pub type LlmFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -66,13 +69,37 @@ impl BanterGenerationRequest {
     }
 }
 
-/// Validated structured output returned by the inference server (`{ mood, text }`).
+/// Validated structured output returned by the inference server (`{ speak, mood, text }`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BanterOutput {
+    /// Whether the persona chooses to speak out loud (`true`) or remain silent (`false`).
+    pub speak: bool,
     /// Model-selected discrete persona mood (`牌友情绪`).
     pub mood: PersonaMood,
-    /// Single-line Chinese banter text (`牌桌台词`).
+    /// Single-line Chinese banter text (`牌桌台词`; normalized to `""` when `speak == false`).
     pub text: String,
+}
+
+impl BanterOutput {
+    /// Convenience constructor for an audible spoken banter decision (`speak: true`).
+    #[must_use]
+    pub fn spoken(mood: PersonaMood, text: impl Into<String>) -> Self {
+        Self {
+            speak: true,
+            mood,
+            text: text.into(),
+        }
+    }
+
+    /// Convenience constructor for a silent mood-only decision (`speak: false`, empty text).
+    #[must_use]
+    pub fn silent(mood: PersonaMood) -> Self {
+        Self {
+            speak: false,
+            mood,
+            text: String::new(),
+        }
+    }
 }
 
 /// Structured request for distilling one concise persona grudge note (`<= 30` chars).
@@ -138,7 +165,7 @@ pub enum LlmError {
     /// `/v1/models` returned an empty model list.
     #[error("推理服务（{endpoint}）未加载可用模型")]
     NoModelsAvailable { endpoint: String },
-    /// Response leaked chain-of-thought tags or `reasoning_content`.
+    /// Response leaked `<think>` / `</think>` chain-of-thought tags into `content` or `text`.
     #[error("推理响应包含被禁止的思考链内容")]
     ThinkingLeakage,
     /// Parsed banter text was empty after normalization.
@@ -158,7 +185,7 @@ pub trait LlmClient: Send + Sync + std::fmt::Debug {
     /// Probes `/health` and `/v1/models` to verify the inference service is ready.
     fn health_check(&self) -> LlmFuture<'_, Result<LlmHealthStatus, LlmError>>;
 
-    /// Requests one structured `{ mood, text }` banter output from the inference service.
+    /// Requests one structured `{ speak, mood, text }` banter decision from the inference service.
     fn generate_banter(
         &self,
         request: BanterGenerationRequest,
@@ -315,7 +342,10 @@ fn contains_thinking_tag(text: &str) -> bool {
     lower.contains("<think>") || lower.contains("</think>")
 }
 
-fn extract_completion_content(body: &[u8], context_label: &str) -> Result<String, LlmError> {
+fn extract_completion_content(
+    body: &[u8],
+    context_label: &str,
+) -> Result<(String, Option<String>), LlmError> {
     let parsed: ChatCompletionResponse =
         serde_json::from_slice(body).map_err(|err| LlmError::InvalidResponse {
             reason: format!("{context_label} JSON 解析失败：{err}"),
@@ -325,14 +355,6 @@ fn extract_completion_content(body: &[u8], context_label: &str) -> Result<String
             reason: "choices 为空".to_string(),
         });
     };
-    if choice
-        .message
-        .reasoning_content
-        .as_deref()
-        .is_some_and(|rc| !rc.trim().is_empty())
-    {
-        return Err(LlmError::ThinkingLeakage);
-    }
     let Some(content) = choice.message.content else {
         return Err(LlmError::InvalidResponse {
             reason: "message.content 缺失".to_string(),
@@ -341,7 +363,18 @@ fn extract_completion_content(body: &[u8], context_label: &str) -> Result<String
     if contains_thinking_tag(&content) {
         return Err(LlmError::ThinkingLeakage);
     }
-    Ok(content)
+    Ok((content, choice.message.reasoning_content))
+}
+
+fn clamp_banter_text_chars(text: String) -> String {
+    if text.chars().count() <= MAX_BANTER_TEXT_CHARS {
+        return text;
+    }
+    text.chars()
+        .take(MAX_BANTER_TEXT_CHARS)
+        .collect::<String>()
+        .trim_end()
+        .to_string()
 }
 
 fn build_chat_completions_payload(
@@ -361,7 +394,7 @@ fn build_chat_completions_payload(
         "max_tokens": request.max_tokens,
         "stream": false,
         "chat_template_kwargs": {
-            "enable_thinking": false
+            "enable_thinking": true
         },
         "response_format": {
             "type": "json_schema",
@@ -371,17 +404,20 @@ fn build_chat_completions_payload(
                 "schema": {
                     "type": "object",
                     "properties": {
+                        "speak": {
+                            "type": "boolean"
+                        },
                         "mood": {
                             "type": "string",
                             "enum": ["Smug", "Mocking", "Tilted", "Nervous", "Plotting", "Deadpan"]
                         },
                         "text": {
                             "type": "string",
-                            "minLength": 1,
+                            "minLength": 0,
                             "maxLength": 64
                         }
                     },
-                    "required": ["mood", "text"],
+                    "required": ["speak", "mood", "text"],
                     "additionalProperties": false
                 }
             }
@@ -391,19 +427,35 @@ fn build_chat_completions_payload(
 
 /// Validates and parses a raw OpenAI `/v1/chat/completions` JSON response body into [`BanterOutput`].
 fn parse_chat_completion_response(body: &[u8]) -> Result<BanterOutput, LlmError> {
-    let content = extract_completion_content(body, "chat completion")?;
+    let (content, reasoning_content) = extract_completion_content(body, "chat completion")?;
     let output: BanterOutput =
         serde_json::from_str(content.trim()).map_err(|err| LlmError::InvalidResponse {
-            reason: format!("结构化 {{ mood, text }} 解析失败：{err}"),
+            reason: format!("结构化 {{ speak, mood, text }} 解析失败：{err}"),
         })?;
     if contains_thinking_tag(&output.text) {
         return Err(LlmError::ThinkingLeakage);
     }
-    let text = normalize_single_line_text(&output.text);
-    if text.is_empty() {
-        return Err(LlmError::EmptyBanterText);
-    }
+    let reasoning_chars = reasoning_content
+        .as_deref()
+        .map_or(0, |rc| rc.trim().chars().count());
+    let text = if output.speak {
+        let normalized = normalize_single_line_text(&output.text);
+        if normalized.is_empty() {
+            return Err(LlmError::EmptyBanterText);
+        }
+        clamp_banter_text_chars(normalized)
+    } else {
+        String::new()
+    };
+    tracing::debug!(
+        speak = output.speak,
+        mood = ?output.mood,
+        text_chars = text.chars().count(),
+        reasoning_chars,
+        "parsed llm banter completion"
+    );
     Ok(BanterOutput {
+        speak: output.speak,
         mood: output.mood,
         text,
     })
@@ -451,7 +503,8 @@ fn build_memory_note_payload(model: &str, request: &MemoryNoteRequest) -> serde_
 }
 
 fn parse_memory_note_response(body: &[u8]) -> Result<String, LlmError> {
-    let content = extract_completion_content(body, "memory note chat completion")?;
+    let (content, _reasoning_content) =
+        extract_completion_content(body, "memory note chat completion")?;
     let output: MemoryNoteJsonOutput =
         serde_json::from_str(content.trim()).map_err(|err| LlmError::InvalidResponse {
             reason: format!("结构化 {{ note }} 解析失败：{err}"),
@@ -632,16 +685,30 @@ mod tests {
     }
 
     #[test]
-    fn request_payload_enforces_no_thinking_json_schema_and_sampling_params() {
+    fn request_payload_enables_thinking_and_enforces_speak_mood_text_schema() {
+        assert_eq!(
+            super::DEFAULT_REQUEST_TIMEOUT,
+            std::time::Duration::from_secs(20)
+        );
         let req = BanterGenerationRequest::new("system rules", "user event");
+        assert_eq!(req.max_tokens, 512);
         let json = build_chat_completions_payload("Qwen3.5-9B-Q5_K_M", &req);
 
         assert_eq!(json["model"], "Qwen3.5-9B-Q5_K_M");
         assert_eq!(json["stream"], false);
-        assert_eq!(json["chat_template_kwargs"]["enable_thinking"], false);
+        assert_eq!(json["max_tokens"], 512);
+        assert_eq!(json["chat_template_kwargs"]["enable_thinking"], true);
         assert_eq!(json["response_format"]["type"], "json_schema");
         assert_eq!(json["response_format"]["json_schema"]["strict"], true);
-        let moods = json["response_format"]["json_schema"]["schema"]["properties"]["mood"]["enum"]
+        let schema = &json["response_format"]["json_schema"]["schema"];
+        assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(
+            schema["required"],
+            serde_json::json!(["speak", "mood", "text"])
+        );
+        assert_eq!(schema["properties"]["speak"]["type"], "boolean");
+        assert_eq!(schema["properties"]["text"]["minLength"], 0);
+        let moods = schema["properties"]["mood"]["enum"]
             .as_array()
             .expect("mood enum array");
         assert_eq!(moods.len(), 6);
@@ -651,44 +718,99 @@ mod tests {
     }
 
     #[test]
-    fn response_parser_accepts_valid_json_and_rejects_thinking_leakage_or_empty_text() {
-        let valid = r#"{"choices":[{"message":{"content":"{\"mood\":\"Smug\",\"text\":\"  这把速攻直接收菜！\\n还想拦我？ \"}"}}]}"#.as_bytes();
-        let parsed = parse_chat_completion_response(valid).expect("valid response");
+    fn response_parser_handles_reasoning_content_speak_flag_runaway_length_and_think_tags() {
+        // 1. speak: true with reasoning_content succeeds cleanly
+        let valid = r#"{"choices":[{"message":{"content":"{\"speak\":true,\"mood\":\"Smug\",\"text\":\"  这把速攻直接收菜！\\n还想拦我？ \"}","reasoning_content":"我刚听牌且手气正顺，顺势得意一句"}}]}"#.as_bytes();
+        let parsed = parse_chat_completion_response(valid).expect("valid response with reasoning");
         assert_eq!(
             parsed,
             BanterOutput {
+                speak: true,
                 mood: PersonaMood::Smug,
                 text: "这把速攻直接收菜！ 还想拦我？".to_string(),
             }
         );
 
-        let think_tag = r#"{"choices":[{"message":{"content":"<think>hmm</think>{\"mood\":\"Smug\",\"text\":\"你好\"}"}}]}"#.as_bytes();
+        // 2. speak: false with empty text and reasoning_content succeeds cleanly
+        let silent = r#"{"choices":[{"message":{"content":"{\"speak\":false,\"mood\":\"Plotting\",\"text\":\"\"}","reasoning_content":"场面平淡先憋着不说话，暗中观察"}}]}"#.as_bytes();
+        assert_eq!(
+            parse_chat_completion_response(silent).expect("silent mood update"),
+            BanterOutput {
+                speak: false,
+                mood: PersonaMood::Plotting,
+                text: String::new(),
+            }
+        );
+
+        // 3. speak: false normalizes whitespace/stray text to empty string
+        let silent_whitespace = r#"{"choices":[{"message":{"content":"{\"speak\":false,\"mood\":\"Nervous\",\"text\":\"   先不说  \"}"}}]}"#.as_bytes();
+        assert_eq!(
+            parse_chat_completion_response(silent_whitespace).expect("silent normalizes text"),
+            BanterOutput {
+                speak: false,
+                mood: PersonaMood::Nervous,
+                text: String::new(),
+            }
+        );
+
+        // 4. speak: true with > 40 Unicode scalar chars is safely clamped to 40 chars
+        let runaway_text = "一二三四五六七八九十".repeat(5); // 50 chars
+        let runaway_json = serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": serde_json::json!({
+                        "speak": true,
+                        "mood": "Tilted",
+                        "text": runaway_text,
+                    }).to_string()
+                }
+            }]
+        })
+        .to_string();
+        let clamped = parse_chat_completion_response(runaway_json.as_bytes())
+            .expect("runaway banter text should be safely clamped");
+        assert!(clamped.speak);
+        assert_eq!(clamped.mood, PersonaMood::Tilted);
+        assert_eq!(clamped.text.chars().count(), 40);
+        assert_eq!(clamped.text, "一二三四五六七八九十".repeat(4));
+
+        // 5. <think> tags leaked in content or text are still rejected
+        let think_tag = r#"{"choices":[{"message":{"content":"<think>hmm</think>{\"speak\":true,\"mood\":\"Smug\",\"text\":\"你好\"}"}}]}"#.as_bytes();
         assert_eq!(
             parse_chat_completion_response(think_tag),
             Err(LlmError::ThinkingLeakage)
         );
 
-        let think_inside_text = r#"{"choices":[{"message":{"content":"{\"mood\":\"Tilted\",\"text\":\"<think>oops</think>破防了\"}"}}]}"#.as_bytes();
+        let think_inside_text = r#"{"choices":[{"message":{"content":"{\"speak\":true,\"mood\":\"Tilted\",\"text\":\"<think>oops</think>破防了\"}"}}]}"#.as_bytes();
         assert_eq!(
             parse_chat_completion_response(think_inside_text),
             Err(LlmError::ThinkingLeakage)
         );
 
-        let reasoning_field = r#"{"choices":[{"message":{"content":"{\"mood\":\"Mocking\",\"text\":\"呵呵\"}","reasoning_content":"secret thoughts"}}]}"#.as_bytes();
+        let think_inside_silent_text = r#"{"choices":[{"message":{"content":"{\"speak\":false,\"mood\":\"Deadpan\",\"text\":\"</think>\"}"}}]}"#.as_bytes();
         assert_eq!(
-            parse_chat_completion_response(reasoning_field),
+            parse_chat_completion_response(think_inside_silent_text),
             Err(LlmError::ThinkingLeakage)
         );
 
-        let empty_text = r#"{"choices":[{"message":{"content":"{\"mood\":\"Deadpan\",\"text\":\"   \\n  \"}"}}]}"#.as_bytes();
+        // 6. speak: true with empty text is rejected
+        let empty_text = r#"{"choices":[{"message":{"content":"{\"speak\":true,\"mood\":\"Deadpan\",\"text\":\"   \\n  \"}"}}]}"#.as_bytes();
         assert_eq!(
             parse_chat_completion_response(empty_text),
             Err(LlmError::EmptyBanterText)
         );
 
-        let invalid_mood =
-            r#"{"choices":[{"message":{"content":"{\"mood\":\"Furious\",\"text\":\"气死了\"}"}}]}"#
+        // 7. Missing speak field or invalid mood is rejected
+        let missing_speak =
+            r#"{"choices":[{"message":{"content":"{\"mood\":\"Smug\",\"text\":\"缺字段\"}"}}]}"#
                 .as_bytes();
+        assert!(matches!(
+            parse_chat_completion_response(missing_speak),
+            Err(LlmError::InvalidResponse { .. })
+        ));
+
+        let invalid_mood = r#"{"choices":[{"message":{"content":"{\"speak\":true,\"mood\":\"Furious\",\"text\":\"气死了\"}"}}]}"#
+            .as_bytes();
         assert!(matches!(
             parse_chat_completion_response(invalid_mood),
             Err(LlmError::InvalidResponse { .. })

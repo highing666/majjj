@@ -699,6 +699,16 @@ export function createPresentationQueue(
     scheduleSeatBubble(bubble);
   }
 
+  function handlePersonaMoodUpdated(
+    message: Extract<ServerMessage, { PersonaMoodUpdated: unknown }>,
+  ): void {
+    const reduced = reduceServerMessage(sessionState, message);
+    if (reduced.state !== sessionState) {
+      sessionState = reduced.state;
+      emitState();
+    }
+  }
+
   function handleTableBanterAudioFallback(
     message: Extract<ServerMessage, { TableBanterAudioFallback: unknown }>,
   ): void {
@@ -933,6 +943,10 @@ export function createPresentationQueue(
       }
       if ("TableBanter" in message) {
         handleTableBanter(message);
+        return;
+      }
+      if ("PersonaMoodUpdated" in message) {
+        handlePersonaMoodUpdated(message);
         return;
       }
       if ("TableBanterAudioReady" in message) {

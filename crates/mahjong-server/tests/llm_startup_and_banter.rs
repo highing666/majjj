@@ -24,8 +24,10 @@ use tokio::sync::watch;
 #[derive(Debug, Clone)]
 enum FakeCompletionMode {
     Ok {
+        speak: bool,
         mood: &'static str,
         text: &'static str,
+        reasoning_content: Option<&'static str>,
     },
     ThinkingLeak,
     Slow(Duration),
@@ -129,13 +131,26 @@ async fn fake_chat_completions(
     state.requests.lock().expect("lock requests").push(body);
     let mode = state.mode.lock().expect("lock mode").clone();
     match mode {
-        FakeCompletionMode::Ok { mood, text } => {
-            let content = serde_json::json!({ "mood": mood, "text": text }).to_string();
+        FakeCompletionMode::Ok {
+            speak,
+            mood,
+            text,
+            reasoning_content,
+        } => {
+            let content =
+                serde_json::json!({ "speak": speak, "mood": mood, "text": text }).to_string();
+            let mut message = serde_json::json!({
+                "role": "assistant",
+                "content": content,
+            });
+            if let Some(reasoning) = reasoning_content {
+                message["reasoning_content"] = serde_json::json!(reasoning);
+            }
             (
                 StatusCode::OK,
                 Json(serde_json::json!({
                     "choices": [{
-                        "message": { "role": "assistant", "content": content }
+                        "message": message
                     }]
                 })),
             )
@@ -146,14 +161,15 @@ async fn fake_chat_completions(
                 "choices": [{
                     "message": {
                         "role": "assistant",
-                        "content": "<think>secret</think>{\"mood\":\"Smug\",\"text\":\"穿帮了\"}"
+                        "content": "<think>secret</think>{\"speak\":true,\"mood\":\"Smug\",\"text\":\"穿帮了\"}"
                     }
                 }]
             })),
         ),
         FakeCompletionMode::Slow(delay) => {
             tokio::time::sleep(delay).await;
-            let content = serde_json::json!({ "mood": "Deadpan", "text": "迟到了" }).to_string();
+            let content = serde_json::json!({ "speak": true, "mood": "Deadpan", "text": "迟到了" })
+                .to_string();
             (
                 StatusCode::OK,
                 Json(serde_json::json!({
@@ -199,8 +215,10 @@ async fn startup_gate_enforces_reachable_llm_precedence_and_binary_exit_on_failu
 
     // 2. Reachable /health but empty /v1/models -> must also fail startup!
     let fake = FakeLlamaServer::start(FakeCompletionMode::Ok {
+        speak: true,
         mood: "Smug",
         text: "测试台词",
+        reasoning_content: None,
     })
     .await;
     fake.set_models(Vec::new());
@@ -290,8 +308,10 @@ async fn startup_gate_enforces_reachable_llm_precedence_and_binary_exit_on_failu
 #[tokio::test]
 async fn fake_llama_server_end_to_end_json_schema_banter_timeout_and_recovery() {
     let fake = FakeLlamaServer::start(FakeCompletionMode::Ok {
+        speak: true,
         mood: "Smug",
         text: "开局手牌顺得很，你们都别想胡！",
+        reasoning_content: Some("起手牌型很顺，主动挑衅一句最贴合人设"),
     })
     .await;
 
@@ -383,18 +403,29 @@ async fn fake_llama_server_end_to_end_json_schema_banter_timeout_and_recovery() 
         _ => unreachable!(),
     }
 
-    // Verify exact OpenAI request body sent to fake llama-server.
+    // Verify exact OpenAI request body sent to fake llama-server (native thinking + {speak, mood, text}).
     let reqs = fake.recorded_requests();
     assert_eq!(reqs.len(), 1);
     assert_eq!(reqs[0]["model"], "Qwen3.5-9B-Q5_K_M.gguf");
-    assert_eq!(reqs[0]["chat_template_kwargs"]["enable_thinking"], false);
+    assert_eq!(reqs[0]["max_tokens"], 512);
+    assert_eq!(reqs[0]["chat_template_kwargs"]["enable_thinking"], true);
     assert_eq!(reqs[0]["response_format"]["type"], "json_schema");
     assert_eq!(reqs[0]["response_format"]["json_schema"]["strict"], true);
+    assert_eq!(
+        reqs[0]["response_format"]["json_schema"]["schema"]["required"],
+        serde_json::json!(["speak", "mood", "text"])
+    );
+    assert_eq!(
+        reqs[0]["response_format"]["json_schema"]["schema"]["properties"]["text"]["minLength"],
+        0
+    );
 
     // 2. East wins Hand 1 by Tsumo -> HandSettled triggers banter with all 4 revealed hands!
     fake.set_mode(FakeCompletionMode::Ok {
+        speak: true,
         mood: "Mocking",
-        text: "哟哟哟，第一手就自摸红中，发牌员是你亲戚吧？",
+        text: "哟哟哟，第一手就自摸红中，手气这么离谱？",
+        reasoning_content: Some("东家第一手直接自摸红中，必须调侃一下"),
     });
     send_msg(
         &mut east,
@@ -462,8 +493,10 @@ async fn fake_llama_server_end_to_end_json_schema_banter_timeout_and_recovery() 
 
     // 4. Switch fake server back to Ok -> East discards 1m -> South Pons 1m -> emits recovery LlmStatusNotice + TableBanter!
     fake.set_mode(FakeCompletionMode::Ok {
+        speak: true,
         mood: "Tilted",
         text: "碰你这张一万，看你还怎么装！",
+        reasoning_content: Some("碰出一万抢回主动权"),
     });
     send_msg(
         &mut east,
@@ -505,11 +538,50 @@ async fn fake_llama_server_end_to_end_json_schema_banter_timeout_and_recovery() 
         }
     }
 
-    // 5. Verify Slow (> sync cap) and Http500 directly through OpenAiLlmClient & real HTTP server.
-    fake.set_mode(FakeCompletionMode::Http500);
+    // 5. Verify silent mood (speak: false + empty text + reasoning_content), >40-char safety clamp,
+    // relaxed default timeout (20s), Slow timeout error, and Http500 directly through OpenAiLlmClient.
+    assert_eq!(
+        mahjong_server::llm::DEFAULT_REQUEST_TIMEOUT,
+        Duration::from_secs(20)
+    );
     let http_client = mahjong_server::OpenAiLlmClient::new(&fake.base_url())
         .expect("build client")
         .with_request_timeout(Duration::from_millis(200));
+
+    fake.set_mode(FakeCompletionMode::Ok {
+        speak: false,
+        mood: "Plotting",
+        text: "",
+        reasoning_content: Some("先憋着不开口，暗中切到阴险表情"),
+    });
+    let silent = http_client
+        .generate_banter(mahjong_server::BanterGenerationRequest::new("sys", "usr"))
+        .await
+        .expect("speak: false with empty text and reasoning_content must succeed");
+    assert_eq!(
+        silent,
+        mahjong_server::BanterOutput {
+            speak: false,
+            mood: PersonaMood::Plotting,
+            text: String::new(),
+        }
+    );
+
+    fake.set_mode(FakeCompletionMode::Ok {
+        speak: true,
+        mood: "Tilted",
+        text: "一二三四五六七八九十一二三四五六七八九十一二三四五六七八九十一二三四五六七八九十一二三四五六七八",
+        reasoning_content: Some("情绪失控输出超长文本"),
+    });
+    let clamped = http_client
+        .generate_banter(mahjong_server::BanterGenerationRequest::new("sys", "usr"))
+        .await
+        .expect("runaway >40-char text must be safely clamped");
+    assert!(clamped.speak);
+    assert_eq!(clamped.mood, PersonaMood::Tilted);
+    assert_eq!(clamped.text.chars().count(), 40);
+
+    fake.set_mode(FakeCompletionMode::Http500);
     let err_500 = http_client
         .generate_banter(mahjong_server::BanterGenerationRequest::new("sys", "usr"))
         .await

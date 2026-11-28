@@ -617,6 +617,35 @@ export function reduceServerMessage(
     };
   }
 
+  if ("PersonaMoodUpdated" in message) {
+    if (state.snapshot === null) {
+      return { state, effects: [] };
+    }
+    const { seat, persona_id, mood } = message.PersonaMoodUpdated;
+    const idx = seatIndex(seat);
+    const currentSeat = state.snapshot.seats[idx];
+    if (
+      currentSeat.kind !== "Ai" ||
+      currentSeat.persona_id !== persona_id ||
+      currentSeat.mood === mood
+    ) {
+      return { state, effects: [] };
+    }
+    const nextSeats = state.snapshot.seats.map((entry, i) =>
+      i === idx ? { ...entry, mood } : entry,
+    ) as TableSnapshot["seats"];
+    return {
+      state: {
+        ...state,
+        snapshot: {
+          ...state.snapshot,
+          seats: nextSeats,
+        },
+      },
+      effects: [],
+    };
+  }
+
   if ("QuickEmoteBroadcast" in message) {
     if (
       state.snapshot !== null &&

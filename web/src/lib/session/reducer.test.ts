@@ -1204,6 +1204,114 @@ describe("session reducer — TableBanter and LlmStatusNotice", () => {
     expect(ignoredHuman.snapshot?.seats[0].mood).toBeNull();
   });
 
+  it("updates AI seat mood silently on PersonaMoodUpdated and ignores non-AI or mismatched persona seats", () => {
+    const seats = makeLobbySeats();
+    seats[0] = {
+      ...seats[0],
+      kind: "Human",
+      nickname: "房主",
+      connected: true,
+    };
+    seats[1] = {
+      ...seats[1],
+      kind: "Ai",
+      nickname: "大川",
+      connected: true,
+      ai_difficulty: "Strong",
+      ai_style: "AggressiveFast",
+      persona_id: "QuickHothead",
+      mood: "Smug",
+    };
+    seats[3] = {
+      ...seats[3],
+      kind: "Ai",
+      nickname: "无角色AI",
+      connected: true,
+      ai_difficulty: "Strong",
+      ai_style: "Balanced",
+      persona_id: null,
+      mood: "Deadpan",
+    };
+
+    const inMatch = reduceServerMessage(createInitialSessionState(), {
+      TableSnapshot: makeSnapshot({
+        phase: "InMatch",
+        your_seat: "East",
+        seats,
+        player_view: makePlayerView(),
+        seq: 4,
+      }),
+    }).state;
+
+    // 1. Matching AI seat updates mood to Plotting with zero effects
+    const updated = reduceServerMessage(inMatch, {
+      PersonaMoodUpdated: {
+        seat: "South",
+        persona_id: "QuickHothead",
+        mood: "Plotting",
+      },
+    });
+    expect(updated.effects).toEqual([]);
+    expect(updated.state.snapshot?.seats[1].mood).toBe("Plotting");
+    expect(updated.state.snapshot?.seats[0].mood).toBeNull();
+    expect(updated.state.snapshot?.seats[2].mood).toBeNull();
+
+    // 2. Identical mood is a reference-preserving no-op
+    const noop = reduceServerMessage(updated.state, {
+      PersonaMoodUpdated: {
+        seat: "South",
+        persona_id: "QuickHothead",
+        mood: "Plotting",
+      },
+    });
+    expect(noop.state).toBe(updated.state);
+    expect(noop.effects).toEqual([]);
+
+    // 3. Human seat is ignored
+    const ignoredHuman = reduceServerMessage(updated.state, {
+      PersonaMoodUpdated: {
+        seat: "East",
+        persona_id: "QuickHothead",
+        mood: "Mocking",
+      },
+    });
+    expect(ignoredHuman.state).toBe(updated.state);
+    expect(ignoredHuman.state.snapshot?.seats[0].mood).toBeNull();
+
+    // 4. Empty seat is ignored
+    const ignoredEmpty = reduceServerMessage(updated.state, {
+      PersonaMoodUpdated: {
+        seat: "West",
+        persona_id: "TeaSarcasm",
+        mood: "Tilted",
+      },
+    });
+    expect(ignoredEmpty.state).toBe(updated.state);
+    expect(ignoredEmpty.state.snapshot?.seats[2].mood).toBeNull();
+
+    // 5. Mismatched persona_id on AI seat is ignored
+    const ignoredMismatch = reduceServerMessage(updated.state, {
+      PersonaMoodUpdated: {
+        seat: "South",
+        persona_id: "TeaSarcasm",
+        mood: "Tilted",
+      },
+    });
+    expect(ignoredMismatch.state).toBe(updated.state);
+    expect(ignoredMismatch.state.snapshot?.seats[1].mood).toBe("Plotting");
+
+    // 6. AI seat without matching persona_id (null) is ignored
+    const ignoredNullPersona = reduceServerMessage(updated.state, {
+      PersonaMoodUpdated: {
+        seat: "North",
+        persona_id: "ChaosInstigator",
+        mood: "Nervous",
+      },
+    });
+    expect(ignoredNullPersona.state).toBe(updated.state);
+    expect(ignoredNullPersona.state.snapshot?.seats[3].mood).toBe("Deadpan");
+  });
+
   it("tracks LlmStatusNotice outage and recovery cleanly without clearing snapshot", () => {
     const base = reduceServerMessage(createInitialSessionState(), {
       TableSnapshot: makeSnapshot({ phase: "InMatch", your_seat: "East" }),

@@ -178,6 +178,7 @@ impl LlmClient for ScriptedLlmClient {
             Some(match &self.banter_fallback {
                 Some(handler) => handler(&request),
                 None => Ok(BanterOutput {
+                    speak: true,
                     mood: PersonaMood::Deadpan,
                     text: "默认补位吐槽".to_string(),
                 }),
@@ -297,6 +298,7 @@ impl VirtualClient {
                     ServerMessage::TableSnapshot(snap) => return snap,
                     ServerMessage::LobbyUpdated { .. }
                     | ServerMessage::TableBanter { .. }
+                    | ServerMessage::PersonaMoodUpdated { .. }
                     | ServerMessage::TableBanterAudioReady { .. }
                     | ServerMessage::TableBanterAudioFallback { .. }
                     | ServerMessage::LlmStatusNotice { .. }
@@ -348,6 +350,7 @@ impl LlmClient for FastStubLlmClient {
     ) -> LlmFuture<'_, Result<BanterOutput, LlmError>> {
         Box::pin(async {
             Ok(BanterOutput {
+                speak: true,
                 mood: PersonaMood::Smug,
                 text: "这招够狠，你们接着看！".to_string(),
             })
@@ -636,6 +639,7 @@ pub async fn recv_non_ping_msg(ws: &mut WsClient) -> ServerMessage {
         match recv_msg(ws).await {
             ServerMessage::ServerPing { .. }
             | ServerMessage::TableBanter { .. }
+            | ServerMessage::PersonaMoodUpdated { .. }
             | ServerMessage::TableBanterAudioReady { .. }
             | ServerMessage::TableBanterAudioFallback { .. }
             | ServerMessage::LlmStatusNotice { .. }
@@ -652,6 +656,7 @@ pub async fn recv_snapshot(ws: &mut WsClient) -> TableSnapshot {
             ServerMessage::TableSnapshot(snap) => return snap,
             ServerMessage::LobbyUpdated { .. }
             | ServerMessage::TableBanter { .. }
+            | ServerMessage::PersonaMoodUpdated { .. }
             | ServerMessage::TableBanterAudioReady { .. }
             | ServerMessage::TableBanterAudioFallback { .. }
             | ServerMessage::LlmStatusNotice { .. }
@@ -675,6 +680,7 @@ pub async fn recv_event_batch(
             } => return (from_seq, to_seq, events, updated_legal_actions),
             ServerMessage::LobbyUpdated { .. }
             | ServerMessage::TableBanter { .. }
+            | ServerMessage::PersonaMoodUpdated { .. }
             | ServerMessage::TableBanterAudioReady { .. }
             | ServerMessage::TableBanterAudioFallback { .. }
             | ServerMessage::LlmStatusNotice { .. }

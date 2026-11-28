@@ -418,6 +418,12 @@ pub enum ServerMessage {
         event_seq: u64,
         reply_to_seat: Option<Seat>,
     },
+    /// Silent facial/emotional mood update (`牌友情绪`) when an AI chooses not to speak.
+    PersonaMoodUpdated {
+        seat: Seat,
+        persona_id: PersonaId,
+        mood: PersonaMood,
+    },
     /// Lightweight notification that synthesized `BanterVoice` WAV audio is ready for same-origin fetch.
     TableBanterAudioReady {
         banter_id: String,

@@ -88,10 +88,12 @@ async fn midhand_tenpai_inflection_injects_exact_hand_facts_without_leaking_oppo
 
     let llm = ScriptedLlmClient::from_outputs(vec![
         BanterOutput {
+            speak: true,
             mood: PersonaMood::Smug,
             text: "开局这牌稳了，看我表演！".to_string(),
         },
         BanterOutput {
+            speak: true,
             mood: PersonaMood::Plotting,
             text: "嘿嘿，这手牌突然顺起来了，你们小心点！".to_string(),
         },
@@ -197,14 +199,17 @@ async fn stalled_draw_inflection_fires_and_per_seat_cooldown_blocks_until_3500ms
 
     let llm = ScriptedLlmClient::from_outputs(vec![
         BanterOutput {
+            speak: true,
             mood: PersonaMood::Smug,
             text: "开局先打个招呼！".to_string(),
         },
         BanterOutput {
+            speak: true,
             mood: PersonaMood::Tilted,
             text: "连摸三手烂牌，发牌员今天存心演我！".to_string(),
         },
         BanterOutput {
+            speak: true,
             mood: PersonaMood::Tilted,
             text: "冷却都转完了还给我发烂牌，真服了！".to_string(),
         },
@@ -308,33 +313,40 @@ async fn highlight_banter_chains_set_reply_to_seat_and_cap_strictly_at_1_to_2_ro
     let llm = ScriptedLlmClient::from_outputs(vec![
         // Hand 1 opening
         BanterOutput {
+            speak: true,
             mood: PersonaMood::Smug,
             text: "第一小局开打！".to_string(),
         },
         // Hand 1 settlement opener + 2 follow-up replies
         BanterOutput {
+            speak: true,
             mood: PersonaMood::Tilted,
             text: "起手天胡自摸？这发牌员绝对收红包了！".to_string(),
         },
         BanterOutput {
+            speak: true,
             mood: PersonaMood::Mocking,
             text: "哎哟急眼哥别破防呀，手气不好就认命嘛。".to_string(),
         },
         BanterOutput {
+            speak: true,
             mood: PersonaMood::Plotting,
             text: "哈哈哈打起来打起来，我正好瓜子都嗑上了！".to_string(),
         },
         // Hand 2 opening
         BanterOutput {
+            speak: true,
             mood: PersonaMood::Deadpan,
             text: "第二小局重新做人。".to_string(),
         },
         // Hand 2 Pon opener + 1 follow-up reply
         BanterOutput {
+            speak: true,
             mood: PersonaMood::Smug,
             text: "碰你这张一万，节奏直接起飞！".to_string(),
         },
         BanterOutput {
+            speak: true,
             mood: PersonaMood::Mocking,
             text: "碰个一万也这么得意，可别回头点炮哭鼻子哦。".to_string(),
         },

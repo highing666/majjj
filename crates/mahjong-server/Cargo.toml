@@ -24,6 +24,7 @@ serde_json.workspace = true
 socket2 = "0.6"
 thiserror.workspace = true
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync", "time", "signal", "fs"] }
+tracing = { version = "0.1", default-features = false, features = ["std"] }
 ts-rs.workspace = true
 uuid = { version = "1", features = ["v4"] }
 

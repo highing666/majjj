@@ -32,6 +32,7 @@ fn recording_memory_llm() -> Arc<ScriptedLlmClient> {
     ScriptedLlmClient::with_handlers(
         |_| {
             Ok(BanterOutput {
+                speak: true,
                 mood: PersonaMood::Mocking,
                 text: "上回的账我都给你记在小本本上了！".to_string(),
             })

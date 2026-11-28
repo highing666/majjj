@@ -93,6 +93,7 @@ async fn highlight_sync_cap_unblocks_at_1500ms_without_false_outage_and_delivers
     let llm = ScriptedLlmClient::from_replies(vec![
         // 1. HandStarted opening banter (fast)
         PlannedReply::Immediate(Ok(BanterOutput {
+            speak: true,
             mood: PersonaMood::Plotting,
             text: "开局手气来了，你们小心点炮！".to_string(),
         })),
@@ -102,12 +103,14 @@ async fn highlight_sync_cap_unblocks_at_1500ms_without_false_outage_and_delivers
         PlannedReply::Delayed(
             Duration::from_millis(1800),
             Ok(BanterOutput {
+                speak: true,
                 mood: PersonaMood::Smug,
                 text: "碰你这张一万，照样稳稳接上！".to_string(),
             }),
         ),
         // 3. Follow-up chain reply after Pon banter commits
         PlannedReply::Immediate(Ok(BanterOutput {
+            speak: true,
             mood: PersonaMood::Mocking,
             text: "刚碰一张就飘成这样？".to_string(),
         })),
@@ -224,25 +227,34 @@ async fn true_llm_timeout_past_async_limit_emits_outage_notice_and_clears_on_rec
     let llm = ScriptedLlmClient::from_replies(vec![
         // 1. HandStarted opening banter (fast)
         PlannedReply::Immediate(Ok(BanterOutput {
+            speak: true,
             mood: PersonaMood::Plotting,
             text: "开局手气来了！".to_string(),
         })),
-        // 2. MeldDeclared (South Pon) hangs 10s (> 6000ms ASYNC_BANTER_TIMEOUT) -> genuine timeout!
+        // 2. MeldDeclared (South Pon) hangs past ASYNC_BANTER_TIMEOUT (20s) -> genuine timeout!
         PlannedReply::Delayed(
-            Duration::from_secs(10),
+            ASYNC_BANTER_TIMEOUT + Duration::from_secs(5),
             Ok(BanterOutput {
+                speak: true,
                 mood: PersonaMood::Smug,
                 text: "超过完整超时不应该出现".to_string(),
             }),
         ),
         // 3. Subsequent quick emote reply recovers -> emits LlmStatusNotice { available: true } + TableBanter!
         PlannedReply::Immediate(Ok(BanterOutput {
+            speak: true,
             mood: PersonaMood::Tilted,
             text: "网卡刚恢复，这就来回喷你！".to_string(),
         })),
     ]);
 
     let (runtime, mut east, start_seq) = setup_east_south_pon_table(12, llm).await;
+    // Disable slow-think nudge (16s) so waiting across the 20s ASYNC_BANTER_TIMEOUT doesn't fire a nudge mid-wait.
+    east.send(
+        &runtime,
+        &ClientMessage::SetSlowThinkNudge { enabled: false },
+    )
+    .await;
     yield_tasks().await;
     let _ = east.drain_all();
 
@@ -342,6 +354,7 @@ async fn takeover_and_disband_drop_in_flight_banter_without_ghost_lines() {
         PlannedReply::Gated(
             Arc::clone(&gate1),
             Ok(BanterOutput {
+                speak: true,
                 mood: PersonaMood::Smug,
                 text: "这句不该在接管后幽灵弹出！".to_string(),
             }),
@@ -349,6 +362,7 @@ async fn takeover_and_disband_drop_in_flight_banter_without_ghost_lines() {
         PlannedReply::Gated(
             Arc::clone(&gate2),
             Ok(BanterOutput {
+                speak: true,
                 mood: PersonaMood::Tilted,
                 text: "这句不该在解散后幽灵弹出！".to_string(),
             }),
@@ -475,4 +489,221 @@ async fn takeover_and_disband_drop_in_flight_banter_without_ghost_lines() {
             .any(|m| matches!(m, ServerMessage::TableBanter { .. })),
         "ghost TableBanter leaked after disband: {after_disband:?}"
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn silent_mood_update_emits_persona_mood_updated_on_change_suppresses_noop_and_unblocks_sync()
+{
+    let llm = ScriptedLlmClient::from_replies(vec![
+        // 1. HandStarted opening decision: speak: false with mood = Plotting (differs from initial Deadpan)
+        PlannedReply::Immediate(Ok(BanterOutput::silent(PersonaMood::Plotting))),
+        // 2. MeldDeclared (South Pon, pending_sync): speak: false with mood = Tilted -> unblocks sync cleanly!
+        PlannedReply::Immediate(Ok(BanterOutput::silent(PersonaMood::Tilted))),
+        // 3. Subsequent QuickEmote replies: speak: false with SAME mood (Tilted for South, Deadpan/Plotting unchanged)
+        PlannedReply::Immediate(Ok(BanterOutput::silent(PersonaMood::Tilted))),
+        PlannedReply::Immediate(Ok(BanterOutput::silent(PersonaMood::Deadpan))),
+    ]);
+
+    let (runtime, mut east, start_seq) = setup_east_south_pon_table(19, llm.clone()).await;
+
+    // 1. Opening decision: speak: false + changed mood -> emits PersonaMoodUpdated ONLY (zero TableBanter).
+    yield_tasks().await;
+    let opening_msgs = east.drain_all();
+    assert!(
+        !opening_msgs
+            .iter()
+            .any(|m| matches!(m, ServerMessage::TableBanter { .. })),
+        "speak: false must never emit TableBanter: {opening_msgs:?}"
+    );
+    let opening_mood_updates: Vec<_> = opening_msgs
+        .iter()
+        .filter(|m| matches!(m, ServerMessage::PersonaMoodUpdated { .. }))
+        .collect();
+    assert_eq!(
+        opening_mood_updates.len(),
+        1,
+        "expected exactly 1 PersonaMoodUpdated on changed silent mood: {opening_msgs:?}"
+    );
+    assert!(matches!(
+        opening_mood_updates[0],
+        ServerMessage::PersonaMoodUpdated {
+            mood: PersonaMood::Plotting,
+            ..
+        }
+    ));
+
+    // 2. East discards 1m -> South Pons 1m (pending_sync highlight) -> South resolves immediately with
+    // speak: false + Tilted -> emits PersonaMoodUpdated for South, zero TableBanter, zero follow-up,
+    // AND unblocks South's discard without waiting for 1500ms sync cap!
+    east.send(
+        &runtime,
+        &ClientMessage::SubmitAction {
+            expected_seq: start_seq,
+            client_action_id: "silent-pon-1m".to_string(),
+            action: PlayerAction::Discard {
+                tile: tile("1m"),
+                from_drawn: false,
+            },
+        },
+    )
+    .await;
+    pump_ai_turn().await;
+    yield_tasks().await;
+
+    let after_pon = east.drain_all();
+    assert!(
+        after_pon.iter().any(|m| matches!(
+            m,
+            ServerMessage::PersonaMoodUpdated {
+                seat: Seat::South,
+                persona_id: PersonaId::QuickHothead,
+                mood: PersonaMood::Tilted,
+            }
+        )),
+        "expected PersonaMoodUpdated for South Tilted, got {after_pon:?}"
+    );
+    assert!(
+        !after_pon
+            .iter()
+            .any(|m| matches!(m, ServerMessage::TableBanter { .. })),
+        "silent Pon decision must not emit TableBanter: {after_pon:?}"
+    );
+    assert!(
+        after_pon.iter().any(|m| matches!(
+            m,
+            ServerMessage::EventBatch { events, .. }
+                if events.iter().any(|e| matches!(e.kind, PlayerEventKind::TileDiscarded { seat: Seat::South, .. }))
+        )),
+        "pending_sync must unblock immediately on speak: false without waiting for sync cap: {after_pon:?}"
+    );
+
+    // Advance past chain delay (1s): speak: false must NOT have scheduled any follow-up banter.
+    let calls_before_chain_window = llm.captured().len();
+    tokio::time::advance(Duration::from_millis(1000)).await;
+    yield_tasks().await;
+    assert_eq!(
+        llm.captured().len(),
+        calls_before_chain_window,
+        "speak: false must not schedule any follow-up banter chain"
+    );
+
+    // Snapshot reflects South's updated silent mood.
+    east.send(&runtime, &ClientMessage::RequestSnapshot).await;
+    let snap = east.recv_snapshot().await;
+    assert_eq!(
+        snap.seats[Seat::South.index()].mood,
+        Some(PersonaMood::Tilted)
+    );
+    let _ = east.drain_all();
+
+    // 3. Same mood returned with speak: false -> silent no-op (zero PersonaMoodUpdated, zero TableBanter).
+    let gate_takeover = Arc::new(Notify::new());
+    let llm_noop = ScriptedLlmClient::from_replies(vec![
+        // Opening: South (QuickHothead) starts with initial_mood = Smug -> returning silent Smug is a no-op!
+        PlannedReply::Immediate(Ok(BanterOutput::silent(PersonaMood::Smug))),
+        // Second call gated for takeover test
+        PlannedReply::Gated(
+            Arc::clone(&gate_takeover),
+            Ok(BanterOutput::silent(PersonaMood::Tilted)),
+        ),
+    ]);
+    let wall = no_reaction_wall();
+    let factory: WallProviderFactory = Arc::new(move || {
+        BoxedWallProvider(Box::new(PresetWallProvider::single(
+            Seat::East,
+            wall.clone(),
+        )))
+    });
+    let rt2 = TableRuntime::with_options(
+        8789,
+        None,
+        TableOptions::with_wall_factory(23, factory)
+            .with_pacing(PacingMode::Immediate)
+            .with_llm_client(llm_noop.clone()),
+    );
+    let mut host = VirtualClient::connect(&rt2, "h2", "房主").await;
+    let mut guest = VirtualClient::connect(&rt2, "g2", "客串").await;
+    host.send(
+        &rt2,
+        &ClientMessage::JoinSeat {
+            seat: Some(Seat::East),
+        },
+    )
+    .await;
+    let _ = host.recv_snapshot().await;
+    host.send(
+        &rt2,
+        &ClientMessage::SetSeatPersona {
+            seat: Seat::South,
+            persona_id: Some(PersonaId::QuickHothead),
+        },
+    )
+    .await;
+    host.send(&rt2, &ClientMessage::StartMatch).await;
+    let snap2 = host.recv_snapshot().await;
+    let _ = guest.recv_snapshot().await;
+    assert_eq!(
+        snap2.seats[Seat::South.index()].mood,
+        Some(PersonaMood::Smug)
+    );
+    yield_tasks().await;
+    let opening_noop = host.drain_all();
+    assert!(
+        !opening_noop.iter().any(|m| matches!(
+            m,
+            ServerMessage::PersonaMoodUpdated { .. } | ServerMessage::TableBanter { .. }
+        )),
+        "unchanged silent mood must be a silent no-op: {opening_noop:?}"
+    );
+
+    // 4. Stale speak: false after seat takeover is dropped silently (zero PersonaMoodUpdated, mood stays None).
+    host.send(
+        &rt2,
+        &ClientMessage::SendQuickEmote {
+            emote: mahjong_server::protocol::QuickEmote::IsThatIt,
+        },
+    )
+    .await;
+    yield_tasks().await;
+    let captured_after_emote = llm_noop.captured();
+    assert!(captured_after_emote.len() >= 2);
+    let prompt_emote = &captured_after_emote[1].system_prompt;
+    let target_seat = snap2
+        .seats
+        .iter()
+        .find(|s| {
+            s.kind == SeatKind::Ai
+                && s.persona_id
+                    .is_some_and(|pid| prompt_emote.contains(pid.display_name()))
+        })
+        .map(|s| s.seat)
+        .expect("find target AI seat");
+
+    let _ = guest.drain_all();
+    guest
+        .send(
+            &rt2,
+            &ClientMessage::TakeOverSeat {
+                seat: target_seat,
+                confirm: true,
+            },
+        )
+        .await;
+    let _ = guest.recv_snapshot().await;
+    let _ = host.drain_all();
+    let _ = guest.drain_all();
+
+    gate_takeover.notify_waiters();
+    yield_tasks().await;
+    let after_stale = host.drain_all();
+    assert!(
+        !after_stale.iter().any(|m| matches!(
+            m,
+            ServerMessage::PersonaMoodUpdated { seat, .. } if *seat == target_seat
+        )),
+        "stale silent mood update after takeover must be dropped: {after_stale:?}"
+    );
+    guest.send(&rt2, &ClientMessage::RequestSnapshot).await;
+    let verify_snap = guest.recv_snapshot().await;
+    assert_eq!(verify_snap.seats[target_seat.index()].mood, None);
 }

@@ -2096,6 +2096,28 @@ impl TableSession {
                     return BanterCommitOutcome::default();
                 }
 
+                tracing::debug!(
+                    seat = ?guard.seat,
+                    persona_id = ?guard.persona_id,
+                    speak = output.speak,
+                    mood = ?output.mood,
+                    text_chars = output.text.chars().count(),
+                    "committing banter decision"
+                );
+
+                if !output.speak {
+                    let seat_info = &mut self.seats[guard.seat.index()].info;
+                    if seat_info.mood != Some(output.mood) {
+                        seat_info.mood = Some(output.mood);
+                        self.broadcast_all(ServerMessage::PersonaMoodUpdated {
+                            seat: guard.seat,
+                            persona_id: guard.persona_id,
+                            mood: output.mood,
+                        });
+                    }
+                    return BanterCommitOutcome::default();
+                }
+
                 let now = tokio::time::Instant::now();
                 if let Some(active) = self.active_match.as_mut() {
                     active.seat_last_banter_at[guard.seat.index()] = Some(now);

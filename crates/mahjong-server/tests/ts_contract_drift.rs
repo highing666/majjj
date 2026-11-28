@@ -419,6 +419,11 @@ fn frozen_server_protocol_types_roundtrip_serde_json_without_loss() {
             event_seq: 18,
             reply_to_seat: Some(Seat::East),
         },
+        ServerMessage::PersonaMoodUpdated {
+            seat: Seat::South,
+            persona_id: PersonaId::QuickHothead,
+            mood: PersonaMood::Plotting,
+        },
         ServerMessage::TableBanterAudioReady {
             banter_id: "b-1".to_string(),
             seat: Seat::South,

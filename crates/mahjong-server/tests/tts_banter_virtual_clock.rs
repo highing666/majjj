@@ -242,10 +242,12 @@ async fn banter_broadcasts_immediately_without_waiting_on_tts_and_synthesizes_on
     let wav_pon = make_sample_wav(0x22, 1600);
     let llm = ScriptedLlmClient::from_replies(vec![
         PlannedReply::Immediate(Ok(BanterOutput {
+            speak: true,
             mood: PersonaMood::Plotting,
             text: "开局这牌有点东西！".to_string(),
         })),
         PlannedReply::Immediate(Ok(BanterOutput {
+            speak: true,
             mood: PersonaMood::Smug,
             text: "碰你一万，节奏我拿捏了！".to_string(),
         })),
@@ -395,16 +397,19 @@ async fn settlement_quick_emote_and_slow_think_nudge_use_expected_deadlines() {
     let llm = ScriptedLlmClient::with_banter_fn(|req| {
         if req.user_prompt.contains("四家摊开手牌") || req.user_prompt.contains("结算") {
             Ok(BanterOutput {
+                speak: true,
                 mood: PersonaMood::Tilted,
                 text: "开局自摸这也太离谱了！".to_string(),
             })
         } else if req.user_prompt.contains("快捷互动") {
             Ok(BanterOutput {
+                speak: true,
                 mood: PersonaMood::Mocking,
                 text: "别急，这就打给你看！".to_string(),
             })
         } else {
             Ok(BanterOutput {
+                speak: true,
                 mood: PersonaMood::Deadpan,
                 text: "局中正常吐槽一句。".to_string(),
             })
@@ -517,6 +522,7 @@ async fn stale_tts_is_discarded_on_deadline_same_seat_override_next_hand_takeove
     // without tripping TtsStatusNotice.
     {
         let llm = ScriptedLlmClient::from_outputs(vec![BanterOutput {
+            speak: true,
             mood: PersonaMood::Smug,
             text: "超过五秒的语音必须静默回退".to_string(),
         }]);
@@ -580,10 +586,12 @@ async fn stale_tts_is_discarded_on_deadline_same_seat_override_next_hand_takeove
         let gate_old = Arc::new(Notify::new());
         let llm = ScriptedLlmClient::from_outputs(vec![
             BanterOutput {
+                speak: true,
                 mood: PersonaMood::Deadpan,
                 text: "第一句同座旧台词".to_string(),
             },
             BanterOutput {
+                speak: true,
                 mood: PersonaMood::Smug,
                 text: "第二句同座新台词覆盖！".to_string(),
             },
@@ -717,10 +725,12 @@ async fn stale_tts_is_discarded_on_deadline_same_seat_override_next_hand_takeove
         let gate_settle = Arc::new(Notify::new());
         let llm = ScriptedLlmClient::from_outputs(vec![
             BanterOutput {
+                speak: true,
                 mood: PersonaMood::Deadpan,
                 text: "开局".to_string(),
             },
             BanterOutput {
+                speak: true,
                 mood: PersonaMood::Tilted,
                 text: "上一小局结算迟到的语音".to_string(),
             },
@@ -806,10 +816,12 @@ async fn stale_tts_is_discarded_on_deadline_same_seat_override_next_hand_takeove
         let gate_disband = Arc::new(Notify::new());
         let llm = ScriptedLlmClient::from_outputs(vec![
             BanterOutput {
+                speak: true,
                 mood: PersonaMood::Smug,
                 text: "接管前的话".to_string(),
             },
             BanterOutput {
+                speak: true,
                 mood: PersonaMood::Smug,
                 text: "解散前的话".to_string(),
             },
@@ -930,6 +942,7 @@ async fn stale_tts_is_discarded_on_deadline_same_seat_override_next_hand_takeove
 async fn consecutive_failures_enter_15s_cooldown_skip_upstream_and_recover_via_health_probe() {
     let llm = ScriptedLlmClient::with_banter_fn(|_| {
         Ok(BanterOutput {
+            speak: true,
             mood: PersonaMood::Smug,
             text: "继续互怼不停歇！".to_string(),
         })
@@ -1082,6 +1095,7 @@ async fn consecutive_failures_enter_15s_cooldown_skip_upstream_and_recover_via_h
 async fn startup_unhealthy_tts_notifies_hello_clients_without_blocking_and_recovers() {
     let llm = ScriptedLlmClient::with_banter_fn(|_| {
         Ok(BanterOutput {
+            speak: true,
             mood: PersonaMood::Deadpan,
             text: "语音没开照样吐槽".to_string(),
         })
@@ -1153,6 +1167,7 @@ async fn runtime_audio_cache_respects_lru_ttl_and_no_tts_emits_banter_id_only() 
     )));
     let llm = ScriptedLlmClient::with_banter_fn(|_| {
         Ok(BanterOutput {
+            speak: true,
             mood: PersonaMood::Smug,
             text: "缓存淘汰测试".to_string(),
         })
@@ -1254,6 +1269,7 @@ async fn runtime_audio_cache_respects_lru_ttl_and_no_tts_emits_banter_id_only() 
 async fn timeout_and_deadline_exceeded_emit_fallback_without_tripping_circuit_breaker() {
     let llm = ScriptedLlmClient::with_banter_fn(|_| {
         Ok(BanterOutput {
+            speak: true,
             mood: PersonaMood::Smug,
             text: "超时和408都不能误报服务不可用！".to_string(),
         })
@@ -1428,6 +1444,7 @@ async fn single_in_flight_slot_supersedes_queued_line_and_emits_fallback() {
     let gate_first = Arc::new(Notify::new());
     let llm = ScriptedLlmClient::with_banter_fn(|_| {
         Ok(BanterOutput {
+            speak: true,
             mood: PersonaMood::Smug,
             text: "单在途加一槽最新顶替测试！".to_string(),
         })
@@ -1581,4 +1598,72 @@ async fn single_in_flight_slot_supersedes_queued_line_and_emits_fallback() {
     );
     let sent_ids: Vec<String> = tts.captured().into_iter().map(|r| r.request_id).collect();
     assert_eq!(sent_ids, vec!["b-1".to_string(), b3_id.clone()]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn silent_mood_decision_emits_persona_mood_updated_without_triggering_tts_or_banter() {
+    let llm = ScriptedLlmClient::from_replies(vec![PlannedReply::Immediate(Ok(
+        BanterOutput::silent(PersonaMood::Plotting),
+    ))]);
+    let tts = ScriptedTtsClient::new(
+        true,
+        vec![PlannedTtsReply::Immediate(Ok(TtsAudioOutput {
+            wav_bytes: make_sample_wav(0x77, 1600),
+            duration_ms: 800,
+        }))],
+    );
+    let wall = no_reaction_wall();
+    let factory: WallProviderFactory = Arc::new(move || {
+        BoxedWallProvider(Box::new(PresetWallProvider::single(
+            Seat::East,
+            wall.clone(),
+        )))
+    });
+    let runtime = TableRuntime::with_options(
+        8789,
+        None,
+        TableOptions::with_wall_factory(91, factory)
+            .with_pacing(PacingMode::Immediate)
+            .with_llm_client(llm)
+            .with_tts_client(tts.clone()),
+    );
+
+    let mut east = VirtualClient::connect(&runtime, "tts-silent-e", "房主").await;
+    east.send(
+        &runtime,
+        &ClientMessage::JoinSeat {
+            seat: Some(Seat::East),
+        },
+    )
+    .await;
+    let _ = east.recv_snapshot().await;
+    east.send(&runtime, &ClientMessage::StartMatch).await;
+    let _ = east.recv_snapshot().await;
+    yield_tasks().await;
+
+    let msgs = east.drain_all();
+    assert!(
+        msgs.iter().any(|m| matches!(
+            m,
+            ServerMessage::PersonaMoodUpdated {
+                mood: PersonaMood::Plotting,
+                ..
+            }
+        )),
+        "expected PersonaMoodUpdated on silent mood change, got {msgs:?}"
+    );
+    assert!(
+        !msgs.iter().any(|m| matches!(
+            m,
+            ServerMessage::TableBanter { .. }
+                | ServerMessage::TableBanterAudioReady { .. }
+                | ServerMessage::TableBanterAudioFallback { .. }
+        )),
+        "speak: false must never emit TableBanter or TTS audio messages: {msgs:?}"
+    );
+    assert!(
+        tts.captured().is_empty(),
+        "speak: false must never invoke TtsClient::synthesize, got {:?}",
+        tts.captured()
+    );
 }

@@ -1844,4 +1844,105 @@ describe("PresentationQueue", () => {
 
     queue.dispose();
   });
+
+  it("updates AI seat mood silently on PersonaMoodUpdated with zero bubbles or voice events and ignores stale/mismatched targets", () => {
+    const scheduled = new Map<number, { cb: () => void; delayMs: number }>();
+    let nextTimerId = 1;
+
+    const queue = createPresentationQueue({
+      scheduler: {
+        setTimeout(cb, delayMs) {
+          const id = nextTimerId++;
+          scheduled.set(id, { cb, delayMs });
+          return id;
+        },
+        clearTimeout(handle) {
+          scheduled.delete(handle as number);
+        },
+      },
+    });
+
+    const snap = makeSnapshot(3, "Standard");
+    snap.seats[1] = {
+      ...snap.seats[1],
+      kind: "Ai",
+      persona_id: "QuickHothead",
+      mood: "Smug",
+      nickname: "大川",
+    };
+    snap.seats[2] = {
+      ...snap.seats[2],
+      kind: "Ai",
+      persona_id: "TeaSarcasm",
+      mood: "Mocking",
+      nickname: "小晚",
+    };
+    queue.enqueueServerMessage({ TableSnapshot: snap });
+
+    const semanticEvents: unknown[] = [];
+    const voiceEvents: unknown[] = [];
+    let stateEmits = 0;
+    queue.onSemanticEvent((ev) => semanticEvents.push(ev));
+    queue.onBanterVoiceEvent((ev) => voiceEvents.push(ev));
+    queue.subscribe(() => {
+      stateEmits += 1;
+    });
+    // Initial subscribe call fires once synchronously
+    stateEmits = 0;
+
+    // 1. Matching AI seat updates mood silently with zero bubbles, zero timers, zero audio
+    queue.enqueueServerMessage({
+      PersonaMoodUpdated: {
+        seat: "South",
+        persona_id: "QuickHothead",
+        mood: "Tilted",
+      },
+    });
+    expect(stateEmits).toBe(1);
+    expect(queue.getState().snapshot?.seats[1].mood).toBe("Tilted");
+    expect(queue.getState().snapshot?.seats[2].mood).toBe("Mocking");
+    expect(queue.getState().activeBubbles).toEqual({
+      East: null,
+      South: null,
+      West: null,
+      North: null,
+    });
+    expect(scheduled.size).toBe(0);
+    expect(semanticEvents).toEqual([]);
+    expect(voiceEvents).toEqual([]);
+
+    // 2. Same mood is a no-op (no redundant state emit)
+    queue.enqueueServerMessage({
+      PersonaMoodUpdated: {
+        seat: "South",
+        persona_id: "QuickHothead",
+        mood: "Tilted",
+      },
+    });
+    expect(stateEmits).toBe(1);
+
+    // 3. Human seat and mismatched persona_id are ignored cleanly
+    queue.enqueueServerMessage({
+      PersonaMoodUpdated: {
+        seat: "East",
+        persona_id: "QuickHothead",
+        mood: "Mocking",
+      },
+    });
+    queue.enqueueServerMessage({
+      PersonaMoodUpdated: {
+        seat: "South",
+        persona_id: "TeaSarcasm",
+        mood: "Deadpan",
+      },
+    });
+    expect(stateEmits).toBe(1);
+    expect(queue.getState().snapshot?.seats[0].mood).toBeNull();
+    expect(queue.getState().snapshot?.seats[1].mood).toBe("Tilted");
+    expect(queue.getState().activeBubbles.South).toBeNull();
+    expect(semanticEvents).toEqual([]);
+    expect(voiceEvents).toEqual([]);
+
+    queue.dispose();
+  });
 });

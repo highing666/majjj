@@ -639,6 +639,7 @@ async fn remote_session_sanitizes_snapshot_blocks_offline_human_takeover_allows_
 ) {
     let llm = ScriptedLlmClient::with_banter_fn(|_| {
         Ok(BanterOutput {
+            speak: true,
             mood: PersonaMood::Smug,
             text: "远程来的手气还挺硬！".to_string(),
         })
@@ -903,6 +904,7 @@ async fn remote_human_match_records_into_history_and_persona_memory() {
     let llm = ScriptedLlmClient::with_handlers(
         |_| {
             Ok(BanterOutput {
+                speak: true,
                 mood: PersonaMood::Tilted,
                 text: "起手自摸？远程外援这么凶！".to_string(),
             })
