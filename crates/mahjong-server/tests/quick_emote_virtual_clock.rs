@@ -27,9 +27,10 @@ fn emote_nudge_responder(request: &BanterGenerationRequest) -> Result<BanterOutp
             "哟，这手牌是要算出花来吗？慢慢想别着急！".to_string(),
         )
     } else if user_prompt.contains("快捷互动回应") {
+        let header = user_prompt.lines().next().unwrap_or(user_prompt);
         let matched_label = QuickEmote::ALL
             .iter()
-            .find(|e| user_prompt.contains(e.label()))
+            .find(|e| header.contains(e.label()))
             .map_or("快捷互动", |e| e.label());
         (
             PersonaMood::Smug,

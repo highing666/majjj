@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use mahjong_ai::{AiStyle, DecisionBudget, DecisionContext, HandFacts};
+use mahjong_ai::{AiStyle, DecisionBudget, DecisionContext};
 use mahjong_core::{
     AnyRuleset, HandOutcome, HandSettlement, Match, MatchMode, PlayerAction, PlayerEvent,
     PlayerEventKind, PlayerView, PublicPhase, RecordedEvent, Seat, SeededWallProvider,
@@ -22,12 +22,12 @@ use crate::ai_pool::{
     PendingAiJob, ScheduledWork,
 };
 use crate::banter::{
-    initialize_seat_hand_facts, plan_banter_for_events, plan_chain_followup,
-    plan_quick_emote_reply, plan_slow_think_nudge, BanterChainContext, BanterGuard,
-    BanterPlanContext, BanterSessionState, ChainPrevLine, NudgeTurnKey, PendingBanterJob,
-    SlowThinkTicket, BANTER_CHAIN_REPLY_DELAY,
+    plan_banter_for_events, plan_chain_followup, plan_quick_emote_reply, plan_slow_think_nudge,
+    BanterChainContext, BanterGuard, BanterPlanContext, BanterSessionState, ChainPrevLine,
+    NudgeTurnKey, PendingBanterJob, SlowThinkTicket, BANTER_CHAIN_REPLY_DELAY,
 };
 use crate::banter_audio::{BanterAudioCache, PendingTtsJob, TtsGuard, TtsSessionState};
+use crate::banter_context::{format_view_anchor, seat_display_name, MatchBanterContext};
 use crate::history_dto::{
     ClearHistoryResponse, HandRecord, HandSeatRecord, HistoryExportResponse, MatchRecord,
     MatchSeatRecord, PreferencesData, StatsResponse, HISTORY_SCHEMA_VERSION,
@@ -403,7 +403,7 @@ pub(crate) struct ActiveMatchState {
     pub(crate) hands_settled: u32,
     pub(crate) hand_generation: u64,
     pub(crate) any_ai_assisted: [bool; 4],
-    pub(crate) seat_hand_facts: [Option<HandFacts>; 4],
+    pub(crate) banter_context: MatchBanterContext,
 }
 
 impl ActiveMatchState {
@@ -624,6 +624,7 @@ impl TableSession {
             seat_generation,
             in_flight_seats,
             persona_memory,
+            banter_context: &active.banter_context,
         }
     }
 
@@ -637,19 +638,17 @@ impl TableSession {
         let Some(active_mut) = self.active_match.as_mut() else {
             return;
         };
-        let mut seat_hand_facts = std::mem::take(&mut active_mut.seat_hand_facts);
-        let planned = {
-            let ctx = Self::build_banter_plan_context(
-                active_mut,
-                &seat_infos,
-                &seat_generation,
-                in_flight_seats,
-                &self.persona_memory,
-            );
-            plan_banter_for_events(&ctx, emitted, &mut seat_hand_facts)
-        };
-        active_mut.seat_hand_facts = seat_hand_facts;
-        if let Some(job) = planned {
+        active_mut
+            .banter_context
+            .observe_events(&active_mut.game, &seat_infos, emitted);
+        let ctx = Self::build_banter_plan_context(
+            active_mut,
+            &seat_infos,
+            &seat_generation,
+            in_flight_seats,
+            &self.persona_memory,
+        );
+        if let Some(job) = plan_banter_for_events(&ctx, emitted) {
             let _ = self.banter.enqueue_banter_job(job);
         }
     }
@@ -1084,8 +1083,20 @@ impl TableSession {
             text: emote.label().to_string(),
         });
 
+        let seat_infos = self.seat_infos();
+        if let Some(active_mut) = self.active_match.as_mut() {
+            let anchor = format_view_anchor(&active_mut.game.project_view(seat));
+            let speaker_name = seat_display_name(&seat_infos, seat);
+            active_mut.banter_context.record_quick_emote(
+                seat,
+                speaker_name,
+                emote,
+                emote.label().to_string(),
+                anchor,
+            );
+        }
+
         if self.options.llm_client.is_some() {
-            let seat_infos = self.seat_infos();
             let in_flight_seats = self.banter.in_flight_flags();
             let active = self
                 .active_match
@@ -1228,7 +1239,7 @@ impl TableSession {
         self.tts.bump_all_seat_banter_generations();
         let hand_attribution = HandAttribution::from_seats(&self.seats);
         let initial_seat_infos = self.seat_infos();
-        let initial_hand_facts = initialize_seat_hand_facts(&game, &initial_seat_infos);
+        let initial_banter_context = MatchBanterContext::new(&game, &initial_seat_infos);
         self.active_match = Some(ActiveMatchState {
             match_id,
             match_uuid: Uuid::new_v4().to_string(),
@@ -1241,7 +1252,7 @@ impl TableSession {
             hands_settled: 0,
             hand_generation: 1,
             any_ai_assisted: [false; 4],
-            seat_hand_facts: initial_hand_facts,
+            banter_context: initial_banter_context,
         });
 
         self.broadcast_all_snapshots();
@@ -1623,6 +1634,7 @@ impl TableSession {
                 continue;
             };
             active.hands_settled += 1;
+            active.banter_context.record_hand_settled(&settlement);
             for seat in Seat::ALL {
                 if active.hand_attribution.assisted_by_ai[seat.index()] {
                     active.any_ai_assisted[seat.index()] = true;
@@ -2105,6 +2117,19 @@ impl TableSession {
                     reply_to_seat: guard.reply_to_seat,
                 });
 
+                let seat_infos = self.seat_infos();
+                if let Some(active_mut) = self.active_match.as_mut() {
+                    let anchor = format_view_anchor(&active_mut.game.project_view(guard.seat));
+                    let speaker_name = seat_display_name(&seat_infos, guard.seat);
+                    active_mut.banter_context.record_banter(
+                        guard.seat,
+                        speaker_name,
+                        output.mood,
+                        output.text.clone(),
+                        anchor,
+                    );
+                }
+
                 let tts_job = if self.tts.should_dispatch(now) {
                     let deadline_ms = if guard.allow_finished_phase {
                         TTS_SETTLEMENT_DEADLINE_MS
@@ -2138,7 +2163,6 @@ impl TableSession {
                 };
 
                 let followup = chain.and_then(|chain| {
-                    let seat_infos = self.seat_infos();
                     let in_flight_seats = self.banter.in_flight_flags();
                     let active_ref = self.active_match.as_ref()?;
                     let ctx = Self::build_banter_plan_context(
@@ -2153,13 +2177,7 @@ impl TableSession {
                         mood: output.mood,
                         text: &output.text,
                     };
-                    plan_chain_followup(
-                        &ctx,
-                        &prev,
-                        chain,
-                        &active_ref.seat_hand_facts,
-                        BANTER_CHAIN_REPLY_DELAY,
-                    )
+                    plan_chain_followup(&ctx, &prev, chain, BANTER_CHAIN_REPLY_DELAY)
                 });
 
                 BanterCommitOutcome { followup, tts_job }

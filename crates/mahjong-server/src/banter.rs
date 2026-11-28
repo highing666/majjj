@@ -10,6 +10,9 @@ use mahjong_core::{
     RevealedHand, RevealedMeld, Seat, Suit, Tile, WinKind,
 };
 
+use crate::banter_context::{
+    current_local_time_zh, seat_direction_and_name, MatchBanterContext, SixBlockInput,
+};
 use crate::llm::BanterGenerationRequest;
 use crate::persona::{PersonaId, PersonaMood};
 use crate::persona_memory::{MemoryNoteJob, PersonaMemoryStore};
@@ -371,28 +374,7 @@ pub(crate) struct BanterPlanContext<'a> {
     pub seat_generation: &'a [u64; 4],
     pub in_flight_seats: [bool; 4],
     pub persona_memory: &'a PersonaMemoryStore,
-}
-
-fn seated_human_nicknames(seats: &[SeatInfo; 4]) -> Vec<String> {
-    seats
-        .iter()
-        .filter(|info| info.kind == SeatKind::Human)
-        .map(|info| info.nickname.clone())
-        .collect()
-}
-
-fn append_memory_context(
-    mut prompt: String,
-    memory: &PersonaMemoryStore,
-    persona: PersonaId,
-    seats: &[SeatInfo; 4],
-) -> String {
-    let humans = seated_human_nicknames(seats);
-    if let Some(mem_block) = memory.build_prompt_memory_context(persona, &humans) {
-        prompt.push_str("\n\n");
-        prompt.push_str(&mem_block);
-    }
-    prompt
+    pub banter_context: &'a MatchBanterContext,
 }
 
 /// Formats a `Tile` into its canonical Chinese tile name.
@@ -428,7 +410,7 @@ fn format_tiles_zh(tiles: &[Tile]) -> String {
         .join(" ")
 }
 
-fn format_mood_zh(mood: PersonaMood) -> &'static str {
+pub(crate) fn format_mood_zh(mood: PersonaMood) -> &'static str {
     match mood {
         PersonaMood::Smug => "得意欠揍",
         PersonaMood::Mocking => "阴阳嘲讽",
@@ -519,67 +501,12 @@ pub fn format_hand_facts_zh(facts: &HandFacts) -> String {
     out
 }
 
-fn relative_relation_zh(speaker: Seat, target: Seat) -> &'static str {
-    let diff = (target.index() + 4 - speaker.index()) % 4;
-    match diff {
-        0 => "自家",
-        1 => "下家",
-        2 => "对门",
-        _ => "上家",
-    }
-}
-
-fn seat_label(seats: &[SeatInfo; 4], speaker: Seat, target: Seat) -> String {
-    let name = seats[target.index()].nickname.trim();
-    let display = if name.is_empty() {
-        format!("玩家{}", target.index() + 1)
-    } else {
-        name.to_string()
-    };
-    if speaker == target {
-        format!("{display}（自家）")
-    } else {
-        format!("{display}（{}）", relative_relation_zh(speaker, target))
-    }
-}
-
-fn format_scores_line(seats: &[SeatInfo; 4], speaker: Seat, scores: &[i32; 4]) -> String {
-    Seat::ALL
-        .into_iter()
-        .map(|s| format!("{} {}分", seat_label(seats, speaker, s), scores[s.index()]))
-        .collect::<Vec<_>>()
-        .join("，")
-}
-
-fn format_own_hand(view: &PlayerView) -> String {
+pub(crate) fn format_own_hand(view: &PlayerView) -> String {
     let mut text = format_tiles_zh(&view.hand.closed_tiles);
     if let Some(drawn) = view.hand.drawn_tile {
         let _ = write!(text, "（刚摸：{}）", format_tile_zh(drawn));
     }
     text
-}
-
-fn format_public_table_pressure(seats: &[SeatInfo; 4], speaker: Seat, view: &PlayerView) -> String {
-    let meld_notes: Vec<String> = Seat::ALL
-        .into_iter()
-        .filter(|&s| !view.seats[s.index()].melds.is_empty())
-        .map(|s| {
-            format!(
-                "{}已鸣牌{}次",
-                seat_label(seats, speaker, s),
-                view.seats[s.index()].melds.len()
-            )
-        })
-        .collect();
-    if meld_notes.is_empty() {
-        format!("牌墙剩余 {} 张，全桌暂无人鸣牌", view.wall_remaining)
-    } else {
-        format!(
-            "牌墙剩余 {} 张，公开鸣牌态势：{}",
-            view.wall_remaining,
-            meld_notes.join("、")
-        )
-    }
 }
 
 fn format_revealed_meld(meld: &RevealedMeld) -> String {
@@ -595,7 +522,7 @@ fn format_revealed_meld(meld: &RevealedMeld) -> String {
 fn format_revealed_hand(seats: &[SeatInfo; 4], speaker: Seat, revealed: &RevealedHand) -> String {
     let mut line = format!(
         "- {}：手牌[{}]",
-        seat_label(seats, speaker, revealed.seat),
+        seat_direction_and_name(seats, speaker, revealed.seat),
         format_tiles_zh(&revealed.closed_tiles)
     );
     if let Some(drawn) = revealed.drawn_tile {
@@ -613,43 +540,47 @@ fn format_revealed_hand(seats: &[SeatInfo; 4], speaker: Seat, revealed: &Reveale
     line
 }
 
-fn persona_voice_guide(persona: PersonaId) -> &'static str {
+/// Returns the rich, humanized everyday-acquaintance profile and speech habits for a built-in persona.
+pub(crate) fn persona_voice_guide(persona: PersonaId) -> &'static str {
     match persona {
         PersonaId::QuickHothead => {
-            "你是「大川」：川渝急性子爽快哥们，嘴速手速双快，胡 0 番基本胡也要狂吹，被抢碰或打断节奏立马急眼炸毛，说话干脆冲动带火药味。"
+            "你是熟人牌友「大川」：川渝急性子爽快哥们，打牌爱快攻抢节奏、手速嘴速双快。性格直来直去又讲义气，牌顺了忍不住洋洋得意吹两句，连卡几巡或被抢碰立刻急眼炸毛，但气来得快去得也快。说话干脆利落带火药味，偶尔自然带点川渝口语味（像“要得”“莫急嘛”“稳得很”“搞快点”），绝不尬演方言腔；平常爱聊火锅串串、夜宵宵夜和手气玄学。"
         }
         PersonaId::TeaSarcasm => {
-            "你是「小晚」：温婉腹黑、笑里藏刀的姐妹，满口反话不说脏字却句句扎心，最爱笑眯眯记仇翻旧账戳肺管子。"
+            "你是熟人牌友「小晚」：温婉腹黑、笑里藏刀的姐妹，外表客气斯文、说话慢条斯理轻声细语，实则嘴毒扎心不带脏字。牌风稳健爱憋大牌，记忆力极好又爱记仇，最擅长笑眯眯翻旧账戳肺管子。口头习惯用“没事呀”“挺好的”“你开心就好”“我也没说啥”这类轻飘飘的反话拿捏人；日常爱聊奶茶甜品、追剧吃瓜和上班摸鱼。"
         }
         PersonaId::StubbornBlamer => {
-            "你是「大鹏」：京片子嘴贫死磕的哥们，顺风就吹自己算无遗策，点炮或手牌差永远嘴硬不认输、借口清奇爱甩锅上家。"
+            "你是熟人牌友「大鹏」：京片子嘴贫死磕的铁哥们，爱打快攻、死要面子绝不认怂。赢了就吹成算无遗策，点炮或牌碎永远嘴硬不服输，总能掰出各种清奇借口（怪风水、怪节奏、怪上家乱出、怪今天没吃饱），输赢其实看得很开但嘴上绝不让步。说话带点爽朗京味贫嘴和冷幽默（像“这叫战术”“没毛病”“就差一丢丢”）；平常爱聊烧烤夜宵、加班摸鱼和转运玄学。"
         }
         PersonaId::ChaosInstigator => {
-            "你是「小桃」：网感极强、爱吃瓜起哄补刀的损友妹妹，看别人点炮比自家自摸还开心，最爱煽风点火看热闹。"
+            "你是熟人牌友「小桃」：网感极强、爱吃瓜起哄补刀的损友妹妹，牌风均衡机灵。看别人点炮和互怼比自家胡牌还来劲，最擅长在牌桌气氛微妙时递刀子、拱火、顺茬接梗和神补刀，脑洞跳脱反应极快。说话活泼轻快带自然年轻口语（绝不尬套过时老梗）；日常爱聊外卖奶茶、熬夜刷手机、周末躺平和生活小吐槽。"
         }
         PersonaId::TiltedMaster => {
-            "你是「老陈」：爱端前辈架子的老哥，全程好为人师点评他家操作，自己一吃亏立刻血压飙升当场红温破防。"
+            "你是熟人牌友「老陈」：爱端前辈架子的熟人老哥，自诩老江湖、防守做大牌派，总忍不住好为人师点评他家打法、传授“老经验”。顺风时一脸高深莫测，可一旦自家卡手、被截胡或点炮立刻端不住架子，当场血压飙升秒红温破防，随后还要强装镇定找补挽尊。口语常带“按我说”“听哥一句”“这牌打得…”的过来人腔调；日常爱聊茶酒下酒菜、早起养生和工作琐事。"
         }
     }
 }
 
-/// Builds the system prompt incorporating `#65`-verified Chinese mood anchors and `#67` anti-hallucination rules.
+/// Builds the humanized system prompt for autonomous `{ speak, mood, text }` banter decisions (`ADR-0015`).
 #[must_use]
 pub fn build_system_prompt(persona: PersonaId) -> String {
     format!(
         "{voice}\n\
-你在家庭熟人推倒胡麻将牌桌上发表实时牌桌台词，风格为野生损友互怼吐槽。\n\
+你在家庭熟人推倒胡麻将牌桌上边打牌边唠嗑，风格是真实熟人损友之间的自然口语互动。\n\
 必须严格遵守：\n\
-1. 仅输出合法 JSON：{{\"speak\":true/false,\"mood\":\"...\",\"text\":\"...\"}}，严禁在正文中输出 <think> 标签、代码块或多余解释（speak 为 false 时 text 留空字符串）。\n\
-2. mood 必须从以下 6 档心理锚点中选最贴合当下处境的一项：\n\
-- Smug：得意欠揍（胡牌、占便宜、秀操作、稳操胜券）\n\
-- Mocking：阴阳嘲讽（笑话别人点炮、嘲讽他家操作蠢、煽风点火）\n\
-- Tilted：红温破防（被抢碰、被抢杠胡、点炮赔分、手牌太碎气急败坏）\n\
-- Nervous：心虚紧绷（场面危险、被逼紧、怕点炮、手牌悬乎）\n\
+1. 仅输出合法 JSON：{{\"speak\":true/false,\"mood\":\"...\",\"text\":\"...\"}}，严禁在最终正文中输出 <think> 标签、代码块或多余解释（speak 为 false 时 text 必须为空字符串 \"\"）。\n\
+2. 自主拿捏开口分寸：普通无波澜的摸牌出牌回合，优先保持沉默（speak: false）；心里情绪变了可以沉默只切 mood 变脸。真有牌运起伏、绝妙接梗、想拆台补刀、或想顺势闲聊时再开口（speak: true）；结合「发言间隔提示」克制频率，刚开过口没新梗别硬接。\n\
+3. mood 必须从以下 6 档心理锚点中选最贴合当下处境的一项：\n\
+- Smug：得意欠揍（胡牌、占便宜、牌顺、稳操胜券）\n\
+- Mocking：阴阳嘲讽（笑话别人点炮、调侃他家操作、煽风点火）\n\
+- Tilted：红温破防（被抢碰、被抢杠胡、点炮赔分、连续卡手气急败坏）\n\
+- Nervous：心虚紧绷（场面危险、被逼紧、怕点炮、听口悬乎）\n\
 - Plotting：阴险憋大招（暗自算计、坐山观虎斗、憋大番准备阴人）\n\
 - Deadpan：无语装淡定（荒庄无语、强行嘴硬挽尊、冷眼旁观）\n\
-3. text 必须是 10 到 26 字的鲜活中文口语单句，直接对牌桌说话，不换行、不说教、不报菜名。\n\
-4. 仅可引用输入事实中明确出现的牌名、玩家昵称与番型，未给出具体牌名时只能泛指，严禁捏造未出现的牌名或臆测他人暗牌；必须严格遵循「预计算手牌事实」中的向听、听口与番型方向，绝不胡算牌，可据此吐槽真实牌况、装惨诈唬或嘴硬放狠话。",
+4. text 为 2 到 18 字的自然中文口语短句（常态 4 到 14 字脱口而出，允许极短感叹如“绝了”“稳了”，也允许偶尔完整抖包袱），直接对牌桌说话，不换行、不书面腔、不客服腔、不报菜名。\n\
+5. 称呼自然不点名：默认直接开口，不要在句首硬加对方姓名！像真人打牌一样直接感叹、自言自语，或自然用“你”“上家”“老哥”“姐们”等称呼；只在真需要点名调侃、算旧账或点炮追责时，才顺口提到对方昵称，切忌照抄“方位+姓名”标签。\n\
+6. 熟人日常闲聊：约 15% 到 25% 的开口可以结合「现实时间语境」（饭点、夜宵、加班摸鱼、熬夜、周末安排）或手气玄学聊点轻松的牌外闲话与接地气玩梗，也欢迎顺着「牌桌对话流」里别人刚起的话头接茬互逗，别复读刚说过的梗；严禁低俗脏话、敏感时政与客套客服腔。\n\
+7. 事实与隐私红线：仅可引用输入事实中明确出现的牌名、玩家昵称与番型，未给出具体牌名时只能泛指，严禁捏造未出现的牌名或臆测他家暗牌（含他家暗杠）；必须严格遵循「预计算手牌事实」中的向听、听口与番型方向，绝不胡算牌，结合自身性格找丰富真实的牌桌吐槽或找补角度。",
         voice = persona_voice_guide(persona),
     )
 }
@@ -697,22 +628,6 @@ fn find_idle_ai_persona(
     find_ai_persona(seats, seat)
 }
 
-/// Initializes per-seat [`HandFacts`] snapshots for all AI seats at the start of a hand.
-#[must_use]
-pub(crate) fn initialize_seat_hand_facts(
-    game: &ActiveMatch,
-    seats: &[SeatInfo; 4],
-) -> [Option<HandFacts>; 4] {
-    Seat::ALL.map(|seat| {
-        if find_ai_persona(seats, seat).is_some() {
-            let view = game.project_view(seat);
-            Some(analyze_hand_facts(&view, None))
-        } else {
-            None
-        }
-    })
-}
-
 fn format_public_meld_summary(
     seats: &[SeatInfo; 4],
     speaker: Seat,
@@ -720,20 +635,20 @@ fn format_public_meld_summary(
     meld: &MeldView,
     reveal_own_concealed: bool,
 ) -> String {
-    let actor_label = seat_label(seats, speaker, actor);
+    let actor_label = seat_direction_and_name(seats, speaker, actor);
     match meld {
         MeldView::Pon {
             tile, from_seat, ..
         } => format!(
             "{actor_label} 碰了 {} 的 {}",
-            seat_label(seats, speaker, *from_seat),
+            seat_direction_and_name(seats, speaker, *from_seat),
             format_tile_zh(*tile)
         ),
         MeldView::ExposedKong {
             tile, from_seat, ..
         } => format!(
             "{actor_label} 明杠了 {} 的 {}",
-            seat_label(seats, speaker, *from_seat),
+            seat_direction_and_name(seats, speaker, *from_seat),
             format_tile_zh(*tile)
         ),
         MeldView::AddedKong { tile, .. } => {
@@ -752,32 +667,29 @@ fn format_public_meld_summary(
             ..
         } => format!(
             "{actor_label} 吃了 {} 的 {}（{}）",
-            seat_label(seats, speaker, *from_seat),
+            seat_direction_and_name(seats, speaker, *from_seat),
             format_tile_zh(*called_tile),
             format_tiles_zh(tiles)
         ),
     }
 }
 
-fn build_ai_discard_checkin_prompt(
-    seats: &[SeatInfo; 4],
-    speaker: Seat,
-    discarded_tile: Tile,
-    view: &PlayerView,
-    facts: &HandFacts,
+fn compose_scene_and_six_blocks(
+    scene: String,
+    banter_context: &MatchBanterContext,
+    input: &SixBlockInput<'_>,
 ) -> String {
+    let six_blocks = banter_context.format_six_blocks(input);
+    format!("{scene}\n\n{six_blocks}")
+}
+
+fn build_ai_discard_checkin_prompt(discarded_tile: Tile) -> String {
     format!(
         "【自家出牌巡检】你刚刚舍出 {}。\n\
-公开牌桌态势：{}。\n\
-你的自家手牌：{}（严禁臆测他家暗牌）。\n\
-预计算手牌事实：{}。\n\
-请结合自家真实牌况与场上气氛，自主决定此刻是否开口（speak: true/false）以及当前牌友情绪（mood）：\
-若本巡平淡无波澜可优先沉默（speak: false，情绪有变化时仅更新 mood）；\
-若有牌运起伏、听牌/做大牌心理战或想顺势吐槽，则用你的人设来一句自然口语短句。",
+请结合下方 6 块牌桌上下文（整场战况、公开牌河、自家手牌与牌运轨迹、对话流、牌友记忆与当前时间），自主决定此刻是否开口（speak: true/false）以及牌友情绪（mood）：\
+若本巡平淡无波澜优先保持沉默（speak: false，情绪有变化时仅静默切 mood）；\
+若有牌运起伏、听牌/做大牌心理战、想顺着对话流接梗或聊一句轻松的日常闲话，则脱口来一句自然短句。",
         format_tile_zh(discarded_tile),
-        format_public_table_pressure(seats, speaker, view),
-        format_own_hand(view),
-        format_hand_facts_zh(facts),
     )
 }
 
@@ -786,24 +698,13 @@ fn build_meld_declared_prompt(
     speaker: Seat,
     actor: Seat,
     meld: &MeldView,
-    view: &PlayerView,
-    facts: &HandFacts,
+    wall_remaining: u8,
 ) -> String {
     let action_desc = format_public_meld_summary(seats, speaker, actor, meld, true);
     format!(
-        "【鸣牌动态】{action_desc}，牌墙剩余 {} 张。\n\
-你的自家手牌：{}（严禁臆测他家暗牌）。\n\
-预计算手牌事实：{}。\n\
-请自主决定是否就这次鸣牌开口（speak: true/false）以及当前牌友情绪（mood）：想接话就用你的人设自然吐槽、调侃或施压，没必要说话就保持沉默。",
-        view.wall_remaining,
-        format_own_hand(view),
-        format_hand_facts_zh(facts),
+        "【鸣牌动态】{action_desc}，牌墙剩余 {wall_remaining} 张。\n\
+请结合下方 6 块牌桌上下文自主决定是否就这次鸣牌开口（speak: true/false）以及当前牌友情绪（mood）：想接话就自然吐槽、调侃或施压，没必要说话就保持沉默。"
     )
-}
-
-struct OwnHandContext<'a> {
-    view: &'a PlayerView,
-    facts: &'a HandFacts,
 }
 
 fn format_chain_trigger_summary(
@@ -815,7 +716,7 @@ fn format_chain_trigger_summary(
         BanterChainTrigger::HandSettled(settlement) => {
             let (outcome_summary, deltas, revealed) =
                 format_settlement_summary_lines(seats, speaker, settlement);
-            format!("{outcome_summary} 得分：{deltas}。\n摊牌：\n{revealed}")
+            format!("{outcome_summary} 得分：{deltas}。\n四家摊开手牌：\n{revealed}")
         }
         BanterChainTrigger::MeldDeclared {
             actor,
@@ -831,17 +732,17 @@ fn format_chain_trigger_summary(
             wall_remaining,
         } => format!(
             "{} 舍出 {}（牌墙余{wall_remaining}张）",
-            seat_label(seats, speaker, *actor),
+            seat_direction_and_name(seats, speaker, *actor),
             format_tile_zh(*tile),
         ),
         BanterChainTrigger::QuickEmote { sender, emote } => format!(
             "{} 发送快捷互动：「{}」",
-            seat_label(seats, speaker, *sender),
+            seat_direction_and_name(seats, speaker, *sender),
             emote.label(),
         ),
         BanterChainTrigger::SlowThinkNudge { target_seat } => format!(
             "{} 这一手思考了较久",
-            seat_label(seats, speaker, *target_seat),
+            seat_direction_and_name(seats, speaker, *target_seat),
         ),
     }
 }
@@ -851,35 +752,20 @@ fn build_chain_reply_prompt(
     speaker: Seat,
     history: &[ChainUtterance],
     chain: &BanterChainContext,
-    own: Option<OwnHandContext<'_>>,
 ) -> String {
     let summary = format_chain_trigger_summary(seats, speaker, &chain.trigger);
-    let mut prompt = format!("【牌友接茬判断】当前场面：{summary}\n近期同段对话：\n");
+    let mut prompt = format!("【牌友接茬判断】当前场面：{summary}\n刚刚同段发言：\n");
     for utt in history {
-        let label = seat_label(seats, speaker, utt.seat);
+        let label = seat_direction_and_name(seats, speaker, utt.seat);
         let _ = writeln!(
             prompt,
-            "- {label}（情绪：{mood}）：「{text}」",
-            mood = format_mood_zh(utt.mood),
+            "- {label}（{}）：「{text}」",
+            format_mood_zh(utt.mood),
             text = utt.text,
         );
     }
-    if !chain.hands_revealed {
-        if let Some(own_ctx) = own {
-            let _ = writeln!(
-                prompt,
-                "你的自家手牌：{}（严禁臆测他家暗牌）。",
-                format_own_hand(own_ctx.view)
-            );
-            let _ = writeln!(
-                prompt,
-                "预计算手牌事实：{}。",
-                format_hand_facts_zh(own_ctx.facts)
-            );
-        }
-    }
     prompt.push_str(
-        "请自主决定要不要顺着刚才的话接茬回喷、拆台或补刀（speak: true/false）；没梗可接就安静返回 speak: false，若开口严禁捏造未给出的牌名。",
+        "请结合下方 6 块牌桌上下文自主决定要不要顺着刚才的话接茬回喷、拆台、补刀或接住日常闲聊（speak: true/false）；没梗可接就安静返回 speak: false，若开口严禁捏造未给出的牌名。",
     );
     prompt
 }
@@ -903,10 +789,8 @@ fn format_kong_transfers(
             };
             let delta = k.score_deltas[k.actor.index()];
             format!(
-                "{}{}（{:+})分",
-                seat_label(seats, speaker, k.actor),
-                kind,
-                delta
+                "{} {kind}（{delta:+}分）",
+                seat_direction_and_name(seats, speaker, k.actor),
             )
         })
         .collect::<Vec<_>>()
@@ -943,12 +827,9 @@ fn format_settlement_summary_lines(
                         .join("+")
                 };
                 parts.push(format!(
-                    "{} {} {}（共{}番：{}）",
-                    seat_label(seats, speaker, w.seat),
-                    win_kind,
-                    tile_name,
+                    "{} {win_kind} {tile_name}（共{}番：{items}）",
+                    seat_direction_and_name(seats, speaker, w.seat),
                     w.total_fan,
-                    items
                 ));
             }
             let multi = if winners.len() > 1 {
@@ -957,7 +838,10 @@ fn format_settlement_summary_lines(
                 ""
             };
             let discarder_note = match discarder {
-                Some(d) => format!("，点炮/被抢杠胡者：{}", seat_label(seats, speaker, *d)),
+                Some(d) => format!(
+                    "，点炮/被抢杠胡者：{}",
+                    seat_direction_and_name(seats, speaker, *d)
+                ),
                 None => String::new(),
             };
             format!("{multi}{}{discarder_note}。", parts.join("；"))
@@ -968,8 +852,8 @@ fn format_settlement_summary_lines(
         .into_iter()
         .map(|s| {
             format!(
-                "{}{:+}分(现{}分)",
-                seat_label(seats, speaker, s),
+                "{} {:+}分（现{}分）",
+                seat_direction_and_name(seats, speaker, s),
                 settlement.score_deltas[s.index()],
                 settlement.new_scores[s.index()]
             )
@@ -1001,7 +885,7 @@ fn build_hand_settled_prompt(
 本小局得分变化：{deltas}（你本小局净变化：{speaker_delta:+}分）。\n\
 四家摊开手牌（已全部公开，可据此精准复盘互喷）：\n\
 {revealed}\n\
-请自主决定是否点评本小局胜负、番型或真实摊牌内容（speak: true/false）以及当前牌友情绪（mood）。",
+请结合下方 6 块整场上下文自主决定是否点评本小局胜负、番型或真实摊牌内容（speak: true/false）以及当前牌友情绪（mood）。",
         kongs = format_kong_transfers(seats, speaker, settlement),
     )
 }
@@ -1011,30 +895,12 @@ fn build_quick_emote_reply_prompt(
     speaker: Seat,
     sender: Seat,
     emote: QuickEmote,
-    view: &PlayerView,
-    facts: &HandFacts,
 ) -> String {
-    let sender_label = seat_label(seats, speaker, sender);
-    let scores = format_scores_line(
-        seats,
-        speaker,
-        &[
-            view.seats[0].score,
-            view.seats[1].score,
-            view.seats[2].score,
-            view.seats[3].score,
-        ],
-    );
+    let sender_label = seat_direction_and_name(seats, speaker, sender);
     let emote_text = emote.label();
     format!(
         "【快捷互动回应】{sender_label} 刚向全桌发了快捷互动：「{emote_text}」。\n\
-当前牌墙剩余 {wall} 张，积分：{scores}。\n\
-你的自家手牌：{own_hand}（严禁臆测他家暗牌）。\n\
-预计算手牌事实：{facts_zh}。\n\
-请自主决定是否顺着 {sender_label} 这句「{emote_text}」接话回喷或调侃（speak: true/false）以及当前牌友情绪（mood）。",
-        wall = view.wall_remaining,
-        own_hand = format_own_hand(view),
-        facts_zh = format_hand_facts_zh(facts),
+请结合下方 6 块牌桌上下文自主决定是否顺着这句「{emote_text}」接话回喷或调侃（speak: true/false）以及当前牌友情绪（mood）。"
     )
 }
 
@@ -1042,18 +908,11 @@ fn build_slow_think_nudge_prompt(
     seats: &[SeatInfo; 4],
     speaker: Seat,
     target_seat: Seat,
-    view: &PlayerView,
-    facts: &HandFacts,
 ) -> String {
-    let target_label = seat_label(seats, speaker, target_seat);
+    let target_label = seat_direction_and_name(seats, speaker, target_seat);
     format!(
-        "【慢思考催牌调侃】{target_label} 这一手已经想了快二十秒还没操作，牌墙剩余 {wall} 张。\n\
-你的自家手牌：{own_hand}（严禁臆测他家暗牌）。\n\
-预计算手牌事实：{facts_zh}。\n\
-请自主决定是否来一句俏皮温和的催牌调侃（speak: true/false，带点损友玩笑催一催，别太凶也别催命）。",
-        wall = view.wall_remaining,
-        own_hand = format_own_hand(view),
-        facts_zh = format_hand_facts_zh(facts),
+        "【慢思考催牌调侃】{target_label} 这一手已经想了快二十秒还没操作。\n\
+请结合下方 6 块牌桌上下文自主决定是否来一句俏皮温和的催牌调侃（speak: true/false，带点损友玩笑催一催，别太凶也别催命）。"
     )
 }
 
@@ -1072,12 +931,21 @@ pub(crate) fn plan_quick_emote_reply(
         .wrapping_add(emote.index() as u64);
     let (speaker, persona_id) = pick_deterministic_ai(&idle_ai, seed)?;
     let view = ctx.game.project_view(speaker);
-    let facts = analyze_hand_facts(&view, None);
-    let user_prompt = append_memory_context(
-        build_quick_emote_reply_prompt(ctx.seats, speaker, sender, emote, &view, &facts),
-        ctx.persona_memory,
-        persona_id,
-        ctx.seats,
+    let facts = analyze_hand_facts(&view, ctx.banter_context.last_hand_facts(speaker));
+    let local_time = current_local_time_zh();
+    let user_prompt = compose_scene_and_six_blocks(
+        build_quick_emote_reply_prompt(ctx.seats, speaker, sender, emote),
+        ctx.banter_context,
+        &SixBlockInput {
+            speaker,
+            persona_id,
+            seats: ctx.seats,
+            view: &view,
+            facts: Some(&facts),
+            hands_revealed: false,
+            persona_memory: ctx.persona_memory,
+            local_time_zh: &local_time,
+        },
     );
     let request = BanterGenerationRequest::new(build_system_prompt(persona_id), user_prompt);
     Some(PendingBanterJob {
@@ -1118,12 +986,21 @@ pub(crate) fn plan_slow_think_nudge(
     let (speaker, persona_id) = pick_deterministic_ai(&idle_ai, random_pick)?;
     let seq = ctx.game.seq();
     let view = ctx.game.project_view(speaker);
-    let facts = analyze_hand_facts(&view, None);
-    let user_prompt = append_memory_context(
-        build_slow_think_nudge_prompt(ctx.seats, speaker, target_seat, &view, &facts),
-        ctx.persona_memory,
-        persona_id,
-        ctx.seats,
+    let facts = analyze_hand_facts(&view, ctx.banter_context.last_hand_facts(speaker));
+    let local_time = current_local_time_zh();
+    let user_prompt = compose_scene_and_six_blocks(
+        build_slow_think_nudge_prompt(ctx.seats, speaker, target_seat),
+        ctx.banter_context,
+        &SixBlockInput {
+            speaker,
+            persona_id,
+            seats: ctx.seats,
+            view: &view,
+            facts: Some(&facts),
+            hands_revealed: false,
+            persona_memory: ctx.persona_memory,
+            local_time_zh: &local_time,
+        },
     );
     let request = BanterGenerationRequest::new(build_system_prompt(persona_id), user_prompt);
     Some(PendingBanterJob {
@@ -1154,34 +1031,31 @@ pub(crate) fn plan_slow_think_nudge(
     })
 }
 
-/// Plans at most 1 non-blocking autonomous banter check-in for an emitted event batch,
-/// updating `seat_hand_facts` cleanly along the way:
-/// - `HandStarted`: resets `seat_hand_facts` (no forced opening banter).
+/// Plans at most 1 non-blocking autonomous banter check-in for an emitted event batch:
+/// - `HandStarted`: no forced opening banter (trajectories already reset by `MatchBanterContext::observe_events`).
 /// - `HandSettled`: wakes 1 most relevant idle AI (`max_seq_drift: None`, `allow_finished_phase: true`).
 /// - Human `MeldDeclared` (`Pon`/`ExposedKong`/`AddedKong`/`ConcealedKong`): wakes 1 most relevant idle AI
 ///   (`max_seq_drift: Some(STRONG_RECENCY_MAX_SEQ_DRIFT)`).
-/// - AI `MeldDeclared`: updates `seat_hand_facts[actor]` without waking banter (the AI checks in after its own discard).
-/// - AI `TileDiscarded`: updates `seat_hand_facts[actor]` and wakes that AI if idle (`max_seq_drift: None`).
-/// - `TileDrawn`, human `TileDiscarded`, etc.: never wake banter.
+/// - AI `TileDiscarded`: wakes that AI if idle (`max_seq_drift: None`).
+/// - `TileDrawn`, human `TileDiscarded`, AI `MeldDeclared`, etc.: never wake banter.
 pub(crate) fn plan_banter_for_events(
     ctx: &BanterPlanContext<'_>,
     emitted: &[RecordedEvent],
-    seat_hand_facts: &mut [Option<HandFacts>; 4],
 ) -> Option<PendingBanterJob> {
     if emitted.is_empty() {
         return None;
     }
 
-    // 1. HandStarted: reset per-seat HandFacts without forcing opening banter.
+    // 1. HandStarted: never force opening banter.
     for event in emitted {
         let projected = ctx.game.project_event(event, Seat::East);
         if matches!(projected.kind, PlayerEventKind::HandStarted { .. }) {
-            *seat_hand_facts = initialize_seat_hand_facts(ctx.game, ctx.seats);
             return None;
         }
     }
 
     let idle_ai = idle_ai_persona_seats(ctx.seats, &ctx.in_flight_seats);
+    let local_time = current_local_time_zh();
 
     // 2. HandSettled (Tsumo / Ron / RobKongHu / DrawGame): non-blocking async wake-up of 1 idle AI.
     for event in emitted {
@@ -1194,11 +1068,20 @@ pub(crate) fn plan_banter_for_events(
                 &settlement,
                 event.seq(),
             )?;
-            let user_prompt = append_memory_context(
+            let view = ctx.game.project_view(seat);
+            let user_prompt = compose_scene_and_six_blocks(
                 build_hand_settled_prompt(ctx.seats, seat, &settlement),
-                ctx.persona_memory,
-                persona_id,
-                ctx.seats,
+                ctx.banter_context,
+                &SixBlockInput {
+                    speaker: seat,
+                    persona_id,
+                    seats: ctx.seats,
+                    view: &view,
+                    facts: None,
+                    hands_revealed: true,
+                    persona_memory: ctx.persona_memory,
+                    local_time_zh: &local_time,
+                },
             );
             let request =
                 BanterGenerationRequest::new(build_system_prompt(persona_id), user_prompt);
@@ -1231,20 +1114,13 @@ pub(crate) fn plan_banter_for_events(
         }
     }
 
-    // 3. MeldDeclared: update AI's own facts silently; wake 1 relevant idle AI ONLY for human melds/kongs.
+    // 3. Human MeldDeclared: wake 1 relevant idle AI ONLY for human melds/kongs.
     for event in emitted {
         let projected = ctx.game.project_event(event, Seat::East);
         if let PlayerEventKind::MeldDeclared {
             seat: actor, meld, ..
         } = projected.kind
         {
-            if find_ai_persona(ctx.seats, actor).is_some() {
-                let actor_view = ctx.game.project_view(actor);
-                let updated =
-                    analyze_hand_facts(&actor_view, seat_hand_facts[actor.index()].as_ref());
-                seat_hand_facts[actor.index()] = Some(updated);
-                continue;
-            }
             if ctx.seats[actor.index()].kind != SeatKind::Human {
                 continue;
             }
@@ -1262,12 +1138,26 @@ pub(crate) fn plan_banter_for_events(
                 _ => meld,
             };
             let view = ctx.game.project_view(speaker);
-            let facts = analyze_hand_facts(&view, seat_hand_facts[speaker.index()].as_ref());
-            let user_prompt = append_memory_context(
-                build_meld_declared_prompt(ctx.seats, speaker, actor, &speaker_meld, &view, &facts),
-                ctx.persona_memory,
-                persona_id,
-                ctx.seats,
+            let facts = analyze_hand_facts(&view, ctx.banter_context.last_hand_facts(speaker));
+            let user_prompt = compose_scene_and_six_blocks(
+                build_meld_declared_prompt(
+                    ctx.seats,
+                    speaker,
+                    actor,
+                    &speaker_meld,
+                    view.wall_remaining,
+                ),
+                ctx.banter_context,
+                &SixBlockInput {
+                    speaker,
+                    persona_id,
+                    seats: ctx.seats,
+                    view: &view,
+                    facts: Some(&facts),
+                    hands_revealed: false,
+                    persona_memory: ctx.persona_memory,
+                    local_time_zh: &local_time,
+                },
             );
             let request =
                 BanterGenerationRequest::new(build_system_prompt(persona_id), user_prompt);
@@ -1314,19 +1204,28 @@ pub(crate) fn plan_banter_for_events(
         let projected = ctx.game.project_event(event, Seat::East);
         if let PlayerEventKind::TileDiscarded { seat, tile, .. } = projected.kind {
             if let Some((speaker, persona_id)) = find_ai_persona(ctx.seats, seat) {
-                let view = ctx.game.project_view(speaker);
-                let facts = analyze_hand_facts(&view, seat_hand_facts[speaker.index()].as_ref());
-                // Always commit one clean post-discard turn snapshot per AI seat.
-                seat_hand_facts[speaker.index()] = Some(facts.clone());
-
                 if ctx.in_flight_seats[speaker.index()] {
                     return None;
                 }
-                let user_prompt = append_memory_context(
-                    build_ai_discard_checkin_prompt(ctx.seats, speaker, tile, &view, &facts),
-                    ctx.persona_memory,
-                    persona_id,
-                    ctx.seats,
+                let view = ctx.game.project_view(speaker);
+                let facts = ctx
+                    .banter_context
+                    .last_hand_facts(speaker)
+                    .cloned()
+                    .unwrap_or_else(|| analyze_hand_facts(&view, None));
+                let user_prompt = compose_scene_and_six_blocks(
+                    build_ai_discard_checkin_prompt(tile),
+                    ctx.banter_context,
+                    &SixBlockInput {
+                        speaker,
+                        persona_id,
+                        seats: ctx.seats,
+                        view: &view,
+                        facts: Some(&facts),
+                        hands_revealed: false,
+                        persona_memory: ctx.persona_memory,
+                        local_time_zh: &local_time,
+                    },
                 );
                 let request =
                     BanterGenerationRequest::new(build_system_prompt(persona_id), user_prompt);
@@ -1374,7 +1273,6 @@ pub(crate) fn plan_chain_followup(
     ctx: &BanterPlanContext<'_>,
     prev: &ChainPrevLine<'_>,
     chain: BanterChainContext,
-    seat_hand_facts: &[Option<HandFacts>; 4],
     reply_delay: Duration,
 ) -> Option<PendingBanterJob> {
     let hard_cap = chain.max_replies.min(MAX_BANTER_CHAIN_REPLIES);
@@ -1396,16 +1294,14 @@ pub(crate) fn plan_chain_followup(
             .wrapping_add(u64::from(chain.replies_emitted)),
     )?;
 
-    let (own_view, own_facts) = if chain.hands_revealed {
-        (None, None)
+    let view = ctx.game.project_view(next_seat);
+    let own_facts = if chain.hands_revealed {
+        None
     } else {
-        let view = ctx.game.project_view(next_seat);
-        let facts = analyze_hand_facts(&view, seat_hand_facts[next_seat.index()].as_ref());
-        (Some(view), Some(facts))
-    };
-    let own_ctx = match (own_view.as_ref(), own_facts.as_ref()) {
-        (Some(view), Some(facts)) => Some(OwnHandContext { view, facts }),
-        _ => None,
+        Some(analyze_hand_facts(
+            &view,
+            ctx.banter_context.last_hand_facts(next_seat),
+        ))
     };
 
     let mut next_history = chain.history.clone();
@@ -1415,11 +1311,20 @@ pub(crate) fn plan_chain_followup(
         text: prev.text.to_string(),
     });
 
-    let prompt = append_memory_context(
-        build_chain_reply_prompt(ctx.seats, next_seat, &next_history, &chain, own_ctx),
-        ctx.persona_memory,
-        next_persona,
-        ctx.seats,
+    let local_time = current_local_time_zh();
+    let prompt = compose_scene_and_six_blocks(
+        build_chain_reply_prompt(ctx.seats, next_seat, &next_history, &chain),
+        ctx.banter_context,
+        &SixBlockInput {
+            speaker: next_seat,
+            persona_id: next_persona,
+            seats: ctx.seats,
+            view: &view,
+            facts: own_facts.as_ref(),
+            hands_revealed: chain.hands_revealed,
+            persona_memory: ctx.persona_memory,
+            local_time_zh: &local_time,
+        },
     );
 
     let mut next_spoken = chain.spoken_seats;
@@ -1521,11 +1426,13 @@ mod tests {
 
     use super::{
         build_ai_discard_checkin_prompt, build_chain_reply_prompt, build_hand_settled_prompt,
-        build_meld_declared_prompt, build_system_prompt, format_hand_facts_zh, format_tile_zh,
-        seat_label, BanterChainContext, BanterChainTrigger, BanterSessionState, ChainUtterance,
-        OwnHandContext,
+        build_meld_declared_prompt, build_system_prompt, compose_scene_and_six_blocks,
+        format_hand_facts_zh, format_tile_zh, BanterChainContext, BanterChainTrigger,
+        BanterSessionState, ChainUtterance,
     };
+    use crate::banter_context::{seat_direction_and_name, MatchBanterContext, SixBlockInput};
     use crate::persona::{PersonaId, PersonaMood};
+    use crate::persona_memory::PersonaMemoryStore;
     use crate::protocol::{SeatInfo, SeatKind};
 
     fn sample_seats() -> [SeatInfo; 4] {
@@ -1616,7 +1523,7 @@ mod tests {
     }
 
     #[test]
-    fn system_prompt_includes_all_six_mood_anchors_and_anti_hallucination_rules() {
+    fn system_prompt_enforces_humanized_short_phrase_contract_without_dealer_bias() {
         for pid in PersonaId::ALL {
             let prompt = build_system_prompt(pid);
             assert!(prompt.contains(pid.display_name()));
@@ -1626,14 +1533,20 @@ mod tests {
                 assert!(prompt.contains(mood), "missing mood anchor {mood}");
             }
             assert!(prompt.contains("<think>"));
-            assert!(prompt.contains("10 到 26 字"));
+            assert!(prompt.contains("2 到 18 字"));
+            assert!(prompt.contains("4 到 14 字"));
+            assert!(!prompt.contains("10 到 26 字"));
+            assert!(!prompt.contains("发牌员"));
+            assert!(prompt.contains("speak: false"));
+            assert!(prompt.contains("不要在句首硬加对方姓名"));
+            assert!(prompt.contains("15% 到 25%"));
             assert!(prompt.contains("严禁捏造"));
             assert!(prompt.contains("预计算手牌事实"));
         }
     }
 
     #[test]
-    fn mid_hand_prompts_include_precomputed_facts_and_hide_opponent_concealed_kong_tile() {
+    fn mid_hand_prompts_include_six_blocks_and_hide_opponent_concealed_kong_tile() {
         let seats = sample_seats();
         // 13-tile tenpai hand: 123m 456m 789p 23s 55p (waits on 1s and 4s, 门前清)
         let closed = vec![
@@ -1658,36 +1571,53 @@ mod tests {
         assert!(facts_str.contains("一条(余4张/1番)"));
         assert!(facts_str.contains("四条(余4张/1番)"));
 
-        let checkin_prompt = build_ai_discard_checkin_prompt(
-            &seats,
-            Seat::South,
-            Tile::new(27).unwrap(),
-            &view,
-            &facts,
+        let banter_ctx = MatchBanterContext::default();
+        let memory = PersonaMemoryStore::in_memory();
+        let checkin_prompt = compose_scene_and_six_blocks(
+            build_ai_discard_checkin_prompt(Tile::new(27).unwrap()),
+            &banter_ctx,
+            &SixBlockInput {
+                speaker: Seat::South,
+                persona_id: PersonaId::QuickHothead,
+                seats: &seats,
+                view: &view,
+                facts: Some(&facts),
+                hands_revealed: false,
+                persona_memory: &memory,
+                local_time_zh: "周六深夜（周末）",
+            },
         );
         assert!(checkin_prompt.contains("自家出牌巡检"));
         assert!(checkin_prompt.contains("预计算手牌事实"));
         assert!(checkin_prompt.contains("一条(余4张/1番)"));
         assert!(checkin_prompt.contains("严禁臆测他家暗牌"));
+        assert!(checkin_prompt.contains("【1. 本场对局战况编年史】"));
+        assert!(checkin_prompt.contains("【6. 现实时间语境】"));
 
         // Opponent ConcealedKong with tile: None must not expose any tile name.
         let hidden_kong = MeldView::ConcealedKong {
             tile: None,
             seq: 10,
         };
-        let meld_prompt = build_meld_declared_prompt(
-            &seats,
-            Seat::South,
-            Seat::East,
-            &hidden_kong,
-            &view,
-            &facts,
+        let meld_prompt = compose_scene_and_six_blocks(
+            build_meld_declared_prompt(&seats, Seat::South, Seat::East, &hidden_kong, 60),
+            &banter_ctx,
+            &SixBlockInput {
+                speaker: Seat::South,
+                persona_id: PersonaId::QuickHothead,
+                seats: &seats,
+                view: &view,
+                facts: Some(&facts),
+                hands_revealed: false,
+                persona_memory: &memory,
+                local_time_zh: "周六深夜（周末）",
+            },
         );
         assert!(meld_prompt.contains("暗杠了一手（牌面保密未知）"));
         assert!(!meld_prompt.contains("发财"));
 
         // Mid-hand chain reply includes prior speaker text + own facts without opponent hidden tiles
-        // AND formats all seat labels strictly from the follow-up speaker's perspective (West).
+        // AND formats all seats with separated direction + name from the follow-up speaker's perspective (West).
         let chain = BanterChainContext {
             trigger: BanterChainTrigger::MeldDeclared {
                 actor: Seat::South,
@@ -1709,31 +1639,45 @@ mod tests {
             mood: PersonaMood::Smug,
             text: "这碰下来稳赢了！".to_string(),
         }];
-        let reply_prompt = build_chain_reply_prompt(
-            &seats,
-            Seat::West,
-            &history,
-            &chain,
-            Some(OwnHandContext {
+        let reply_prompt = compose_scene_and_six_blocks(
+            build_chain_reply_prompt(&seats, Seat::West, &history, &chain),
+            &banter_ctx,
+            &SixBlockInput {
+                speaker: Seat::West,
+                persona_id: PersonaId::TeaSarcasm,
+                seats: &seats,
                 view: &view,
-                facts: &facts,
-            }),
+                facts: Some(&facts),
+                hands_revealed: false,
+                persona_memory: &memory,
+                local_time_zh: "周六深夜（周末）",
+            },
         );
         assert!(reply_prompt.contains("这碰下来稳赢了！"));
-        assert!(reply_prompt.contains("大川（上家）"));
-        assert!(reply_prompt.contains("小王（对门）"));
+        assert!(reply_prompt.contains("上家 大川"));
+        assert!(reply_prompt.contains("对门 小王"));
         assert!(!reply_prompt.contains("大川（自家）"));
+        assert!(!reply_prompt.contains("大川（上家）"));
         assert!(!reply_prompt.contains("（自己）"));
         assert!(reply_prompt.contains("预计算手牌事实"));
         assert!(reply_prompt.contains("严禁臆测他家暗牌"));
     }
 
     #[test]
-    fn seat_label_and_settlement_chain_use_glossary_self_and_replier_perspective() {
+    fn seat_direction_and_settlement_chain_use_separated_labels_and_replier_perspective() {
         let seats = sample_seats();
-        assert_eq!(seat_label(&seats, Seat::South, Seat::South), "大川（自家）");
-        assert_eq!(seat_label(&seats, Seat::West, Seat::South), "大川（上家）");
-        assert_eq!(seat_label(&seats, Seat::West, Seat::West), "小晚（自家）");
+        assert_eq!(
+            seat_direction_and_name(&seats, Seat::South, Seat::South),
+            "自家 大川"
+        );
+        assert_eq!(
+            seat_direction_and_name(&seats, Seat::West, Seat::South),
+            "上家 大川"
+        );
+        assert_eq!(
+            seat_direction_and_name(&seats, Seat::West, Seat::West),
+            "自家 小晚"
+        );
 
         let settlement = HandSettlement {
             wind_round: Wind::East,
@@ -1779,10 +1723,10 @@ mod tests {
             mood: PersonaMood::Smug,
             text: "点炮舒服不？".to_string(),
         }];
-        let west_reply = build_chain_reply_prompt(&seats, Seat::West, &history, &chain, None);
-        assert!(west_reply.contains("小晚（自家）"));
-        assert!(west_reply.contains("大川（上家）"));
-        assert!(west_reply.contains("小王（对门）"));
+        let west_reply = build_chain_reply_prompt(&seats, Seat::West, &history, &chain);
+        assert!(west_reply.contains("自家 小晚"));
+        assert!(west_reply.contains("上家 大川"));
+        assert!(west_reply.contains("对门 小王"));
         assert!(!west_reply.contains("大川（自家）"));
         assert!(!west_reply.contains("小王（自家）"));
         assert!(!west_reply.contains("（自己）"));
