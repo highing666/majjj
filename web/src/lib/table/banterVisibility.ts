@@ -4,14 +4,27 @@ import type {
 } from "../audio/audioTypes";
 import type { HumanVoicePackId } from "../audio/voicePackSchema";
 import type { DevicePreferences } from "../preferences/devicePreferences";
-import type { ActiveBanterBubble } from "../presentation/presentationQueue";
+import type {
+  ActiveBanterBubble,
+  ActiveBanterMap,
+} from "../presentation/presentationQueue";
 import type { Seat } from "../protocol/generated/Seat";
+import type { SeatInfo } from "../protocol/generated/SeatInfo";
+import {
+  getPersonaMeta,
+  getPersonaMoodMeta,
+  getQuickEmoteMeta,
+} from "../protocol/personas";
+import {
+  ALL_SEATS,
+  formatRelativeSeatDisplay,
+  seatIndex,
+} from "../protocol/seats";
 import type { TtsStatusNoticeState } from "../session/reducer";
 
 export interface BanterVisibilityInput {
   readonly preferences: Pick<
     DevicePreferences,
-    | "hide_banter_bubble_with_voice"
     | "muted"
     | "master_volume"
     | "voice_volume"
@@ -22,18 +35,15 @@ export interface BanterVisibilityInput {
 }
 
 /**
- * Returns `true` ONLY when the user enabled `hide_banter_bubble_with_voice` AND
- * realtime `BanterVoice` is genuinely audible (not muted, volumes > 0, banter voice
- * enabled, Safari AudioContext running, and LAN TTS service available).
+ * Voice-first default visibility policy: returns `true` whenever realtime
+ * `BanterVoice` is genuinely audible (not muted, master & voice volumes > 0,
+ * banter voice enabled, Safari AudioContext running, and LAN TTS service available).
  *
- * Flipping ANY single condition immediately returns `false` so text bubbles
- * auto-restore with zero flicker.
+ * Flipping ANY single condition immediately returns `false` so AI text bubbles
+ * auto-restore as fallback with zero flicker.
  */
 export function shouldHideBanterBubbles(input: BanterVisibilityInput): boolean {
   const { preferences, audioState, ttsStatusNotice } = input;
-  if (!preferences.hide_banter_bubble_with_voice) {
-    return false;
-  }
   if (
     preferences.muted ||
     preferences.master_volume <= 0 ||
@@ -92,6 +102,87 @@ export function isSeatActivelySpeaking(
   activeBanterVoice: ActiveBanterVoiceState | null,
 ): boolean {
   return activeBanterVoice !== null && activeBanterVoice.seat === seat;
+}
+
+export interface PostHandBanterStripInput {
+  readonly seats: readonly [SeatInfo, SeatInfo, SeatInfo, SeatInfo];
+  readonly yourSeat: Seat | null;
+  readonly activeBubbles: ActiveBanterMap;
+  readonly activeBanterVoice: ActiveBanterVoiceState | null;
+  readonly hideAiBanterText: boolean;
+}
+
+export interface PostHandBanterStripItem {
+  readonly bubble: ActiveBanterBubble;
+  readonly speakerName: string;
+  readonly replyTargetName: string | null;
+  readonly accentHex: string;
+  readonly moodShortLabel: string;
+  readonly moodBadgeBg: string;
+  readonly moodBadgeFg: string;
+  readonly speaking: boolean;
+  readonly hideText: boolean;
+}
+
+/**
+ * Builds ordered settlement/summary post-hand banter strip cards.
+ * Regular AI cards collapse to compact avatar + mood + speaking pulse when
+ * `hideAiBanterText` is active, and expand body text on fallback or human `quick_emote`.
+ */
+export function buildPostHandBanterStripItems(
+  input: PostHandBanterStripInput,
+): PostHandBanterStripItem[] {
+  const { seats, yourSeat, activeBubbles, activeBanterVoice, hideAiBanterText } =
+    input;
+  const active: ActiveBanterBubble[] = [];
+  for (const seat of ALL_SEATS) {
+    const bubble = activeBubbles[seat];
+    if (bubble !== null) {
+      active.push(bubble);
+    }
+  }
+  active.sort((a, b) => a.bubbleId - b.bubbleId);
+
+  return active.map((bubble) => {
+    const seatInfo = seats[seatIndex(bubble.seat)];
+    const replyTargetName =
+      bubble.replyToSeat !== null
+        ? formatRelativeSeatDisplay(bubble.replyToSeat, yourSeat, seats)
+        : null;
+    const speaking = isBubbleActivelySpeaking(bubble, activeBanterVoice);
+    const hideText = !shouldShowBubbleText(bubble, hideAiBanterText);
+    if (
+      bubble.kind === "banter" &&
+      bubble.personaId !== null &&
+      bubble.mood !== null
+    ) {
+      const personaMeta = getPersonaMeta(bubble.personaId);
+      const moodMeta = getPersonaMoodMeta(bubble.mood);
+      return {
+        bubble,
+        speakerName: seatInfo.nickname.trim() || personaMeta.name,
+        replyTargetName,
+        accentHex: personaMeta.accentHex,
+        moodShortLabel: moodMeta.shortLabel,
+        moodBadgeBg: moodMeta.badgeBg,
+        moodBadgeFg: moodMeta.badgeFg,
+        speaking,
+        hideText,
+      };
+    }
+    const emoteMeta = bubble.emote ? getQuickEmoteMeta(bubble.emote) : null;
+    return {
+      bubble,
+      speakerName: seatInfo.nickname.trim() || "玩家",
+      replyTargetName,
+      accentHex: emoteMeta?.accentHex ?? "#F5BE58",
+      moodShortLabel: "快捷互动",
+      moodBadgeBg: emoteMeta?.accentHex ?? "#F5BE58",
+      moodBadgeFg: "#181A20",
+      speaking: false,
+      hideText: false,
+    };
+  });
 }
 
 export interface HumanVoicePackSyncInput {

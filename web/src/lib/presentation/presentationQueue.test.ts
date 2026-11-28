@@ -8,6 +8,7 @@ import type { ServerMessage } from "../protocol/generated/ServerMessage";
 import type { TablePace } from "../protocol/generated/TablePace";
 import type { TableSnapshot } from "../protocol/generated/TableSnapshot";
 import { ALL_SEATS } from "../protocol/seats";
+import { shouldShowBubbleText } from "../table/banterVisibility";
 import { createPresentationEffectsBus } from "./effectsBus";
 import {
   createPresentationQueue,
@@ -1942,6 +1943,200 @@ describe("PresentationQueue", () => {
     expect(queue.getState().activeBubbles.South).toBeNull();
     expect(semanticEvents).toEqual([]);
     expect(voiceEvents).toEqual([]);
+
+    queue.dispose();
+  });
+
+  it("reveals AI banter immediately when switching from audible to muted mid-window (including voice-held & fast-pace pending TTS), without resurrecting already-finished lines, while keeping human quick_emote visible", () => {
+    const scheduled = new Map<number, { cb: () => void; delayMs: number }>();
+    let nextTimerId = 1;
+
+    const queue = createPresentationQueue({
+      scheduler: {
+        setTimeout(cb, delayMs) {
+          const id = nextTimerId++;
+          scheduled.set(id, { cb, delayMs });
+          return id;
+        },
+        clearTimeout(handle) {
+          scheduled.delete(handle as number);
+        },
+      },
+    });
+
+    const snap = makeSnapshot(3, "Standard");
+    snap.seats[1] = {
+      ...snap.seats[1],
+      kind: "Ai",
+      persona_id: "QuickHothead",
+      mood: "Deadpan",
+      nickname: "大川",
+    };
+    queue.enqueueServerMessage({ TableSnapshot: snap });
+    queue.setHideAiBanterText(true);
+
+    let stateEmits = 0;
+    queue.subscribe(() => {
+      stateEmits += 1;
+    });
+    stateEmits = 0;
+
+    // 1. Audible AI TableBanter updates seat mood immediately while hiding text bubble,
+    //    and human QuickEmoteBroadcast remains visible even when hideAiBanterText is true.
+    queue.enqueueServerMessage({
+      TableBanter: {
+        banter_id: "b-mid-1",
+        seat: "South",
+        persona_id: "QuickHothead",
+        mood: "Smug",
+        text: "这手稳了，看我表演！",
+        event_seq: 4,
+        reply_to_seat: null,
+      },
+    });
+    expect(queue.getState().snapshot?.seats[1].mood).toBe("Smug");
+    const activeSouth = queue.getState().activeBubbles.South;
+    expect(activeSouth?.banterId).toBe("b-mid-1");
+    expect(shouldShowBubbleText(activeSouth!, true)).toBe(false);
+
+    queue.enqueueServerMessage({
+      QuickEmoteBroadcast: {
+        seat: "East",
+        emote: "IsThatIt",
+        text: "就这？",
+      },
+    });
+    const activeEast = queue.getState().activeBubbles.East;
+    expect(activeEast?.kind).toBe("quick_emote");
+    expect(shouldShowBubbleText(activeEast!, true)).toBe(true);
+
+    // Switching to muted inside the active dwell window immediately reveals South's text
+    queue.setHideAiBanterText(false);
+    expect(queue.getState().activeBubbles.South?.banterId).toBe("b-mid-1");
+    expect(shouldShowBubbleText(queue.getState().activeBubbles.South!, false)).toBe(
+      true,
+    );
+    // Switching back to audible immediately hides South's text again (still keeps human quick_emote)
+    queue.setHideAiBanterText(true);
+    expect(shouldShowBubbleText(queue.getState().activeBubbles.South!, true)).toBe(
+      false,
+    );
+    expect(shouldShowBubbleText(queue.getState().activeBubbles.East!, true)).toBe(
+      true,
+    );
+
+    // 2. Voice-held mid-speech mute after base 5.5s timer elapsed:
+    //    switching to muted re-arms a full dwell timer instead of letting the bubble vanish after 500ms voice tail.
+    scheduled.clear();
+    queue.enqueueServerMessage({
+      TableBanter: {
+        banter_id: "b-mid-voice",
+        seat: "South",
+        persona_id: "QuickHothead",
+        mood: "Tilted",
+        text: "说了半天还没听完就静音？",
+        event_seq: 5,
+        reply_to_seat: null,
+      },
+    });
+    queue.enqueueServerMessage({
+      TableBanterAudioReady: {
+        banter_id: "b-mid-voice",
+        seat: "South",
+        audio_url: "/api/banter-audio/b-mid-voice",
+        duration_ms: 7000,
+      },
+    });
+    queue.setActiveBanterVoice(
+      { seat: "South", banterId: "b-mid-voice" },
+      new Set(),
+    );
+    const [baseVoiceTimerId] = [...scheduled.keys()];
+    const baseVoiceTimer = scheduled.get(baseVoiceTimerId!)!;
+    scheduled.delete(baseVoiceTimerId!);
+    baseVoiceTimer.cb();
+    // Held alive by active voice
+    expect(queue.getState().activeBubbles.South?.banterId).toBe("b-mid-voice");
+    expect(scheduled.size).toBe(0);
+
+    // User mutes or disables banter voice mid-speech -> full 5500ms timer armed (not 500ms tail)
+    queue.setHideAiBanterText(false);
+    queue.setActiveBanterVoice(null, new Set());
+    expect(queue.getState().activeBubbles.South?.banterId).toBe("b-mid-voice");
+    expect(scheduled.size).toBe(1);
+    const [revealedTimerId] = [...scheduled.keys()];
+    expect(scheduled.get(revealedTimerId!)?.delayMs).toBe(5500);
+
+    // Let it finish & expire naturally
+    const revealedTimer = scheduled.get(revealedTimerId!)!;
+    scheduled.delete(revealedTimerId!);
+    revealedTimer.cb();
+    expect(queue.getState().activeBubbles.South).toBeNull();
+
+    // 3. After audio already arrived and bubble expired naturally, muting later does NOT resurrect it
+    queue.setHideAiBanterText(true);
+    queue.enqueueServerMessage({
+      TableBanter: {
+        banter_id: "b-finished",
+        seat: "South",
+        persona_id: "QuickHothead",
+        mood: "Deadpan",
+        text: "早就说完的一句",
+        event_seq: 6,
+        reply_to_seat: null,
+      },
+    });
+    queue.enqueueServerMessage({
+      TableBanterAudioReady: {
+        banter_id: "b-finished",
+        seat: "South",
+        audio_url: "/api/banter-audio/b-finished",
+        duration_ms: 1200,
+      },
+    });
+    const [doneTimerId] = [...scheduled.keys()];
+    const doneTimer = scheduled.get(doneTimerId!)!;
+    scheduled.delete(doneTimerId!);
+    doneTimer.cb();
+    expect(queue.getState().activeBubbles.South).toBeNull();
+
+    queue.setHideAiBanterText(false);
+    expect(queue.getState().activeBubbles.South).toBeNull();
+
+    // 4. Fast-pace pending-TTS gap (4290ms expired before AudioReady/AudioFallback arrived):
+    //    muting while TTS is still pending immediately restores the bubble with a fresh dwell timer.
+    const fastSnap = makeSnapshot(7, "Fast");
+    fastSnap.seats[1] = snap.seats[1];
+    queue.enqueueServerMessage({ TableSnapshot: fastSnap });
+    queue.setHideAiBanterText(true);
+    queue.enqueueServerMessage({
+      TableBanter: {
+        banter_id: "b-fast-pending",
+        seat: "South",
+        persona_id: "QuickHothead",
+        mood: "Plotting",
+        text: "快速节奏里语音还没到就静音也能补显！",
+        event_seq: 8,
+        reply_to_seat: null,
+      },
+    });
+    const [fastTimerId] = [...scheduled.keys()];
+    expect(scheduled.get(fastTimerId!)?.delayMs).toBe(4290);
+    const fastTimer = scheduled.get(fastTimerId!)!;
+    scheduled.delete(fastTimerId!);
+    fastTimer.cb();
+    expect(queue.getState().activeBubbles.South).toBeNull();
+
+    stateEmits = 0;
+    queue.setHideAiBanterText(false);
+    expect(stateEmits).toBe(1);
+    expect(queue.getState().activeBubbles.South?.banterId).toBe("b-fast-pending");
+    expect(shouldShowBubbleText(queue.getState().activeBubbles.South!, false)).toBe(
+      true,
+    );
+    expect(scheduled.size).toBe(1);
+    const [restoredFastId] = [...scheduled.keys()];
+    expect(scheduled.get(restoredFastId!)?.delayMs).toBe(4290);
 
     queue.dispose();
   });
