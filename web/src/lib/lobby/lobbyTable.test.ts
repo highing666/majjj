@@ -198,7 +198,7 @@ describe("lobbyTable", () => {
 
     expect(vm.slots.right.personaMeta).toMatchObject({
       id: "QuickHothead",
-      name: "急眼快攻哥",
+      name: "大川",
       styleLabel: "快攻",
     });
     expect(
@@ -220,11 +220,11 @@ describe("lobbyTable", () => {
     // Full 5-persona visual roster is always exposed for preview before selection.
     expect(vm.personaRoster).toHaveLength(5);
     expect(vm.personaRoster.map((p) => p.meta.name)).toEqual([
-      "急眼快攻哥",
-      "阴阳茶艺师",
-      "嘴硬死磕王",
-      "拱火乐子人",
-      "红温老雀神",
+      "大川",
+      "小晚",
+      "大鹏",
+      "小桃",
+      "老陈",
     ]);
     for (const item of vm.personaRoster) {
       expect(item.meta.tagline.length).toBeGreaterThan(0);

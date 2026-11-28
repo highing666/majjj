@@ -568,7 +568,7 @@ async fn highlight_banter_chains_set_reply_to_seat_and_cap_strictly_at_1_to_2_ro
         .contains("碰你这张一万，节奏直接起飞！"));
     assert!(pon_reply_req.user_prompt.contains("预计算手牌事实"));
     assert!(
-        !pon_reply_req.user_prompt.contains("急眼快攻哥（自家）")
+        !pon_reply_req.user_prompt.contains("大川（自家）")
             && !pon_reply_req.user_prompt.contains("（自己）"),
         "Pon follow-up prompt must format seats from replier's perspective: {}",
         pon_reply_req.user_prompt

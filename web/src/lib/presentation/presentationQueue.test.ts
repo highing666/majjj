@@ -796,14 +796,14 @@ describe("PresentationQueue", () => {
       kind: "Ai",
       persona_id: "QuickHothead",
       mood: "Smug",
-      nickname: "急眼快攻哥",
+      nickname: "大川",
     };
     snap.seats[2] = {
       ...snap.seats[2],
       kind: "Ai",
       persona_id: "TeaSarcasm",
       mood: "Mocking",
-      nickname: "阴阳茶艺师",
+      nickname: "小晚",
     };
     queue.enqueueServerMessage({ TableSnapshot: snap });
 
@@ -1013,14 +1013,14 @@ describe("PresentationQueue", () => {
       kind: "Ai",
       persona_id: "QuickHothead",
       mood: "Smug",
-      nickname: "急眼快攻哥",
+      nickname: "大川",
     };
     snap.seats[2] = {
       ...snap.seats[2],
       kind: "Ai",
       persona_id: "TeaSarcasm",
       mood: "Mocking",
-      nickname: "阴阳茶艺师",
+      nickname: "小晚",
     };
     queue.enqueueServerMessage({ TableSnapshot: snap });
 
@@ -1167,21 +1167,21 @@ describe("PresentationQueue", () => {
       kind: "Ai",
       persona_id: "QuickHothead",
       mood: "Smug",
-      nickname: "急眼快攻哥",
+      nickname: "大川",
     };
     snap.seats[2] = {
       ...snap.seats[2],
       kind: "Ai",
       persona_id: "TeaSarcasm",
       mood: "Mocking",
-      nickname: "阴阳茶艺师",
+      nickname: "小晚",
     };
     snap.seats[3] = {
       ...snap.seats[3],
       kind: "Ai",
       persona_id: "StubbornBlamer",
       mood: "Tilted",
-      nickname: "嘴硬死磕王",
+      nickname: "大鹏",
     };
     queue.enqueueServerMessage({ TableSnapshot: snap });
     // Initial snapshot triggers a clean flush boundary
@@ -1431,14 +1431,14 @@ describe("PresentationQueue", () => {
       kind: "Ai",
       persona_id: "QuickHothead",
       mood: "Smug",
-      nickname: "急眼快攻哥",
+      nickname: "大川",
     };
     snap.seats[2] = {
       ...snap.seats[2],
       kind: "Ai",
       persona_id: "TeaSarcasm",
       mood: "Mocking",
-      nickname: "阴阳茶艺师",
+      nickname: "小晚",
     };
     queue.enqueueServerMessage({ TableSnapshot: snap });
 
@@ -1582,21 +1582,21 @@ describe("PresentationQueue", () => {
       kind: "Ai",
       persona_id: "QuickHothead",
       mood: "Smug",
-      nickname: "急眼快攻哥",
+      nickname: "大川",
     };
     snap.seats[2] = {
       ...snap.seats[2],
       kind: "Ai",
       persona_id: "TeaSarcasm",
       mood: "Mocking",
-      nickname: "阴阳茶艺师",
+      nickname: "小晚",
     };
     snap.seats[3] = {
       ...snap.seats[3],
       kind: "Ai",
       persona_id: "StubbornBlamer",
       mood: "Tilted",
-      nickname: "嘴硬死磕王",
+      nickname: "大鹏",
     };
     queue.enqueueServerMessage({ TableSnapshot: snap });
 
@@ -1678,7 +1678,7 @@ describe("PresentationQueue", () => {
         seat: "North",
         persona_id: "StubbornBlamer",
         mood: "Tilted",
-        text: "发牌员又演我！",
+        text: "什么破手气，又卡手了！",
         event_seq: 5,
         reply_to_seat: null,
       },
@@ -1732,7 +1732,7 @@ describe("PresentationQueue", () => {
       kind: "Ai",
       persona_id: "QuickHothead",
       mood: "Smug",
-      nickname: "急眼快攻哥",
+      nickname: "大川",
     };
     queue.enqueueServerMessage({ TableSnapshot: snap });
 

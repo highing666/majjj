@@ -768,7 +768,7 @@ describe("table viewModel helpers", () => {
         {
           seat: "East" as const,
           kind: "Ai" as const,
-          nickname: "红温老雀神",
+          nickname: "老陈",
           connected: true,
           ai_assisted: false,
           ai_difficulty: "Strong" as const,
@@ -792,7 +792,7 @@ describe("table viewModel helpers", () => {
         {
           seat: "West" as const,
           kind: "Ai" as const,
-          nickname: "阴阳茶艺师",
+          nickname: "小晚",
           connected: true,
           ai_assisted: false,
           ai_difficulty: "Strong" as const,
@@ -843,7 +843,7 @@ describe("table viewModel helpers", () => {
       seat: "West",
       personaId: "TeaSarcasm",
       mood: "Mocking",
-      name: "阴阳茶艺师",
+      name: "小晚",
       moodShortLabel: "阴阳",
       isActive: true,
     });
@@ -852,7 +852,7 @@ describe("table viewModel helpers", () => {
       seat: "East",
       personaId: "TiltedMaster",
       mood: "Tilted",
-      name: "红温老雀神",
+      name: "老陈",
       moodShortLabel: "红温",
       isActive: false,
     });

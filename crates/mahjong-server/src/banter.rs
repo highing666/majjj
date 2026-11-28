@@ -605,19 +605,19 @@ fn format_revealed_hand(seats: &[SeatInfo; 4], speaker: Seat, revealed: &Reveale
 fn persona_voice_guide(persona: PersonaId) -> &'static str {
     match persona {
         PersonaId::QuickHothead => {
-            "你是「急眼快攻哥」：嘴速手速双快，胡 0 番基本胡也要狂吹，被抢碰或打断节奏立马急眼炸毛，说话干脆冲动带火药味。"
+            "你是「大川」：川渝急性子爽快哥们，嘴速手速双快，胡 0 番基本胡也要狂吹，被抢碰或打断节奏立马急眼炸毛，说话干脆冲动带火药味。"
         }
         PersonaId::TeaSarcasm => {
-            "你是「阴阳茶艺师」：笑里藏刀、满口反话阴阳怪气、不说脏字却句句扎心，最爱笑眯眯翻旧账戳肺管子。"
+            "你是「小晚」：温婉腹黑、笑里藏刀的姐妹，满口反话不说脏字却句句扎心，最爱笑眯眯记仇翻旧账戳肺管子。"
         }
         PersonaId::StubbornBlamer => {
-            "你是「嘴硬死磕王」：死磕到底绝不认输，顺风就吹自己算无遗策，点炮或手牌差永远嘴硬甩锅发牌员和上家。"
+            "你是「大鹏」：京片子嘴贫死磕的哥们，顺风就吹自己算无遗策，点炮或手牌差永远嘴硬不认输、借口清奇爱甩锅上家。"
         }
         PersonaId::ChaosInstigator => {
-            "你是「拱火乐子人」：专业煽风点火挑拨离间，看别人点炮比自己自摸还开心，最爱看热闹补刀拱火。"
+            "你是「小桃」：网感极强、爱吃瓜起哄补刀的损友妹妹，看别人点炮比自家自摸还开心，最爱煽风点火看热闹。"
         }
         PersonaId::TiltedMaster => {
-            "你是「红温老雀神」：自封牌桌导师，全程好为人师毒舌点评他家操作，自己一吃亏立刻血压飙升当场破防。"
+            "你是「老陈」：爱端前辈架子的老哥，全程好为人师点评他家操作，自己一吃亏立刻血压飙升当场红温破防。"
         }
     }
 }
@@ -851,7 +851,7 @@ fn build_mid_hand_inflection_prompt(
             direction.label_zh()
         ),
         MidHandInflection::ConsecutiveStalledDraws { streak } => format!(
-            "局中拐点：你已经连续 {streak} 手摸不到有效进张、原地卡手，可以吐槽发牌员演你、甩锅上家或强行嘴硬挽尊。"
+            "局中拐点：你已经连续 {streak} 手摸不到有效进张、原地卡手，可以吐槽自家破手气、甩锅上家或强行嘴硬挽尊。"
         ),
         MidHandInflection::OpponentHeavyMelds {
             target_seat,
@@ -1955,7 +1955,7 @@ mod tests {
             SeatInfo {
                 seat: Seat::South,
                 kind: SeatKind::Ai,
-                nickname: "急眼快攻哥".to_string(),
+                nickname: "大川".to_string(),
                 connected: true,
                 ai_assisted: false,
                 ai_difficulty: None,
@@ -1967,7 +1967,7 @@ mod tests {
             SeatInfo {
                 seat: Seat::West,
                 kind: SeatKind::Ai,
-                nickname: "阴阳茶艺师".to_string(),
+                nickname: "小晚".to_string(),
                 connected: true,
                 ai_assisted: false,
                 ai_difficulty: None,
@@ -1979,7 +1979,7 @@ mod tests {
             SeatInfo {
                 seat: Seat::North,
                 kind: SeatKind::Ai,
-                nickname: "红温老雀神".to_string(),
+                nickname: "老陈".to_string(),
                 connected: true,
                 ai_assisted: false,
                 ai_difficulty: None,
@@ -2144,9 +2144,9 @@ mod tests {
             }),
         );
         assert!(reply_prompt.contains("这碰下来稳赢了！"));
-        assert!(reply_prompt.contains("急眼快攻哥（上家）"));
+        assert!(reply_prompt.contains("大川（上家）"));
         assert!(reply_prompt.contains("小王（对门）"));
-        assert!(!reply_prompt.contains("急眼快攻哥（自家）"));
+        assert!(!reply_prompt.contains("大川（自家）"));
         assert!(!reply_prompt.contains("（自己）"));
         assert!(reply_prompt.contains("预计算手牌事实"));
         assert!(reply_prompt.contains("严禁臆测他家暗牌"));
@@ -2155,18 +2155,9 @@ mod tests {
     #[test]
     fn seat_label_and_settlement_chain_use_glossary_self_and_replier_perspective() {
         let seats = sample_seats();
-        assert_eq!(
-            seat_label(&seats, Seat::South, Seat::South),
-            "急眼快攻哥（自家）"
-        );
-        assert_eq!(
-            seat_label(&seats, Seat::West, Seat::South),
-            "急眼快攻哥（上家）"
-        );
-        assert_eq!(
-            seat_label(&seats, Seat::West, Seat::West),
-            "阴阳茶艺师（自家）"
-        );
+        assert_eq!(seat_label(&seats, Seat::South, Seat::South), "大川（自家）");
+        assert_eq!(seat_label(&seats, Seat::West, Seat::South), "大川（上家）");
+        assert_eq!(seat_label(&seats, Seat::West, Seat::West), "小晚（自家）");
 
         let settlement = HandSettlement {
             wind_round: Wind::East,
@@ -2223,10 +2214,10 @@ mod tests {
             text: "点炮舒服不？",
         };
         let west_reply = build_chain_reply_prompt(&seats, Seat::West, &prev, &chain, None);
-        assert!(west_reply.contains("阴阳茶艺师（自家）"));
-        assert!(west_reply.contains("急眼快攻哥（上家）"));
+        assert!(west_reply.contains("小晚（自家）"));
+        assert!(west_reply.contains("大川（上家）"));
         assert!(west_reply.contains("小王（对门）"));
-        assert!(!west_reply.contains("急眼快攻哥（自家）"));
+        assert!(!west_reply.contains("大川（自家）"));
         assert!(!west_reply.contains("小王（自家）"));
         assert!(!west_reply.contains("（自己）"));
     }
@@ -2296,15 +2287,15 @@ mod tests {
         assert!(prompt.contains(format_tile_zh(Tile::new(18).unwrap())));
         assert!(prompt.contains(format_tile_zh(Tile::new(33).unwrap())));
         assert!(prompt.contains("小王"));
-        assert!(prompt.contains("阴阳茶艺师"));
-        assert!(prompt.contains("红温老雀神"));
+        assert!(prompt.contains("小晚"));
+        assert!(prompt.contains("老陈"));
     }
 
     #[test]
     fn human_discard_table_inflection_formats_discarder_relative_to_ai_speaker() {
         let seats = sample_seats();
         let discarder = Seat::East; // 小王 (Human)
-        let speaker = Seat::South; // 急眼快攻哥 (AI)
+        let speaker = Seat::South; // 大川 (AI)
         let trigger_desc = format!(
             "{}刚刚舍出 {}",
             seat_label(&seats, speaker, discarder),

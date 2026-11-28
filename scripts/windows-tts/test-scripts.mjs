@@ -21,11 +21,11 @@ const EXPECTED_PS_SCRIPTS = [
 ];
 
 const EXPECTED_PERSONAS = [
-  { id: 'QuickHothead', name: '急眼快攻哥', speaker: 'Eric' },
-  { id: 'TeaSarcasm', name: '阴阳茶艺师', speaker: 'Serena' },
-  { id: 'StubbornBlamer', name: '嘴硬死磕王', speaker: 'Dylan' },
-  { id: 'ChaosInstigator', name: '拱火乐子人', speaker: 'Vivian' },
-  { id: 'TiltedMaster', name: '红温老雀神', speaker: 'Uncle_Fu' },
+  { id: 'QuickHothead', name: '大川', legacyName: '急眼快攻哥', speaker: 'Eric' },
+  { id: 'TeaSarcasm', name: '小晚', legacyName: '阴阳茶艺师', speaker: 'Serena' },
+  { id: 'StubbornBlamer', name: '大鹏', legacyName: '嘴硬死磕王', speaker: 'Dylan' },
+  { id: 'ChaosInstigator', name: '小桃', legacyName: '拱火乐子人', speaker: 'Vivian' },
+  { id: 'TiltedMaster', name: '老陈', legacyName: '红温老雀神', speaker: 'Uncle_Fu' },
 ];
 
 const EXPECTED_MOODS = ['Smug', 'Mocking', 'Tilted', 'Nervous', 'Plotting', 'Deadpan'];
@@ -377,6 +377,10 @@ test('personas.json defines all 5 personas x 6 moods with exact speaker mapping'
     assert.ok(entry, `personas.json missing persona ${persona.id}`);
     assert.equal(entry.display_name, persona.name);
     assert.equal(entry.speaker, persona.speaker);
+    assert.ok(
+      Array.isArray(entry.aliases) && entry.aliases.includes(persona.legacyName),
+      `personas.json ${persona.id} must retain legacy alias ${persona.legacyName}`,
+    );
   }
   for (const mood of EXPECTED_MOODS) {
     const entry = data.moods[mood];

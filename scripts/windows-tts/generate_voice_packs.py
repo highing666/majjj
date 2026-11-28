@@ -139,7 +139,7 @@ CANONICAL_SLOTS: Tuple[VoiceSlotSpec, ...] = (
     VoiceSlotSpec("emote_hurry_up", "emote", "搞快点", EMOTE_STYLE_INSTRUCT),
     VoiceSlotSpec("emote_spare_me", "emote", "别点我，求放过", EMOTE_STYLE_INSTRUCT),
     VoiceSlotSpec("emote_nice_play", "emote", "666，漂亮", EMOTE_STYLE_INSTRUCT),
-    VoiceSlotSpec("emote_dealer_rigged", "emote", "发牌员演我", EMOTE_STYLE_INSTRUCT),
+    VoiceSlotSpec("emote_dealer_rigged", "emote", "什么破手气", EMOTE_STYLE_INSTRUCT),
     VoiceSlotSpec("emote_going_big", "emote", "这把我要胡大的", EMOTE_STYLE_INSTRUCT),
 )
 
@@ -147,7 +147,7 @@ CANONICAL_PACK_SPECS: Tuple[VoicePackSpec, ...] = (
     VoicePackSpec(
         pack_id="quick_hothead",
         kind="ai",
-        display_name="急眼快攻哥",
+        display_name="大川",
         model_repo=MODEL_17B_CUSTOM_VOICE,
         language="Chinese",
         speaker="Eric",
@@ -159,7 +159,7 @@ CANONICAL_PACK_SPECS: Tuple[VoicePackSpec, ...] = (
     VoicePackSpec(
         pack_id="tea_sarcasm",
         kind="ai",
-        display_name="阴阳茶艺师",
+        display_name="小晚",
         model_repo=MODEL_17B_CUSTOM_VOICE,
         language="Chinese",
         speaker="Serena",
@@ -171,7 +171,7 @@ CANONICAL_PACK_SPECS: Tuple[VoicePackSpec, ...] = (
     VoicePackSpec(
         pack_id="stubborn_blamer",
         kind="ai",
-        display_name="嘴硬死磕王",
+        display_name="大鹏",
         model_repo=MODEL_17B_CUSTOM_VOICE,
         language="Chinese",
         speaker="Dylan",
@@ -183,7 +183,7 @@ CANONICAL_PACK_SPECS: Tuple[VoicePackSpec, ...] = (
     VoicePackSpec(
         pack_id="chaos_instigator",
         kind="ai",
-        display_name="拱火乐子人",
+        display_name="小桃",
         model_repo=MODEL_17B_CUSTOM_VOICE,
         language="Chinese",
         speaker="Vivian",
@@ -195,7 +195,7 @@ CANONICAL_PACK_SPECS: Tuple[VoicePackSpec, ...] = (
     VoicePackSpec(
         pack_id="tilted_master",
         kind="ai",
-        display_name="红温老雀神",
+        display_name="老陈",
         model_repo=MODEL_17B_CUSTOM_VOICE,
         language="Chinese",
         speaker="Uncle_Fu",

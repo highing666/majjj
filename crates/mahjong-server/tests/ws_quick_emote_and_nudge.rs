@@ -109,7 +109,7 @@ async fn real_ws_quick_emotes_broadcast_trigger_ai_replies_and_nudge_persists_ac
     )
     .await;
 
-    // East receives QuickEmoteBroadcast + 2 AI TableBanter replies referencing 「发牌员演我」.
+    // East receives QuickEmoteBroadcast + 2 AI TableBanter replies referencing 「什么破手气」.
     let mut east_saw_broadcast = false;
     let mut ai_reply_seats = Vec::new();
     while !(east_saw_broadcast && ai_reply_seats.len() >= 2) {
@@ -117,7 +117,7 @@ async fn real_ws_quick_emotes_broadcast_trigger_ai_replies_and_nudge_persists_ac
             ServerMessage::QuickEmoteBroadcast { seat, emote, text } => {
                 assert_eq!(seat, Seat::East);
                 assert_eq!(emote, QuickEmote::DealerRigged);
-                assert_eq!(text, "发牌员演我");
+                assert_eq!(text, "什么破手气");
                 east_saw_broadcast = true;
             }
             ServerMessage::TableBanter {
@@ -126,7 +126,7 @@ async fn real_ws_quick_emotes_broadcast_trigger_ai_replies_and_nudge_persists_ac
                 reply_to_seat: Some(Seat::East),
                 ..
             } => {
-                assert!(text.contains("发牌员演我"));
+                assert!(text.contains("什么破手气"));
                 ai_reply_seats.push(seat);
             }
             ServerMessage::TableBanter { .. }
@@ -147,7 +147,7 @@ async fn real_ws_quick_emotes_broadcast_trigger_ai_replies_and_nudge_persists_ac
             ServerMessage::QuickEmoteBroadcast { seat, emote, text } => {
                 assert_eq!(seat, Seat::East);
                 assert_eq!(emote, QuickEmote::DealerRigged);
-                assert_eq!(text, "发牌员演我");
+                assert_eq!(text, "什么破手气");
                 break;
             }
             ServerMessage::TableBanter { .. }
